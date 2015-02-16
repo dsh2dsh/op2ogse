@@ -1,0 +1,337 @@
+-------------------------------------------------------------------------------
+--| ogse_bind_light.script                                                  |--
+--| Ѕиндер источников света: лампы и прожектора                             |--
+--| Ќужен дл€ поддержки работы по расписанию,                               |--
+--| также поддерживает встроенную игровую логику                            |--
+--| Malandrinus, OGS Evolution Team, 2012                                   |--
+-------------------------------------------------------------------------------
+function init(obj)
+	if string.find(obj:name(), "r1_r2") then
+		ogse_campfire.bind_light(obj)
+		return
+	end
+	local ini = obj:spawn_ini()
+	if not ini then return end
+	local has_light_config = ini:section_exist("light_config")
+	local has_logic = ini:section_exist("logic")
+	local has_fade_params = ini:section_exist("fade_params")
+	if has_light_config or has_logic or has_fade_params then
+		local new_binder = light_binder(obj, has_light_config, has_logic, has_fade_params)
+		obj:bind_object(new_binder)
+	end
+end
+
+-------------------------------------------------------------------------------
+class "light_binder" (object_binder)
+-- MARKER: __init 
+function light_binder:__init(obj, has_light_config, has_logic, has_fade_params) super(obj)
+	self.initialized = false
+	self.loaded = false
+	self.has_light_config = has_light_config
+	self.has_logic = has_logic
+	self.has_fade_params = has_fade_params
+end 
+-- MARKER: reload
+function light_binder:reload(section)
+end
+-- MARKER: reinit
+function light_binder:reinit()
+	self.object:set_callback(callback.hit, self.hit_callback, self)
+	self.object:set_callback(callback.use_object, self.use_callback, self)
+	db.storage[self.object:id()] = {}
+	self.st = db.storage[self.object:id()]
+end
+-- MARKER: update
+function light_binder:update(delta)
+	if not self.initialized and db.actor then
+		self.initialized = true
+		xr_logic.initialize_obj(self.object, self.st, self.loaded, db.actor, modules.stype_item)
+		-- выполн€ем инициализацию лампы при условии наличи€ конфига лампы 
+		if self.has_light_config then
+			-- читаем сохранЄнное состо€ние
+			self.is_on = xr_logic.pstor_retrieve(self.object, "is_on", true)
+			self.is_broken = xr_logic.pstor_retrieve(self.object, "is_broken", false)
+			local str_rt = xr_logic.pstor_retrieve(self.object, "repair_time", "0,0,0,0,0,0,0") -- "y,m,d,h,min,s,ms"
+			self.repair_time = unpack_time_from_string(str_rt)
+			if game.get_game_time() > self.repair_time then
+				self.is_broken = false
+			end
+			-- инициализируем остальное
+			local light_config_fname = get_string("light_config", "cfg", nil, self.object:spawn_ini())
+			ASSERT(light_config_fname, "[light_binder:update] parameter 'cfg' in 'light_config' section in object '%s' is not defined", self.object:name())
+			self.light_config = ini_file(light_config_fname)
+			self.st.light_config = {}
+			ASSERT(self.light_config, "[light_binder:update] can not create config file '%s'", light_config_fname)
+			if self.light_config:line_exist("light_config", "schedule") then -- если присутствует собственное расписание
+				-- если есть расписание, то нужен уникальный сигнал. ¬ этом случае параметр "signal_name" будет проигнорирован.
+				self.signal_name = self.object:name()
+				self.has_own_schedule = true
+				-- то добавл€ем его в менеджер освещени€
+				local switch_times = get_numbers("light_config", "schedule", self.light_config)
+				ogse_lights_mgr.add_light_schedule(self.signal_name, switch_times)
+			else
+				-- если своего расписани€ нет, то возможно есть внешнее расписание
+				self.signal_name = get_string("light_config", "signal_name", nil, self.light_config)
+				if self.signal_name == "auto" then -- запрос на генерацию уникального имени сигнала
+					self.signal_name = self.object:name()
+				end
+			end
+			self.st.light_config.signal_name = self.signal_name
+			if self.signal_name then -- если есть сигнал (свой или внешний, неважно)
+				-- то подписываемс€ на него
+				self.switch_signal_desc = {signal = self.signal_name, self = self, fun = self.on_switch}
+				ogse_signals.get_mgr():subscribe(self.switch_signal_desc) -- регистрируем себ€ в менеджере сигналов
+			end
+			--
+			self.particle_name = get_string("light_config", "particle", nil, self.light_config)
+			if self.particle_name then
+				self.particle_offset = get_vector("light_config", "particle_offset", vector():set(0,0,0), self.light_config)
+				self.particle_bone = get_string("light_config", "particle_bone", nil, self.light_config)
+			end
+
+			if self.signal_name and ogse_lights_mgr.schedule_for_signal_exist(self.signal_name) then -- если есть сигнал от расписани€
+				ogse_lights_mgr.request_last_signal(self.signal_name) -- запрашиваем сигнал инициализации
+			else
+				self:on_switch(self.is_on)
+			end
+			self.repair_interval = get_float("light_config", "repair_time", 3.0, self.light_config)
+			if self.object:is_projector() then
+				if self.light_config:line_exist("light_config", "aimpoint") then
+					self.aimpoint = get_vector("light_config", "aimpoint", nil, self.light_config)
+					ASSERT(self.aimpoint, "[light_binder:update] cannot read parameter 'aimpoint' from section 'light_config' in file '%s' for object '%s'", 
+						light_config_fname,
+						self.object:name())
+				elseif self.light_config:line_exist("light_config", "aim_path") then
+					local path_section = get_string("light_config", "aim_path", nil, self.light_config)
+					ASSERT(self.light_config:section_exist(path_section), "[light_binder:update] no aim_path section '%' in the file '%'", path_section, light_config_fname)
+					self.aim_path = {}
+					self.current_point = 1
+					local default_aim_pause = get_float("light_config", "default_aim_pause", 2.0, self.light_config)
+					for line = 0, self.light_config:line_count(path_section) - 1 do
+						local res,key,sline = self.light_config:r_line(path_section, line)
+						local ap_data = parse_nums(sline)
+						ASSERT(
+							#ap_data == 3 or #ap_data == 4, 
+							"[light_binder:update] line %d of aim path '%s' in the file '%s' has incorrect format",
+							line, path_section, light_config_fname
+							)
+						local aim_point_item = {
+							p = {ap_data[1], ap_data[2], ap_data[3]},
+							t = ap_data[4] or default_aim_pause,
+						}
+						table.insert(self.aim_path, aim_point_item)
+					end
+				end
+			end
+			--log1("light initialization complete: "..self.object:name())
+		end
+		if self.has_fade_params then
+			local ini = self.object:spawn_ini()
+			local lsf_speed = ini:r_float("fade_params", "speed");
+			local lsf_amount = ini:r_float("fade_params", "amount");
+			local lsf_jitter = ini:r_float("fade_params", "smap_jitter");
+--			log1("load ~~"..self.object:name()..tostring(lsf_speed).."__"..tostring(lsf_amount).."__"..tostring(lsf_jitter));
+			self.object:set_lsf_speed(lsf_speed)
+			self.object:set_lsf_amount(lsf_amount)
+			self.object:set_lsf_smap_jitter(lsf_jitter)
+		end
+		if self.object:is_projector() then
+			self.object:set_go_float(nil, xr_logic.pstor_retrieve(self.object, "current_yaw",   0.0), 492)
+			self.object:set_go_float(nil, xr_logic.pstor_retrieve(self.object, "current_pitch", 0.0), 496)
+			self.object:set_go_float(nil, xr_logic.pstor_retrieve(self.object, "target_yaw",    0.0), 500)
+			self.object:set_go_float(nil, xr_logic.pstor_retrieve(self.object, "target_pitch",  0.0), 504)
+		end
+		-- направл€ем прожектор
+		if self.aimpoint then
+			--print_vector("aimpoint", self.aimpoint)
+			local lk = look(self.aimpoint, 0.5, 0.5)
+			local act = entity_action()
+			act:set_action(lk)
+			self.object:script(true,"test")
+			self.object:reset_action_queue()
+			self.object:command(act,  true)
+		end
+	end
+	if self.is_on and self.aim_path then
+		--log3("self.aim_path: %d", self.current_point)
+		--log3("#self.aim_path %d", #self.aim_path)
+		local new_aim_point = nil
+		local dir = self.object:get_current_direction()
+		--print_vector("dir", dir)
+		if not self.last_dir then -- ещЄ не задавали направление
+			--log1("pr first_setup")
+			self.current_point = 1
+			new_aim_point = self.aim_path[self.current_point].p
+		else
+			if self.pause_start_time then -- режим паузы
+				--log1(tostring(self.aim_path[self.current_point].t))
+				local tdif = (time_global() - self.pause_start_time) / 1.0e3
+				--log3("pr pause: %5.2f / %5.2f", tdif, self.aim_path[self.current_point].t)
+				if tdif > self.aim_path[self.current_point].t then -- пауза закончилась
+					--log1("pr set new point")
+					self.pause_start_time = nil -- снимаем паузу
+					-- назначаем следующую целевую точку
+					self.current_point = self.current_point + 1
+					if self.current_point > #self.aim_path then
+						self.current_point = 1
+					end
+					new_aim_point = self.aim_path[self.current_point].p
+				end
+			else -- режим вращени€
+				--log1("pr move")
+				local dif = vector():sub(dir, self.last_dir):magnitude()
+				--log3("dif = %f", dif)
+				if dif < 0.001 then -- направление устаканилось
+					--log1("pr stop moving")
+					self.pause_start_time = time_global() -- начинаем паузу
+				end
+			end
+		end
+		self.last_dir = dir
+		if new_aim_point then
+			--log1("pr set new point")
+			local lk = look(vector():set(unpack(new_aim_point)), 0.5, 0.5)
+			local act = entity_action()
+			act:set_action(lk)
+			self.object:script(true,"test")
+			self.object:reset_action_queue()
+			self.object:command(act,  true)
+			--log1("done")
+		end
+	end
+	-- обновл€ем положение партикла
+	if self.is_on and self.particle then
+	--' «апускаем ассоциированный с объектом партикл.
+		local pos = self:particle_position()
+		self.particle:move_to(pos, pos)
+	end
+	--
+	if self.st.active_section then
+		xr_logic.issue_event(self.object, self.st[self.st.active_scheme], "update", delta)
+	end	
+end
+
+function light_binder:particle_position()
+	local pos
+	if self.particle_bone then
+		pos = self.object:bone_position(self.particle_bone)
+	else
+		pos = self.object:position()
+	end
+	return pos:add(self.particle_offset)
+end
+
+function light_binder:on_switch(turn_on)
+	self.is_on = (turn_on == true)
+	--log2("light_binder:on_switch: self.object=%s", type(self.object))
+	--log2("light_binder:on_switch: self.object:id()=%d", self.object:id())
+	--log3("light_binder:on_switch: name=%s, on=%s, broken=%s", self.object:name(), turn_on, tostring(self.is_broken))
+	local lamp = self.object:get_hanging_lamp()
+	if lamp then
+		if self.is_on and not self.is_broken then
+			lamp:turn_on()
+		else
+			lamp:turn_off()
+		end
+	elseif self.object:is_projector() then
+		
+		if self.is_on and not self.is_broken then
+			self.object:projector_on()
+			--local visual_ini = self.object:get_visual_ini()
+			--if visual_ini:section_exist("projector_definition") then
+			--	visual_ini:section_exist("projector_definition")
+			--end
+			self.object:set_bone_visible("bone_light", 1)
+			self.object:set_bone_visible("bone_cone", 1)
+		else
+			self.object:projector_off()
+		end
+	end
+	--
+	if self.particle_name then
+		if self.is_on then
+			if self.particle and self.particle:playing() then return end
+		--' «апускаем ассоциированный с объектом партикл.
+			self.particle = particles_object(self.particle_name)
+			self.particle:play_at_pos(self:particle_position())
+		else
+			if self.particle then
+				self.particle:stop()
+				self.particle = nil
+			end
+		end
+	end
+end
+-- MARKER: net_spawn
+function light_binder:net_spawn(data)
+	return true
+end
+-- MARKER: net_destroy
+function light_binder:net_destroy()
+	db.storage[self.object:id()] = nil
+	if self.particle ~= nil then
+        self.particle:stop()
+    end
+	if self.switch_signal_desc then -- если были подписаны на сигнал
+		ogse_signals.get_mgr():unsubscribe(self.switch_signal_desc) -- отписатьс€ от сигнала
+		self.switch_signal_desc = nil
+	end
+	if self.has_own_schedule then -- если работал по собственному расписанию
+		-- то удалить это расписание из менеджера освещени€
+		ogse_lights_mgr.remove_light_schedule(self.signal_name)
+	end
+end
+-- MARKER: net_save_relevant
+function light_binder:net_save_relevant()
+	return true
+end
+-- MARKER: save
+function light_binder:save(packet)
+	-- сохран€ем состо€ние, если есть что сохран€ть
+	if self.has_light_config then
+		xr_logic.pstor_store(self.object, "is_on", self.is_on)
+		xr_logic.pstor_store(self.object, "is_broken", self.is_broken)
+		if self.repair_time then
+			local str_rt = pack_time_to_string(self.repair_time)
+			xr_logic.pstor_store(self.object, "repair_time", str_rt)
+		end
+	end
+	if self.object:is_projector() then
+		xr_logic.pstor_store(self.object, "current_yaw",   self.object:get_go_float(492))
+		xr_logic.pstor_store(self.object, "current_pitch", self.object:get_go_float(496))
+		xr_logic.pstor_store(self.object, "target_yaw",    self.object:get_go_float(500))
+		xr_logic.pstor_store(self.object, "target_pitch",  self.object:get_go_float(504))
+	end
+	--
+	xr_logic.save_obj(self.object, packet)
+end
+-- MARKER: load
+function light_binder:load(reader)
+	self.loaded = true
+	xr_logic.load_obj(self.object, reader)
+end
+-- MARKER: use_callback
+function light_binder:use_callback(obj, who)
+	if self.st.active_section then
+		xr_logic.issue_event(self.object, self.st[self.st.active_scheme], "use_callback", obj, who)
+	end
+end
+-- MARKER: hit_callback
+function light_binder:hit_callback(obj, amount, local_direction, who, bone_index)
+	if self.st.active_section then
+		xr_logic.issue_event(self.object, self.st[self.st.active_scheme], "hit_callback", obj, amount, local_direction, who, bone_index)
+	end
+	if self.has_light_config then
+		if self.is_broken then
+			--log1("already broken")
+			return
+		end
+		xr_logic.pstor_store(self.object, "is_broken", true)
+		self.is_broken = true
+		self:on_switch(false)
+		local s,ms = math.modf(self.repair_interval*3600.0)
+		local t = game.CTime()
+		t:setHMSms(0,0,s,ms*1000)
+		self.repair_time = game.CTime(game.get_game_time() + t)
+	end
+end
