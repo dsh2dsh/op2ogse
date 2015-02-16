@@ -149,11 +149,15 @@ function actor_binder:net_destroy()
   self.object:set_callback(callback.article_info, nil)
   self.object:set_callback(callback.on_item_take, nil)
   self.object:set_callback(callback.on_item_drop, nil)
+  self.object:set_callback(callback.trade_sell_buy_item, nil)
   --self.object:set_callback(callback.actor_sleep, nil)
   self.object:set_callback(callback.task_state, nil)
+  --self.object:set_callback(callback.map_location_added, nil)
   self.object:set_callback(callback.level_border_enter, nil)
   self.object:set_callback(callback.level_border_exit, nil)
   self.object:set_callback(callback.take_item_from_box, nil)
+  self.object:set_callback(callback.use_object, nil)
+  self.object:set_callback(callback.death, nil)
 
   if sr_psy_antenna.psy_antenna then
     sr_psy_antenna.psy_antenna:destroy()
@@ -207,9 +211,7 @@ function actor_binder:reinit()
   self.object:set_callback(callback.level_border_enter, self.level_border_enter, self)
   self.object:set_callback(callback.level_border_exit, self.level_border_exit, self)
   self.object:set_callback(callback.take_item_from_box, self.take_item_from_box, self)
-
   self.object:set_callback(callback.use_object, self.on_use_object, self)
-
   self.object:set_callback(callback.death, self.death_callback, self)
 end
 ----------------------------------------------------------------------------------------------------------------------
@@ -565,15 +567,89 @@ function actor_binder:update(delta)
 -- malandrinus
 --    watch_value = game.time()
 -- /malandrinus
+  local time = time_global()
   amk.oau_watchdog=200
   amk.oau_reason="actor_binder:update"
   --amk.updateGameTime()
   amk.oau_watchdog=2001
   object_binder.update(self, delta)
-  amk.oau_watchdog=199
 
-  local time = time_global()
+  amk.oau_watchdog=188
+  if self.bCheckStart then
+    printf("SET DEFAULT INFOS")   
+	
+	db.money = self.object:money()
+	db.vbr = drrr.next_vbr()
+
+    if not has_alife_info("storyline_actor_start") and
+       (level.name() == "l01_escape")
+    then
+      self.object:give_info_portion("storyline_actor_start")
+      _G.g_start_avi = true
+      printf("*AVI* RUN START AVI")     
+    end
+
+--    if not has_alife_info("encyclopedy") then
+--      self.object:give_info_portion("encyclopedy")
+--    end
+
+    if not has_alife_info("global_dialogs") then
+      self.object:give_info_portion("global_dialogs")
+    end
+
+    if not has_alife_info("level_changer_icons") then
+      self.object:give_info_portion("level_changer_icons")
+    end
+
+    level_tasks.add_lchanger_location()
+	all_spawn_fix.respawn_allspawn()
+	ui_mm_opt_add.send_bad_objects_info()
+	ui_load_dialog.saved_games_limit_show_error()
+	archievements.acv_death()
+
+	if has_alife_info("fli_chaes_start") and not has_alife_info("fli_chaes_have") and not has_alife_info("fli_chaes_fail") then
+		fly_island.fli_chaes_set_range()
+	end
+
+	if has_alife_info("snp_kamen_udachy_have") and not has_alife_info("runner_tele_have") then
+		alife():create("runner_tele", vector():set(0,0,0), 0, 0, self.object:id())
+		db.actor:give_info_portion("runner_tele_have")
+	end
+
+	if has_alife_info("sar_monolith_destroy") and not has_alife_info("sar2_monolith_miracle") then
+		db.actor:give_info_portion("sar2_monolith_miracle")
+	end
+
+	-- правка потери бинокля
+	if has_alife_info("zvezdochet_talk_start") then
+		local slot4 = self.object:item_in_slot(4)
+		if not slot4 then
+			alife():create("wpn_binoc", vector():set(0,0,0), 0, 0, self.object:id())
+		elseif slot4:section() ~= "wpn_binoc" then
+			alife():release(alife():object(slot4:id()))
+			alife():create("wpn_binoc", vector():set(0,0,0), 0, 0, self.object:id())
+		end
+	end
+	
+	-- принудительное переодевание квестовиков
+	xrs_armor.redress()
+
+	-- Фикс Бармена
+	if level.name() == "l05_bar" then
+		all_spawn_fix.release_allspawn_object("bar_barman")
+		alife():create(alife():spawn_id(500))
+	end
+
+	if amk.has_timer("no_save") then
+		abort("Этим сохранением пользоваться нельзя. Удалите его.")
+	end
+	amk.start_timer("no_save", 5)
+	
+	self.health = self.object.health
+    self.bCheckStart = nil    
+  end 
   
+  amk.oau_watchdog=199
   sk_actor_death.is_killed()
   fly.update()
   fly.returner_update()
@@ -775,6 +851,12 @@ end
     self.next_restrictors_update_time = time + 200
 
     task_manager.actor_update()
+
+	-- Для актора hit_callback не вызывается. Заткнем эту дырку.
+	if self.health-self.object.health > 0.001 then
+	self:hit_callback(self.object, self.health-self.object.health, vector():set(1,0,0), self.object, 0)
+	end
+	self.health = self.object.health
   end
 
 	self.update_cnt = self.update_cnt+1
@@ -847,80 +929,6 @@ end
 --  if not self.object:is_talking() then 
 --	dunin_ammo.on_update()
 --  end 
-  amk.oau_watchdog=188
-  if self.bCheckStart then
-    printf("SET DEFAULT INFOS")   
-	
-	db.money = self.object:money()
-	db.vbr = drrr.next_vbr()
-
-    if not has_alife_info("storyline_actor_start") and
-       (level.name() == "l01_escape")
-    then
-      self.object:give_info_portion("storyline_actor_start")
-      _G.g_start_avi = true
-      printf("*AVI* RUN START AVI")     
-    end
-
---    if not has_alife_info("encyclopedy") then
---      self.object:give_info_portion("encyclopedy")
---    end
-
-    if not has_alife_info("global_dialogs") then
-      self.object:give_info_portion("global_dialogs")
-    end
-
-    if not has_alife_info("level_changer_icons") then
-      self.object:give_info_portion("level_changer_icons")
-    end
-
-    level_tasks.add_lchanger_location()
-	all_spawn_fix.respawn_allspawn()
-	ui_mm_opt_add.send_bad_objects_info()
-	ui_load_dialog.saved_games_limit_show_error()
-	archievements.acv_death()
-
-	if has_alife_info("fli_chaes_start") and not has_alife_info("fli_chaes_have") and not has_alife_info("fli_chaes_fail") then
-		fly_island.fli_chaes_set_range()
-	end
-
-	if has_alife_info("snp_kamen_udachy_have") and not has_alife_info("runner_tele_have") then
-		alife():create("runner_tele", vector():set(0,0,0), 0, 0, self.object:id())
-		db.actor:give_info_portion("runner_tele_have")
-	end
-
-	if has_alife_info("sar_monolith_destroy") and not has_alife_info("sar2_monolith_miracle") then
-		db.actor:give_info_portion("sar2_monolith_miracle")
-	end
-
-	-- правка потери бинокля
-	if has_alife_info("zvezdochet_talk_start") then
-		local slot4 = self.object:item_in_slot(4)
-		if not slot4 then
-			alife():create("wpn_binoc", vector():set(0,0,0), 0, 0, self.object:id())
-		elseif slot4:section() ~= "wpn_binoc" then
-			alife():release(alife():object(slot4:id()))
-			alife():create("wpn_binoc", vector():set(0,0,0), 0, 0, self.object:id())
-		end
-	end
-	
-	-- принудительное переодевание квестовиков
-	xrs_armor.redress()
-
-	-- Фикс Бармена
-	if level.name() == "l05_bar" then
-		all_spawn_fix.release_allspawn_object("bar_barman")
-		alife():create(alife():spawn_id(500))
-	end
-
-	if amk.has_timer("no_save") then
-		abort("Этим сохранением пользоваться нельзя. Удалите его.")
-	end
-	amk.start_timer("no_save", 5)
-	
-    self.bCheckStart = nil    
-  end 
-
   
   amk.oau_watchdog=187
   --AMK UTILS--
@@ -1029,12 +1037,13 @@ end
 	akill.check_actor_armor()
 -- Akill end
 	  
---он и так вешается на быстрый вызов с помощью  db.actor:set_fastcall(update, db.actor)
-      --bind_det_arts.update()
       amk.oau_watchdog=183
 	  snp.update()
   end
 
+  amk.oau_watchdog=184
+  bind_det_arts.update()
+  
   amk.oau_watchdog=0
   amk.oau_reason=""    
   
@@ -1064,6 +1073,16 @@ if db.debug then
 	end
 end
 
+end
+----------------------------------------------------------------------------------------------------------------------
+function actor_binder:hit_callback(obj, amount, local_direction, who, bone_index)
+	--get_console():execute("load ~~~ hit_callback: "..tostring(has_alife_info("grenade_flash_blow")).." "..amount.." "..time_global())
+	if has_alife_info("grenade_flash_blow") then
+		xr_sound.get_safe_sound_object([[weapons\explo\grenade_flash]]):play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
+		level.add_pp_effector("teleport.ppe", 2000, false)
+		amk.start_timer("run", 1.5, "bind_grenade.flash_bum1()")
+		db.actor:disable_info_portion("grenade_flash_blow")
+	end
 end
 ----------------------------------------------------------------------------------------------------------------------
 function actor_binder:save(packet)
