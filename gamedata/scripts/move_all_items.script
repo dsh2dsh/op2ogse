@@ -1,0 +1,112 @@
+function attach( sm )
+  sm:subscribe({ signal = "on_body_hide",     fun = this.on_body_hide })
+  sm:subscribe({ signal = "on_body_open",     fun = this.on_body_open })
+  sm:subscribe({ signal = "on_drop",          fun = this.on_drop })
+  sm:subscribe({ signal = "on_take",          fun = this.on_take })
+  sm:subscribe({ signal = "on_take_from_box", fun = this.on_take_from_box })
+end
+
+local is_body_opened = false
+local transferred    = {}
+
+function on_body_hide( npc )
+  is_body_opened = false
+end
+
+function on_body_open( npc )
+  is_body_opened = true
+end
+
+function on_drop( obj, sobj )
+  if sobj == nil then return end
+  if not GetShift() then return end
+  if transferred[ obj:id() ] then
+    if transferred[ obj:id() ] == 2 then transferred = {} end
+    return
+  end
+  local box_id = sobj.parent_id
+  if not ( box_id == 0 or box_id == 65535 ) then
+    transferred[ obj:id() ] = 1
+    local last_item = obj:id()
+    local sect  = obj:section()
+    local sim   = alife()
+    local items = {}
+    for i = 0, db.actor:object_count() - 1 do
+      local item_from_inv = db.actor:object( i )
+      if item_from_inv:section() == sect then
+        local found = sim:object( item_from_inv:id() )
+        if found.parent_id == 0 then
+          table.insert( items, item_from_inv )
+        end
+      end
+    end
+    local box = level.object_by_id( box_id )
+    for i, v in ipairs( items ) do
+      db.actor:transfer_item( v, box )
+      transferred[ v:id() ] = 1
+      last_item = v:id()
+    end
+    transferred[ last_item ] = 2
+  end
+end
+
+function on_take( obj, sobj )
+  if sobj == nil then return end
+  if not GetShift() then return end
+  if obj:section() == "separator" then return end
+  if transferred[ obj:id() ] then
+    if transferred[ obj:id() ] == 2 then transferred = {} end
+    return
+  end
+  if not is_body_opened then return end
+  local from = level.get_target_obj()
+  if from then
+    transferred[ obj:id() ] = 1
+    local last_item = obj:id()
+    local sect  = obj:section()
+    local sim   = alife()
+    local items = {}
+    for i = 0, from:object_count() - 1 do
+      local item_from_inv = from:object( i )
+      if item_from_inv:section() == sect then
+        local found = sim:object( item_from_inv:id() )
+        if found.parent_id == from:id() then
+          table.insert( items, item_from_inv )
+        end
+      end
+    end
+    for i, v in ipairs( items ) do
+      from:transfer_item( v, db.actor )
+      transferred[ v:id() ] = 1
+      last_item = v:id()
+    end
+    transferred[ last_item ] = 2
+  end
+end
+
+function on_take_from_box( box, item, sitem )
+  if sitem == nil then return end
+  if not GetShift() then return end
+  if transferred[ item:id() ] then return end
+  transferred[ item:id() ] = 1
+  local last_item = item:id()
+  local sect   = item:section()
+  local box_id = box:id()
+  local sim    = alife()
+  local items  = {}
+  for i = 0, box:inv_box_count() - 1 do
+      local item_from_box = box:object_from_inv_box( i )
+      if item_from_box:section() == sect then
+        local obj = sim:object( item_from_box:id() )
+        if obj.parent_id == box_id then
+          table.insert( items, item_from_box )
+        end
+      end
+  end
+  for i, v in ipairs( items ) do
+    box:transfer_item( v, db.actor )
+    transferred[ v:id() ] = 1
+    last_item = v:id()
+  end
+  transferred[ last_item ] = 2
+end

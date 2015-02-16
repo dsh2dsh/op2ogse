@@ -36,14 +36,20 @@ lasttime  = 0
 post_process = 0
 local weapon_hide = false
 -- local arts = false
+
+local sim = alife()
 ----------------------------------------------------------------------------------------------------------------------
 class "actor_binder" (object_binder)
 ----------------------------------------------------------------------------------------------------------------------
 function actor_binder:__init (obj) super(obj)
+  sim = alife()
   self.bCheckStart = false
   self.weather_manager = level_weathers.WeatherManager()
   self.actor_detector = xr_detector.actor_detector()
   self.is_saved = false
+  self.am = ogse_signals.get_mgr()
+  self.am:call("on_load_before_all")
+  self.am:call("on_init", obj)
 end
 ----------------------------------------------------------------------------------------------------------------------
 function actor_binder:net_spawn(data)
@@ -63,6 +69,8 @@ function actor_binder:net_spawn(data)
 --    skunk.dbglog("actor net spawn 1")   
     return false
   end
+
+  set_extensions_flags(15)
 
 --  skunk.dbglog("actor net spawn 2")  
   if self.st.disable_input_time == nil then
@@ -128,6 +136,7 @@ end]]
 	self.currY = self.lastY
 	self.update_cnt = 1
 	self.delta = 0
+	self.am:call("on_spawn", data)
 	return true
 end
 ----------------------------------------------------------------------------------------------------------------------
@@ -141,6 +150,7 @@ function actor_binder:net_destroy()
     actor_stats.remove_from_ranking(self.object:id())
   end
 --  game_stats.shutdown ()
+  set_extensions_flags(0)
   db.del_actor(self.object)
 
     sr_light.clean_up ()
@@ -154,6 +164,22 @@ function actor_binder:net_destroy()
   self.object:set_callback(callback.level_border_enter, nil)
   self.object:set_callback(callback.level_border_exit, nil)
   self.object:set_callback(callback.take_item_from_box, nil)
+  self.object:set_callback(callback.use_object, nil)
+
+  self.object:set_callback(callback_ex.on_key_press, nil)
+  self.object:set_callback(callback_ex.on_key_release, nil)
+  self.object:set_callback(callback_ex.on_key_hold, nil)
+  self.object:set_callback(callback_ex.on_mouse_wheel, nil)
+  self.object:set_callback(callback_ex.on_mouse_move, nil)
+  self.object:set_callback(callback_ex.on_belt, nil)
+  self.object:set_callback(callback_ex.on_ruck, nil)
+  self.object:set_callback(callback_ex.on_slot, nil)
+  self.object:set_callback(callback.hit, nil)
+
+  self.object:set_callback(callback.death, nil)
+
+  self.object:set_callback(callback_ex.entity_alive_before_hit, nil)
+  self.object:set_callback(callback_ex.on_before_use_item, nil)
 
   if sr_psy_antenna.psy_antenna then
     sr_psy_antenna.psy_antenna:destroy()
@@ -176,7 +202,10 @@ function actor_binder:net_destroy()
       table_sort(t, sortStat)
     amk.dump_table(t)
   end
+
+  cmd( "r2_render_mode normal" )
   
+  self.am:call("on_destroy")
   object_binder.net_destroy(self)
 end
 
@@ -207,10 +236,25 @@ function actor_binder:reinit()
   self.object:set_callback(callback.level_border_enter, self.level_border_enter, self)
   self.object:set_callback(callback.level_border_exit, self.level_border_exit, self)
   self.object:set_callback(callback.take_item_from_box, self.take_item_from_box, self)
-
   self.object:set_callback(callback.use_object, self.on_use_object, self)
+  self.object:set_callback(callback.hit, self.actor_hit_callback, self)
 
   self.object:set_callback(callback.death, self.death_callback, self)
+
+
+  self.object:set_callback(callback_ex.on_key_press, self.on_key, self)			-- нажатие клавиши
+  self.object:set_callback(callback_ex.on_key_release, self.on_key_free, self)		-- отпускание клавиши
+  self.object:set_callback(callback_ex.on_key_hold, self.on_key_hold, self)		-- удержание клавиши
+  self.object:set_callback(callback_ex.on_mouse_wheel, self.on_wheel_rotation, self)	-- вращение колесика мыши
+  self.object:set_callback(callback_ex.on_mouse_move, self.on_mouse_move, self)		-- движение мыши
+  self.object:set_callback(callback_ex.on_belt, self.item_to_belt, self)		-- перемещение предмета на пояс
+  self.object:set_callback(callback_ex.on_ruck, self.item_to_backpack, self)	-- перемещение предмета в рюкзак
+  self.object:set_callback(callback_ex.on_slot, self.item_to_slot, self)		-- перемещение предмета в слот
+  --
+  self.object:set_callback(callback_ex.entity_alive_before_hit, self.before_hit_callback, self)
+  self.object:set_callback(callback_ex.on_before_use_item, self.before_use, self)
+
+  self.am:call("on_reinit")
 end
 ----------------------------------------------------------------------------------------------------------------------
 function actor_binder:death_callback(victim, who)
@@ -233,7 +277,6 @@ function actor_binder:take_item_from_box(box, item)
 	-- если калбек на взятие предмета из тайника поставить сюда, а не в on_item_take, то калбек сработает только один раз
 	-- и не будет вызываться каждый раз при лоаде, поэтому поршнем его отсекать не нужно
 	snp.check_treasure_item(item)
-	spawn_level_changer.on_take_teleportator(item)
 	braad_test.mina_band2(item)
 	
 	-- подъем рюкзаков
@@ -264,6 +307,7 @@ zamok.remove(box, item)
 	amk_utils.actor_item_from_box(box, item)
 	--AMK UTILS--
 
+  self.am:call("on_take_from_box", box, item, sim:object(item:id()))
 end
 ----------------------------------------------------------------------------------------------------------------------
 function actor_binder:level_border_enter(npc, info_id)
@@ -273,6 +317,7 @@ function actor_binder:level_border_enter(npc, info_id)
   amk_utils.actor_level_border_enter(npc, info_id)
   --AMK UTILS--
   
+  self.am:call("on_level_border_enter", npc, info_id)
 end
 ----------------------------------------------------------------------------------------------------------------------
 function actor_binder:level_border_exit(npc, info_id)
@@ -282,8 +327,39 @@ function actor_binder:level_border_exit(npc, info_id)
    amk_utils.actor_level_border_exit(npc, info_id)
    --AMK UTILS--
    
+  self.am:call("on_level_border_exit", npc, info_id)
 end
 ----------------------------------------------------------------------------------------------------------------------
+local info2call = {
+	ui_pda                   = "on_pda_open",
+	ui_pda_hide              = "on_pda_hide",
+	ui_pda_contacts          = "on_pda_contacts_open",
+	ui_pda_contacts_hide     = "on_pda_contacts_hide",
+	ui_pda_map_local         = "on_pda_map_local",
+	ui_pda_map_global        = "on_pda_map_global",
+	ui_pda_news              = "on_pda_news_open",
+	ui_pda_news_hide         = "on_pda_news_hide",
+	ui_pda_jobs_failed       = "on_pda_jobs_failed",
+	ui_pda_jobs_accomplished = "on_pda_jobs_accomplished",
+	ui_pda_jobs_current      = "on_pda_jobs_current",
+	ui_pda_jobs              = "on_pda_jobs_open",
+	ui_pda_jobs_hide         = "on_pda_jobs_hide",
+	ui_pda_diary             = "on_pda_diary_open",
+	ui_pda_diary_hide        = "on_pda_diary_hide",
+	ui_pda_encyclopedia      = "on_pda_encyclopedia_open",
+	ui_pda_encyclopedia_hide = "on_pda_encyclopedia_hide",
+	ui_pda_actor_info        = "on_pda_actor_info",
+	ui_pda_ranking           = "on_pda_ranking",
+	ui_pda_events            = "on_pda_events",
+	ui_inventory             = "on_inventory_open",
+	ui_inventory_hide        = "on_inventory_hide",
+	ui_talk                  = "on_talk_open",
+	ui_talk_hide             = "on_talk_hide",
+	ui_trade                 = "on_trade_open",
+	ui_trade_hide            = "on_trade_hide",
+	ui_car_body              = "on_body_open",
+	ui_car_body_hide         = "on_body_hide",
+}
 function actor_binder:info_callback(npc, info_id)
 --  printf("*INFO*: npc='%s' id='%s'", npc:name(), info_id)
   --' Сюжет
@@ -304,6 +380,11 @@ function actor_binder:info_callback(npc, info_id)
 	if npc:id() == db.actor:id() then
 		meceniy_spawn.respawn(info_id)
     end
+  self.am:call("on_info", npc, info_id)
+  local sc = info2call[info_id]
+  if sc then
+     self.am:call(sc, npc)
+  end
 end
 ----------------------------------------------------------------------------------------------------------------------
 function actor_binder:on_trade (item, sell_bye, money)
@@ -316,11 +397,12 @@ function actor_binder:on_trade (item, sell_bye, money)
 		archievements.on_receive_count_item(item)
 		game_stats.money_trade_update(-money)
     end
-	
-	db.traded = true
+
+    self.am:call("on_trade", item, sell_bye, money)
+    db.traded = true
 end
 ----------------------------------------------------------------------------------------------------------------------
-function actor_binder:article_callback(npc, group, name)
+function actor_binder:article_callback(npc, group, name, article_type)
   --printf("article_callback [%s][%s]", group, name)
   if device().precache_frame >1 then return end
   
@@ -335,6 +417,7 @@ function actor_binder:article_callback(npc, group, name)
   amk_utils.actor_article(npc, group, name)
   --AMK UTILS--
   
+  self.am:call("on_article", npc, group, name, article_type)
 end
 --------------------------------------------------------------------------------------------------
 function actor_binder:on_item_take (obj)
@@ -426,7 +509,6 @@ kostya_dialog.checking_taken_item64(obj)
 kostya_dialog.checking_taken_item_vzn(obj)
 kostya_dialog.peshera_go(obj)
 snp.checking_taken_item_snp(obj)
-spawn_level_changer.on_take_teleporter(obj)
 archievements.on_receive_count_item(obj)
 archievements.on_item_take(obj)
 volazar_dialog.check_upd(obj)
@@ -471,6 +553,11 @@ monster_parts.on_part_take(obj)
 			db.actor:transfer_item(outfit, db.actor)
 		end
 	end
+
+        local sobj = sim:object(obj:id()) 
+        if sobj then -- такое бывает, если до этого объект был удалён в on_ruck
+           self.am:call("on_take", obj, sobj)
+        end
 end
 ----------------------------------------------------------------------------------------------------------------------
 function actor_binder:on_item_drop (obj)
@@ -504,7 +591,6 @@ babah.li(obj)
   meceniy_utils.on_item_drop_callback(obj)
   -------------------------------
   kostya_dialog.peshera_drink(obj)
-spawn_level_changer.checking_droped_obj(obj)
 --[[spawn_level_changer.checking_droped_item(obj)
 spawn_level_changer.checking_droped_item2(obj)
 spawn_level_changer.checking_droped_item3(obj)
@@ -522,8 +608,25 @@ zamok.add(obj)
 snp.checking_dropped_item_snp(obj)	-- snp
 nightvision.checking_droped_obj(obj) -- ПНВ
 
+  local sobj = sim:object(obj:id())
+  if sobj then
+     self.am:call("on_drop", obj, sobj)
+  end
 end
 ----------------------------------------------------------------------------------------------------------------------
+
+function actor_binder:before_use(item)
+	self.am:call("on_actor_before_use", item, sim:object(item:id()))
+end
+
+function actor_binder:before_hit_callback(p_s_hit, p_ignore_flags)
+	local hit_data = read_hit_data(p_s_hit)
+	self.am:call("on_actor_before_hit", hit_data, p_s_hit, p_ignore_flags)
+end
+
+function actor_binder:actor_hit_callback(obj, amount, local_direction, who, bone_index)
+	self.am:call("on_hit", obj, amount, local_direction, who, bone_index)
+end
 
 function actor_binder:task_callback(_task, _objective, _state)
   task_manager.task_callback(_task:get_id(), _objective:get_idx(), _state)
@@ -549,19 +652,23 @@ function actor_binder:task_callback(_task, _objective, _state)
   amk_utils.actor_task(_task, _objective, _state)
   --AMK UTILS--
   
+  self.am:call("on_task", _task, _objective, _state)
 end
 
 ----------------------------------------------------------------------------------------------------------------------
 function actor_binder:map_location_added_callback(spot_type_str, object_id)
   if (false==app_ready()) or (device().precache_frame>1) then return end
   --'news_manager.send_task(db.actor, "new")
+  self.am:call("on_add_map_location", spot_type_str, object_id)
 end
 ----------------------------------------------------------------------------------------------------------------------
 -- malandrinus
 --watch_value = 0
 -- malandrinus
 scopeUsed = false
+local update_was_never_called = true
 function actor_binder:update(delta)
+  self.am:call( "on_before_update", delta )
 -- malandrinus
 --    watch_value = game.time()
 -- /malandrinus
@@ -857,6 +964,7 @@ end
     if not has_alife_info("storyline_actor_start") and
        (level.name() == "l01_escape")
     then
+      self.am:call("on_storyline_start")
       self.object:give_info_portion("storyline_actor_start")
       _G.g_start_avi = true
       printf("*AVI* RUN START AVI")     
@@ -1064,7 +1172,54 @@ if db.debug then
 	end
 end
 
+  self.am:call("on_update", delta)
+  if update_was_never_called then
+    self.am:call("on_first_update")
+    update_was_never_called = false
+  end
 end
+
+function actor_binder:on_key(key)
+	self.am:call("on_key_down", key, dik_to_bind(key))
+end
+
+function actor_binder:on_key_free(key)
+	self.am:call("on_key_up", key, dik_to_bind(key))
+end
+
+function actor_binder:on_key_hold(key)
+	self.am:call("on_key_hold", key, dik_to_bind(key))
+end
+
+function actor_binder:on_wheel_rotation(vol)
+	self.am:call("on_wheel", vol-100000)
+end
+
+function actor_binder:on_mouse_move(velx, vely)
+	self.am:call("on_mouse_move", velx-100000, vely-100000)
+end
+
+function actor_binder:item_to_belt(obj)
+	local sobj = sim:object(obj:id())
+	if sobj then
+		self.am:call("on_item_to_belt", obj, sobj)
+	end
+end
+
+function actor_binder:item_to_backpack(obj)
+	local sobj = sim:object(obj:id())
+	if sobj then -- такое бывает, когда спавним в инвентарь предмет, а потом его тут же удаляем ещё выхода в онлайн
+		self.am:call("on_item_to_ruck", obj, sobj)
+	end
+end
+
+function actor_binder:item_to_slot(obj)
+	local sobj = sim:object(obj:id())
+	if sobj then
+		self.am:call("on_item_to_slot", obj, sobj)
+	end
+end
+
 ----------------------------------------------------------------------------------------------------------------------
 function actor_binder:save(packet)
   if amk.has_timer("no_save") and not db.debug then
@@ -1110,6 +1265,8 @@ function actor_binder:save(packet)
     self.wt=time_global()
 -- amk.send_tip("Actor packet size <6000 ","Размер нетпакета ГГ мал. Всё ОК:"..pk1:w_tell(),0,15,"gen_info")
   end
+  self.am:call("on_save", packet)
+  self.am:call("on_save_after_all")
   self.is_saved = true
 end
 
@@ -1192,6 +1349,7 @@ function actor_binder:load(reader)
 	
 	task_manager.load(reader)
 	self.actor_detector:load(reader)
+  self.am:call("on_load", reader)
   
   if xr_logic.pstor_retrieve(self.object,"emerg",false) then -- нельзя использовать amk.load_varible(), так как db.actor ещё не определён
     self.warning=true
@@ -1209,6 +1367,13 @@ function actor_binder:on_use_object(obj)
 	meceniy_outfit.on_item_drop(obj)
     fly.start(obj)
 	amk_alcohol.drink_vodka(obj)
+   if obj then
+      local id = obj:id()
+      local sobj = sim:object(id)
+      if sobj then
+         self.am:call("on_use", obj, sobj)
+      end
+   end
 end
 
 function actor_binder:rotting()
