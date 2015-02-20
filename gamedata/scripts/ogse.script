@@ -1,0 +1,2958 @@
+-----------------------------------------------------------------------
+--- ogse.script
+--- Утилитарная база OGSE 0.6.9.3
+--- 2007-2008 (c) xStream, DEXXX
+--- 2009-2013 (c) OGS Evolution Team
+-----------------------------------------------------------------------
+
+local k_timers = 1
+game_time_factor = level.get_time_factor()
+local npc_spawner={}
+local quest_dead_on_arrival = {}
+local timers={}
+local g_timers={}
+local markers={}
+local x_objs={}
+local timer_trigger=nil
+local debug_mode = system_ini():r_bool("options","debug_mode")
+local fov_vol = system_ini():r_s32("options","fov_volume")
+local max_alarm_fov_vol = system_ini():r_s32("options","max_fov_volume")
+local min_alarm_fov_vol = system_ini():r_s32("options","min_fov_volume")
+local psyzones_flag = system_ini():r_s32("options","psyzones_flag")
+offline_alife_enabled = system_ini():r_bool("options","offline_alife")
+
+local vertexes_checked = false
+local bar_timer = time_global()
+local sleep_timer = time_global()
+local car_timer = time_global()
+local ids_timer = time_global()
+local mine_timer = time_global()
+local health_time = time_global()
+local loot_timer = time_global()
+local new_mine_timer = time_global()
+local buggy_timer = time_global()
+local anom_enum = time_global()
+local armor_healing = time_global()
+local heal_interval = 200
+local watchdog = 0
+local watchdog_max = 28
+local drug_timer = time_global()
+local off_timer = time_global()
+local off_timer_1 = time_global()
+local timer_trigger_step = 500		-- шаг проверки таймеров (мс)
+local main_variable_tbl = nil
+local loaded_slot = nil
+
+
+art_levels = {
+["af_medusa"] = 1,
+["af_vyvert"] = 1,
+["af_blood"] = 1,
+["af_ameba_slime"] = 1,
+["af_gravi"] = 2,
+["af_drops"] = 2,
+["af_electra_sparkler"] = 2,
+["af_ameba_slug"] = 2,
+["af_rusty_thorn"] = 2,
+["af_mincer_meat"] = 2,
+["af_cristall_flower"] = 2,
+["af_fireball"] = 3,
+["af_electra_flash"] = 3,
+["af_rusty_kristall"] = 3,
+["af_kaktus"] = 3,
+["af_gold_fish"] = 4,
+["af_cristall"] = 4,
+["af_dummy_spring"] = 4,
+["af_dummy_dummy"] = 4,
+["af_dummy_pellicle"] = 4,
+["af_night_star"] = 5,
+["af_soul"] = 5,
+["af_electra_moonlight"] = 5,
+["af_ameba_mica"] = 5,
+["af_rusty_sea-urchin"] = 5,
+["af_dummy_battery"] = 5,
+["af_dummy_glassbeads"] = 5,
+["af_fuzz_kolobok"] = 5
+}
+
+local loc_levels = {
+["l01_escape"] = 1,
+["l02_garbage"] = 2,
+["l03_agroprom"] = 3,
+["l03u_agr_underground"] = 3,
+["l04_darkvalley"] = 3,
+["l04u_labx18"] = 4,
+["l05_bar"] = 3,
+["l06_rostok"] = 4,
+["l07_military"] = 4,
+["l08_yantar"] = 4,
+["l08u_brainlab"] = 5,
+["l10_radar"] = 5,
+["l10u_bunker"] = 5,
+["l11_pripyat"] = 5,
+["l12_stancia"] = 5,
+["l12_stancia_2"] = 5,
+["l12u_sarcofag"] = 5,
+["l12u_control_monolith"] = 5,
+["l09_deadcity_ogse"] = 5,
+["l13_generators_ogse"] = 5,
+["l22_marsh"] = 5
+}
+
+-- Переменные для типсов
+tips_variable = {
+	["pda_news"] = ([[device\pda\pda_news]]),
+	["pda_tips"] = ([[device\pda\pda_tip]]),
+	["pda_task"] = ([[device\pda\pda_objective]]),
+	["pda_sos"] = ([[device\pda\pda_sos]]),
+}
+tips_icons = {
+	default  = { 82, 282},
+	trader   = { 332, 893},
+	dolg     = { 0, 658},
+	freedom  = { 0, 658},
+	ecolog   = { 498, 0},
+	arena    = { 332, 141},
+	stalker  = { 0, 658},
+	krot     = { 332, 47},
+	barman   = { 332, 235},
+	wolf	   = { 332, 940},
+	o_soznanie = { 498, 893},
+	monolith = { 0, 658},
+	saharov  = { 332, 470},
+	prizrak  = { 0, 658},
+	killer   = { 0, 658},
+	death    = { 0, 752},
+	gen_info	= { 0, 658},
+	trade 	= { 0, 0},
+	uniq	= { 498, 47}
+}
+
+function kill_living_npc(npc_id)
+   local s_npc = alife():object(npc_id)
+   s_npc.force_offline = true
+   go_offline_kill_timer(npc_id, pos):start()
+end
+-- служебный таймер, ждущий ухода в оффлайн
+class "go_offline_kill_timer" (ogse_qt.quick_timer)
+function go_offline_kill_timer:__init(npc_id) super()
+   self.npc_id = npc_id -- запоминаем в таймере id непися
+end
+function go_offline_kill_timer:condition()
+   return (not level.object_by_id(self.npc_id)) -- ждём исчезновения клиентского объекта
+end
+function go_offline_kill_timer:action()
+   local s_npc = alife():object(self.npc_id)
+   if s_npc then
+      alife():release(s_npc, true)
+   else
+      --send_tip("Something wrong!") -- такое возможно при удалении объекта
+   end
+end
+
+--- Перезапуск логики NPC
+function reset_npc_logic(obj)
+	if obj then
+		local npc_id = obj:id()
+		db.storage[npc_id].overrides = nil
+		xr_logic.reset_generic_schemes_on_scheme_switch(obj, "nil", "nil")
+		db.storage[npc_id].active_section = nil
+		db.storage[npc_id].active_scheme = nil
+	end
+end
+
+-- Получение заданного настройками fov
+function get_default_fov()
+	return fov_vol
+end
+-- Получение максимально допустимого настройками fov
+function get_max_alarm_fov()
+	return max_alarm_fov_vol
+end
+-- Получение минимально допустимого настройками fov
+function get_min_alarm_fov()
+	return min_alarm_fov_vol
+end
+
+-- Проверка уровня артефакта по имени левела
+function art_accesible(item)
+	local section = item:section()
+	local level_name = level.name()
+	local art_level = art_levels[section]
+	local loc_level = loc_levels[level_name]
+	if art_level and loc_level then
+		if art_level <= loc_level then
+			return true
+		else
+			return false
+		end
+	else
+		return true
+	end
+	return false
+end
+
+-- Проверка нахождения актора в особой зоне
+function actor_in_zone(pos_psy_x,pos_psy_y,size_psy_x,size_psy_y,z1,z2)
+local pos = db.actor:position()
+local x1 = pos_psy_x
+local x2 = pos_psy_y
+local y1 = size_psy_x
+local y2 = size_psy_y
+if (pos.x >= x1 and pos.x <= x2) and (pos.z >= y1 and pos.z <= y2) and (pos.y >= z1) and (pos.y <= z2) then
+	return 1
+end
+return 0
+end
+
+-- Проверка нахождения НПС в особой зоне
+function npc_in_zone(obj,lev,pos_psy_x,pos_psy_y,size_psy_x,size_psy_y,z1,z2)
+local level_name = level.name()
+if level_name ~= lev then
+	return false
+end
+local pos = obj:position()
+local x1 = pos_psy_x
+local x2 = pos_psy_y
+local y1 = size_psy_x
+local y2 = size_psy_y
+if (pos.x >= x1 and pos.x <= x2) and (pos.z >= y1 and pos.z <= y2) and (pos.y >= z1) and (pos.y <= z2) then
+	return true
+end
+return false
+end
+
+-- Проверка, является ли объект монстром
+function is_monster(object)
+local id = get_clsid (object)
+if id == clsid.boar_s or
+   id == clsid.bloodsucker_s or
+   id == clsid.dog_s or
+   id == clsid.flesh_s or
+   id == clsid.pseudodog_s or
+   id == clsid.psy_dog_s or
+   id == clsid.burer_s or
+   id == clsid.cat_s or
+   id == clsid.chimera_s or
+   id == clsid.controller_s or
+   id == clsid.fracture_s or
+   id == clsid.poltergeist_s or
+   id == clsid.gigant_s or
+   id == clsid.zombie_s or
+   id == clsid.tushkano_s or
+   id == clsid.snork_s then
+	return 1
+end
+return 0
+end
+
+local quest_profiles = {
+	["military_trader"] 		= true,
+	["bandit_trader"] 			= true,
+	["monolit_trader"] 			= true,
+	["merc_trader"] 			= true,
+	["pri_trader_profile"]	 	= true,
+	["agr_dolg_glavnyi"] 		= true,
+	["agr_dolg_sniper"] 		= true,
+	["agr_ratcatcher"]			= true,
+	["ecolog_v_tainike"] 		= true,
+	["ecolog_v_doline"] 		= true,
+	["neytral_drug_seregi"]		= true,
+	["neytral_serega_manyak"] 	= true,
+	["yan_svoboda_informator"] 	= true,
+	["mil_dolg_recon"] 			= true,
+	["mil_svoboda_wounded"] 	= true,
+	["mil_dolg_killer_commander"] = true,
+	["mil_dolg_killer_1"] 		= true,
+	["mil_dolg_killer_2"] 		= true,
+	["mil_Svoboda_zombi_stalker"] = true,
+	["mil_svoboda_bespredel"] 	= true,
+	["esc_anmaly_military_leader"] 	= true,
+	["esc_anmaly_military_solder"] 	= true,
+	["bar_arena_manager"]	= true,
+	["aem_arny"]	= true,
+	["aem_admin_1"]	= true,
+	["aem_admin_2"]	= true,
+	["aem_admin_3"]	= true,
+	["aem_admin_4"]	= true,
+	["aem_admin_5"]	= true,
+	["esc_specotryad_leader"] = true,
+	["esc_specotryad_npc"] = true,
+	["esc_plennik_on_blockpost"] = true,
+	["esc_anmaly_military_leader"] = true,
+	["esc_anmaly_military_solder"] = true,
+	["esc_killer_mined_lager"] = true,
+	["val_freedom_enemy"] = true,
+	["val_freedom_enemy_commander"] = true,
+	["val_friend_of_barman"] = true,
+	["val_stalkers_barman"] = true,
+	["gar_dolg_on_sdelka"] = true,
+	["gar_killers_on_sdelka"] = true,
+	["agr_plennik_on_base_mils"] = true,
+	["agr_military_plennik"] = true,
+	["pri_doch_of_starik"] = true,
+	["esc_starik_searcing_doch"] = true,
+	["rad_freedomer_on_vetr"] = true,
+	["esc_stalker_novice_teterev"] = true,
+	["esc_bandit_of_teterev_leader"] = true,
+	["esc_bandit_of_teterev"] = true,
+	["esc_sniper_qest_on_elevator"] = true,
+	["esc_sniper_qest_on_elevator_2"] = true,
+	["yan_zombied_chuk"] = true,
+	["yan_figa"] = true,
+	["x18_death_stalker"] = true,
+	["val_kvestx10_svyaznoy"] = true,
+	["esc_scoryi"] = true,
+	["val_orlov"] = true,
+	["val_kvest_sniper"] = true,
+	["esc_sitnik"] = true,
+	["esc_pechkin"] = true,
+	["yan_ecolog_preobr"] = true,
+	["val_bandit_uzh"] = true,
+	["esc_hitryi"] = true,
+	["val_bodryi"] = true,
+	["x16_gribnik"] = true,
+	["x16_leshyi"] = true,
+	["gar_hellcar_group_1"] = true,
+	["gar_hellcar_group_2"] = true,
+	["gar_seryi_drug2"] = true,
+	["gar_seryi_drug3"] = true,
+	["esc_blokpost_commander"] = true,
+	["sim_stalker_master_diador"] = true,
+	["agr_defector_stalker1"] = true,
+	["bar_ecolog_professor"] = true,
+	["gar_sniper_bandit"] = true,
+	["first_neutral"] = true,
+	["esc_lekar"] = true,
+	["bridge_lekar"] = true,
+	["esc_digger"] = true,
+	["ds_hunter"] = true,
+	["ds_glavar"] = true,
+	["ds_telohr_1"] = true,
+	["ds_telohr_2"] = true,
+	["ds_shesterka"] = true,
+	["ds_patruln"] = true,
+	["bratstvo_lider"] = true,
+	["bratstvo_orujeinik"] = true,
+	["bratstvo_vrach"] = true,
+	["bratstvo_cleaner"] = true,
+	["iskatel_shaman"] = true,
+	["iskatel_dusty"] = true,
+	["iskatel_yuriy"] = true,
+	["iskatel_ahmet"] = true,
+	["iskatel_bacha"] = true,
+	["ds_nalet_band_1"] = true,
+	["ds_nalet_band_2"] = true,
+	["ds_nalet_band_3"] = true,
+	["ds_nalet_band_4"] = true,
+	["ds_nalet_band_5"] = true,
+	["ds_nalet_band_6"] = true,
+	["ds_nalet_band_7"] = true,
+	["ds_nalet_band_8"] = true,
+	["garb_novice_arthunter"] = true,
+	["bar_kulg_agent"] = true,
+	["dolg_palach1"] = true,
+	["dolg_palach2"] = true,
+	["bar_sergant_jivoderov"] = true,
+	["rad_company_mikluha"] = true,
+	["rad_company_che"] = true,
+	["rad_company_fidel"] = true,
+	["rad_company_markiz"] = true,
+	["rad_company_graf"] = true,
+	["rad_company_zahar"] = true,
+	["izgioy_lider"] = true,
+	["izgoy_pomoshnik"] = true,
+	["izgoy_first_patient"] = true,
+	["izgoy_second_patient"] = true,
+	["dar_merk_lider"] = true,
+	["dar_merk_bomber"] = true,
+	["dar_merk_guard_1"] = true,
+	["dar_merk_guard_2"] = true,
+	["dar_officer"] = true,
+	["bar_dr_gorbovsky"] = true,
+	["dik_the_drifter"] = true,
+	["bratstvo_agent_1"] = true,
+	["dar_gaz_dolg_lider"] = true,
+	["dar_gaz_dolg1"] = true,
+	["dar_gaz_dolg2"] = true,
+	["dar_gaz_dolg3"] = true,
+	["stalker_tikar"] = true,
+	["major_pomoshnik2"] = true,
+	["major_wounded"] = true,
+	["zona_brother1"] = true,
+	["zona_brother2"] = true,
+	["yan_soldier"] = true,
+	["ros_soldier"] = true,
+	["yan_soldier_new"] = true,
+	["deadcity_bar_nardyman"] = true,
+	["deadcity_bar_barman"] = true,
+	["deadcity_master_voice"] = true,
+	["bar_guider"] = true,
+	["yantar_guider"] = true,
+	["pri_guider"] = true,
+	["esc_semenov"] = true,
+}
+
+--- Возвращает true если параметром передан квестовый непись
+function is_quest_npc(npc)
+	local story = 4294967296
+	if npc then
+		if npc.m_story_id ~= nil then
+			story = npc.m_story_id
+		else
+			story = npc:story_id()
+		end
+		if story == 4294967296 then
+			local profile = npc:profile_name()
+			local name = npc:name()
+			if quest_profiles[profile] or quest_profiles[name] then
+				return true
+			end
+		end
+	end
+	if story ~= 4294967296 then return true else return false end
+end
+
+-- телепортация NPC в пределах уровня
+-- сама функция только ставит флажок на выпихивание в оффлайн и запускает ждущий таймер
+-- вся работа будет сделана в экшине таймера
+function teleport_npc(npc_id, pos)
+   local s_npc = alife():object(npc_id)
+   s_npc.force_offline = true
+   go_offline_watch_timer(npc_id, pos):start() -- таймер "выстрелил-забыл"
+end
+-- служебный таймер, ждущий ухода в оффлайн
+class "go_offline_watch_timer" (ogse_qt.quick_timer)
+function go_offline_watch_timer:__init(npc_id, pos) super()
+   self.npc_id = npc_id -- запоминаем в таймере id непися
+   self.pos    = pos -- запоминаем позицию, куда будем перемещать
+end
+function go_offline_watch_timer:condition()
+   return (not level.object_by_id(self.npc_id)) -- ждём исчезновения клиентского объекта
+end
+function go_offline_watch_timer:action()
+   local s_npc = alife():object(self.npc_id)
+   if s_npc then
+      s_npc.position = self.pos -- кастуем злое колдунство
+      s_npc.force_offline = nil -- отправляем обратно в онлайн
+   else
+      --log1("Something wrong!") -- такое возможно при удалении объекта
+   end
+end
+
+--- Возвращает класс защиты надетой на ГГ брони от выброса. В obj передавать db:actor
+--- С неписями НЕ работает! Пользуйте armor_type(npc)
+function armor_class(obj)
+	if obj then
+		local armor = obj:get_current_outfit()
+		local armorname
+		if armor ~= nil then armorname = armor:section() else return 5 end
+		if armorname ~= nil then
+			if 	string.find(armorname, "scientific_outfit") or
+				string.find(armorname, "ecolog_outfit") or
+				string.find(armorname, "protection_outfit") or
+				string.find(armorname, "military_outfit") then
+				return 1
+	     elseif string.find(armorname, "exo") or
+				string.find(armorname, "monolit_exoskeleton") then
+				return 2
+	     elseif string.find(armorname, "outfit_specnaz_m1") or
+				string.find(armorname, "specops_outfit") or
+				string.find(armorname, "monolit_outfit_m1") or
+				string.find(armorname, "svoboda_heavy_outfit") then
+				return 3 else return 4
+			end
+		end
+	end
+end
+
+--- Возвращает величину урона ударной волной в зависимости от локации
+function level_blow_damage(level_name)
+
+local level_name = level.name()
+
+	if level_name then
+		if level_name == "l01_escape" then
+			return 0.02
+		elseif level_name == "l03_agroprom" or level_name == "l02_garbage" or level_name == "l04_darkvalley" then
+			return 0.04
+		elseif level_name == "l05_bar" or level_name == "l06_rostok" then
+			return 0.06
+		elseif level_name == "l07_military" or level_name == "l08_yantar" or level_name == "l11_pripyat" then
+			return 0.08
+		else return 0.06 end
+	end
+	return 0.06
+end
+
+local armor_type_npc = {["novice"]=4, ["experienced"]=3, ["veteran"]=2, ["master"]=1}
+--- Возвращает класс защиты непися
+function armor_type(npc)
+	if npc then
+		local npc_rank = ranks.get_obj_rank_name(npc)
+		if npc_rank ~= nil then
+			return (armor_type_npc[npc_rank] or 5)
+		end
+	end
+end
+
+-- Показ типса
+function send_tip(news_text, header, timeout, showtime, sender, sound)
+	if news_text==nil then return end
+	local header = (header or game.translate_string("st_tip"))
+	local timeout = (timeout or 0)
+	local showtime = (showtime or 5)
+
+	local player = xr_sound.get_safe_sound_object((tips_variable[tostring(sound)] or  tips_variable["pda_tips"]))
+
+	--' Играем дефолтный звук
+	player:play(db.actor, timeout, sound_object.s2d)
+
+	local sender = (sender or "default")
+
+	local x = tips_icons[sender][1]
+	local y = tips_icons[sender][2]
+
+	local news_text = "%c[255,160,160,160]"..header.."\\n".."%c[default]"..news_text
+	db.actor:give_game_news(news_text, "ui\\ui_iconsTotal", Frect():set(x,y,83,47), timeout*1000, showtime*1000)
+	return true
+end
+
+
+-- Старт таймера в реальном времени
+function start_timer(name,delay,action)
+	if not delay then
+		return false
+	end
+
+	if not action then
+		action = ""
+	end
+
+	local a=1
+	while main_variable_tbl["rt"..a] do
+		a=a+1
+		if a>100 then
+			return false
+		end
+	end
+
+	save_variable("rt"..a, name)
+	save_variable("rt"..a.."c", 0)
+	save_variable("rt"..a.."d", delay*1000)
+	save_variable("rt"..a.."p", action)
+
+	--log1("start_timer: timer started "..tostring("rt"..a).." = "..name)
+
+	return true
+end
+
+
+-- Старт таймера в игровом времени
+function g_start_timer(name,delay_d,delay_h,delay_m,action)
+	if delay_d==nil or delay_h==nil or delay_m==nil then
+		return false
+	end
+
+	if not action then
+		action = ""
+	end
+
+	local gtime = game.time() --time in seconds since 1970
+	local a=1
+	while main_variable_tbl["gt"..a] do
+		a=a+1
+		if a>100 then
+			return false
+		end
+	end
+
+	save_variable("gt"..a, name)
+	save_variable("gt"..a.."d", gtime+delay_d*24*60*60*1000+delay_h*60*60*1000+delay_m*60*1000)
+	save_variable("gt"..a.."p", action)
+
+	--log1("g_start_timer: timer started "..tostring("gt"..a).." = "..name)
+
+	return true
+end
+
+
+local checked = 0
+
+-- Проверка таймеров, использует 3 следующие за ним функции для выбора действия
+function check_timers()
+	local tmp
+	local horror_fault = true
+	local surge_fault = true
+	local game_time = game.time()
+
+	for a=1,100,1 do
+		tmp=load_variable("rt"..a,nil)
+		if tmp~=nil then
+			__timer_found(a)
+			-- log1("timer found ".."rt"..a.." = "..tostring(tmp))
+		end
+	end
+
+	for a=1,100,1 do
+		tmp=load_variable("gt"..a,nil)
+		if tmp~=nil then
+			__g_timer_found(a)
+			-- log1("g_timer found ".."gt"..a.." = "..tostring(tmp))
+		end
+	end
+
+	checked = checked + 1
+end
+function __timer_found(idx)
+	local delay = tonumber(load_variable("rt"..idx.."d", nil))
+	local count = tonumber(load_variable("rt"..idx.."c", nil))
+	count = count+timer_trigger_step
+	if delay > count then
+		del_variable("rt"..idx.."c")
+		save_variable("rt"..idx.."c", count)
+	else
+		local name = load_variable("rt"..idx, nil)
+		local params = load_variable("rt"..idx.."p", nil)
+		del_variable("rt"..idx)
+		del_variable("rt"..idx.."c")
+		del_variable("rt"..idx.."d")
+		del_variable("rt"..idx.."p")
+		printf("__timer_found: timer execute ".."rt"..idx.." = "..tostring(name))
+		__do_timer_action(name, params)
+		return true
+	end
+	return false
+end
+function __g_timer_found(idx)
+     local gtime = game.time() --time in seconds since 1970
+	if tonumber(load_variable("gt"..idx.."d", nil)) <= gtime then
+		local name = load_variable("gt"..idx, nil)
+		local params = load_variable("gt"..idx.."p", nil)
+		del_variable("gt"..idx)
+		del_variable("gt"..idx.."d")
+		del_variable("gt"..idx.."p")
+		printf("__g_timer_found: timer execute ".."gt"..idx.." = "..tostring(name))
+		__do_timer_action(name, params)
+		return true
+	end
+	return false
+end
+
+local selector = {
+	["ex1"] = function(params_string)
+		if ui_ogse_exo_control.exo_to_rust and ui_ogse_exo_control.exo_to_rust_condition then
+			local a = level.object_by_id(ui_ogse_exo_control.exo_to_rust)
+			if a ~= nil then a:set_condition(ui_ogse_exo_control.exo_to_rust_condition) end
+			ui_ogse_exo_control.exo_to_rust = nil
+			ui_ogse_exo_control.exo_to_rust_condition = nil
+		end
+	end,
+
+	["otf"] = function(params_string)
+		local a = level.object_by_id(tonumber(params_string))
+		if a ~= nil then a:set_condition((10+math.random(6,65))/100) end
+	end,
+
+	["men"] = function(params_string)
+		del_variable("smn")
+	end,
+
+	["rfx"] = function(params_string)
+		ogse_quests_fix.radar_fix()
+	end,
+
+	["rsp"] = function(params_string)
+		ogsm_respawn.level_spawn()
+		g_start_timer("rsp",0, vars.t_spawn+math.random(-1,1), 0)
+	end,
+
+	["rkc"] = function(params_string)
+		remkit_main.search_repair_kit()
+	end,
+
+	["kol"] = function(params_string)
+		local h = hit ()
+		h.direction = vector():set(0, 0, 0)
+		h.impulse = 5
+		h.draftsman = db.actor
+		h.type = hit.explosion
+		h.power = 3
+		if has_alife_info("task_1_start") and not has_alife_info("kolodets_razminirovan") then
+			local snd = [[weapons\f1_explode]]
+			snd = xr_sound.get_safe_sound_object(snd)
+			db.actor:give_info_portion("kolodets_razminirovan")
+			db.actor:give_info_portion("task_2_obj_1")
+			db.actor:hit(h)
+			if snd then
+				snd:play_no_feedback(db.actor, sound_object.s3d, 0, db.actor:position(), 1.0)
+			end
+			level.add_cam_effector("camera_effects\\fusker.anm", 999, false, "")
+		end
+		if has_alife_info("task_1_start") and has_alife_info("kolodets_razminirovan") then
+			db.actor:give_info_portion("task_2_obj_1")
+		end
+		del_variable("kol")
+	end,
+
+	["spw"] = function(params_string)
+		if params_string == "hrm" then
+			spawn_item_in_inv("harmonica_f")
+		elseif params_string == "gtr" then
+			spawn_item_in_inv("guitar_f")
+		end
+	end,
+
+	["fpl"] = function(params_string)
+		level_tasks.set_task_state(task.completed, "sar_warlab", 0)
+		level_tasks.set_task_state(task.completed, "sar_warlab", 1)
+	end,
+
+	["oso"] = function(params_string)
+		ogse_quests.turn_pnv_off()
+		level.add_pp_effector("deadcity_wake.ppe", 2008, false)
+
+		-- local point = patrol("sar_poltergeist_home")
+		-- local look = patrol("mon_jump_aes2_look")
+		-- db.actor:set_actor_position(point:point(0))
+		-- local dir = look:point(0):sub(point:point(0))
+		-- db.actor:set_actor_direction(-dir:getH())
+
+		local point = patrol("mon_jump_aes2_walk")
+		local look = patrol("mon_jump_aes2_look")
+		db.actor:set_actor_position(point:point(0))
+		local dir = look:point(0):sub(point:point(0))
+		db.actor:set_actor_direction(-dir:getH())
+
+		db.actor:restore_weapon()
+		level.enable_input()
+		level.show_indicators()
+	end,
+
+	["vd1"] = function(params_string)
+		local p = particles_object("anomaly2\\teleport_out_00")
+		p:play_at_pos(params_string)
+		local s = sound_object("anomaly\\teleport_incoming")
+		s:play_no_feedback(db.actor,sound_object.s2d, 0, vector():set(0, 0, 0), 1.0)
+		start_timer("vd2", 2)
+	end,
+
+	["vd2"] = function(params_string)
+		level.add_pp_effector("teleport.ppe", 2009, false)
+		local s = sound_object("anomaly\\teleport_work_2")
+		s:play_at_pos(db.actor, vector():set(0, 0, 0), 0, sound_object.s2d)
+		db.actor:give_info_portion("pri_trader_vanish")
+		start_timer("vd3", 2)
+	end,
+
+	["vd3"] = function(params_string)
+		local s = sound_object("x18_laugh")
+		s:play_no_feedback(db.actor,sound_object.s2d, 0, vector():set(0, 0, 0), 1.0)
+		level.enable_input()
+		db.actor:restore_weapon()
+	end,
+
+	["dismiss_prebandit"] = function(params_string)
+		if has_alife_info("actor_prebandit") then
+			dialogs.actor_clear_community(actor, npc)
+		end
+	end,
+
+	["make_reinforcements_mad"] = function(params_string)
+		jekan_work.dar_zapravka_reinforcement_madness()
+	end,
+	
+	["phatnom_controller"] = function(params_string)
+		db.actor:disable_info_portion("phatnom_controller")
+	end,
+
+	["block_begin_dialog"] = function(params_string)
+		if has_alife_info("block_begin_dialog") then
+			db.actor:disable_info_portion("block_begin_dialog")
+		end
+	end,
+
+	["fail_kill_agr_plennik"] = function(params_string)
+		tasks_functor.fail_kill_agr_plennik_timer()
+	end,
+
+	["scene_hit_actor_to_prison"] = function(params_string)
+		if not tasks_functor.orlov_killed() then
+			tasks_functor.show_messeges_shpion_to_orlov()
+		end
+	end,
+
+	["zag"] = function(params_string)
+		db.actor:give_info_portion("hunter_new_zagadka")
+		db.actor:disable_info_portion("hunter_oshibka")
+	end,
+
+	["rad_zomb"] = function(params_string)
+		jekan_work.rad_company_gipnoz()
+	end,
+
+	["barpris"] = function(params_string)
+		db.actor:give_info_portion("sergant_new_dopros")
+	end,
+
+	["dar_officer"] = function(params_string)
+		jekan_work.spawn_dar_officer()
+		news_manager.send_tip(db.actor, "merc_officer_tip", nil)
+		soundtrack.dar_officer_spawn()
+	end,
+
+	["road_bomb"] = function(params_string)
+		jekan_work.road_bomb_hit()
+	end,
+
+	["road_bomb_expl"] = function(params_string)
+		jekan_work.btr_signal_to_stop()
+	end,
+
+	["uaz"] = function(params_string)
+		db.actor:give_info_portion("spawn_dar_uaz")
+	end,
+
+	["request"] = function(params_string)
+		soundtrack.military_radio_request2()
+		db.actor:give_info_portion("dar_dez_btr_spawn")
+	end,
+
+	["drifter1"] = function(params_string)
+		jekan_work.drifter_body_release()
+	end,
+
+	["drifter2"] = function(params_string)
+		jekan_work.respawn_drifter()
+		jekan_work.spawn_drifter_dog()
+	end,
+	
+	["goto_izgoy_camp"] = function(params_string)
+		jekan_work.goto_camp()
+	end,
+	
+	["yan_sold_move_actor"] = function(params_string)
+		jekan_work.yan_sold_paralyze_actor()
+	end,
+
+	["yan_sold_actor_failed"] = function(params_string)
+		if db.actor:dont_has_info("yan_sold_hitted") and db.actor:dont_has_info("yan_soldier_dead") then
+			db.actor:give_info_portion("yan_sold_actor_wait_too_long")
+		else
+			db.actor:give_info_portion("yan_sold_generator_enabled")
+		end
+	end,
+	
+	["yan_sold_give_tip"] = function(params_string)
+		level.enable_input()
+		news_manager.send_tip( db.actor, "tips_yan_sold", nil, "actor", nil )
+	end,
+	
+	["yan_actor_hit_soldier"] = function(params_string)
+		news_manager.send_tip( db.actor, "tips_actor_hit_soldier", nil, "actor", nil )
+	end,
+	
+	["izgoy_fin"] = function(params_string)
+		jekan_work.izgoy_fin()
+	end,
+	
+	["brat_1"] = function(params_string)
+		jekan_work.teleport_brat()
+	end,	
+
+	["drifter3"] = function(params_string)
+		jekan_work.drifter_release_effect()
+	end,
+
+	["uley_1"] = function(params_string)
+		jekan_update.uley_timer_1()
+	end,
+
+	["uley_2"] = function(params_string)
+		jekan_update.uley_timer_2()
+	end,
+
+	["zapr"] = function(params_string)
+		jekan_work.ds_zapravka_signal2()
+	end,
+	
+	["final_dream"] = function(params_string)
+		ogse_quests.final_dream()
+	end,
+	
+	["recall_all"] = function(params_string)
+		ogse_quests.flashback()
+	end,	
+	
+	["final_talk"] = function(params_string)
+		ogse_quests.init_talk_final()
+	end,	
+	
+
+	--[[
+	["pkm1"] = function(params_string)
+		level.enable_input()
+		bind_statpkm.create_stat_pkm_on_actor()
+		jekan_work.spawn_pkm_case()
+	end,
+
+	["pkm2"] = function(params_string)
+		level.enable_input()
+		jekan_work.release_stat_pkm()
+		jekan_work.release_pkm_case()
+		alife():create('turret_pkm', db.actor:position(),db.actor:level_vertex_id(),db.actor:game_vertex_id(),db.actor:id())
+	end,
+	]]
+
+	["cheb5"] = function(params_string)
+		db.actor:disable_info_portion("cheb_sleep")
+	end,
+
+	["cheb_art"] = function(params_string)
+		db.actor:disable_info_portion("cheb_levelhelp")
+		db.actor:disable_info_portion("cheb_busy")
+	end,
+
+	["art1"] = function(params_string)
+		jekan_work.delete_art1()
+	end,
+
+	["art1a"] = function(params_string)
+		jekan_work.fake_art1effect()
+	end,
+
+	["art2"] = function(params_string)
+		jekan_work.delete_art2()
+	end,
+
+	["art2a"] = function(params_string)
+		jekan_work.fake_art2effect()
+	end,
+
+	["art3"] = function(params_string)
+		jekan_work.delete_art3()
+	end,
+
+	["art3a"] = function(params_string)
+		jekan_work.fake_art3effect()
+	end,
+
+	["str_zon1"] = function(params_string)
+		db.actor:give_info_portion("strangezone1_rebuild")
+		jekan_work.strange_zone1_charged_tip()
+		db.actor:disable_info_portion("strangezone1_off")
+		
+		if db.actor:has_info("strangezone1_has_same_art") then
+			db.actor:disable_info_portion("strangezone1_has_same_art")
+		end
+	end,
+
+	["str_zon2"] = function(params_string)
+		db.actor:give_info_portion("strangezone2_rebuild")
+		jekan_work.strange_zone2_charged_tip()
+		db.actor:disable_info_portion("strangezone2_off")
+		
+		if db.actor:has_info("strangezone2_has_same_art") then
+			db.actor:disable_info_portion("strangezone2_has_same_art")
+		end
+	end,
+
+	["str_zon3"] = function(params_string)
+		db.actor:give_info_portion("strangezone3_rebuild")
+		jekan_work.strange_zone3_charged_tip()
+		db.actor:disable_info_portion("strangezone3_off")
+		
+		if db.actor:has_info("strangezone3_has_same_art") then
+			db.actor:disable_info_portion("strangezone3_has_same_art")
+		end
+	end,
+
+	["str_zon4"] = function(params_string)
+		db.actor:give_info_portion("strangezone4_rebuild")
+		jekan_work.strange_zone4_charged_tip()
+		db.actor:disable_info_portion("strangezone4_off")
+		
+		if db.actor:has_info("strangezone4_has_same_art") then
+			db.actor:disable_info_portion("strangezone4_has_same_art")
+		end
+	end,
+
+	["str_zon5"] = function(params_string)
+		db.actor:give_info_portion("strangezone5_rebuild")
+		jekan_work.strange_zone5_charged_tip()
+		db.actor:disable_info_portion("strangezone5_off")
+		
+		if db.actor:has_info("strangezone5_has_same_art") then
+			db.actor:disable_info_portion("strangezone5_has_same_art")
+		end
+	end,
+
+	["str_zon6"] = function(params_string)
+		db.actor:give_info_portion("strangezone6_rebuild")
+		jekan_work.strange_zone6_charged_tip()
+		db.actor:disable_info_portion("strangezone6_off")
+		
+		if db.actor:has_info("strangezone6_has_same_art") then
+			db.actor:disable_info_portion("strangezone6_has_same_art")
+		end
+	end,
+
+	["str_zon7"] = function(params_string)
+		db.actor:give_info_portion("strangezone7_rebuild")
+		jekan_work.strange_zone7_charged_tip()
+		db.actor:disable_info_portion("strangezone7_off")
+		
+		if db.actor:has_info("strangezone7_has_same_art") then
+			db.actor:disable_info_portion("strangezone7_has_same_art")
+		end
+	end,
+
+	["atpbox1"] = function(params_string)
+		jekan_work.put_items_to_atp_box()
+	end,
+
+	["atpbox2"] = function(params_string)
+		jekan_work.vikin_vasyu_na_moroz()
+		alife():create("bolt", db.actor:position(), db.actor:level_vertex_id(), db.actor:game_vertex_id(), db.actor:id())
+	end,
+
+	["strang"] = function(params_string)
+		jekan_update.strange_zone_actor_particle()
+	end,
+
+	["unicsos"] = function(params_string)
+		db.actor:give_info_portion("unic_krovosos_quest")
+	end,
+
+	["unicsos2"] = function(params_string)
+		if db.actor:dont_has_info("sleep_bloodsucker_on_place") then
+			jekan_work.spawn_krovos_unic_bad2()
+			ogse.start_timer("unicsos3",0,1)
+		end
+	end,
+
+	["unicsos3"] = function(params_string)
+		jekan_work.release_krovos_unic_body()
+	end,
+
+	["psdog"] = function(params_string)
+		db.actor:give_info_portion("unic_pseudodog_quest")
+	end,
+
+	["psdog2"] = function(params_string)
+		if db.actor:dont_has_info("sleep_pseudodog_on_place") then
+			jekan_work.spawn_pseudodog_unic_bad2()
+			ogse.start_timer("psdog3",0,1)
+		end
+	end,
+
+	["psdog3"] = function(params_string)
+		jekan_work.release_pseudodog_unic_body()
+	end,
+
+	["guard"] = function(params_string)
+		jekan_work.spawn_caravan_guard1()
+		jekan_work.spawn_caravan_guard2()
+	end,
+
+	["cargo"] = function(params_string)
+		jekan_work.spawn_loader_cargo1()
+	end,
+	
+	["art_trap"] = function(params_string)
+		ogse_teleport_art_quest.journey_begin()
+	end,
+	
+	["btr_comp"] = function(params_string)
+		ogse_quests.comp_is_offline()
+	end,
+
+	["btr_acc_rdy"] = function(params_string)
+		ogse_quests.btr_accum_charged()
+	end,
+	
+	["btr_final"] = function(params_string)
+		ogse_quests.btr_finished()
+	end,	
+
+	["atplider"] = function(params_string)
+		if db.actor:dont_has_info("atp_lider_dead") then
+			jekan_work.spawn_atp_lider_work_restrictor()
+		end
+	end,
+
+	["kosar"] = function(params_string)
+		level.enable_input()
+		jekan_work.release_potsik()
+		db.actor:give_money(-1000)
+	end,
+	
+	["psy_helm_up"] = function(params_string)
+		db.actor:give_info_portion("master_quest_helmet_given")
+	end,	
+	
+	["dead_bomb"] = function(params_string)
+		db.actor:give_info_portion("master_quest_bomb_ready")
+	end,
+
+	["thermite_bomb"] = function(params_string)
+		ogse_quests.blow_bidon_bomb()
+	end,
+
+	["final_mast_bl"] = function(params_string)
+		ogse_quests.final_scene_master_end()
+	end,
+
+	["final_mast"] = function(params_string)
+		ogse_quests.final_scene_master_talk()
+	end,	
+	
+	["master_notice"] = function(params_string)
+		ogse_quests.notify_actor_mg()
+	end,	
+	
+	["game_loose"] = function(params_string)
+		db.actor:disable_info_portion("game_kosti_loose")
+	end,	
+
+	["synak_drinked"] = function(params_string)
+		db.actor:give_info_portion("sinyak_go_to_sleep")
+	end,	
+	
+	["synak_sleeped"] = function(params_string)
+		db.actor:give_info_portion("sinyak_awaked")
+	end,	
+	
+	["release_major_jivoderov"] = function(params_string)
+		jekan_work.release_major()
+	end,		
+}
+
+function __do_timer_action(select_string, params_string)
+	local action = selector[select_string]
+	if action ~= nil then
+		action(params_string)
+	else
+		log3("ERROR!!! Wrong select string!!! [%s] [%s]", select_string, params_string)
+	end
+end
+
+-- Спавним объекты в инвентарь
+function spawn_item_in_inv(section,npc)
+	local npc = (npc or db.actor)
+	log1("~~spawn_item_in_inv sect ["..tostring(section).."] npc ["..npc:name().."]")	
+	local sobj_abstr = alife():create(section,
+			npc:position(),
+			npc:level_vertex_id(),
+			npc:game_vertex_id(),
+			npc:id())
+	if sobj_abstr then
+		return alife():object(sobj_abstr.id)
+	else	
+		log1("!!Error spawn_item_in_inv sect ["..tostring(section).."] npc ["..npc:name().."]")	
+		return false
+	end	
+end
+
+-- Спавним патроны в инвентарь
+function spawn_ammo_in_inv(section,number,npc)
+	local npc = (npc or db.actor)
+	log1("~~spawn_ammo_in_inv sect ["..tostring(section).."] npc ["..npc:name().."]")	
+	if number > 0 then
+		local sobj_abstr = se_respawn.create_ammo(section,
+				npc:position(),
+				npc:level_vertex_id(),
+				npc:game_vertex_id(),
+				npc:id(),
+				number)
+		if not sobj_abstr then
+			return false
+		end
+		return alife():object(sobj_abstr.id)
+	end
+end
+
+
+-- Удаляем объект из игры
+function remove_item(item_to_remove)
+	--ASSERT(item_to_remove, "[ogse.remove_item] item is a nil reference!")
+	if item_to_remove then
+		local sobj = alife():object(item_to_remove:id())
+		if sobj then
+			alife():release(sobj, true)
+			return true
+		else
+			return false
+		end
+	end
+	return false
+end
+
+-- Удаляем объект из игры по имени
+function remove_item_by_name(item_to_remove)
+	--ASSERT(item_to_remove, "[ogse.remove_item] item is a nil reference!")
+	if item_to_remove then
+		local sobj = alife():object(item_to_remove)
+		if sobj then
+			alife():release(sobj, true)
+			return true
+		else
+			return false
+		end
+	end
+	return false
+end
+
+-- Выбрасываем объект из инвентаря, применимо к ГГ
+function drop_item(npc,item)
+	if item~=nil then
+	    npc:mark_item_dropped(item)
+	end
+end
+
+
+-- Убиваем непися
+function make_suicide(npc)
+	npc:kill(npc)
+end
+
+
+-- Узнаем отношение одного непися к другому
+function get_npc_relation(obj,target)
+	local rel = obj:relation(target)
+	if rel ~= nil then
+		return (rel==game_object.neutral and "neutral" or rel==game_object.friend and "friend" or rel==game_object.enemy and "enemy") or false
+	end
+end
+
+
+-- Задаем отношение одного непися к другому
+function set_npc_relation(obj,target,relation)
+	ASSERT(relation, "[ogse.set_npc_relation] variable relation == nil!")
+	if relation=="neutral" then
+		rel=game_object.neutral
+	elseif relation=="friend" then
+		rel=game_object.friend
+	elseif relation=="enemy" then
+		rel=game_object.enemy
+	else
+		return false
+	end
+	obj:set_relation(rel,target)
+	return true
+end
+
+
+-- Узнаем группировку непися, применимо к ГГ
+function get_npc_community(npc)
+	return npc:community()
+end
+
+
+-- Выставляем группировку непися, можно ГГ
+function set_npc_community(npc,community_string)
+	--значения для community_string можно узнать в config\creatures\game_relations.ltx
+	return npc:set_character_community(community_string, 0, 0)
+end
+
+
+-- Удаляем предмет из инвентаря
+function remove_item_from_inventory_by_name(remove_item_name,npc)
+	return remove_item_from_inventory(npc:object(remove_item_name),npc)
+end
+function remove_item_from_inventory(remove_item,npc)
+	if npc==nil then npc=db.actor end
+	if remove_item~=nil then
+	    npc:mark_item_dropped(remove_item)
+		local sobj = alife():object(remove_item:id())
+		if sobj then
+			alife():release(sobj, true)
+			return true
+		else
+			return false
+		end
+	end
+	return false
+end
+
+
+-- Создаем "ожидатели" для неписей нужно для корректной работы с объектами, созданными внутри скрипта
+function create_waiter_for_npc(npc,select_string)
+	npc_spawner[npc.id]=select_string
+end
+
+
+-- Очищаем инвентарь непися, можно ГГ, использует следующую фунцию для удаления предмета
+function clear_npc_inventory(npc)
+    npc:iterate_inventory(__del_item, npc)
+end
+function __del_item(npc, item)
+    local section = item:section()
+
+    if section == "bolt" or section == "device_torch" then
+        return
+    end
+    npc:mark_item_dropped(item)
+	local sobj = alife():object(item:id())
+	if sobj then
+		alife():release(sobj, true)
+	end
+end
+
+
+-- Проверка, запущена ли игра
+function check_game()
+	if level.present() and (db.actor ~= nil) and db.actor:alive() then
+		return true
+	end
+	return false
+end
+
+-- Записываем переменную
+function save_variable(variable_name, value)
+	if main_variable_tbl == nil then
+		main_variable_tbl = {}
+	end
+	main_variable_tbl[variable_name] = value
+end
+
+-- Загружаем переменную
+function load_variable(variable_name, value_if_not_found)
+	if main_variable_tbl ~= nil and main_variable_tbl[variable_name] ~= nil then
+		local val = main_variable_tbl[variable_name]
+		if val ~= nil then
+			return val
+		end
+	end
+	if value_if_not_found ~= nil then
+		return value_if_not_found
+	end
+	return nil
+end
+
+-- Удаляем переменную
+function del_variable(variable_name)
+	if main_variable_tbl[variable_name] then
+		main_variable_tbl[variable_name] = nil
+	end
+end
+
+local sidor_sobj
+-- Готовим хранилище Сидорыча
+function create_sidor_storage()
+	sidor_sobj = alife():story_object(story_ids.Escape_Trader)
+end
+
+deadmans_table = {}
+-- Формат хранения:
+-- [id] = { time_died = time_when_killed, killer = who:id() }
+
+-- Восстанавливаем оперативные переменные из хранилища Сидорыча
+function load_main_variable_tbl()
+	main_variable_tbl = nil
+	if sidor_sobj and sidor_sobj.m_storage then
+		local m_storage_parsed = sidor_sobj.m_storage
+		local m_storage_unparsed = m_net_utils.parse_custom_data(m_storage_parsed)
+		if not m_storage_unparsed.m_storage then
+			main_variable_tbl = {}
+			deadmans_table = {}
+			log1("load_main_variable_tbl: Warning! main_variable_tbl load as empty!")
+		else
+			main_variable_tbl = m_storage_unparsed.m_storage
+			deadmans_table = m_storage_unparsed.bones_pile
+			log1("load_main_variable_tbl: INFO: main_variable_tbl load is succesful")
+		end
+	else
+		main_variable_tbl = {}
+		deadmans_table = {}
+		log1("load_main_variable_tbl: ERROR!: sidor_sobj or sidor_sobj.m_storage is faile!")
+		log1("load_main_variable_tbl: Warning! main_variable_tbl load as empty!")
+	end
+end
+
+-- Сохраняем оперативные переменные в хранилище Сидорыча
+function save_main_variable_tbl()
+	if sidor_sobj then
+		local m_storage_unparsed = {}
+		m_storage_unparsed.m_storage = main_variable_tbl
+		m_storage_unparsed.bones_pile = deadmans_table
+		local m_storage_parsed = m_net_utils.gen_custom_data(m_storage_unparsed)
+		sidor_sobj.m_storage = m_storage_parsed
+		log1("save_main_variable_tbl: INFO: main_variable_tbl saved in store is succesful")
+	else
+		log1("save_main_variable_tbl: ERROR!: sidor_sobj is faile!")
+	end
+end
+
+
+-- Определяем находится ли ГГ в определенной зоне
+function check_npc_in_box(npc, p1,p2)
+	local pos=npc:position()
+	if is_point_inside_interval(pos.x,p1.x,p2.x) and
+		is_point_inside_interval(pos.y,p1.y,p2.y) and
+		is_point_inside_interval(pos.z,p1.z,p2.z) then
+		return true
+	else
+		return false
+	end
+end
+function is_point_inside_interval(x,p1,p2)
+	if p1>p2 then
+		p1,p2 = p2,p1
+	end
+
+	if x>p1 and x<p2 then
+		return true
+	else
+		return false
+	end
+end
+
+-- Получаем инвентарное название объекта
+function get_inv_name(section)
+	return system_ini():r_string(section,"inv_name")
+end
+
+-- Колбэк на появление предмета в инвентаре ГГ
+function on_item_take(obj)
+
+	if not obj then 
+		return 
+	else	
+		local id = obj:id()
+		local sobj = alife():object(id)
+		if not sobj then
+			return
+		end
+	end
+
+	inventory.on_item_take(obj)
+	--ui_item_effects.on_item_take(obj) -- сейчас работает под управлением менеджера аддонов
+	--ogse_addons.on_item_take(obj)  -- сейчас работает под управлением менеджера аддонов
+-- Проверка экзы
+	ui_ogse_exo_control.chek_button_accessibility()
+
+	local level_name = level.name()
+	if db.actor and db.actor:dont_has_info("player_have_crowbar") and string.find(obj:section(), "wpn_montirovka") and level_name == "l06_rostok" then
+		soundtrack.rostok_gordon()
+		db.actor:give_info_portion("player_have_crowbar")
+	end
+	-- квест чебурана и аномальные итемы
+	quest_deadcity.on_item_take(obj)
+	--метка
+	metka.check_beacon_take(obj)
+end
+
+ignore_this_items = false
+
+-- Колбэк на потерю предмета из инвентаря ГГ
+function on_item_drop(obj)
+
+	if not obj then 
+		return 
+	else	
+		local id = obj:id()
+		local sobj = alife():object(id)
+		if not sobj then
+			return
+		end
+	end
+	
+	--! ВНИМАНИЕ ! Все проверки сенкций тут должны выполняться ТОЛЬКО у серверного объекта
+
+	if not ignore_this_items then
+		inventory.on_item_drop(obj)
+		ogse_night_vision.chek_drop_pnv(obj)
+		--метка
+		metka.check_beacon_drop(obj)
+		--генератор по квесту радиста
+		jekan_work.check_generator(obj)
+		ogse_anomaly.check_artefact_activation(obj)
+	end
+-- Проверка экзы
+	ui_ogse_exo_control.chek_button_accessibility()
+end
+
+-- Колбэк на использование предмета в инвентаре ГГ
+function use_inventory_item(obj)
+
+	if not obj then 
+		return 
+	else	
+		local id = obj:id()
+		local sobj = alife():object(id)
+		if not sobj then
+			return
+		end
+	end
+
+	ogsm_quests.check_use_quest_item(obj)
+	remkit_main.check_use_repair_kit(obj)
+	ui_ogse_exo_control.use_exo(obj)
+	tasks_functor.use_item(obj)
+	item_usage.on_use_item(obj)
+	biodetector.on_use_item(obj)
+	jekan_books.on_use_item(obj)
+	jekan_update.on_use_item(obj)
+	
+end
+
+local inventory_updated_first = false
+local updates_check = 0
+local slot_change_retries = 0
+local resetted_item_id = 0
+
+-- Колбэк на апдейт ГГ
+function on_actor_update(obj)
+	--local pt = ogse_profiler.profiler("ogse_on_actor_update"):start()
+
+-- АПДЕЙТЫ С ВЫСОКИМ ПРИОРИТЕТОМ ПОМЕЩАТЬ СЮДА!
+
+	ogse_debug.process_actor("upd_a", 1)
+
+	local glob_time = time_global()
+
+	if updates_check <= 1001 then
+		updates_check = updates_check + 1
+	end
+
+	ogse_debug.process_actor("upd_a", 2)
+
+-- Обновление таймеров
+	if not timer_trigger then
+		timer_trigger=glob_time
+	end
+	if timer_trigger<=glob_time then
+		timer_trigger=glob_time+timer_trigger_step
+		check_timers()
+	end
+-- Обновление таймеров
+
+	ogse_debug.process_actor("upd_a", 3)
+
+-- Перехват события начала апдейта актора
+	on_actor_updating_start()
+-- Перехват события начала апдейта актора
+
+	ogse_debug.process_actor("upd_a", 4)
+
+-- Обновление инвентаря
+	inventory.update()
+-- Обновление инвентаря
+
+-- Проверка таймфактора
+	game_time_factor = level.get_time_factor()
+-- Проверка таймфактора	
+
+	local check_slot = db.actor:active_slot()
+	if check_slot == 4294967296 then
+		check_slot = -1
+	end
+	
+	if resetted_item_id ~= 0 then
+		local item = level.object_by_id(resetted_item_id)
+		if item then
+			db.actor:transfer_item(item, db.actor)
+			db.actor:activate_slot(loaded_slot)
+			loaded_slot = nil
+			resetted_item_id = 0
+			-- log1("!!DEBUG! Slot restored forcefully ")
+		end
+	else	
+		if loaded_slot and check_slot ~= loaded_slot then
+			db.actor:activate_slot(loaded_slot)
+			-- log1("!!DEBUG! Trying to restore slot "..tostring(loaded_slot))
+			slot_change_retries = slot_change_retries + 1
+			if slot_change_retries > 25 then
+				local act_item = db.actor:active_item()
+				if act_item then
+					resetted_item_id = act_item:id()
+					db.actor:drop_item(act_item)
+					slot_change_retries = 0	
+				end
+			end		
+		elseif loaded_slot and check_slot == loaded_slot then
+			loaded_slot = nil
+			-- log1("!!DEBUG! Slot restored after ["..slot_change_retries.."] retries")
+			slot_change_retries = 0
+		end
+	end
+
+	ogse_debug.process_actor("upd_a", 5)
+
+-- Обновление шкалы радиации и худа при использовании бинокля/прицела
+	ogse_dynamic_hud.check_sniper()
+	ogse_dynamic_hud.update_hud_elements()
+	ogse_night_vision.PNV_noise_update()
+-- Обновление шкалы радиации и худа при использовании бинокля/прицела
+
+	ogse_debug.process_actor("upd_a", 6)
+-- Динамический худ
+	ogse_dynamic_hud.doabcevents()
+-- Динамический худ
+
+	ogse_debug.process_actor("upd_a", 7)
+
+-- Противогаз
+	if updates_check > 100 then
+		ogse_dynamic_hud.hud_antigaz()
+	end
+	-- Противогаз
+
+	ogse_debug.process_actor("upd_a", 77777)
+	
+	-- квестовые срочности
+	
+	ogse_quests.set_btr_nonworking()
+	
+	ogse_debug.process_actor("upd_a", 777771)	
+	
+	ogse_scripted_btr.update()
+	
+	ogse_debug.process_actor("upd_a", 777772)	
+	
+	ogse_quests.play_digger_motor_sound()	
+
+	ogse_debug.process_actor("upd_a", 8)
+
+	ogse_teleport_art_quest.check_actor_leave_zone()
+
+	ogse_debug.process_actor("upd_a", 10)
+
+-- Проверка, ранен ли актор
+	ogsm_quests.wounded_pp()
+-- Проверка, ранен ли актор
+
+	ogse_debug.process_actor("upd_a", 12)
+
+-- Подсказка по кнопке
+	ui_ogse_quicklaunch.check_quicklaunch_hint()
+-- Подсказка по кнопке
+
+	ogse_debug.process_actor("upd_a", 13)
+
+	-- Периодические обновления менеджера гранатометания и вооружений
+	-- Обновление АИ-пака
+	if xrs_ai then xrs_ai.actor_update(delta) end
+    --обновление AI управления оружием
+    if rx_ai then rx_ai.actor_update() end
+	-- Периодические обновления менеджера гранатометания и вооружений
+
+	ogse_debug.process_actor("upd_a", 14)
+	
+	ogse_quests.make_colonel_follow()
+
+	ogse_debug.process_actor("upd_a", 15)
+
+-- Багфикс таймеров
+	local d = game.time()
+	if d >= 200000 then
+		k_timers = 0
+	end
+	if k_timers == 0 then
+		if d < 200000 then
+			-- abort("Игровое время вышло, пошлите ближайший сейв разработчикам для проверки сброса таймеров!")
+			task_manager.cleanup_actor()
+			timer_trigger=game.time()
+			check_timers()
+			k_timers = 1
+		end
+	end
+-- Багфикс таймеров
+
+	ogse_debug.process_actor("upd_a", 17)
+
+-- Подрыв ствола в руках
+	ogse_wpn_explode_fx.update()
+-- Подрыв ствола в руках
+
+	ogse_debug.process_actor("upd_a", 19)
+	
+-- Проверка убиванцев по выходу в оффлайн
+	check_doa_kills()
+
+	ogse_debug.process_actor("upd_a", 21)
+
+	_sdata.vis_int()
+
+	ogse_debug.process_actor("upd_a", 22)
+
+-- Сценка с вертушкой на Кордоне
+	PMA_escape.show_heli_scene()
+-- Сценка с вертушкой на Кордоне
+
+	-- удалить нахер в релизе
+	if db.actor:dont_has_info("DEBUG_bar_sinyak_respawned") then
+		local c_obj = level_object_by_sid(story_ids.bar_sinyak)
+		if not c_obj then
+			--log1("sinyak offline")
+			local s_obj = alife():story_object(story_ids.bar_sinyak)
+			if s_obj then
+				alife():release(s_obj, true)
+				local s_npc = spawn_object(ogse_spawn_db.script_spawn_registry.jekan_quests.bar_sinyak)
+				if s_npc then
+					--log1("sinyak respawned")
+					s_npc.force_offline = nil
+				else
+					abort("cannot respawn bar_sinyak")
+				end
+			end
+			db.actor:give_info_portion("DEBUG_bar_sinyak_respawned")
+		end
+	end
+	
+	-- удалить нахер в релизе
+	if db.actor:dont_has_info("DEBUG_gorbovsky_respawned") then
+		local c_obj = level_object_by_sid(story_ids.bar_dr_gorbovsky)
+		if not c_obj then
+			local s_obj = alife():story_object(story_ids.bar_dr_gorbovsky)
+			if s_obj then
+				alife():release(s_obj, true)
+				local s_npc = spawn_object(ogse_spawn_db.script_spawn_registry.jekan_quests.bar_dr_gorbovsky)
+				if s_npc then
+					s_npc.force_offline = nil
+					if db.actor:has_info("izgioy_doctor_works") then
+						teleport_npc(s_npc.id, vector():set(32.1100006103516,0,189.190002441406))
+					end
+				else
+					abort("cannot respawn bar_dr_gorbovsky")
+				end
+			end
+			db.actor:give_info_portion("DEBUG_gorbovsky_respawned")
+		end
+	end
+
+	-- КОНЕЦ АПДЕЙТОВ С ВЫСОКИМ ПРИОРИТЕТОМ
+	--pt:save("hi_pri")
+if watchdog == 1 then
+	ogse_debug.process_actor("upd_a", 23)
+-- Предохранительное отключение аномалий
+	if ogse_anomaly then
+		ogse_anomaly.lvl_anomaly_disable()
+	end
+-- Предохранительное отключение аномалий
+end
+
+if watchdog == 2 then
+	ogse_debug.process_actor("upd_a", 24)
+-- Выводим время на HUD
+	show_time()
+-- Выводим время на HUD
+end
+
+if watchdog == 3 then
+	ogse_debug.process_actor("upd_a", 25)
+-- Порча еды
+	inventory.spoilage_food()
+-- Порча еды
+end
+
+if watchdog == 4 then
+	ogse_debug.process_actor("upd_a", 26)
+-- Пытаемся включить ПНВ при загрузке сейва
+	ogse_night_vision.try_to_restart_nv_fx()
+-- Пытаемся включить ПНВ при загрузке сейва
+end
+
+if watchdog == 5 then
+	ogse_debug.process_actor("upd_a", 27)
+-- Обновление эффектов артефактов в инвентаре
+	if updates_check > 300 then
+		inventory.hit_from_arts()
+	end
+-- Обновление эффектов артефактов в инвентаре
+end
+
+if watchdog == 6 then
+	ogse_debug.process_actor("upd_a", 28)
+-- Запускаем затычку от возможной потери содержимого тайников
+	treasure_manager.get_treasure_manager():loss_workaround()
+-- Запускаем затычку от возможной потери содержимого тайников
+end
+
+if watchdog == 7 then
+	ogse_debug.process_actor("upd_a", 29)
+-- Багфикс радара
+	ogse_quests_fix.check_radar_off()
+-- Багфикс радара
+end
+
+if watchdog == 8 then
+	ogse_debug.process_actor("upd_a", 30)
+-- Обновление арены
+	aem_manager.get_aem():update()
+-- Обновление арены
+end
+
+if watchdog == 9 then
+	ogse_debug.process_actor("upd_a", 31)
+-- Обновление квестового барахла
+	ogse_quests.set_btr_fuel_empty()
+end
+
+if watchdog == 10 then
+	ogse_debug.process_actor("upd_a", 32)
+--Метка
+	metka.check_metka()
+--Метка
+end
+
+if watchdog == 11 then
+	ogse_debug.process_actor("upd_a", 33)
+-- Новости
+    news_main_data.show_news_main()
+-- Новости
+end
+
+if watchdog == 12 then
+	ogse_debug.process_actor("upd_a", 34)
+-- Квестовые заморочки
+	ogsm_quests.kruglov_kill()
+-- Квестовые заморочки
+end
+
+if watchdog == 13 then
+	ogse_debug.process_actor("upd_a", 35)
+-- Очищаем уровни от трупов во фриплее
+	ogse_quests_fix.clean_level()
+-- Очищаем уровни от трупов во фриплее
+end
+
+if watchdog == 14 then
+	ogse_debug.process_actor("upd_a", 36)
+-- Постэффект ношения "Ока" актором
+	ogsm_quests.actor_af_transmut_8_fx()
+-- Постэффект ношения "Ока" актором
+
+-- Постэффект зомбирования актора
+	ogsm_quests.actor_zombied_fx()
+-- Постэффект зомбирования актора
+end
+
+if watchdog == 15 then
+	ogse_debug.process_actor("upd_a", 37)
+-- Поездки в машине с напарником
+	xr_companion.check_in_car()
+-- Поездки в машине с напарником	
+end
+
+if watchdog == 16 then
+	ogse_debug.process_actor("upd_a", 38)
+--сон НПС - врублен Kamikazze после апдейта от FEAR
+	if glob_time > sleep_timer then
+			ms_ai.update()
+		sleep_timer = sleep_timer + math.random(120000, 180000)
+	end
+--сон НПС
+end
+
+if watchdog == 17 then
+	ogse_debug.process_actor("upd_a", 39)
+-- зачистка таблички сохраненных трупиков
+	if not deadmans_table then deadmans_table = {} end
+	for k, v in pairs(deadmans_table) do
+		local time_died, killer = 1, 1
+		local a = 0
+		for word in string.gfind(v, "%d+") do
+			if a == 0 then
+				time_died = tonumber(word)
+			else
+				killer = tonumber(word)
+			end
+			a = a + 1
+		end
+		local sobj = alife():object(k)
+		if not sobj then
+			deadmans_table[k] = nil
+		else
+			sobj = alife():object(killer)
+			if not sobj then
+				deadmans_table[k] = nil
+			else
+				if (time_died+(30*60*1000)) <= game.time() then
+					deadmans_table[k] = nil
+				end
+			end
+		end
+	end
+-- зачистка таблички сохраненных трупиков
+end
+
+if watchdog == 18 then
+	ogse_debug.process_actor("upd_a", 40)
+-- Уборка трупов и лута
+	if glob_time > loot_timer then
+		db.remove_deadman()
+		loot_timer = loot_timer + math.random(500, 800)
+	end
+-- Уборка трупов и лута
+end
+
+if watchdog == 19 then
+	ogse_debug.process_actor("upd_a", 41)
+-- Обновление баг-таймера
+	if glob_time > buggy_timer then
+		for k, v in pairs(db.creature) do
+			local obj = level.object_by_id(k)
+			local sobj = alife():object(k)
+			if obj and obj:alive() == false and v == true and obj:object("device_torch") and obj:name() ~= "single_player" and sobj.offline_dead == 0 then
+				-- log1("UNREGISTERED BODY FOUND - TO DELAYED "..obj:id().." "..obj:name())
+				-- db.actor:give_game_news("ВНИМАНИЕ! Обнаружен потенциально повреждённый неразрегистрированный труп! Объект: "..obj:character_name().." ИД: "..obj:id().." Профиль: "..obj:profile_name().." Будет произведена попытка разрегистрации и удаления объекта!", "ui\\ui_iconsTotal", Frect():set(498,47,83,47),7000, 20000)
+				if not db.delayed[obj:id()] then db.delayed[obj:id()] = obj:id() end
+			end
+		end
+		buggy_timer = buggy_timer + math.random(20000,25000)
+	end
+-- Обновление баг-таймера
+-- Удаление глючных трупов с битым пстором
+	db.remove_delayed()
+-- Удаление глючных трупов с битым пстором
+end
+
+if watchdog == 20 then
+	ogse_debug.process_actor("upd_a", 42)
+--	jekan_work.check_bind_anom_house_items()	
+	jekan_work.check_bind_avail_six_anom_house_items()
+end
+
+if watchdog == 21 then
+	ogse_debug.process_actor("upd_a", 43)
+-- обновление хоррор-тайм
+	horror_time.horror_process()
+-- обновление хоррор-тайм
+end
+
+if watchdog == 22 then
+	ogse_debug.process_actor("upd_a", 44)
+-- периодическая проверка количества идентификаторов
+	if id_cleaner and id_cleaner.check_ids_flag == 1 then
+		if glob_time > ids_timer then
+			id_cleaner.check_ids()
+			--- снятие флага атаки на актора
+			xr_companion.actor_attacked = false
+			---
+			ids_timer = ids_timer + math.random(30000, 60000)
+		end
+	end
+-- периодическая проверка количества идентификаторов
+end
+
+if watchdog == 23 then
+	ogse_debug.process_actor("upd_a", 45)
+-- Периодическая проверка численности
+	if glob_time > anom_enum then
+		if vertexes_checked == false then
+			clear_garbage.check_vertexes()
+			vertexes_checked = true
+		end
+		-- Проверим численность
+		se_respawn.check_zone_population()
+		anom_enum = glob_time + math.random(60000, 80000)
+	end
+-- Периодическая проверка численности
+end
+
+if watchdog == 24 then
+	ogse_debug.process_actor("upd_a", 46)
+-- Обработка мин
+	if checker_minefield then
+		if glob_time > mine_timer then
+			ogse_debug.process_actor("upd_a", 451)
+			checker_minefield.delete_mines()
+			mine_timer = mine_timer + math.random(15000, 20000)
+		end
+	end
+-- Обработка мин
+end
+
+if watchdog == 25 then
+	ogse_debug.process_actor("upd_a", 47)
+	-- оффлайн-алайф
+	ogse_debug.process_actor("upd_a", 55)
+	news_amk_core.check_news()
+	if glob_time > off_timer then
+		ogse_debug.process_actor("upd_a", 56)
+		news_amk_core.on_news()
+		off_timer = off_timer + math.random(40000, 80000)
+	end
+	ogse_debug.process_actor("upd_a", 57)
+	if offline_alife_enabled then
+		if glob_time > off_timer_1 then
+			amk_offline_alife.update()
+			off_timer_1 = off_timer_1 + math.random(20000, 30000)
+		end
+	end
+	-- оффлайн-алайф
+end
+
+if watchdog == 26 then
+	ogse_debug.process_actor("upd_a", 48)
+-- квесты 
+	quest_deadcity.check_first_enter()
+	ogse_quests.check_gorkom_books()
+	ogse_quests.check_colonel_dead()	
+end
+
+if watchdog == 27 then
+	ogse_debug.process_actor("upd_a", 49)
+	
+end
+
+-- НЕ ТРОГАТЬ!!! БИБЛИОТЕЧНАЯ КОНСТРУКЦИЯ! ДОЛЖНО ЗАМЫКАТЬ ФУНКЦИЮ!
+watchdog = watchdog + 1
+if watchdog >= watchdog_max then
+	watchdog = 0
+end
+
+ogse_debug.process_actor("upd_a", 0)
+
+end
+
+-- Коллбэк на нажатие клавиши
+function on_key(key, bind)
+	-- Вкл/выкл ПНВ
+	ogse_night_vision.call_pnv(key, bind)
+
+	-- Проверка клавиш быстрого меню
+	ui_ogse_quicklaunch.chek_keys(key, bind)
+
+	-- Проверка управления оружием
+	--ogse_addons.chek_keys(key, bind)  -- сейчас работает под управлением менеджера аддонов
+
+	-- Проверка зумма
+	ogse_dynamic_hud.chek_keys(key, bind)
+
+	-- Раскрутка минигана
+	ogse_minigun_sound.chek_keys(key, bind)
+
+end
+
+-- Коллбэк на отпускание клавиши
+function on_key_free(key, bind)
+
+	-- Проверка зумма
+	ogse_dynamic_hud.chek_keys_free(key, bind)
+
+	-- Раскрутка минигана
+	ogse_minigun_sound.chek_keys_free(key, bind)
+
+end
+
+-- Коллбэк на удержание клавиши
+function on_key_hold(key, bind)
+
+	-- Раскрутка минигана
+	ogse_minigun_sound.chek_keys_hold(key, bind)
+
+end
+
+-- Коллбэк на вращение колесика мыши
+function on_wheel_rotation(vol)
+end
+
+-- Коллбэк на движение мыши
+function on_mouse_move(vol)
+end
+
+-- Коллбэк на перенос предмета на пояс
+function on_item_to_belt(obj)
+
+	if not obj then 
+		return 
+	else	
+		local id = obj:id()
+		local sobj = alife():object(id)
+		if not sobj then
+			return
+		end
+	end
+
+-- Убирание с пояса лишних ПНВ
+	ogse_night_vision.chek_belt_double_pnv(obj)	-- запускать ДО обновления инвентаря!!!
+-- Обновление инвентаря
+	inventory.forced_inventory_update(false)
+-- Обновление инвентаря
+
+end
+
+-- Коллбэк на перенос предмета в рюкзак
+function on_item_to_backpack(obj)
+
+	if not obj then 
+		return 
+	else	
+		local id = obj:id()
+		local sobj = alife():object(id)
+		if not sobj then
+			return
+		end
+	end
+
+-- Обновление инвентаря
+	inventory.forced_inventory_update(false)
+-- Проверка потери ПНВ
+	ogse_night_vision.chek_drop_pnv(obj)
+-- Проверка экзы
+	ui_ogse_exo_control.chek_button_accessibility()
+
+end
+
+-- Коллбэк на перенос предмета в слот
+function on_item_to_slot(obj)
+
+	if not obj then 
+		return 
+	else	
+		local id = obj:id()
+		local sobj = alife():object(id)
+		if not sobj then
+			return
+		end
+	end
+
+-- Убирание с пояса предметов, перемещённых в слоты
+	inventory.remove_belt_art(obj)	-- запускать ДО обновления инвентаря!!!
+-- Обновление инвентаря
+	inventory.forced_inventory_update(false)
+-- Проверка экзы
+	ui_ogse_exo_control.chek_button_accessibility()
+-- Убирание с пояса лишних ПНВ
+	ogse_night_vision.chek_outfit_double_pnv(obj)
+
+end
+
+-- Колбэк на выдачу инфопоршена ГГ
+function on_info_update(info_id)
+	_sdata.infos(info_id)
+
+	inventory.on_inventory_info(info_id)
+	ogse_night_vision.on_inventory_info(info_id)
+	ui_ogse_exo_control.on_inventory_info(info_id)
+
+-- "Выключение" PDA в Выброс
+	pda_fx.on_pda_info(info_id)
+
+end
+
+-- Перехват события начала апдейта актора
+local actor_updating_not_started = true
+function on_actor_updating_start()
+	if actor_updating_not_started then
+		actor_updating_not_started = false
+		on_actor_first_update()
+	end
+end
+
+-- Запуск вызовов при первом апдейта актора
+function on_actor_first_update()
+	-- Установка FOV
+	db.actor:set_camera_fov(fov_vol)
+
+	-- Перехват хоткеев
+	ogse_rebind_key.unbind_key()
+
+	-- Пытаемся включить ПНВ после загрузки сейва
+	ogse_night_vision.try_to_restart_nv_fx()
+
+	-- Пытаемся восстановить эффекты экзо после загрузки сейва
+	ui_ogse_exo_control.set_actor_parameters()
+
+	-- Восстанавливаем активный слот
+	-- log1("~~ Restore active slot "..tonumber(load_variable("store_slot", 5)))
+	loaded_slot = tonumber(load_variable("store_slot", 5))
+	if loaded_slot == 4294967296 or loaded_slot == 3 or loaded_slot == 6 or loaded_slot == 7 or loaded_slot > 8 then
+		loaded_slot = -1
+	end
+	
+	-- проверка валидности удаления телепортов
+	ogse_anomaly.emergency_restr_reset()
+	
+	-- удаляем с пояса части мутантов. УДАЛИТЬ В РЕЛИЗЕ
+	db.actor:iterate_inventory(function (dummy,item)  
+								log1("ACTOR ITEM "..item:section())
+                                if string.find(item:section(), "mutant_") or
+								string.find(item:section(), "af_bolt") or
+								string.find(item:section(), "af_sparks") or
+								string.find(item:section(), "af_resine") or
+								string.find(item:section(), "af_polter") or
+								string.find(item:section(), "fake_art1") or
+								string.find(item:section(), "fake_art2") or
+								string.find(item:section(), "fake_art3")
+								then
+									db.actor:move_to_ruck(item)
+								end
+                                end, nil)
+	-- удаляем из слота артефакты. УДАЛИТЬ В РЕЛИЗЕ
+	local it = db.actor:item_in_slot(1)
+	if it and string.find(it:section(), "af_") then
+		db.actor:move_to_ruck(it)
+	end 
+
+end
+
+-- Загружаем все переменные, которые нужно, вызывается при загрузке игры автоматически
+function on_game_load()
+
+	ogse_debug.process_actor("a_spw", 111)
+
+	-- Подготовим хранилище Сидора
+	create_sidor_storage()
+
+	ogse_debug.process_actor("a_spw", 112)
+
+	se_respawn.check_zone_population()
+
+	ogse_debug.process_actor("a_spw", 113)
+	-- Загрузим из хранилища Сидора все переменные
+	load_main_variable_tbl()
+
+	ogse_debug.process_actor("a_spw", 114)
+
+	-- Определяем текущий тайм-фактор
+	game_time_factor = level.get_time_factor()
+
+	ogse_debug.process_actor("a_spw", 115)
+
+	-- -- Чистим фантомов пси-собак при загрузке
+	-- for i=1,65355 do
+		-- local sobj = alife():object(i)
+		-- if sobj and string.find(sobj:section_name(), "psy_dog") then
+			-- -- log1("phantom_release")
+			-- alife():release(sobj, true)
+		-- end
+	-- end
+
+	ogse_debug.process_actor("a_spw", 116)
+
+	-- Отключаем в PDA вкладку "Контакты"
+	get_console():execute("unbind contacts")
+
+	ogse_debug.process_actor("a_spw", 117)
+
+	-- проверка количества идентификаторов
+	id_cleaner.check_ids()
+
+	ogse_debug.process_actor("a_spw", 118)
+
+	-- Создаем хранилище актора
+	if db.storage[db.actor:id()].pstor == nil then
+		db.storage[db.actor:id()].pstor = {}
+	end
+
+	ogse_debug.process_actor("a_spw", 119)
+
+	-- Первый запуск мода
+	if db.actor:dont_has_info("storyline_actor_start") then
+	
+		db.actor:give_info_portion("wipe_2_ogse")
+	
+		g_start_timer("rsp",0, 5+math.random(-1,1), 0)
+		log1("1")
+		ogsm_respawn.first_run()
+		log1("2")
+		ogse_spawns.traders_spawn()
+		ogse_quests.spawn_black_dealer()
+		log1("3")
+		ogse_spawns.sidr_guard_spawn()
+		-- ogse_zoneseffect.effect() -- будет сделано нормально
+		log1("4")
+		turret_spawn.kordon_spawn_turret()
+		-- turret_spawn.agroprom_spawn_turret()
+		log1("5")
+		turret_spawn.tspawn3()
+		log1("6")
+		checker_minefield.set_gsc_mine()
+		log1("7")
+		db.actor:give_info_portion("encyclopedy_tutorial_jump")
+		db.actor:give_info_portion("encyclopedy_tutorial_crouch")
+		db.actor:give_info_portion("encyclopedy_tutorial_sprint")
+		db.actor:give_info_portion("encyclopedy_tutorial_binocular")
+		db.actor:give_info_portion("encyclopedy_tutorial_relation")
+		db.actor:give_info_portion("encyclopedy_tutorial_wound")
+		
+		ogse_quests.scape_doors_start() -- двери в Лощине
+
+     end
+	 
+	--KD: установка настроек графики
+
+	-- шмапы
+	log3("[KD] applying graphics settings")
+	cmd("r2_ls_depth_bias -0.00005")
+	cmd("r2_ls_depth_scale 1.00001")
+	cmd("r2_sun_depth_far_bias -0.00001")
+	cmd("r2_sun_depth_far_scale 1.0")
+	cmd("r2_sun_depth_near_bias -0.0001")
+	cmd("r2_sun_depth_near_scale 1.00004")
+	cmd("r2_sun_focus on")
+	cmd("r2_sun_near_border 1.")
+	-- избавляемся от пересвета поверхностей
+	-- -- блум
+	cmd("r2_ls_bloom_threshold 1.")
+	-- -- мультипликатор цвета солнца (идиотская настройка)
+	cmd("r2_sun_lumscale 1.")
+
+	--KD: end	 
+
+	-- проверка мин
+
+	checker_minefield.startup()
+
+	ogse_debug.process_actor("a_spw", 120)
+
+	-- чистим уровень от лишних стволов
+	clear_garbage.remove_guns()
+
+	ogse_debug.process_actor("a_spw", 1110)
+
+
+	db.register_all_quest_zones()
+
+	ogse_debug.process_actor("a_spw", 1111)
+
+	-- рандомный спавн лута в сталкеров
+	trick_sr.art_and_ammo_random()
+
+	ogse_debug.process_actor("a_spw", 1112)
+
+	bar_timer = bar_timer + 20000
+
+	anom_enum = anom_enum + 15000
+
+	ogse_debug.process_actor("a_spw", 1113)
+
+	-- проверка помощи Круглову
+	ogsm_quests.kruglov_help_chek()
+
+	ogse_debug.process_actor("a_spw", 1114)
+
+	-- проверка прохождения X-18
+	ogse_quests.dar_stalker_explorer_spawn()
+
+	ogse_debug.process_actor("a_spw", 1115)
+
+	ogse_night_vision.add_nv_fx_faile_hud()
+
+	ogse_debug.process_actor("a_spw", 1116)
+
+
+	ogse_debug.process_actor("a_spw", 1117)
+
+	-- Получаем список всех монстров и укрытий
+	ogsm_respawn.get_level_mobs()
+
+	ogse_debug.process_actor("a_spw", 1118)
+
+	-- Обновление менеджера аномалий
+	if ogse_anomaly then
+		ogse_anomaly.anom_update()
+	end
+
+	ogse_debug.process_actor("a_spw", 1119)
+
+	-- Спавним, если надо, пси-зоны
+	if ogsm_psyzones then
+		if psyzones_flag ~= 0 then
+			ogsm_psyzones.spawn_on_load()
+		else
+			if ogsm_respawn.psy_list then
+				for k, v in pairs(ogsm_respawn.psy_list) do
+					if v then
+						alife():release(v, true)
+					end
+					ogsm_respawn.psy_list[k] = nil
+				end
+			end
+		end
+	end
+
+	ogse_debug.process_actor("a_spw", 1120)
+	
+	-- Квестовые умиранцы 
+	
+	quest_dead_on_arrival = load_var("q_doa", {}, "array")
+
+	ogse_debug.process_actor("a_spw", 1121)
+
+	-- Апдейтим ремкомплекты
+	remkit_main.update_repair_kit()
+
+	ogse_debug.process_actor("a_spw", 1122)
+
+    ---новости(фильтр левелов)
+    news_main_data.message_filter()
+
+	ogse_debug.process_actor("a_spw", 1123)
+
+	ogse_debug.process_actor("a_spw", 1124)
+
+	-- Выставляем глосс-фактор по умолчанию
+	--ogse_raining_fx.gloss_reset() -- перенесено на сигнальную основу
+
+	ogse_debug.process_actor("a_spw", 1125)
+	--tasks_functor.car_for_yashik_disable_fuel()
+
+	ogse_debug.process_actor("a_spw", 1126)
+
+	ogse_debug.process_actor("a_spw", 1127)
+	-- Восстановим сценку с вертолётом
+	if db.actor:has_info("esc_heli_go") and db.actor:dont_has_info("tutorial_wounded_start")  then
+		local spw_1 = tonumber(load_variable("heli_quest_1",nil))
+		local spw_2 = tonumber(load_variable("heli_quest_2",nil))
+		local spw_3 = tonumber(load_variable("heli_quest_3",nil))
+		if spw_1 then
+			PMA_escape.deadman[spw_1] = spw_1
+		end
+		if spw_2 then
+			PMA_escape.deadman[spw_2] = spw_2
+		end
+		if spw_3 then
+			PMA_escape.deadman[spw_3] = spw_3
+		end
+		-- print_table_inlog_v2(PMA_escape.deadman,"DEAD_MANS>>")
+	end
+
+	ogse_debug.process_actor("a_spw", 1128)
+
+	news_amk_core.init()
+
+	if offline_alife_enabled then
+
+	ogse_debug.process_actor("a_spw", 1129)
+
+	amk_offline_alife.init()
+
+	ogse_debug.process_actor("a_spw", 1130)
+
+	amk_offline_alife.update_npc_tables()
+
+	ogse_debug.process_actor("a_spw", 1131)
+
+	amk_offline_alife.update_trade()
+
+	end
+
+	ogse_debug.process_actor("a_spw", 1133)
+
+	--guiders.check_just_guided()
+
+	ogse_debug.process_actor("a_spw", 1134)
+	
+	ui_ogse_exo_control.load()
+	
+	-- Сброс состояния Темных Зон. Только для избежания новой игры после 9 апдейта. УДАЛИТЬ В РЕЛИЗЕ!
+	local dz_cleaned = tonumber(load_variable("dz_cleaned", 0))
+	if dz_cleaned == 0 then
+		jekan_work.strange_zone_set_rebuild()
+		save_variable("dz_cleaned", 1)
+	end
+	
+	if not db.actor:has_info("wipe_2_ogse") then
+		abort("Невозможно загрузить сейв от старой версии ОБТ OGSE")
+	end
+	
+end
+
+-- Коллбэк на удаление актора
+function on_net_destroy()
+	ogse_night_vision.remove_PNV_rec_wnd()
+end
+
+
+-- Коллбэк на запись сейва
+function on_game_save(packet)
+	-- log1("!!Memory used by Lua before cleanup: "..collectgarbage("count"))
+	collectgarbage("collect")
+	-- log1("--Memory used by Lua after cleanup: "..collectgarbage("count"))
+	-- Проверим численность
+	save_var("q_doa", quest_dead_on_arrival, "array")
+	se_respawn.check_zone_population()
+	-- Запоминаем активный слот
+	-- log1("Store active slot")
+	local act_slot = db.actor:active_slot()
+	save_variable("store_slot", act_slot)
+	log1("Active slot = "..act_slot..", stored")
+	
+	ui_ogse_exo_control.save()
+
+	-- Сохраняем оперативные переменные в хранилище Сидорыча
+	save_main_variable_tbl()
+
+end
+
+
+function check_doa_kills()
+	for k, v in pairs(quest_dead_on_arrival) do
+		local obj = level.object_by_id(v)
+		if obj and obj:alive() then
+			obj:kill(obj)
+			quest_dead_on_arrival[k] = nil
+		elseif obj then	
+			quest_dead_on_arrival[k] = nil
+		end
+	end
+end
+
+function add_to_doa(obj)
+	if obj then
+		table.insert(quest_dead_on_arrival, obj.id)
+	end
+end
+
+function kill_offline_npc(obj)
+	if obj then
+
+		add_to_doa(obj)
+		
+		local pk = xs_netpk.monster(obj)
+		if not pk:isOk() then
+			pk = xs_netpk.stalker(obj)
+		end
+		
+		local data = pk:get()
+		data.health = 0
+		data.updhealth = 0
+		pk:set(data)
+		obj.offline_dead = 1
+		smart_terrain.on_death( obj.id )
+		
+	end
+end
+
+-- возвращает уровень здоровья НПС, для проверки в оффлайне жив/мёртв НПС
+function check_offline_npc(obj)
+	if obj then
+		local pk = xs_netpk.monster(obj)
+		if not pk:isOk() then
+			pk = xs_netpk.stalker(obj)
+		end
+		
+		local data = pk:get()
+		local health = data.health
+		if health > 0 then
+			return true
+		else
+			return false
+		end
+		-- send_tip("HEALTH "..health)
+	end
+end
+
+-- Выводим время на HUD
+function show_time()
+	local hud = get_hud()
+
+--  hud:AddCustomStatic("hud_time_tex", true)
+
+    local time_h = sr_timer.time2str(level.get_time_hours())
+	local time_m = sr_timer.time2str(level.get_time_minutes())
+	hud:AddCustomStatic("hud_timer_text1", true)
+	cs = hud:GetCustomStatic("hud_timer_text1"):wnd()
+	cs:SetText(time_h..":"..time_m)
+
+end
+
+
+-- Парсинг ини-файла в массив
+function parse_ini_section_to_array(ini,section)
+	local tmp={}
+	if ini:section_exist(section) then
+		local result, id, value = nil, nil, nil
+		for a=0,ini:line_count(section)-1 do
+			result, id, value = ini:r_line(section,a,"","")
+			if id~=nil and string.trim(id)~="" and string.trim(id)~=nil then
+				tmp[string.trim(id)] = string.trim(value)
+			end
+		end
+	end
+	return tmp
+end
+
+-- Туториал на пси-воздействие
+function on_my_psy()
+	if not has_alife_info("encyclopedy_tutorial_psy") then
+		game.start_tutorial("part_7_psy")
+		db.actor:give_info_portion("encyclopedy_tutorial_psy")
+	end
+end
+
+function add_spot_on_map(obj_id,type,text)
+  --возможные типы type смотри в ui\map_spots.xml
+  if obj_id then
+    if text==nil then text=" " end
+    -- Ставим метку на серверный объект чтобы её не пришлось обновлять
+    level.map_add_object_spot_ser(obj_id, type, text)
+--    save_variable("x_marker_type_"..obj_id, type)
+--    save_variable("x_marker_text_"..obj_id, text)
+  end
+end
+
+function remove_spot_from_map(obj_id,type)
+  if obj_id and level.map_has_object_spot(obj_id, type)~= 0 then
+    level.map_remove_object_spot(obj_id, type)
+--    del_variable("x_marker_type_"..obj_id)
+--    del_variable("x_marker_text_"..obj_id)
+  end
+end
+-- вспомогательная функция, создание одного или нескольких объектов в заданной точке
+-- назначение: убрать повторный код из функций далее по тексту
+local function spawn_single_object_internal(res, spawn_item)
+	ASSERT(spawn_item.sec, "[spawn_single_object_internal] section not defined")
+	ASSERT(spawn_item.pos, "[spawn_single_object_internal] position not defined, sec = '%s'", spawn_item.sec)
+	ASSERT(spawn_item.lvid, "[spawn_single_object_internal] lvid not defined, sec = '%s'", spawn_item.sec)
+	ASSERT(spawn_item.gvid, "[spawn_single_object_internal] gvid not defined, sec = '%s'", spawn_item.sec)
+	if spawn_item.lvl then
+		ASSERT(level_system_name_by_gvid(spawn_item.gvid) == spawn_item.lvl,
+			"[spawn_single_object_internal] gvid does not match the level name, sec = '%s', lvl = '%s', gvid = %d",
+			spawn_item.sec,
+			spawn_item.lvl,
+			spawn_item.gvid
+			)
+	end
+	local count = spawn_item.cnt or 1
+	ASSERT(not (count > 1 and spawn_item.sid), "[spawn_single_object_internal] cannot assign same sid to multiple objects!, sec = '%s'", spawn_item.sec)
+	local sim = alife()
+	for i=1,count do
+		local sobj_abstract = sim:create(spawn_item.sec, vector():set(unpack(spawn_item.pos)), spawn_item.lvid, spawn_item.gvid)
+		-- получаем объект правильнго типа
+		local sobj = sim:object(sobj_abstract.id)
+		-- на самом деле в этой проверке нет смысла. Ситуации, когда объект создать не удалось, а выполнение продолжилось,
+		-- просто не бывает. В этих случаях всегда идёт вылет. Но пусть будет
+		ASSERT(sobj, "[spawn_single_object_internal] cannot create object, sec = '%s'", spawn_item.sec)
+		if spawn_item.use_ai_location == false or spawn_item.use_ai_location == "false" then
+			sobj:use_ai_locations(false)
+		elseif spawn_item.use_ai_location == true or spawn_item.use_ai_location == "true" then
+			sobj:use_ai_locations(true)
+		end
+		if spawn_item.sid then
+			sim:assign_story_id(nil, nil, sobj.id, spawn_item.sid)
+		end
+		if spawn_item.angle then
+			sobj.angle = vector():set(unpack(spawn_item.angle))
+		end
+		table.insert(res, sobj)
+	end
+end
+-- спавнит один или несколько одинаковых предметов в заданной точке
+-- фактически просто обёртка над spawn_single_object_internal
+function spawn_object(spawn_item)
+	local res = {}
+	spawn_single_object_internal(res, spawn_item)
+	return unpack(res)
+end
+-- спавнит несколько предметов, заданных таблицей
+function spawn_objects(spawn_items)
+	local res = {}
+	for idx,spawn_item in ipairs(spawn_items) do
+		spawn_single_object_internal(res, spawn_item)
+	end
+	return unpack(res)
+end
+-- спавнит рандомно один из предметов, заданных таблицей
+function spawn_object_rand(spawn_items)
+	local spawn_item = spawn_items[math.random(#spawn_items)]
+	local res = {}
+	spawn_single_object_internal(res, spawn_item)
+	return unpack(res)
+end
+
+function quest_spawn_ex(section, total, spawn_item)
+	local res = {}
+	for i=1,total do
+		local spawn_item_tmp = table.clone_simple(spawn_item)
+		spawn_item_tmp.sec = section
+		spawn_single_object_internal(res, spawn_item_tmp)
+	end
+	return unpack(res)
+end
+
+function kill_crow()
+	for k=1,65355 do
+		local crow = level.object_by_id(k)
+		if crow and string.find(crow:name(), "m_crow") then
+			local hit = hit()
+			hit.direction = vector():set(0,0,0)
+			hit.impulse = 10
+			hit.draftsman = crow
+			hit.power = 10
+			hit.type = hit.strike
+			if crow then
+				crow:hit(hit)
+			end
+			checker_minefield.to_delete[k]=k
+		end
+	end
+end
+--TODO: не из-за этой ли функции вороны вылетают из одной точки на земле?
+function spawn_crow()
+local lv = db.actor:level_vertex_id()
+local gv = db.actor:game_vertex_id()
+local x_offset = 0
+local z_offset = 0
+local y_offset = 100
+	for k=1,20 do
+	x_offset = math.random(-100,100)
+	z_offset = math.random(-100,100)
+		local pos = db.actor:position()
+		pos.x = pos.x + x_offset
+		pos.y = pos.y + y_offset
+		pos.z = pos.z + z_offset
+		alife():create("m_crow", pos, lv, gv)
+	end
+end
+
+function give_supplies_to_actor(first_speaker, second_speaker)
+	if not db.actor:object("detector_simple") then
+--		spawn_item_in_inv("detector_simple")
+		dialogs.relocate_item_section(first_speaker, "detector_simple", "in")
+	end
+	if not db.actor:object("device_torch") then
+--		spawn_item_in_inv("device_torch")
+		dialogs.relocate_item_section(first_speaker, "device_torch", "in")
+	end
+	if not db.actor:object("hand_radio_f") then
+--		spawn_item_in_inv("hand_radio_f")
+		dialogs.relocate_item_section(first_speaker, "hand_radio_f", "in")
+	end
+end
+
+function give_binocl_to_actor(first_speaker, second_speaker)
+	if not db.actor:object("wpn_binoc") then
+--		spawn_item_in_inv("wpn_binoc")
+		dialogs.relocate_item_section(first_speaker, "wpn_binoc", "in")
+	end
+end
+
+
+--[[function money_in(money)
+	dialogs.relocate_money(db.actor, money, "in")
+end]]
+
+--[[function money_out(money)
+	dialogs.relocate_money(db.actor, money, "out")
+end]]
+
+function give_info(info)
+	if not has_info(info) then
+		db.actor:give_info_portion(info)
+	end
+end
+
+function has_info(info)
+	return db.actor:has_info(info)
+end
+
+-- функция создания окна сообщения, которое закроется само через определённое время
+function autohiding_msg(txt, delay)
+	local dlg = MonologueMsg(txt)
+	level.start_stop_menu(dlg, true)
+	autohide_dlg_timer(delay, dlg):start()
+end
+
+-- окно "монологового" типа. Просто сообщение в рамке.
+-- Закрыть можно по ESC. Также можно использовать в комбинации с
+-- таймером автозакрытия (см. MonologueMsg и ф-ю autohiding_msg)
+class "MonologueMsg" (CUIScriptWnd)
+
+function MonologueMsg:__init(txt) super()
+	local xml = CScriptXmlInit()
+	local dev = device()
+	
+	if dev.aspect_ratio > 0.7 then
+		xml:ParseFile("ui_ogse_monologue_msg.xml") -- 4^3
+	else
+		xml:ParseFile("ui_ogse_monologue_msg_16.xml") -- 16^9
+	end	
+	xml:InitWindow("main", 0, self)
+	self.msg = xml:InitStatic("main:msg", self)
+	self.msg:SetTextST(txt)
+	self.dlg = self -- трюк для предотвращения вылета.
+	-- Чтобы не было утечки памяти после закрытия окна надо обнулить эту ссылку
+	-- (см. метод OnKeyboard и также метод срабатывания спец. таймера)
+end
+function MonologueMsg:OnKeyboard(dik, key_act) CUIScriptWnd.OnKeyboard(self,dik,key_act)
+	if key_act == ui_events.WINDOW_KEY_PRESSED and dik == DIK_keys.DIK_ESCAPE then
+		self:GetHolder():start_stop_menu(self,true)
+		self.dlg = nil -- отпускаем объект для сборщика мусора
+	end
+	return true
+end
+-- служебный таймер для автоматического закрытия диалога через заданное время
+class "autohide_dlg_timer" (ogse_qt.quick_timer)
+function autohide_dlg_timer:__init(delay, dlg) super(delay)
+	self.dlg = dlg
+end
+function autohide_dlg_timer:taction()
+	if self.dlg and self.dlg:IsShown() then
+		level.start_stop_menu(self.dlg,true)
+		self.dlg.dlg = nil -- отпускаем объект для сборщика мусора
+	end
+end
+
+--/* Уменьшения репутации на .. едениц главному герою..
+function reputation_down_20(stalker, player)
+	db.actor:change_character_reputation(-20)
+end
+
+function reputation_down_10(stalker, player)
+	db.actor:change_character_reputation(-10)
+end
+
+function reputation_up_10(stalker, player)
+	db.actor:change_character_reputation(10)
+end
+
+function reputation_up_20(stalker, player)
+	db.actor:change_character_reputation(20)
+end
+
+save_var = ogse_unist.set_value
+load_var = ogse_unist.get_value
+load_var_safe = ogse_unist.get_value_safe
+var_exists = ogse_unist.value_exist
+delete_var = ogse_unist.remove_value
+save_or_delete_var = ogse_unist.set_or_remove_value
+------------------ таймер со счётчиком на экране --------------------------------
+class "visual_timer" (ogse_st_mgr.delayed_fun_start)
+function visual_timer:__init(name) super(name)
+	self._class = script_name()..".visual_timer"
+end
+function visual_timer:start(...)
+	--
+	self.on_hud_show_desc = {signal = "on_hud_show", self = self, fun = self.on_hud_show}
+	ogse_signals.get_mgr():subscribe(self.on_hud_show_desc)
+	return ogse_st_mgr.delayed_fun_start.start(self, ...)
+end
+function visual_timer:stop()
+	local hud = get_hud()
+	hud:RemoveCustomStatic("hud_timer_2")
+	hud:RemoveCustomStatic("hud_timer_text_2")
+	--
+	ogse_signals.get_mgr():unsubscribe(self.on_hud_show_desc)
+	ogse_st_mgr.delayed_fun_start.stop(self)
+end
+function visual_timer:on_hud_show()
+	local hud = get_hud()
+	if hud:GetCustomStatic("hud_timer_2") then
+		hud:RemoveCustomStatic("hud_timer_2")
+	end
+	hud:AddCustomStatic("hud_timer_2", true)
+	if hud:GetCustomStatic("hud_timer_text_2") then
+		hud:RemoveCustomStatic("hud_timer_text_2")
+	end
+	hud:AddCustomStatic("hud_timer_text_2", true)
+end
+function visual_timer:condition()
+	local dt
+	if self._game_termination_time then
+		dt = game.CTime(self._game_termination_time):diffSec(game.get_game_time())
+	elseif self._residual_time then
+		dt =  self._residual_time - self._time_from_loading
+	else
+		abort("visual_timer:condition: can not update time visual. Time condition is not set.")
+	end
+	local h = math.floor(dt/3600)
+	local m = math.floor(dt/60 - h*60)
+	local s = math.floor(dt - h*3600 - m*60)
+	local txt = string.format("%02d:%02d:%02d", h, m, s)
+	local hud = get_hud()
+	hud:AddCustomStatic("hud_timer_2", true)
+	local st_text = hud:AddCustomStatic("hud_timer_text_2", true)
+	if st_text then
+		st_text:wnd():SetText(txt)
+	end
+	return false
+end
+------------------ таймер со счётчиком на экране и дополниельным условием останова -----------------
+class "conditional_visual_timer" (visual_timer)
+function conditional_visual_timer:__init(name) super(name)
+	self._class = script_name()..".conditional_visual_timer"
+end
+function conditional_visual_timer:init(cond_name, action_name, ...)
+	self.cond_name = cond_name
+	self.user_condition = loadstring("return "..self.cond_name.."(...)")
+	ASSERT(self.user_condition, "conditional_visual_timer:init: can not compile function with the name '"..tostring(self.cond_name).."'")
+	return ogse_st_mgr.delayed_fun_start.init(self, action_name, ...)
+end
+function conditional_visual_timer:condition()
+	visual_timer.condition(self) -- всегда возвращает false
+	return self.user_condition(unpack(self.fun_params))
+end
+function conditional_visual_timer:load(packet)
+	self.cond_name = packet:r_stringZ()
+	self.user_condition = loadstring("return "..self.cond_name.."(...)")
+	ASSERT(self.user_condition, "conditional_visual_timer:load: can not compile function with the name '"..tostring(self.cond_name).."'")
+	ogse_st_mgr.delayed_fun_start.load(self, packet)
+end
+function conditional_visual_timer:save(packet)
+	packet:w_stringZ(self.cond_name)
+	ogse_st_mgr.delayed_fun_start.save(self, packet)
+end
+
+----- обёртки для классов таймеров с визуальным счётчиком --------------------------------
+-- только по времени
+function start_visual_timer(name, delay, fname, ...)
+	return visual_timer(name):set_delay(delay):init(fname, ...):start(true)
+end
+function start_visual_gtimer(name, delay, fname, ...)
+	return visual_timer(name):set_gdelay(delay):init(fname, ...):start(true)
+end
+-- с дополнительным условием останова
+function start_conditional_visual_timer(name, delay, cond_name, act_name, ...)
+	return conditional_visual_timer(name):set_delay(delay):init(cond_name, act_name, ...):start(true)
+end
+function start_conditional_visual_gtimer(name, delay, cond_name, act_name, ...)
+	return conditional_visual_timer(name):set_gdelay(delay):init(cond_name, act_name, ...):start(true)
+end
+-- псевдонимы для удобства вызова
+start_tmr = ogse_st_mgr.start_timer
+start_gtmr = ogse_st_mgr.start_gtimer
+get_tmr = ogse_st_mgr.get_timer
+tmr_exists = ogse_st_mgr.timer_exists
+
+-- специальный таймер для прокрутки игрового времени. Является основой для более
+-- специализированного таймера сна sleep_timer (см. ogse_sleep_mgr.script)
+-- использование:
+-- ogse.time_rewind_timer(12, 5, 4):start()
+-- прокрутить 12 игровых часов за 5 секунд ревльного времени, используя 4 такта
+-- ogse.time_rewind_timer(5):start() -- прокрутить 5 часов
+class "time_rewind_timer" (ogse_qt.quick_timer)
+function time_rewind_timer:__init(game_time_to_rewind, real_time, phases_number) super()
+	ASSERT(game_time_to_rewind > 0, "time_rewind_timer:__init: game_time_to_rewind is negative")
+	self.normal_time_factor = level.get_time_factor()
+	self.start_sleep_time = game.get_game_time()
+	self.end_sleep_time = self.start_sleep_time + seconds2ctime(game_time_to_rewind * 3600.0)
+	self.real_time = real_time or 3 -- время, за которое прокрутим, по умолчанию 3 секунды
+	local ph_num = phases_number or 3 -- количество периодов
+	-- на каждом периоде скорость течения времени уменьшается в 10 раз по отношению к предыдущему
+	-- таким образом повышается точность выставления времени
+	self.real_phase_time = self.real_time / ph_num -- длительность одной фазы
+	self:set_phase(ph_num)
+end
+function time_rewind_timer:set_phase(phase_num)
+	self.phase = phase_num
+	local current_game_time = game.get_game_time()
+	self.phase_begin = current_game_time
+	local time_left = self.end_sleep_time:diffSec(current_game_time) -- оставшееся время сна в секундах
+	if self.phase == 1 then -- последняя фаза, отдаём под неё всё оставшееся время
+		self.phase_end_time = self.end_sleep_time
+	else -- обычная фаза, отдаём под неё время 0.9 * <оставшееся время ожидания>
+		self.phase_end_time = self.phase_begin + seconds2ctime(time_left*0.9)
+	end
+	local tf = self.phase_end_time:diffSec(self.phase_begin) / self.real_phase_time
+	level.set_time_factor(tf)
+end
+function time_rewind_timer:condition()
+	if game.get_game_time() > self.phase_end_time then
+		if self.phase == 1 then return true end
+		self:set_phase(self.phase - 1)
+	end
+	return false
+end
+function time_rewind_timer:action()
+	local s_time_factor = get_float("options","s_time_factor")
+	ASSERT(s_time_factor, "time_rewind_timer:action: parameter 's_time_factor' was not found in the section 'options'")
+	level.set_time_factor(s_time_factor)
+	--level.set_time_factor(self.normal_time_factor)
+end
+

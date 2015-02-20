@@ -1,0 +1,1290 @@
+----------------------------------------------------------------------------------------------------
+-- ogse_weather_mgr.script
+-- Менеджер динамической погоды
+-- OGS Evolution Teamб 2014
+-- version 2.0
+----------------------------------------------------------------------------------------------------
+
+--[[
+Тут много всего наворочено, посему выделяю суть. Менеджер погоды содержит массив self.forecast,
+который представляет собой список погодных секций и времён, в которые их надо последовательно включать.
+Это массив с индексацией от единицы. Первые два элемента - это всегда текущий погодный фрейм. Он задаёт
+текущую погоду с помощью движкового хака, который работает внутри метода 
+	self:setup_frame(self.forecast[1], self.forecast[2])
+Для этого также устанавливается специальная погода 
+	level.set_weather("ogse_script_weather", true)
+При смене фрейма (при переходе через границу текущего) первая точка удаляется, текущим фреймом становятся
+следующие две точки (бывшая №2 становится №1) и т.д. При этом массив прогноза дополняется с конца 
+необходимым количеством точек по алгоритму смены погоды. Если на локации не используется дефолтовая погода,
+то ротация и обновление массива прогноза также выполняется, но без фактической установки погоды.
+Это позволяет держать массив прогноза заполненным и также обеспечивает работу выброса
+
+Менеджер погоды подписан на события:
+on_first_update -- первый апдейт, выполняет установку недефолтовой погоды локации, если задана
+on_load -- грузит массив с прогнозом
+on_save -- сохраняет массив с прогнозом
+on_update -- при переходе через границу погодного фрейма выполняет обновление прогноза и установку
+фактической погоды в виде первых двух точек прогноза
+
+Выброс управляется отсюда, из погодного менеджера. Фактически, выброс представляет собой цепочку специальных 
+погодных кадров, вставленных в прогноз с начала выброса. Кадры содержат в себе информацию об инфопорциях,
+которые должны выдаваться при включении этих кадров. Эти инфопорции управляют остальными эффектами выброса,
+которые включаются уже в менеджере выброса.
+]]
+
+function attach(sm) -- для менеджера сигналов
+	sm:subscribe({signal = "on_init", fun = this.on_actor_init})
+	sm:subscribe({signal = "on_update", fun = this.on_update})
+	sm:subscribe({signal = "on_key_down", fun = this.on_key_down})
+	sm:subscribe({signal = "on_first_update", fun = this.on_first_update})
+	sm:subscribe({signal = "on_save", fun = this.on_save})
+end
+
+local wm
+function on_actor_init()
+	wm = WeatherManager() -- создание
+end
+
+local total_debug = true
+--local always_reset = true
+
+-- если вторая граница фрейма с выбросом будет ближе пяти минут к моменту выброса,
+-- то притянуть её к этому моменту чтобы итоговый фрейм с выбросом был не меньше пяти минут
+-- TODO: сделать это время чуть меньше длительности выброса (по-любому эта граница будет удалена
+-- при размещении точек выброса)
+local point_del_tol = 60*5 
+
+local forecast_shown = false
+local show_next_fc = false
+
+---------< установка таймфактора в 0 на время сохранения и потом возвращение его обратно >----------
+-- нужно для того, чтобы избежать скачка времени после загрузки
+
+local normal_time_factor = get_float("alife", "time_factor")
+-- при первом впдейте после загрузки ставим стандартное значение
+function on_first_update()
+	level.set_time_factor(normal_time_factor)
+	local next_time = get_surge_time()
+	if next_time < -1 then
+		log1("!!Surge is fucked up, resetting")
+		ogse_surge_mgr.surge_final()
+	end
+end
+-- таймер сработает при первом апдейте и вернёт таймфактор к стандартному
+class "restore_tf" (ogse_qt.quick_timer)
+function restore_tf:__init(time) super(0)
+end
+function restore_tf:taction()
+	level.set_time_factor(normal_time_factor)
+end
+-- на время сохранения ставим в ноль, это и запомнится в сейве
+function on_save()
+	level.set_time_factor(0)
+	restore_tf():start()
+end
+----------------------------------------------------------------------------------------------------
+
+function on_update()
+	local st = get_hud():AddCustomStatic("ogse_weather", true):wnd()
+	
+	st:SetTextX(200)
+	st:SetTextY(10)
+	
+	if forecast_shown then
+		st:SetTextColor(255, 255, 0, 0)
+		local wm = get_weather_mgr()
+		--if show_next_fc then
+		--	wm:show_next_fc()
+		--	show_next_fc = false
+		--end
+		local slines = wm:dump_state2lines(30)
+		local s1 = table.concat(slines, '\\n')
+		
+		st:SetText(s1)
+	else
+		st:SetText("")
+		--show_next_fc = false
+	end
+end
+
+function get_surge_time()
+	local wm = get_weather_mgr()
+	local time_surge = wm:time_to_next_surge()
+	return time_surge
+end
+
+function on_key_down(key, bind)
+	local lalt_pressed = GetLAlt()
+	-- local ralt_pressed = GetRAlt()
+	if key == DIK_keys.DIK_O then
+		if not lalt_pressed then
+			forecast_shown = not forecast_shown
+			get_weather_mgr():show_active_forecast()
+		elseif forecast_shown then
+			--show_next_fc = true
+			get_weather_mgr():show_next_forecast()
+		end
+	end
+end
+
+function get_weather_mgr()
+	ASSERT(wm, "")
+	return wm
+end
+
+enabled = true
+
+-- параметры погодного имитатора. На данный момент этот алгоритм НЕ используется.
+local A0 = -0.35  -- общее смещение, нулевой уровень, больше нуля - больше дождя в целом, ниже нуля, больше ясной погоды
+local T0 = 1     -- период дневных колебаний (всегда 1)
+local S0 = 0.667 -- смещение по фазе дневных колебаний, 0.5 +1/6 - 2 часа дня - максимум ясно, 2 ночи - максимум дождя
+local K0 = 0.6     -- размах дневных колебаний, чем выше, тем более длинные периды экстремальной погоды, только ясно или только шторм
+local T1 = 1.2   -- период погодных смещений, несколько дней
+local S1 = 0.0   -- смещение по фазе большого цикла, при старте игры задаётся случайным образом в диапазоне [0 - T1]
+local K1 = 0.7   -- размах погодных смещений (0 - колебание только дневного цикла)
+
+-- по значению абстрактной интенсивности получить имя погодного цикла
+-- интенсивность меняется от 0 до 1. 0 - ясная погода, 1 - шторм
+-- фактически может быть больше 1 и меньше 0, но за пределами интервала принимаем постоянное значение
+-- изменение прописанных здесь пределов также влияет на выбор фактической погоды
+-- здесь можно сделать нелинейное распределение диапазонов, которое сложно достичь простой тригонометрией
+local cycles_ranges = {
+	{"clear"           , 0.0},
+	{"clear_alt"       , 0.2},
+	{"cloudy_light"    , 0.4},
+	{"cloudy_light_rain", 0.5},
+	{"cloudy_dark"     , 0.6},
+	{"cloudy_dark_rain", 0.8},
+	{"storm"           , 0.9},
+}
+local function cycle_by_intensity(v)
+	for _, cycle in ipairs(cycles_ranges) do
+		if cycle[2] > v then
+			return cycle[1]
+		end
+	end
+	return "storm"
+end
+-- аргумент - время в формате game.CTime
+-- результат - имя цикла для этого времени
+local function get_weather_by_time(t)
+	-- вычисляем время в дробных днях, прошедщих с начала 2000 г.
+	local t2000 = game.CTime()
+	t2000:set(2000, 1, 1, 0, 0, 0, 0) -- 01/01/2000, 00:00:00:000
+	local ts = t:diffSec(t2000) -- время с начала 2000 в секундах
+	local td = ts / (24 * 3600) -- время с начала 2000 в дробных днях
+	-- интенсивность облачности и осадков
+	local v = A0 + K0 * math.sin((td - S0) / T0 * math.pi)^2 + K1 * math.sin((td - S1) / T1 * math.pi * 2)
+	-- собственно имя цикла
+	return cycle_by_intensity(v)
+end
+
+------------------< алгоритм выбора погоды, имитирующий исходный из Atmosfear >---------------------
+-- end_w - вес для вычисления вероятности соскочить с данного цикла
+-- tr_w - таблица со списком возможных циклов (для перехода с данного) и их весов
+-- local weather_transitions = {
+	-- storm             = {end_w = 133, tr_w = {cloudy_dark_rain = 70, cloudy_light_rain = 30, }},
+	-- clear             = {end_w = 119, tr_w = {cloudy_light     = 50, cloudy_dark       = 50, }},
+	-- clear_alt         = {end_w = 137, tr_w = {cloudy_light     = 50, cloudy_dark       = 50, }}, 
+	-- cloudy_dark       = {end_w =  68, tr_w = {cloudy_dark_rain = 20, cloudy_light_rain = 20, clear_alt    = 20, cloudy_light = 20, clear = 20,}},
+	-- cloudy_dark_rain  = {end_w =  98, tr_w = {storm            = 33, cloudy_dark       = 33, cloudy_light = 33, }},
+	-- cloudy_light      = {end_w =  84, tr_w = {cloudy_dark_rain = 20, cloudy_light_rain = 20, clear_alt    = 20, cloudy_light = 20, clear = 20,}},
+	-- cloudy_light_rain = {end_w = 101, tr_w = {storm            = 33, cloudy_dark       = 33, cloudy_light = 33, }},
+-- }
+
+local weather_transitions = {
+	storm             = {end_w =  50, tr_w = {cloudy_dark = 10, cloudy_light_rain = 10, clear_alt    = 30, cloudy_light = 20, clear = 30,}},
+	clear             = {end_w = 119, tr_w = {cloudy_dark = 10, cloudy_light_rain = 10, clear_alt    = 50, cloudy_light = 10, clear = 20,}},
+	clear_alt         = {end_w = 137, tr_w = {cloudy_dark = 10, cloudy_light_rain = 10, clear_alt    = 20, cloudy_light = 10, clear = 50,}},
+	cloudy_light      = {end_w =  84, tr_w = {cloudy_dark = 20, cloudy_light_rain = 30, clear    = 20, cloudy_dark_rain = 20, clear = 10,}},
+	cloudy_light_rain = {end_w = 101, tr_w = {cloudy_dark = 30, clear_alt = 10, clear    = 20, cloudy_dark_rain = 20, storm = 20,}},
+	cloudy_dark       = {end_w =  68, tr_w = {cloudy_dark = 10, cloudy_light_rain = 20, clear_alt    = 20, cloudy_dark_rain = 20, storm = 30,}},
+	cloudy_dark_rain  = {end_w =  98, tr_w = {cloudy_dark = 20, clear = 20, clear_alt    = 30, cloudy_dark_rain = 10, storm = 20,}},
+}
+
+--================ внутренние параметры менеджера погоды ===========================================
+-- Количество часов, на которое просчитывается погода.
+-- Число задаётся таким, чтобы "прогноз" с гарантией был больше времени сна, чтобы погода не менялась
+-- случайным образом после того, как ГГ проснулся. С другой стороны, число не должно быть чрезмерно большим,
+-- чтобы уменьшить количество вычислений и объём сохраняемой информации. Два дня выглядит разумным компромиссом.
+local forecast_time = 20
+-- минимальная длительность кадра перехода между циклами в минутах. Точка в цикле, к которому идёт переход, будет искаться 
+-- на расстоянии не меньше этого. Необходимо для того, чтобы при переходе от одного цикла к другому 
+-- не получился очень короткий кадр, если в двух циклах временнЫе точки оказались рядом.
+-- на переходах между точками в пределах цикла никак не сказывается, т.е. при необходимости в пределах
+-- цикла могут быть очень короткие кадры.
+local _min_transition_time = 60 -- в минутах
+local min_transition_time = game.CTime() -- как готовый объект game.CTime для экономии вычислений
+min_transition_time:setHMS(0,_min_transition_time,0)
+-- минимальное приращение для поиска следующей точки в пределах одного цикла
+-- TODO: получать следующую точку в том же цикле без поиска
+local search_step = game.CTime()
+search_step:setHMS(0,0,1)
+----------------------------------------------------------------------------------------------------
+
+-- check if level name corresponds to one of the levels
+-- that should use special indoor level as configured
+-- in game_maps_single.ltx
+local function is_scenario(level_name)
+    return (( level_name == "l12_stancia" or level_name == "l12_stancia_2") and not has_alife_info("pri_what_the_fuck"))	
+end
+
+local weather_ini = ini_file("weathers\\environment.ltx")
+
+local function read_cycle_points(cycle_section, points_table)
+	for line = 0, weather_ini:line_count(cycle_section) - 1 do
+		local res,time_str, sec = weather_ini:r_line(cycle_section, line, "", "")
+		local point_data = {}
+		local h,m,s = time_str:match("^(%d%d):(%d%d):(%d%d)$")
+		ASSERT((h and m and s), "")
+		point_data.time = h*3600 + m*60 + s -- время в секундах
+		point_data.time_orig = point_data.time -- сохраним исходное время на всякий случай
+		point_data.section = sec
+		point_data.index = line + 1 -- прописываем в каждую точку её индекс для облегчения поиска в дальнейшем
+		table.insert(points_table, point_data)
+	end
+	table.sort(points_table, function(a1,a2) return a1.time < a2.time end)
+end
+-- вспомогательная функция, которая оформляет структуру данных цикла, включая заключающую точку и заготовку под статистику
+function build_cycle_data(cycle_section)
+	local cycle_points = {}
+	read_cycle_points(cycle_section, cycle_points) --читаем все секции цикла
+	-- первая точка ВСЕГДА должна быть в начале суток
+	-- движок этого не требует, но с этим дополнительным ограничением всё сильно упрощается
+	ASSERT(cycle_points[1].time == 0, "[WeatherManager:__init] cycle '%s' has first point at not zero time!", cycle_name) 
+	-- добавляем фейковую точку в конце суток для упрощения поиска
+	local last = table.clone_simple(cycle_points[1]) -- копия первой, 
+	last.time = 3600 * 24 -- кроме времени (ровно конец суток в секундах)
+	last.index = 1 -- в последнюю фейковую точку прописываем вместо её собственного индекса индекс первой точки
+	table.insert(cycle_points, last) -- добавляем в конец
+	-----------------------
+	return {section = cycle_section, skipped = 0, points  = cycle_points}
+end
+-------------------------------| базовый класс прогноза погоды |------------------------------------
+-- архитектурно класс прогноза предназначен для отделения функционала прогнозирования погоды
+-- от функционала технических манипуляций с движком. Неоьходимость в этом возникла по причине того,
+-- что прогнозов несколько: один дефолтный с полной динамикой и по одному на каждый уровень со 
+-- статикой.
+
+-- данный класс предназначен для замены статической погоды на управление под скриптовым менеджером
+-- является основой для следующего класса прогноза с вариативной погодой из нескольких циклов
+
+class "StaticForecast"
+function StaticForecast:__init(weather_name)
+	ogse_surge_mgr.surge_log("StaticForecast:__init")
+	ASSERT(weather_name, "[StaticForecast:__init] weather name is a nil reference")
+	self.surge_frame_assigned = false
+	self.forecast = {} -- таблица с временнЫми точками на ближайшие forecast_time+ часов
+	self.static_weather_name = weather_name
+	self.active = false -- является ли активной погодой (таким может быть и должен быть только один из всех)
+	-- данные цикла по ключу-имени: здесь будет всего один цикл
+	local weather_section = get_string("weathers", weather_name, nil, weather_ini)
+	ASSERT(weather_section, "[StaticForecast:__init] cannot get weather section for the weather name '%s'", tostring(weather_name))
+    self.cycles = {[weather_name] = build_cycle_data(weather_section)}
+	self.idx2cycle = {[1] = weather_name} -- затычка для общего алгоритма
+	self.cycles_number = 1
+	ogse_surge_mgr.surge_log("StaticForecast:__init - END")
+end
+function StaticForecast:get_p1()
+	return self.forecast[1]
+end
+function StaticForecast:get_p2()
+	return self.forecast[2]
+end
+function StaticForecast:get_first_frame()
+	return self.forecast[1], self.forecast[2]
+end
+local point_flags = {
+	surge_begin = 1, -- 001b
+	surge_frame = 2, -- 010b
+	processed   = 4, -- 100b
+}
+function StaticForecast:load(forecast_data)
+	ogse_surge_mgr.surge_log("StaticForecast:on_load")
+	-- читаем данные прогноза
+	ogse_surge_mgr.surge_log("forecast points")
+	self.forecast = {}
+	for i=1,forecast_data:r_u16() do
+		local p = {}
+		-- название цикла. Для статики будет избыточность, но не хочется дублировать код
+		p.cycle = forecast_data:r_stringZ()
+		-- читаем и разбираем флаги точки
+		local pflags = flags16():assign(forecast_data:r_u16())
+		p.surge_start = pflags:test(point_flags.surge_begin)
+		p.surge_frame = pflags:test(point_flags.surge_frame)
+		p.processed   = pflags:test(point_flags.processed)
+		--p.surge       = pflags:test(point_flags.surge)
+		self.surge_frame_assigned = self.surge_frame_assigned or p.surge_start -- как только встретим первый true, то так true и останется
+		-- в конце ещё проверим на валидность
+		local point_idx = forecast_data:r_u8() -- индекс точки цикла
+		ASSERT(point_idx ~= 0, "[StaticForecast:on_load] cycle '%s' without index", p.cycle)
+		--p.time = ogse.read_ctime(forecast_data) -- абсолютное время точки
+		p.time = utils.r_CTime_ex(forecast_data)
+		-- в зависимости от типа точки обычная/выброс данные о цикле берём либо 
+		-- из общей таблицы погодных циклов, либо из дополнительно подгруженной таблицы для выброса
+		local cycle_points = {}
+		if p.surge_frame then
+			read_cycle_points(p.cycle, cycle_points)
+		else
+			cycle_points = self.cycles[p.cycle].points
+		end
+		p.data = cycle_points[point_idx]
+		table.insert(self.forecast, p)
+		ogse_surge_mgr.surge_log("cycle '%s', idx = %d/%d, t = %s, %s %s", 
+			p.cycle, 
+			p.data.index, point_idx, 
+			time2string(p.time), 
+			p.surge_start and "surge_start" or '', 
+			p.surge_frame and "surge_frame" or "")
+	end
+	--self:check_and_fail()
+	ogse_surge_mgr.surge_log("StaticForecast:on_load - END")
+end
+function StaticForecast:save(forecast_data)
+	log1("StaticForecast:save 1")
+	ogse_surge_mgr.surge_log("StaticForecast:on_save")
+	log1("StaticForecast:save 2")
+	-- начинаем записывать свои данные
+	-- пишем данные текушего прогноза
+	forecast_data:w_u16(#self.forecast) -- количество точек
+	ogse_surge_mgr.surge_log("forecast_points:")
+	for _,point_data in ipairs(self.forecast) do -- сами точки
+		-- записываем минимум информации для восстановления точки в дальнейшем
+		forecast_data:w_stringZ(point_data.cycle) -- название цикла
+		-- формируем и записываем флаги точки
+		local pflags = flags16():zero()
+		pflags:set(point_flags.surge_begin, point_data.surge_start == true)
+		pflags:set(point_flags.surge_frame,       point_data.surge_frame       == true)
+		pflags:set(point_flags.processed,   point_data.processed   == true)
+		forecast_data:w_u16(pflags:get())
+		--
+		forecast_data:w_u8(point_data.data.index) -- индекс точки цикла
+		--ogse.write_ctime(forecast_data, point_data.time) -- абсолютное время точки
+		utils.w_CTime_ex(forecast_data, point_data.time)
+		
+		ogse_surge_mgr.surge_log("cycle '%s', idx = %d, t = %s, %s %s", 
+			point_data.cycle, 
+			point_data.data.index, 
+			time2string(point_data.time), 
+			point_data.surge_start and "surge_start" or '', 
+			point_data.surge_frame and "surge_frame" or "")
+	end
+	ogse_surge_mgr.surge_log("StaticForecast:on_save - END")
+end
+function StaticForecast:to_strings(max_lines)
+	if #self.forecast == 0 then return {} end
+	local t = {}
+	if not max_lines then max_lines = 10 end
+	local prev_time = self.forecast[1].time
+	local fist_point_time = self.forecast[1].time
+	for i,point in ipairs(self.forecast) do
+		local dif1 = point.time:diffSec(fist_point_time)
+		if math.abs(dif1) < 1e-6 then dif1 = 0 end
+		local dif2 = point.time:diffSec(prev_time)
+		if math.abs(dif2) < 1e-6 then dif2 = 0 end
+		local s = string.format("%02d: [%s] %07d %06.1f|%06.1f, '%s', %s,%s%s%s",
+			i, --%d
+			point.time:dateToString(game.CTime.DateToDay)..'_'..point.time:timeToString(game.CTime.TimeToSeconds), --%s
+			get_day_time_sec(point.time),
+			dif1, dif2,
+			point.cycle, --%s
+			point.data.section, --%s
+			point.surge_start and " surge_start" or "",
+			point.surge_frame and " surge_frame" or "",
+			point.processed and " processed" or "",
+			--point.data.index
+			__dummy__
+			)
+		prev_time = point.time
+		table.insert(t, s)
+		if i == max_lines then break end
+	end
+	return t
+end
+local function build_forecast_point(day_start_time, frame_point_data, cycle_name)
+	-- формируем точку фрейма как время начала суток + время фрейма
+	local point_time = game.CTime()
+	point_time:setHMS(0,0,frame_point_data.time)
+	point_time:add(day_start_time)
+	return {cycle = cycle_name, time = point_time, data = frame_point_data}
+end
+function StaticForecast:insert_forecast_point(day_start_time, frame_point_data, cycle_name, insert_position)
+	local point = build_forecast_point(day_start_time, frame_point_data, cycle_name)
+	table.insert(self.forecast, insert_position, point)
+	return point -- пригодится
+end
+function StaticForecast:append_forecast_point(day_start_time, frame_point_data, cycle_name)
+	ogse_surge_mgr.surge_log("StaticForecast:append_forecast_point")
+	local point = build_forecast_point(day_start_time, frame_point_data, cycle_name)
+	local y,m,d,h,min,s,ms = point.time:get()
+
+	ogse_surge_mgr.surge_log("cycle: %s, time (s): %f, time: %04d:%02d:%02d-%02d:%02d:%02d:%d", point.cycle, point.data.time, y,m,d,h,min,s,ms)
+	table.insert(self.forecast, point)
+	ogse_surge_mgr.surge_log("StaticForecast:append_forecast_point - END")
+	return point -- пригодится
+end
+-- получить следующую погоду по информации из прогноза и статистики
+function StaticForecast:aux_choose_next_weather()
+	ogse_surge_mgr.surge_log("StaticForecast:aux_choose_next_weather")
+	--return self.static_weather_name
+	return self:get_last_point().cycle -- всегда одна и та-же погода
+end
+--
+local function get_frame_by_time(cycle_data, t)
+	local cur_day_seconds = get_day_time_sec(t) -- секунды, прошедшие с начала суток
+	-- ищем фрейм в цикле, включающий текущий момент времени
+	for i=1,#cycle_data-1 do -- перебираем все промежутки (т.е. идём до предпоследнего индекса)
+		local fd1_, fd2_ = cycle_data[i], cycle_data[i+1] -- данные о границах промежутка
+		if cur_day_seconds >= fd1_.time and cur_day_seconds < fd2_.time then
+			return fd1_, fd2_
+		end
+	end
+	ASSERT(false, "") -- такого быть не должно, если всё сделали верно
+end
+--
+local function process_weather_section_inf(weather_section)
+	-- если в погодной секции есть параметр give_info, тогда выдать соответствующую инфопорцию
+	if weather_ini:section_exist(weather_section) then
+		local info = get_string(weather_section, "give_info", nil, weather_ini)
+		--ASSERT(info, "[process_weather_section_inf] give_info parameter is empty in section '%s'", weather_section)
+		if info then
+			db.actor:give_info_portion(info)
+		end
+	end
+end
+function StaticForecast:process_first_point_info()
+	ogse_surge_mgr.surge_log("StaticForecast:process_first_point_info")
+	local first_point = self:get_p1()
+	local script_weather_section = first_point.data.section
+	ogse_surge_mgr.surge_log("before_process_weather_section_inf - set frame: %s", script_weather_section)
+	if self.active and not first_point.processed then -- если флаг не установлен, значит инфопорция из секции не выдавалась
+		ogse_surge_mgr.surge_log("Was not processed. Process info (if any).")
+		process_weather_section_inf(script_weather_section) -- выдать
+	end
+	first_point.processed = true -- запомнить флаг, чтобы не повторить потом ещё раз
+	ogse_surge_mgr.surge_log("StaticForecast:process_first_point_info - END")
+end
+function StaticForecast:reset_statistics()
+end
+
+-- получить из времени в формате CTime время начала суток для этого момента времени тоже в формате CTime
+function get_day_start_time(t)
+	local y,m,d,h,min,s,ms = t:get()
+	local day_start_time = game.CTime()
+	day_start_time:set(y,m,d,0,0,0,0)
+	return day_start_time
+end
+-- обновить цепочку фреймов на ближайшие forecast_time часов
+-- здесь также осуществляется вставка кадров выброса
+function StaticForecast:update()
+	ogse_surge_mgr.surge_log("StaticForecast:update")
+
+	local current_time = game.get_game_time() -- текущее время
+	-- сперва удаляем уже отработавшие точки
+	while self.forecast[1] do -- пока имеется хотя бы одна точка
+		if self.forecast[1].time > current_time then -- если первая точка вдруг оказалась в будущем, чего быть по идее не может
+			--self.forecast = {} -- на всякий случай чистим прогноз совсем
+			fail("First point of forecast is in the future. Check the logic!")
+			break
+		end
+		-- проверяем ситуацию, когда в прогнозе осталась одна точка. 
+		-- такое теоретически может случиться, когда спали дольше, чем имеем прогноз или конец сна
+		-- попал в последний кадр прогноза. Тогда последняя точка прогноза в процессе удаления 
+		-- останется единственной. Этой ситуации надо избегать и длина прогноза специально 
+		-- выбирается так, чтобы покрывать длительность сна с запасом.
+		if not self.forecast[2] then -- как вариант такой же проверки #self.forecast == 1
+			--self.forecast = {} -- тоже на всякий случай чистим прогноз
+			fail("Forecast has only one point. Check the logic!")
+			break
+		end
+		-- надо активировать сигналы из отработавших точек
+		--if self.active and not self.forecast[1].processed then -- если флаг не установлен, значит инфопорция из секции не выдавалась
+		--	ogse_surge_mgr.surge_log("Was not processed. Process info (if any).")
+		--	process_weather_section_inf(self.forecast[1].data.section) -- выдать
+		--end
+		self:process_first_point_info()
+		
+		-- если есть следующая точка и она в будущем, то мы в текущем фрейме
+		if self.forecast[2].time >= current_time then
+			break -- переходим к добавлению новых точек
+		end
+		-- все остальные варианты включают:
+		-- 1. за этой точкой есть ещё одна в прошлом
+		-- 2. эта точка последняя
+		-- в любом случае удаляем её
+		--log1("remove point")
+		-- перед удалением не забыть выдать инфопорции из удаляемых точек
+		--
+		ogse_surge_mgr.surge_log("Remove past forecast point: %s", self.forecast[1].data.section)
+		
+		if self.forecast[1].surge_start then
+			self.surge_frame_assigned = false
+		end
+		table.remove(self.forecast, 1)
+	end
+	-- здесь имеем две возможные ситуации: 
+	-- 1. self.forecast пустой, что может получиться если:
+	--     а) заполняем первый раз
+	--     б) как-то перескочили за forecast_time часов, что опять же может получиться по-разному:
+	--       б.1) после совсем уж длинного сна
+	--       или, что более вероятно,
+	--       б.2) после длительного пребывания на уровне со специальной погодой, когда менеджер не обновлялся
+	--       и соответственно на предыдущем шаге всё очистили
+	-- 2. self.forecast содержит первыми двумя точками текущий фрейм + 0 или больше точек после него
+	-- сперва обрабатываем первую ситуацию, затем, как общий случай, вторую
+	if #self.forecast == 0 then -- массив с предпросчитанными точками пустой
+		-- поскольку массив пустой, то погоду выбираем случайно
+		local cycle_name = self.idx2cycle[math.random(1,self.cycles_number)]
+		local points = self.cycles[cycle_name].points
+		local fd1, fd2 = get_frame_by_time(points, current_time)
+		-- время начала текущих суток
+		local day_start_time = get_day_start_time(current_time)
+		
+		local p1 = self:append_forecast_point(day_start_time, fd1, cycle_name)
+		local p2 = self:append_forecast_point(day_start_time, fd2, cycle_name)
+		--self.last_weather_time = p2.time:diffSec(p1.time) / 60.0 -- длительность цикла в минутах
+		-- обнуляем статистику пропущенных циклов, имеет смысл только для динамической погоды
+		--for cycle_name,cycle_data in pairs(self.cycles) do
+		--	cycle_data.skipped = 0
+		--end
+	end
+	-- дополнить цепочку фреймов до forecast_time часов
+	while true do
+		ogse_surge_mgr.surge_log("adding points. begin loop")
+		-- получаем последнюю точку в прогнозе. На данный момент должно быть как минимум две, так что всегда найдём
+		local last_point = self:get_last_point()
+		if last_point.time:diffSec(current_time) >= forecast_time*3600 then -- если набрали на forecast_time вперёд
+			ogse_surge_mgr.surge_log("reached the forecast_time")
+			break -- то закругляемся
+		end
+
+		-- следующую погоду ищем по смещению от последней точки на min_transition_time
+		local min_next_time = last_point.time + min_transition_time
+		-- вычисляем погодный цикл для этого момента
+		----------------------------------------------------------------------------
+		--local next_cycle = get_weather_by_time(min_next_time)
+		local next_cycle = self:aux_choose_next_weather()
+		-- здесь имеем в переменной next_cycle как результат работы алгоритма выбора строку - имя нового цикла
+		-- теперь надо фактически вставить новую точку в конец прогноза из выбранного цикла
+		-- для этого надо найти все точки от момента <время последней точки прогноза> + <минимальное время перехода>
+		-- до <>
+		--------------------------------------------------------------------------------------------
+		-- получаем время следующей точки как время первой точки в цикле после заданного времени
+		local points = self.cycles[next_cycle].points
+		repeat
+			ogse_surge_mgr.surge_log("adding points. Now have %d points", #self.forecast)
+			local search_time = last_point.time + search_step
+			local day_start_time = get_day_start_time(search_time)
+			local _, fd2 = get_frame_by_time(points, search_time)
+			-- формируем новую точку
+			local new_point = self:append_forecast_point(day_start_time, fd2, next_cycle)
+
+			last_point = new_point
+			--print_time("search_time", search_time)
+			--print_time("min_next_time", min_next_time)
+		until search_time > min_next_time
+	end
+	ogse_surge_mgr.surge_log("StaticForecast:update - END")
+end
+function StaticForecast:get_last_point()
+	return self.forecast[#self.forecast]
+end
+function StaticForecast:get_frame(idx)
+	return self.forecast[idx], self.forecast[idx+1]
+end
+-- проверить, что уже вставлена переходная точка начала выброса.
+-- если нет, то при возможности вставить
+function StaticForecast:check_and_assign_surge_frame(next_surge_time)
+	ogse_surge_mgr.surge_log("StaticForecast:check_and_assign_surge_frame")
+	if self.surge_frame_assigned -- если уже размещали момент начала
+		or next_surge_time <= game.get_game_time() -- или идёт выброс и новое время ещё не назначено
+		or next_surge_time >= self:get_last_point().time -- или ещё рано вставлять, выброс не вошёл в пределы прогноза
+	then 
+		ogse_surge_mgr.surge_log("StaticForecast:check_and_assign_surge_frame - RETURN 1")
+		return -- то ничего не делаем
+	end 
+	for i=1,#self.forecast-1 do -- ищем кадр прогноза, в который попадает начало выброса
+		-- если время выброса попадает в кадр
+		local p1,p2 = self:get_frame(i) --.forecast[i],self.forecast[i+1]
+		if p1.time <= next_surge_time and next_surge_time <= p2.time then
+			-- время выброса попало в текущий кадр, надо вставить дополнительную точку в момент выброса
+			local new_point = {time = game.CTime(next_surge_time), surge_start = true}
+			-- точку вставляем с погодой от ближней к ней границы
+			local del_p2 = false -- удалять ли из прогноза вторую точку включающего фрейма
+			if (next_surge_time - p1.time) < (p2.time - next_surge_time) then
+				-- ближе к началу кадра
+				new_point.cycle = p1.cycle
+				new_point.data = table.clone_simple(p1.data)
+			else
+				-- ближе к концу
+				new_point.cycle = p2.cycle
+				new_point.data = table.clone_simple(p2.data)
+				-- если следующая точка ближе определённого, то удалить её чтобы фрейм с началом выброса был не очень маленький
+				del_p2 = (p2.time:diffSec(next_surge_time) < point_del_tol)
+			end
+			new_point.data.time = get_day_time_sec(next_surge_time)
+			if del_p2 then table.remove(self.forecast, i+1) end
+			table.insert(self.forecast, i+1, new_point)
+			self.surge_frame_assigned = true
+			ogse_surge_mgr.surge_log("StaticForecast:check_and_assign_surge_frame - RETURN 2")
+			return
+		end
+	end
+	ogse_surge_mgr.surge_log("StaticForecast:check_and_assign_surge_frame - FAIL")
+	print_time("fc start time", self:get_p1().time)
+	print_time("fc end time", self:get_last_point().time)
+	print_time("next_surge_time", next_surge_time)
+	fail("[StaticForecast:check_and_assign_surge_frame] failed to find frame for surge")
+end
+function StaticForecast:insert_surge_sequence()
+	ASSERT(self.forecast[1].surge_start, "[ogse_weather_mgr.StaticForecast:insert_surge_sequence] first point is not a surge start!")
+	--local y,m,d,h,min,sec,ms = self.forecast[1].time:get()
+	local h = get_day_time_sec(self.forecast[1].time) / 3600.0
+	local is_day = (h >= 5 and h <= 20)
+	local surge_sect = get_string("weather_effects", is_day and "surge_day_ogse" or "surge_night_ogse", nil, weather_ini)
+	ASSERT(surge_sect, "[ogse_weather_mgr.StaticForecast:insert_surge_sequence] cannot find surge section!")
+	ASSERT(weather_ini:section_exist(surge_sect), "[ogse_weather_mgr.StaticForecast:insert_surge_sequence] surge section '%s' is not found!", surge_sect)
+	local surge_points = {}
+	read_cycle_points(surge_sect, surge_points)
+	local insert_pos = 2
+	local count = 1
+	for i,point_data in ipairs(surge_points) do
+		-- формируем точку фрейма как время начала суток + время фрейма
+		-- поскольку выброс рассчитывался под таймфактор 6, надо это учесть
+		local point_time = game.CTime(self.forecast[1].time) + seconds2ctime(3*60 + point_data.time * normal_time_factor / 6)
+		local point =  {cycle = surge_sect, time = point_time, data = point_data, surge_frame = true}
+		point.data.time = get_day_time_sec(point.time)
+		point.data.index = count
+		count = count + 1
+		table.insert(self.forecast, insert_pos, point)
+		insert_pos = insert_pos + 1
+	end
+	-- удаляем старые точки прогноза, попавшие в пределы выброса
+	local tdiff
+	while true do
+		tdiff = self.forecast[insert_pos].time:diffSec(self.forecast[insert_pos-1].time)
+		if tdiff > 0 then break end
+		table.remove(self.forecast, insert_pos)
+	end
+	-- если от последней точки выброса до следующей точки больше пяти минут, 
+	-- то воткнуть дополнительную точку через три минуты
+	if tdiff > 5*60 then
+		local t = game.CTime(self.forecast[insert_pos-1].time) + seconds2ctime(60*3)
+		local transition_point = {time = t}
+		transition_point.cycle = self.forecast[insert_pos].cycle
+		transition_point.data = table.clone_simple(self.forecast[insert_pos].data)
+		transition_point.data.time = get_day_time_sec(t)
+		table.insert(self.forecast, insert_pos, transition_point)
+	end
+end
+
+------------------------| класс прогноза погоды с динамическими циклами |---------------------------
+class "DynamicForecast" (StaticForecast)
+function DynamicForecast:__init()
+	ogse_surge_mgr.surge_log("DynamicForecast:__init")
+	self.surge_frame_assigned = false
+	self.forecast = {} -- таблица с временнЫми точками на ближайшие forecast_time+ часов
+	
+	self.last_weather_time = 0.0 -- время непрерывного действия последней погоды в прогнозе
+
+    self.cycles   = {} -- данные цикла по ключу-имени
+	self.idx2cycle = {} -- имена циклов по их индексу
+	
+    -- перебираем все циклы динамической погоды, прописанные в секции "weather_dynamic"
+	self.cycles_number = weather_ini:line_count("weather_dynamic")
+    for i = 0, self.cycles_number - 1 do
+        local res, cycle_name, cycle_section = weather_ini:r_line("weather_dynamic", i, "", "")
+		--читаем все секции цикла
+		local cycle_points = {}
+		read_cycle_points(cycle_section, cycle_points)
+		-- первая точка ВСЕГДА должна быть в начале суток
+		-- движок этого не требует, но с этим дополнительным ограничением всё сильно упрощается
+		ASSERT(cycle_points[1].time == 0, "[WeatherManager:__init] cycle '%s' has first point at not zero time!", cycle_name) 
+		-- добавляем фейковую точку в конце суток для упрощения поиска
+		local last = table.clone_simple(cycle_points[1]) -- копия первой, 
+		last.time = 3600 * 24 -- кроме времени (ровно конец суток в секундах)
+		last.index = 1 -- в последнюю фейковую точку прописываем вместо её собственного индекса индекс первой точки
+		table.insert(cycle_points, last) -- добавляем в конец
+		-----------------------
+		self.cycles[cycle_name] = {
+			section = cycle_section, 
+			skipped = 0,
+			points  = cycle_points,
+			}
+		self.idx2cycle[i + 1] = cycle_name
+    end
+	ogse_surge_mgr.surge_log("DynamicForecast:__init - END")
+end
+function DynamicForecast:load(forecast_data)
+	ogse_surge_mgr.surge_log("DynamicForecast:load")
+	-- читаем данные для рандомайзера прогноза
+	log1("1")
+	self.last_weather_time = forecast_data:r_float()
+	log1("2")
+	--
+	while true do
+		log1("3")
+		local cycle_name = forecast_data:r_stringZ()
+		log1(cycle_name)
+		if cycle_name == "" then break end -- встретили завершающий маркер
+		self.cycles[cycle_name].skipped = forecast_data:r_s16()
+	end
+	log1("4")
+	-- читаем данные текушего прогноза
+	StaticForecast.load(self, forecast_data) -- используем метод базового класса
+	log1("5")
+	ogse_surge_mgr.surge_log("DynamicForecast:load - END")
+end
+function DynamicForecast:save(forecast_data)
+	ogse_surge_mgr.surge_log("DynamicForecast:save")
+	-- начинаем записывать свои данные
+	-- пишем данные для рандомайзера прогноза
+	forecast_data:w_float(self.last_weather_time)
+	--
+	for cycle_name,cycle_data in pairs(self.cycles) do
+		forecast_data:w_stringZ(cycle_name)
+		forecast_data:w_s16(cycle_data.skipped)
+	end
+	forecast_data:w_stringZ("") -- завершающий маркер
+	-- пишем данные текушего прогноза
+	StaticForecast.save(self, forecast_data) -- остаток делаем базовым классом
+	ogse_surge_mgr.surge_log("DynamicForecast:save - END")
+end
+function DynamicForecast:reset_statistics()
+	ogse_surge_mgr.surge_log("DynamicForecast:reset_statistics")
+	-- инициализируем данные для алгоритма переключения
+	self.last_weather_time = 0.0 -- p2.time:diffSec(p1.time) / 60.0 -- длительность цикла в минутах
+	-- обнуляем статистику пропущенных циклов, имеет смысл только для динамической погоды
+	for cycle_name,cycle_data in pairs(self.cycles) do
+		cycle_data.skipped = 0
+	end
+	ogse_surge_mgr.surge_log("DynamicForecast:reset_statistics - END")
+end
+function DynamicForecast:append_forecast_point(day_start_time, frame_point_data, cycle_name)
+	ogse_surge_mgr.surge_log("DynamicForecast:append_forecast_point")
+	local prev_last_point = self:get_last_point()
+	local new_point = StaticForecast.append_forecast_point(self, day_start_time, frame_point_data, cycle_name)
+	-- обновляем статистику для алгоритма переключения
+	if prev_last_point then
+		ogse_surge_mgr.surge_log("update self.last_weather_time")
+		self.last_weather_time = new_point.time:diffSec(prev_last_point.time) / 60.0 -- длительность цикла в минутах
+	else -- была пустая очередь, сбрасываем статистику
+		ogse_surge_mgr.surge_log("resettig statistics")
+		self.last_weather_time = 0.0 -- первая точка
+		self:reset_statistics() -- сбрасываем данные для алгоритма переключения
+	end
+	for cycle_name, cycle_data in pairs(self.cycles) do
+		if cycle_name == next_cycle then
+			cycle_data.skipped = 0
+		else
+			cycle_data.skipped = cycle_data.skipped + 1
+		end
+	end
+	ogse_surge_mgr.surge_log("DynamicForecast:append_forecast_point - END")
+	return new_point
+end
+
+-- служебная внутренняя функция получения следующего погодного цикла за последней точкой прогноза
+-- алгоритм выбора погоды в стиле 692
+function DynamicForecast:aux_choose_next_weather()
+	ogse_surge_mgr.surge_log("DynamicForecast:aux_choose_next_weather")
+	local last_point = self:get_last_point()
+	if self.last_weather_time < 1 then -- если был переходный фрейм, то длительность последнего цикла в очереди нулевая
+		return last_point.cycle -- делаем как минимум ещё один фрейм такой же погоды
+		-- TODO: а надо ли? Циклы пасмурной погоды и так забивают всё, 
+		--       может лучше манипулировать вероятностью ухода с цикла?
+		--       Поэкспериментрировать!
+	end
+	-- это не переходный цикл, решаем куда переходим
+	local next_cycle
+	
+	local wtr = weather_transitions[last_point.cycle] -- данные по переходам в/из последнего цикла
+	local trans_prob = (wtr.end_w * self.last_weather_time / 300. + 33.0) / 100.
+	-- проверяем, что пора соскочить с этого цикла
+	if math.random() > trans_prob then -- если ещё рано
+		return last_point.cycle
+	end
+	-- находим циклы с минимальным и максимальным пропущенным числом
+	local last_cycle_skipped = self.cycles[last_point.cycle].skipped
+	local min_skipped = last_cycle_skipped -- минимум пропущенных
+	local max_skipped = last_cycle_skipped -- максимум пропущенных
+	for cycle_name, cycle_data in pairs(self.cycles) do
+		if cycle_data.skipped < min_skipped then
+			min_skipped = cycle_data.skipped
+		end
+		if cycle_data.skipped > max_skipped then
+			max_skipped = cycle_data.skipped
+		end
+	end
+	-- составляем таблицу нормированных весов только для переходов, которые доступны из текущего
+	local weight_scales = {}
+	local wsum = 0
+	for cycle_name,weight in pairs(wtr.tr_w) do -- перебираем все варианты, доступные из текущего цикла
+		local skipped_weight_scale
+		-- least skipped cycle gets 0.5 weight, most skipped used gets 1.5
+		-- вычисленные веса лежат в пределах [0.5, 1.5]
+		if min_skipped < max_skipped then
+			skipped_weight_scale = 0.5 + (self.cycles[cycle_name].skipped - min_skipped) / (max_skipped - min_skipped)
+		else
+			skipped_weight_scale = 1
+		end
+		wsum = wsum + weight * skipped_weight_scale
+		table.insert(weight_scales, {cycle_name, wsum})
+	end
+	-- выбираем следующий цикл
+	local rand_val = math.random() -- случайное число 0..1
+	next_cycle = weight_scales[#weight_scales][1]
+	for _,trw in ipairs(weight_scales) do
+		if trw[2] / wsum >= rand_val then -- сравниваем с нормированной величиной
+			next_cycle = trw[1]
+			break
+		end
+	end
+	self.last_weather_time = 0 -- сменился цикл, сбрасываем время непрерывного действия
+	ogse_surge_mgr.surge_log("DynamicForecast:aux_choose_next_weather - END")
+	return next_cycle
+end
+
+---------------------------------| класс погодного менеджера |--------------------------------------
+-- функционал прогноза теперь отделён от собственно менеджера погоды.
+-- в целом менеджер:
+-- 1. содержит несколько прогнозов - один динамический дефолтный и по одному статическому на каждый
+-- уровень со статической погодой.
+-- 2. обновляет их все чинхронно и выбирает, какой из них использовать
+-- 3. инициирует выброс
+-- 4. собственно устанавливает погоду в соответствии с выбросом
+class "WeatherManager"
+function WeatherManager:__init()
+	ogse_surge_mgr.surge_log("WeatherManager:__init")
+	-- специальный запрос на сброс погоды
+	local wreset_marker_path =  getFS():update_path("$game_saves$", "wreset")
+	local ftmp = io.open(wreset_marker_path)
+	if ftmp then
+		ogse_surge_mgr.surge_log("found reset marker")
+		ftmp:close()
+		local res = os.remove(wreset_marker_path)
+		ogse_surge_mgr.surge_log("removing marker: %s", tostring(res))
+		self.reset_weather = true
+	elseif always_reset then
+		ogse_surge_mgr.surge_log("forced reset flag is set")
+		self.reset_weather = true
+	end
+	-- отладочные фишки, в релизе надо бы убрать ---------------------------------------------------
+	self.aux_next_surge_time = nil
+	-- устанавливаем отладочный хук на запись по ключу "next_surge_time"
+	local mt = getmetatable(self)
+	local old_ni_ev = mt.__newindex
+	mt.old__newindex = old_ni_ev
+	mt.__newindex = function(tt, key, value)
+		if key == 'next_surge_time' then
+			ogse_surge_mgr.surge_log("writing 'next_surge_time'")
+			if type(value) == 'userdata' then
+				ogse_surge_mgr.surge_log("next_surge_time: %s", time2string(value))
+				ogse_surge_mgr.surge_log("time to next surge: %5.1f", value:diffSec(game.get_game_time()))
+			else
+				ogse_surge_mgr.surge_log("next_surge_time: %s", type(value))
+			end
+			ogse_surge_mgr.surge_log("type of value: %s", type(value))
+			ogse_surge_mgr.surge_log(debug.traceback())
+			ogse_surge_mgr.surge_log("-------- end of traceback -----------------")
+			self.aux_next_surge_time = value
+		else
+			old_ni_ev(tt, key, value)
+		end
+	end
+	local old_idx_ev = mt.__index
+	mt.old__index = old_idx_ev
+	mt.__index = function(tt, key)
+		if key == 'next_surge_time' then
+			return self.aux_next_surge_time
+		else
+			return old_idx_ev(tt, key)
+		end
+	end
+	------------------------------------------------------------------------------------------------
+	local weather_by_level = {}
+	local ini = game_ini()
+	local levels_number = ini:line_count("level_maps_single")
+	for i = 0, levels_number - 1 do
+		local res, lname = ini:r_line("level_maps_single", i, "", "")
+		weather_by_level[lname] = get_string(lname, "weathers", "default", ini)
+	end
+
+	-- проверяем, что уровень имеет свою погоду (обычно подземный)
+	local level_name = level.name()
+	self.indoor_weather = isIndoor(level_name) and weather_by_level[level_name]
+	
+	self.forecasts = {} -- таблица со всеми прогнозами
+    -- перебираем все уровни, создаём соответстсвующие прогнозы
+	for lname,weather_name in pairs(weather_by_level) do
+		if not self.forecasts[weather_name] and not isIndoor(lname) then
+			self.forecasts[weather_name] = (weather_name == "default") 
+				and DynamicForecast()
+				or  StaticForecast(weather_name)
+			self.forecasts[weather_name].name = weather_name
+		end
+	end
+	self.active_forecast = self.forecasts[weather_by_level[level_name]]
+	-- для подземного уровня активным ставим дефолтовый, только для того, чтобы дергать им события выброса
+	if self.indoor_weather then
+		self.active_forecast = self.forecasts.default
+	end
+	self.active_forecast.active = true
+	self:show_active_forecast()
+	
+	if self.indoor_weather then -- для уровня c подземной погодой просто устанавливаем ту погоду, которая прописана в его конфиге
+		level.set_weather(self.indoor_weather, true)
+	else -- если не подземная, то значит управляется прогнозом
+		self.script_weather_enabled = true 
+		-- получился избыточный по смыслу флажок, поскольку всегда равен (not self.indoor_weather)
+		-- но для ясности пусть будет
+	end
+	-- подписываем менеджер на сигналы
+	local sm = ogse_signals.get_mgr()
+	self.upd_ev_desc = {signal = "on_update", self = self, fun = self.update}
+	sm:subscribe(self.upd_ev_desc)
+	self.sv_ev_desc = {signal = "on_save",   self = self, fun = self.on_save}
+	sm:subscribe(self.sv_ev_desc)
+	self.ld_ev_desc = {signal = "on_load",   self = self, fun = self.on_load}
+	sm:subscribe(self.ld_ev_desc)
+	self.spwn_ev_desc = {signal = "on_spawn",   self = self, fun = self.on_actor_spawn}
+	sm:subscribe(self.spwn_ev_desc)
+	self.destr_ev_desc = {signal = "on_destroy",self = self, fun = self.on_destroy}
+	sm:subscribe(self.destr_ev_desc)
+	--
+	ogse_surge_mgr.surge_log("WeatherManager:__init - END")
+end
+function WeatherManager:on_destroy()
+	ogse_surge_mgr.surge_log("WeatherManager:on_destroy")
+	local mt = getmetatable(self)
+	mt.__newindex = mt.old__newindex
+	mt.old__newindex = nil
+	--
+	mt.__index = mt.old__index
+	mt.old__index = nil
+	ogse_surge_mgr.surge_log("WeatherManager:on_destroy - END")
+	--
+	-- отписываем менеджер от сигналов
+	local sm = ogse_signals.get_mgr()
+	sm:unsubscribe(self.upd_ev_desc)
+	self.upd_ev_desc = nil
+	sm:unsubscribe(self.sv_ev_desc)
+	self.sv_ev_desc = nil
+	sm:unsubscribe(self.ld_ev_desc)
+	self.ld_ev_desc = nil
+	sm:unsubscribe(self.spwn_ev_desc)
+	self.spwn_ev_desc = nil
+	sm:unsubscribe(self.destr_ev_desc)
+	self.destr_ev_desc = nil
+end
+-- начальная инициализация при начале игры (когда не выполняется on_load)
+function WeatherManager:on_actor_spawn()
+	ogse_surge_mgr.surge_log("WeatherManager:on_actor_spawn")
+	if not self.initialized then -- только если не сработал on_load, т.е. во время начала игры
+		self.next_surge_time = game.get_game_time() + ogse_surge_mgr.get_first_surge_wait_time() -- установка времени первого выброса
+		ogse_surge_mgr.surge_log("next_surge_time: %s", time2string(self.next_surge_time))
+		self:update_forecast()
+	end
+	self:check_and_fail()
+	ogse_surge_mgr.surge_log("WeatherManager:on_actor_spawn - END")
+end
+
+-- загрузка прогноза и текущего состояния из сейва
+function WeatherManager:on_load()
+	ogse_surge_mgr.surge_log("WeatherManager:on_load")
+	
+	if self.reset_weather then
+		ogse_surge_mgr.surge_log("resetting weather was requested: will delete all saved data")
+		if ogse.var_exists("ogse_weather_next_surge_time") then
+			ogse.delete_var("ogse_weather_next_surge_time")
+		end
+		for weather_name, forecast in pairs(self.forecasts) do
+			local var_name = "ogse_weather_forecast_data_"..weather_name
+			if ogse.var_exists(var_name) then
+				ogse.delete_var(var_name)
+			end
+		end
+		ogse_surge_mgr.surge_log("WeatherManager:on_load - END upon resetting eather")
+		return
+	end
+	
+	self.next_surge_time = ogse.load_var("ogse_weather_next_surge_time")
+	for weather_name, forecast in pairs(self.forecasts) do
+		local forecast_data = ogse.load_var("ogse_weather_forecast_data_"..weather_name)
+		forecast:load(forecast_data)
+	end
+	
+	self.initialized = true
+	--self:check_and_fail()
+	ogse_surge_mgr.surge_log("WeatherManager:on_load - END")
+end
+--
+function WeatherManager:on_save()
+	ogse_surge_mgr.surge_log("WeatherManager:on_save")
+	ogse.save_var("ogse_weather_next_surge_time", self.next_surge_time, "time")
+	-- каждый отдельный прогноз имеет свой чанк с данными (поскольку есть вероятность, 
+	-- что все прогнозы не влезут в один нетпакет)
+	for weather_name, forecast in pairs(self.forecasts) do
+		local forecast_data = net_packet()
+		forecast_data:w_begin(123) -- двухбайтовая заглушка
+		forecast_data:r_seek(2) -- чтобы пропустить эти два байта при чтении
+		forecast:save(forecast_data)
+		ogse.save_var("ogse_weather_forecast_data_"..weather_name, forecast_data, "chunk")
+	end
+
+	--self:check_and_fail()
+	ogse_surge_mgr.surge_log("WeatherManager:on_save - END")
+end
+function WeatherManager:show_active_forecast()
+	self.forecast2show = self.active_forecast
+end
+function WeatherManager:show_next_forecast()
+	local name, fc = next(self.forecasts, self.forecast2show.name)
+	if not name then
+		name, fc = next(self.forecasts)
+	end
+	ASSERT(fc, "[WeatherManager:show_next_forecast] %s", tostring(name))
+	self.forecast2show = fc
+end
+function WeatherManager:dump_state2lines(max_lines)
+	local total_fc_points = #self.forecast2show.forecast
+	local afc = self.forecast2show
+	local p1,p2 = afc:get_first_frame()
+	local t1,t2 = p1.time, p2.time
+	local current_time = game.get_game_time()
+	--
+	local t2_t1 = t2:diffSec(t1)
+	local t_t1 = current_time:diffSec(t1)
+	local tf = t_t1/t2_t1
+	
+	local dt_surge = self.next_surge_time:diffSec(current_time) / 3600.0
+	
+	local str_tab = {}
+	table.insert(str_tab, string.format("engine weather: %s",   level.get_weather()))
+	table.insert(str_tab, string.format("time factor: %5.1f",    level.get_time_factor()))
+	table.insert(str_tab, string.format("frame progress: %4.2f", tf))
+	table.insert(str_tab, string.format("next surge time: %s", time2string(self.next_surge_time)))
+	table.insert(str_tab, string.format("next surge in (h): %5.2f", dt_surge))
+	table.insert(str_tab, string.format("surge start frame assigned: %s", afc.surge_frame_assigned and 'yes' or 'no'))
+	table.insert(str_tab, string.format("forecast points (%s:%s) [total %d, shown %d]:", afc.active and 'active' or 'inactive', afc.name, total_fc_points, math.min(max_lines, total_fc_points)))
+	for _,line in ipairs(afc:to_strings(max_lines)) do
+		table.insert(str_tab, line)
+	end
+	return str_tab
+end
+function WeatherManager:time_to_next_surge()
+	local current_time = game.get_game_time()
+	local dt_surge = self.next_surge_time:diffSec(current_time) / 3600.0
+	return dt_surge
+end
+-- распечатать прогноз погоды в лог
+function WeatherManager:dump_forecast()
+	--ogse_surge_mgr.surge_log("WeatherManager:dump_forecast")
+	for _,line in ipairs(self:dump_state2lines(10000)) do
+		ogse_surge_mgr.surge_log(line)
+	end
+	--ogse_surge_mgr.surge_log("WeatherManager:dump_forecast - END")
+end
+-- Проверить менеджер погоды на исправность. Проверки:
+-- 1. назначено ли время выброса (должно быть назначено)
+-- 2. пройти все точки прогноза и проверить наличие маркеров выброса
+-- 2.1 если маркер присутствует, то он должен быть строго один. Больше одного - ошибка.
+-- 2.2 если маркер присутствует, то:
+-- 2.2.1 время выброса должно совпадать со временем маркера
+-- 2.2.2 должен быть взведён служебный флаг, что маркер установлен
+-- 2.3 если маркер отсутствует:
+-- 2.3.1 флаг установленного маркера должен быть снят
+-- 2.3.2 время выброса должно отстоять от текущего на величину некоего допуска (пусть будет 5 часов)
+-- смысл последней проверки в том, что по идее не должно быть такой ситуации, что время выброса 
+-- уже в пределах прогноза, а маркер выброса не назначен. Не очень понятны условия, при которых это
+-- может получиться, но в принципе это не страшно само по себе. По идее, маркер автоматом назначается 
+-- при ближайшем пересчёте прогноза, но если время выброса уже близко к текущему, то значит что-то идёт не так.
+
+function WeatherManager:check_consistency()
+	if not self.aux_next_surge_time then
+		return false, "self.aux_next_surge_time is a nil reference" -- 1
+	end
+	local surge_marker_counter = 0
+	local marked_point = nil
+	for _,point_data in ipairs(self.forecast) do
+		if point_data.surge_start then
+			surge_marker_counter = surge_marker_counter + 1
+			if surge_marker_counter > 1 then
+				return false, "more than one marked point" -- 2.1
+			end
+			marked_point = point_data
+		end
+	end
+	if marked_point then
+		--if math.abs(self.next_surge_time:diffSec(marked_point.time)) > 0.01
+		if self.next_surge_time ~= marked_point.time then
+			return false, "marked point time is not equal global surge time" -- 2.2.1
+		end
+		if not self.surge_frame_assigned then
+			return false, "there is a marker, but surge_frame_assigned is false" -- 2.2.2
+		end
+	else
+		if self.surge_frame_assigned then
+			return false, "no marker, but surge_frame_assigned is true" -- 2.3.1
+		end
+		local to_next_surge = self.next_surge_time:diffSec(game.get_game_time()) / 3600
+		if to_next_surge > 0 and to_next_surge < 5 then
+			return false, "failed to set marker" -- 2.3.2
+		end
+	end
+	return true
+end
+function WeatherManager:check_and_fail()
+	--[[local res, msg = self:check_consistency()
+	if not res then
+		ogse_surge_mgr.surge_log("INCONSISTENT WEATHER MANAGER STATE: %s", msg)
+		ogse_surge_mgr.surge_log(debug.traceback())
+		ogse_surge_mgr.surge_log("-------- end of traceback -----------------")
+		self:dump_forecast()
+		abort("INCONSISTENT WEATHER MANAGER STATE: "..msg)
+	end]]
+end
+-- установить время следующего выброса
+function WeatherManager:prepare_new_surge()
+	ogse_surge_mgr.surge_log("WeatherManager:prepare_new_surge")
+	self.next_surge_time = game.get_game_time() + ogse_surge_mgr.get_surge_wait_time()
+	self.surge_frame_assigned = false
+	ogse_surge_mgr.surge_log("WeatherManager:prepare_new_surge - END")
+end
+
+-- установить время следующего выброса
+function WeatherManager:is_surge_in_process()
+	return (game.get_game_time() > self.next_surge_time)
+end
+
+-- обновить цепочку фреймов на ближайшие forecast_time часов
+-- здесь также осуществляется вставка кадров выброса
+function WeatherManager:update_forecast()
+	ogse_surge_mgr.surge_log("WeatherManager:update_forecast")
+
+	for weather_name, forecast in pairs(self.forecasts) do
+		forecast:update()
+		forecast:check_and_assign_surge_frame(self.next_surge_time)
+	end
+	--self:dump_forecast()
+	ogse_surge_mgr.surge_log("WeatherManager:update_forecast - END")
+end
+local valid_weather_params = {
+	sun_shafts          = true,
+	sun_shafts_length   = true,
+	rain_max_drop_angle = true,
+	flares              = true,
+	sky_texture         = true,
+	sky_rotation        = true,
+	sky_color           = true,
+	clouds_texture      = true,
+	clouds_color        = true,
+	far_plane           = true,
+	fog_distance        = true,
+	fog_color           = true,
+	fog_density         = true,
+	rain_density        = true,
+	rain_color          = true,
+	rain_increase_speed = true,
+	moon_road_intensity = true,
+	thunderbolt         = true,
+	bolt_period         = true,
+	bolt_duration       = true,
+	wind_velocity       = true,
+	wind_direction      = true,
+	ambient             = true,
+	--lmap_color          = true,
+	hemi_color          = true,
+	sun_color           = true,
+	sun_dir             = true,
+	env_ambient         = true,
+}
+-- заполняем таблицу на основе данных секции
+local function get_weather_cycle(section)
+	local t = {}
+	for i=0,weather_ini:line_count(section)-1 do
+		local res,k,v = weather_ini:r_line(section, i)
+		if valid_weather_params[k] then
+			t[k] = v
+		end
+	end
+	return t
+end
+-- задать параметры границы фрейма и вернуть в виде специальной таблицы
+local function compile_frame_point(point_data)
+	local y,m,d,h,min,sec,ms = point_data.time:get()
+	local tab = get_weather_cycle(point_data.data.section)
+	tab.exec_time = (h * 3600.0 + min * 60.0 + sec + ms / 1000.0) -- или может быть point_data.data.time_orig
+	local az,za = sun_pos.sunpos_table(h,min,sec)
+	-- позицию солнца берём из глобального конфига
+	tab.sun_dir = string.format("%f,%f", az,za)
+	return tab
+end
+-- установить текущий погодный фрейм в движке
+local function setup_frame(p1, p2)
+	ogse_surge_mgr.surge_log("setup_frame: %s - %s", p1.data.section, p2.data.section)
+	ASSERT("ogse_script_weather" == level.get_weather(), "")
+	
+	local t1 = compile_frame_point(p1)
+	local t2 = compile_frame_point(p2)
+	--print_table_inlog(t2, "t2")
+	--
+	SetEnvDescData(t1, t2)
+	ogse_surge_mgr.surge_log("setup_frame - END")
+end
+
+-- функция вставляет за первым кадром последовательность кадров выброса
+-- при необходимости часть точек, перекрываемая выбросом, удаляется и также
+-- формируется дополнительная точка в конце для плавного перехода от окончания выброса к обычной погоде
+
+monitoring_weather_sect = nil
+
+function WeatherManager:update()
+	if not enabled then return end
+	local current_time = game.get_game_time()
+	if self.next_update and current_time < self.next_update then return end -- ещё рано
+	
+	ogse_surge_mgr.surge_log("WeatherManager:update - new point")
+	self:update_forecast() -- обновляем прогноз независимо от того, используем ли эту погоду
+	-- проверяем начало выброса, первый кадр имеет флажок surge_start = true
+	local afc = self.active_forecast
+	if afc:get_p1().surge_start then
+		if ogse_surge_mgr.can_start_surge_now() then -- если можно начать выброс,
+			-- то втыкаем последовательность кадров выброса во всех прогнозах
+			ogse_surge_mgr.surge_log("begin surge")
+			for _,fc in pairs(self.forecasts) do
+				fc:insert_surge_sequence()
+			end
+			-- 
+		else -- если по каким-то причинам нельзя
+			-- снимаем флажок с текушего кадра во всех прогнозах
+			for _,fc in pairs(self.forecasts) do
+				fc:get_p1().surge_start = false
+				-- говорим, что надо переразместить кадр выброса
+				fc.surge_frame_assigned = false
+			end
+			-- смещаем время выброса
+			self.next_surge_time = current_time + ogse_surge_mgr.get_surge_postpone_time()
+			-- обновляем на всякий случай прогноз (по идее можно не делать, если смещаем больше чем на кадр)
+			self:update_forecast()
+		end
+	end
+	--
+	self.next_update = afc:get_p2().time
+	-- устанавливаем скриптовую погоду, если прописана дефолтовая погода
+	local script_weather_section = afc:get_p1().data.section
+	if self.script_weather_enabled then
+		level.set_weather("ogse_script_weather", true)
+		setup_frame(afc:get_first_frame())
+		monitoring_weather_sect = script_weather_section
+	elseif self.indoor_weather then
+		monitoring_weather_sect = script_weather_section
+	end
+	afc:process_first_point_info()
+	--if not afc:get_p1().processed then -- если флаг не установлен, значит инфопорция из секции не выдавалась
+	--	afc:get_p1().processed = true -- запомнить флаг, чтобы не повторить потом ещё раз
+	--	ogse_surge_mgr.surge_log("Was not processed. Process info (if any).")
+	--	process_weather_section_inf(script_weather_section) -- выдать
+	--end
+	--self:check_and_fail()
+end
