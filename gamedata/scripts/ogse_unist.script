@@ -1,0 +1,766 @@
+-------------------------------------------------------------------------------
+--|  ogse_unist.script                                                      |--
+--|   Универсальная система хранения пользовательских данных                |--
+--| Malandrinus, OGS Evolution Team, 2011                                   |--
+--| version 1.0                                                             |--
+-------------------------------------------------------------------------------
+-- Использование:
+-- ogse.save_variable(name, value [,type]) -- сохранить переменную
+-- ogse.load_variable(name [,default_value [,type]]) -- прочитать переменную
+-- ogse.variable_exists(name) -- проверить существование переменной
+-- ogse.delete_variable(name) -- удалить переменную, чтобы освободить место
+-- name - строка с уникальным именем переменной
+-- value - значение
+-- type - строка с типом. Это в ряде случаев необязательный параметр. 
+-- Возможные варианты:
+-- "string" - строка, занимает количество символов + 1
+-- "bool" - логическое значение, 1 байт
+-- "float" - яисло с плавающей запятой, 4 байта
+-- "vector" - вектор из 3-х float, 12 байт
+-- "time" - время CTime, 8 байт
+-- "u8", "s8", "u16", "s16", "u32", "s32" - знаковые и беззнаковые целые, 1,2,4 байта соответственно
+-- "number" - автораспознаваемый тип числа, хранится в строковом виде. длина зависит от значения. 
+--            Этот тип не нужно указывать, он будет назначен переменной автоматически, 
+--            если значение имеет тип числа.
+-- "chunk" - представляет собой нетпакет, или попросту кусок двоичных данных произвольной длины. 
+--           Это планировалось как основа для создания отдельных хранилищ, совместимых с текущей 
+--           идеологией. Т.е. везде, где для сохранения/загрузки передаётся нетпакет, его можно 
+--           заменить на наш отдельный, а его уже хранить в этом общем хранилище. Смысл этого в 
+--           экономии места при организации сохранения разных подсистем. Для каждой подсистемы или 
+--           сохраняемого модуля можно конечно выделить отдельный объект хранения (из тех, что 
+--           лежат в основе всего универсального хранилища), но это в общем случае слишком 
+--           расточительно. Используя эти сохраняемые пакеты можно упаковывать данные более экономно.
+-- "array" - тип массива. Значение - таблица вида {v1, v2, v3}, где тип значений массива ограничен
+--           автораспознаваемыми типами: строки, логические значения и числа. 
+-- параметр type не является обязательным в случае типа значения строка, логическое значение и 
+-- число. В случае числа при неуказании точного типа числа оно просто сохраняется в строковом виде. 
+-- Поэтому желательно его указывать. Для чисел с плавающей запятой это существенно уменьшит размер 
+-- хранимых данных, так как при указании типа "float" число будет сохранено в двоичном виде 
+-- как 4 байта, строка же может занять до 16-и байт.
+-- Во всех остальных случаях, вектор, объект CTime, chunk, array, параметр надо указывать
+-- обязательно, так как в этом случае нет возможности тривиально определить природу вргумента. 
+-- Если в этом случае не указать тип, то будет вылет с соответствующим сообщением.
+
+-- при чтении переменной минимально достаточно указать её имя
+-- local value = ogse.load_variable(name)
+-- Однако, переменная должна существовать. Если такой ранее не было сохранено, то будет 
+-- вылет (намеренно). Чтобы этого избежать, надо указывать значение по умолчанию.
+-- local value = ogse.load_variable(name, default_value [,type])
+-- тип, как необязательный параметр, указывается по тем же правилам, что и при сохранении.
+
+
+function attach(sm)
+	sm:subscribe({signal = "on_load_before_all", fun = this.on_load})
+	sm:subscribe({signal = "on_save_after_all", fun = this.on_save})
+end
+
+
+local storage = {} -- данные для сохранения
+local ready = false -- можно ли пользоваться (не раньше, чем будет загружен онлайновый актор)
+-- надо, чтобы не было пересечений с другими хранилищами. Внимание, НЕ МЕНЯТЬ!
+local storage_guid = "{5377D955-0611-4545-A3AB-18521FD303B0}"
+local st_objects = {}
+local st_count_item
+
+function is_ready()
+	return ready
+end
+
+function clear_storage() -- чистим хранилище, остаётся только одно, корневое
+	for k,v in pairs(storage) do
+		if k ~= st_count_item.name then
+			remove_value(k)
+		end
+	end
+	for i=st_count_item.value,2,-1 do
+		ogse_base_storage.remove_storage(st_objects[i].st_id)
+		table.remove(st_objects, i)
+	end
+	st_count_item.value = 1
+end
+
+function print_storage_usage()
+	log1("-- --==<| Printing storage usage information |>==-- -")
+	log1("number of storages: "..st_count_item.value)
+	for i=1,st_count_item.value do
+		local st = st_objects[i]
+		local items_cnt = 0
+		for _,_ in pairs(st.data) do
+			items_cnt = items_cnt + 1
+		end
+		log2("%d : total space = %d, free space = %d, items count = %d", i, st.total_space, st:free_space(), items_cnt)
+	end
+end
+
+function print_storage()
+	print_storage_usage()
+	local types_inv = {}
+	for k,v in pairs(types) do types_inv[v] = k end
+	log1("-- --==<| Printing storage content |>==-- -")
+	for name,item in pairs(storage) do
+		log2("name = '%s', type = '%s', data_size = %d, full size = %d", name, types_inv[item.type], item:data_size(), item.size)
+		log1(item:get_string())
+	end
+end
+
+types = {
+	["string"] = 1,
+	["number"] = 2,
+	["bool"]   = 3,
+	["float"]  = 4,
+	["u8"]     = 5,
+	["s8"]     = 6,
+	["u16"]    = 7,
+	["s16"]    = 8,
+	["u32"]    = 9,
+	["s32"]    = 10,
+	["time"]   = 11,
+	["vector"] = 12,
+	["array"]  = 13,
+	["table"]  = 14,
+	["chunk"]  = 15,
+}
+
+local item_types_registry
+-------------------------------------------------------------------
+-- функция создаёт элемент с именем и типом, но без привязки к конкретному хранилищу
+-- смысл в предварительном создании элемента для последующего выяснения, куда его
+-- можно поместить и собственно помещения
+function create_item(name, value, typ)
+	if typ then -- явно задали тип
+		if type(typ) == "string" then
+			typ = types[typ]
+		end
+		local constructor = item_types_registry[typ]
+		ASSERT(constructor, "ogse_unist.create_item: cant find type ["..typ.."] in types registry")
+		return constructor(name, value)
+	else
+		-- здесь пытаемся определить, какой тип. Такая ситуация должна прокатывать только для следующих типов:
+		-- строки, логические значения, числа, сохраняемые в строках (types.number)
+		local lua_type = type(value)
+		if lua_type == "string" then
+			return string_element(name, value)
+		elseif lua_type == "boolean" then
+			return bool_element(name, value)
+		elseif lua_type == "number" then
+			-- в этом случае любые числа будут сохраняться в виде строки
+			-- занимает больше места, медленней работает,
+			-- для чисел с плавающей запятой может привести к потерям точности
+			-- с другой стороны меньше гемора
+			return general_number(name, value)
+		elseif lua_type == "table" then
+			return table_element(name, value)
+		elseif lua_type == "nil" then
+			-- надо подумать, что делать, вылетать или сохранять nil
+			abort(string.format("ogse_unist.create_item: trying set nil value for variable with name '%s'", name))
+		else
+			abort("ogse_unist.create_item: can't deal with type '"..lua_type.."'")
+		end
+	end
+end
+-- функция читает из нетпакета один элемент в универсальном формате
+function read_item_from_packet(r_packet)
+	local pos1 = r_packet:r_tell()
+	--
+	local typ = r_packet:r_u8() -- тип данных
+	local constructor = item_types_registry[typ]
+	ASSERT(constructor, "ogse_unist.read_item_from_packet: cant find type ["..typ.."] in types registry")
+	local name = r_packet:r_stringZ()
+	local item = constructor(name)
+	item:read_value(r_packet)
+	--
+	local pos2 = r_packet:r_tell()
+	ASSERT(pos2-pos1 == item.size, "read_item_from_packet: item reported size is different from actually readed data: name_len="..item.name:len().." value="..item:get_string().." item.size = "..item.size.." written="..(pos2-pos1))
+	--
+	return item
+end
+-- пишем в нетпакет данные одного элемента
+function write_item_to_packet(w_packet, item)
+	local pos1 = w_packet:w_tell()
+	--
+	w_packet:w_u8(item.type)
+	w_packet:w_stringZ(item.name)
+	item:write_value(w_packet)
+	--
+	local pos2 = w_packet:w_tell()
+	ASSERT(pos2-pos1 == item.size, "write_item_to_packet: item reported size is different from actually written data: name_len="..item.name:len().." value="..item:get_string().." item.size = "..item.size.." written="..(pos2-pos1))
+end
+local function add_storage()
+	local st_count = st_count_item.value + 1
+	local st = base_single_storage(st_count)
+	ASSERT(st, "ogse_unist.add_storage: can't create new storage. count = "..st_count)
+	st_objects[st_count] = st
+	st_count_item.value = st_count -- грязный трюк, не поступаем так больше ни с какой переменной
+	return st
+end
+
+local game_id = nil
+function get_game_id()
+	ASSERT(this.game_id, "[ogse_unist.get_game_id] value of this.game_id is not yet defined. Do not use it before actor's loaded")
+	return this.game_id
+end
+
+function on_load()
+	st_objects[1] = base_single_storage(1) -- корневое хранилище, содержит переменную с общим количеством хранилищ
+	local st_count_key = "ST_COUNT_"..storage_guid -- её имя
+	st_count_item = storage[st_count_key]
+	if not st_count_item then -- если её ещё нет (только что создано корневое хранилище)
+		st_count_item = create_item(st_count_key, 1, types.u16) -- то создаём её со значением 1 (всего одно, корневое хранилище)
+		ASSERT(st_count_item, "on_init: cant create count item")
+		st_objects[1]:add_item(st_count_item) -- добавляем элемент в корневое хранилище
+		-- сохраняем в глобальном хранилище
+		--storage[st_count_item.name] = st_count_item
+	end
+	for i=2,st_count_item.value do -- перебираем все остальные
+		local st = base_single_storage(i) -- создаём их, читаем
+		st_objects[i] = st -- регистрируем
+	end
+	ready = true -- закончили, можно использовать систему
+	-- если нет переменной с ID игры, то добавляем
+	local game_id_key = "GAME_ID_"..storage_guid -- ключ, чтобы с меньшей вероятностью затереть
+	if not value_exist(game_id_key) then
+		this.game_id = math.random(1000000, 9999999)
+		set_value(game_id_key, this.game_id, "u32")
+	else
+		this.game_id = get_value(game_id_key)
+		ASSERT(ready, "[ogse_unist.on_load] cannot load game_id. Check the logic!")
+	end
+	--ASSERT(ready, "ogse_unist.on_init: storage was not succesfully created")
+	ogse_unist.print_storage()
+end
+
+function on_save(--[[packet]]) -- аргумент не используем
+	for i=1,st_count_item.value do
+		st_objects[i]:save()
+	end
+end
+
+-- класс, инкапсулирущий одиночное хранилище
+class "base_single_storage"
+
+function base_single_storage:__init(num) -- аргумент, номер объекта хранилища
+	self.st_num = num
+	self.st_id = "ST_"..storage_guid..num
+	self.st_obj = ogse_base_storage.get_storage(self.st_id)
+	local r_packet = self.st_obj:r_reset() -- это делается только здесь и только один раз
+	self.data_size = 0
+	self.start_pos = r_packet:r_tell()
+	log2("start_pos=%d (%d)", self.start_pos, self.st_obj.zero_pos)
+	
+	self.total_space = 8000 --8192 - self.start_pos - 10 -- отнимаем десятку на всякий случай
+	ASSERT(8192 - self.start_pos > self.total_space, "base_single_storage:__init: netpacket free space is unexpectedly small")
+	self.data = {}
+	while not r_packet:r_eof() do
+		local item = read_item_from_packet(r_packet)
+		self:add_item(item)
+	end
+	self.end_pos = r_packet:r_tell()
+	self:merge_data_to(storage)
+end
+
+function base_single_storage:get_total_space()
+	return self.total_space
+end
+
+function base_single_storage:get_data_size()
+	local sz = 0
+	for _,item in pairs(self.data) do
+		sz = sz + item.size
+	end
+	return sz
+end
+
+function base_single_storage:save()
+	local w_packet = self.st_obj:w_reset() -- это делается только здесь и только один раз
+	for _,item in pairs(self.data) do
+		write_item_to_packet(w_packet, item)
+	end
+end
+
+function base_single_storage:merge_data_to(t)
+	for name,item in pairs(self.data) do
+		t[name] = item
+	end
+end
+
+function base_single_storage:free_space()
+	return self.total_space - self.data_size
+end
+-- одиночное хранилище не создаёт элементы, а только хранит
+-- поэтому для него есть только функции добавления элемента существующего элемента в хранилище
+-- и удаления элемента из хранилища (но не удаления самого элемента)
+function base_single_storage:add_item(item)
+	ASSERT(self.data_size + item.size < self.total_space, 
+		string.format("base_single_storage:add_item: dude, you can't save it here. No space for the element:\nname: %s\ntype: %d\nsize: %s\nin the storage:\nnumber: %dtotal space: %d\nfree space: %d", item.name, item.type, item.size, self.st_num, self.total_space, self:free_space()))
+	item.st_num = self.st_num -- оптимизация для быстрого поиска хранилища по элементу
+	-- добавить элемент в локальную таблицу
+	self.data[item.name] = item
+	-- обновить размер данных
+	self.data_size = self.data_size + item.size
+end
+
+function base_single_storage:remove_item(name)
+	local item = self.data[name]
+	ASSERT(item, string.format("base_single_storage:remove_item: no item with name '%s'", name))
+	-- убираем элемент из локальной таблицы хранилища
+	self.data[name] = nil
+	-- обновить размер данных
+	self.data_size = self.data_size - item.size
+end
+-----------------------------------------------------------------------------------------
+-- для элементов принимается идеология неизменения. Это означает, что значение элемента и его размер
+-- никогда не поменяются и значит должны быть вычислены только один раз
+-- новое значение можно получить только полной заменой элемента
+-- операция get_value всегда даёт копию данных, независимую от содержащейся в элементе
+-- Примечание: для базовых типов (чисел, строк, логических значений) это выполняется 
+-- само собой. Для ссылочных типов (массивов и таблиц) это делается искусственно, методом глубокого клонирования
+class "u8_element"
+function u8_element:__init(name, value)
+	self.type = types.u8
+	self.name = name
+	if value ~= nil then
+		self.value = value
+		self:update_size()
+	end
+	self.r_fun = "r_u8"
+	self.w_fun = "w_u8"
+end
+function u8_element:get_value()
+	return self.value
+end
+function u8_element:data_size()
+	return 1
+end
+function u8_element:get_string()
+	return tostring(self.value)
+end
+function u8_element:read_value(r_packet)
+	self.value = r_packet[self.r_fun](r_packet)
+	self:update_size()
+	return self.value
+end
+function u8_element:write_value(w_packet)
+	w_packet[self.w_fun](w_packet, self.value)
+end
+-- выдаёт полный размер элемента в байтах в нетпакете, включая поле имени и типа
+function u8_element:update_size()
+	self.size = self:data_size() + self.name:len() + 2 -- размер данных + длина имени + 1 байт на завершитель строки имени + 1 байт на тип
+end
+----------
+class "s8_element" (u8_element)
+function s8_element:__init(name, value) super(name, value)
+	self.type = types.s8
+	self.r_fun = "r_s8"
+end
+----------
+class "u16_element" (u8_element)
+function u16_element:__init(name, value) super(name, value)
+	self.type = types.u16
+	self.r_fun = "r_u16"
+	self.w_fun = "w_u16"
+end
+function u16_element:data_size()
+	return 2
+end
+----------
+class "s16_element" (u16_element)
+function s16_element:__init(name, value) super(name, value)
+	self.type = types.s16
+	self.r_fun = "r_s16"
+	self.w_fun = "w_s16"
+end
+----------
+class "u32_element" (u8_element)
+function u32_element:__init(name, value) super(name, value)
+	self.type = types.u32
+	self.r_fun = "r_u32"
+	self.w_fun = "w_u32"
+end
+function u32_element:data_size()
+	return 4
+end
+----------
+class "s32_element" (u32_element)
+function s32_element:__init(name, value) super(name, value)
+	self.type = types.s32
+	self.r_fun = "r_s32"
+	self.w_fun = "w_s32"
+end
+----------
+class "float_element" (s32_element)
+function float_element:__init(name, value) super(name, value)
+	self.type = types.float
+	self.r_fun = "r_float"
+	self.w_fun = "w_float"
+end
+----------
+class "bool_element" (u8_element)
+function bool_element:__init(name, value) super(name, value)
+	self.type = types.bool
+	self.r_fun = "r_bool"
+	self.w_fun = "w_bool"
+end
+----------
+class "string_element" (u8_element)
+function string_element:__init(name, value) super(name, value)
+	self.type = types.string
+	self.r_fun = "r_stringZ"
+	self.w_fun = "w_stringZ"
+end
+function string_element:get_string()
+	return self.value
+end
+function string_element:data_size()
+	return self.value:len() + 1
+end
+----------
+class "general_number" (string_element)
+function general_number:__init(name, value)
+	self.type = types.number	
+	self.name = name
+	if value then
+		self.real_val = value
+		self.value = tostring(value)
+		self:update_size()
+	end
+end
+function general_number:get_value()
+	return self.real_val
+end
+function general_number:read_value(r_packet)
+	self.value = r_packet:r_stringZ()
+	self.real_val = tonumber(self.value)
+	self:update_size()
+	return self.real_val
+end
+function general_number:write_value(data)
+	data:w_stringZ(self.value)
+end
+----------
+class "vector_element" (u8_element)
+function vector_element:__init(name, value)
+	self.name = name
+	if value then
+		self.value = vector():set(value)
+		self:update_size()
+	end
+	self.type = types.vector
+end
+function vector_element:get_value()
+	return vector():set(self.value) -- возвращаем копию
+end
+function vector_element:get_string()
+	return "not implemented"
+end
+function vector_element:read_value(data)
+	self.value = vector()
+	data:r_vec3(self.value)
+	self:update_size()
+	return self.value
+end
+function vector_element:write_value(data)
+	data:w_vec3(self.value)
+end
+function vector_element:data_size()
+	return 12
+end
+----------
+class "time_element" (u8_element)
+function time_element:__init(name, value)
+	self.name = name
+	if value then
+		self.value = game.CTime(value)
+		self:update_size()
+	end
+	self.type = types.time
+end
+function time_element:get_string()
+	return self.value:timeToString(3).." "..self.value:dateToString(0)
+end
+function time_element:read_value(data)
+	--[[self.value = game.CTime()
+	local a1 = data:r_u32()
+	local a2 = data:r_u32()
+	self.value:set_value(a1, a2)]]
+	self.value = utils.r_CTime_ex(data)
+	self:update_size()
+	return self.value
+end
+function time_element:write_value(data)
+	--local a1, a2 = self.value:get_value()
+	--data:w_u32(a1)
+	--data:w_u32(a2)
+	utils.w_CTime_ex(data, self.value)
+end
+function time_element:get_value()
+	return game.CTime(self.value) -- возвращаем копию
+end
+function time_element:data_size()
+	return 8
+end
+----------
+class "array_element" (u8_element)
+function array_element:__init(name, value)
+	self.name = name
+	if value then
+		self.value = {}
+		for _,v in ipairs(value) do
+			table.insert(self.value, create_item("", v))
+		end
+		self:update_size()
+	end
+	self.type = types.array
+end
+function array_element:get_string()
+	local s = ""
+	for i,v in ipairs(self.value) do
+		s = s..i..": ["..v.type.."] "..tostring(v.value)..'\n'
+	end
+	return s
+end
+function array_element:read_value(data)
+	self.value = {}
+	local count = data:r_u16()
+	--log1("array count = "..count)
+	for i=1,count do
+		table.insert(self.value, read_item_from_packet(data))
+	end
+	self:update_size()
+	return self.value
+end
+function array_element:write_value(data)
+	data:w_u16(#self.value)
+	for _,v in ipairs(self.value) do
+		write_item_to_packet(data, v)
+	end
+end
+function array_element:data_size()
+	local sz = 2
+	for i,v in ipairs(self.value) do
+		sz = sz + v.size
+	end
+	return sz
+end
+function array_element:get_value()
+	local t = {}
+	for _,v in ipairs(self.value) do
+		table.insert(t,v.value)
+	end
+	return t
+end
+--[[function array_element:clone_value(src)
+	local dst = {}
+	for _,v in ipairs(src) do
+		table.insert(dst, v)
+	end
+	return dst
+end]]
+----------
+class "table_element" (array_element)
+function table_element:__init(name, value) super(name, value)
+	self.name = name
+	if value then
+		self.value = {}
+		for k,v in pairs(value) do
+			table.insert(self.value, {create_item("", k), create_item("", v)})
+		end
+		self:update_size()
+	end
+	self.type = types.table
+end
+function table_element:get_string()
+	local s = ""
+	for _,v in ipairs(self.value) do
+		s = s.."["..v[1].type.."] "..tostring(v[1].value)..": ["..v[2].type.."] "..tostring(v[2].value)..'\n'
+	end
+	return s
+end
+function table_element:read_value(data)
+	self.value = {}
+	local count = data:r_u16()
+	--log1("array count = "..count)
+	for i=1,count do
+		table.insert(self.value, {read_item_from_packet(data), read_item_from_packet(data)})
+	end
+	self:update_size()
+	return self.value
+end
+function table_element:write_value(data)
+	data:w_u16(#self.value)
+	for _,v in ipairs(self.value) do
+		write_item_to_packet(data, v[1])
+		write_item_to_packet(data, v[2])
+	end
+end
+function table_element:data_size()
+	local sz = 2
+	for _,v in ipairs(self.value) do
+		sz = sz + v[1].size + v[2].size
+	end
+	return sz
+end
+function table_element:get_value()
+	local t = {}
+	for _,v in ipairs(self.value) do
+		t[v[1].value] = v[2].value
+	end
+	return t
+end
+------ объект пользовательского пакета ---------------
+-- представляет собой блок бинарных данных в виде нетпакета с установленной позицией чтения и записи
+-- позиция чтения устанавливается в начало данных, позиция записи в конец, таким образом обозначая
+-- полный размер данных. Данный тип элемента является основой для создания пользовательских систем 
+-- хранения.
+class "chunk_element" (u8_element)
+
+function chunk_element:__init(name, value)
+	self.type = types.chunk
+	self.name = name
+	if value ~= nil then
+		self.value = self:clone_value(value) -- копия нетпакета
+		self:update_size()
+	end
+end
+local function get_row_data(packet)
+	local saved_reading_pos = packet:r_tell()
+	local buf = {}
+	while not packet:r_eof() do
+		table.insert(buf, packet:r_u8())
+	end
+	packet:r_seek(saved_reading_pos)
+	return buf
+end
+function chunk_element:get_value()
+	return self:clone_value(self.value)
+end
+function chunk_element:data_size()
+	return self.value:w_tell() - self.value:r_tell() + 2 -- 2 байта на поле размера
+end
+function chunk_element:get_string()
+	local buf = get_row_data(self.value)
+	local sbuf = {}
+	for _,byte in ipairs(buf) do
+		table.insert(sbuf, string.format("%0x", byte))
+	end
+	return table.concat(sbuf, ' ')
+end
+function chunk_element:read_value(r_packet)
+	local count = r_packet:r_u16()
+	self.value = net_packet()
+	self.value:w_begin(123)
+	self.value:r_seek(self.value:w_tell())
+	for i=1,count do
+		self.value:w_u8(r_packet:r_u8())
+	end
+	self:update_size()
+	return self.value
+end
+function chunk_element:write_value(w_packet)
+	local buf = get_row_data(self.value)
+	w_packet:w_u16(#buf)
+	for _,byte in ipairs(buf) do
+		w_packet:w_u8(byte)
+	end
+end
+function chunk_element:clone_value(source)
+	local new_packet = net_packet()
+	new_packet:w_begin(123)
+	new_packet:r_seek(new_packet:w_tell()) -- в общем-то всегда будет 2, но типа так правильнее
+	local buf = get_row_data(source)
+	for _,byte in ipairs(buf) do
+		new_packet:w_u8(byte)
+	end
+	return new_packet
+end
+-------------------------------------------------------------------------------------------------------
+item_types_registry = {
+	[types.string] = this.string_element,
+	[types.number] = this.general_number,
+	[types.bool]   = this.bool_element,
+	[types.float]  = this.float_element,
+	[types.vector] = this.vector_element,
+	[types.u8]     = this.u8_element,
+	[types.s8]     = this.s8_element,
+	[types.u16]    = this.u16_element,
+	[types.s16]    = this.s16_element,
+	[types.u32]    = this.u32_element,
+	[types.s32]    = this.s32_element,
+	[types.time]   = this.time_element,
+	[types.array]  = this.array_element,
+	[types.table]  = this.table_element,
+	[types.chunk]  = this.chunk_element,
+}
+
+--------------| Публичный интерфейс модуля |--------------------------------------------------------
+function value_exist(name)
+	return (storage[name] ~= nil)
+end
+
+function set_value(name, value, typ)
+	ASSERT(ready, "ogse_unist.set_value: storage is not yet ready")
+	-- сначала в любом случае удаляем старое значение, если было
+	if value_exist(name) then
+		remove_value(name)
+	end
+	-- создаём элемент
+	local item = create_item(name, value, typ)
+	-- ищем первое из локальных хранилищ, где достаточно свободного места для сохранения элемента
+	local st
+	for i=1,st_count_item.value do
+		if st_objects[i]:free_space() >= item.size then
+			st = st_objects[i]
+			break
+		end
+	end
+	-- если не найдено, то добавляем новое хранилище
+	st = st or add_storage() -- если не нашли, то надо создать
+	-- добавляем элемент в хранилище
+	st:add_item(item)
+	-- сохраняем в глобальном хранилище
+	storage[item.name] = item
+end
+function get_value(name, default_value, typ)
+	ASSERT(ready, "ogse_unist.get_value: storage is not yet ready")
+	local item = storage[name]
+	if not item then
+		if default_value ~= nil then -- может быть равно false
+			set_value(name, default_value, typ)
+			return default_value
+		end
+		abort("get_value: neither value '"..name.."' is exist, nor default value is provided")
+	end
+	return item:get_value()
+end
+-- в случае, если не существует, просто вернуть nil
+function get_value_safe(name)
+	ASSERT(ready, "ogse_unist.get_value: storage is not yet ready")
+	local item = storage[name]
+	if item then
+		return item:get_value()
+	end
+	return nil
+end
+
+function remove_value(name)
+	ASSERT(ready, "ogse_unist.remove_value: storage is not yet ready")
+	local item = storage[name]
+	if not item then
+		-- надо подумать, насколько это безобидная ситуация
+		-- пока ставлю просто игнор
+		return
+		-- но возможно стоит поставить вылет
+		-- break(string.format("ogse_unist.remove_value: trying to remove nonexistent value '%s'", name))
+	end
+	-- удалить значение из общего хранилища
+	storage[name] = nil
+	-- удалить из физического хранилища
+	st_objects[item.st_num]:remove_item(name)
+end
+
+function set_or_remove_value(name, value, typ)
+	if value then
+		set_value(name, value, typ)
+	else
+		remove_value(name)
+	end
+end
