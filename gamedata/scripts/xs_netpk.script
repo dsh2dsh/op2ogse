@@ -1,0 +1,2055 @@
+--[[---------------------------------------------------------------------
+--- xs_netpk.script
+--- "Правильная" работа с нет-пакетами. 
+
+---=======================================================================---
+	Интерфейс работы с классами нет-пакетов:
+	0) Что это вообще такое и с чем едят?
+		нет-пакет - это специальная такая фиговина, бинарный буфер, в котором лежит информация, которая описывает тот или иной объект в игре. Например, модель сталкера или монстра,
+		Позиция в пространстве, поворот, текущий режим стрельбы у оружия и т.п. Просто так эта информация не доступна стандартныи средствами из скриптов.
+		Все, что представлено в этом скрипте - специальные классы, которые позволяют организовать ПРОСТОЙ доступ к этим данным и их изменить в случае надобности.
+		Итак...
+	
+	1) сначала необходимо содать объект необходимого класса, передав серверный или клиентский объект:
+		а) local pk = xs_netpk.net_XXXXXX(obj)		-- указываем КОНКРЕТНЫЙ класс, как подобрать, см. ниже
+		б) local pk = xs_netpk.HELPER_FUNCT(obj)	-- указываем функцию-хелпер, которая автоматически подберет нужный класс. См. тоже ниже
+		
+	1.1) Чтобы узнать, все ли прошло хорошо, можно вызвать pk:isOk(), он вернет true, если пакет успешно создан. false - в случае неудачи.
+	
+	1.2) При использовании короткоименных хелперов, появляется еще одна возможность.
+			Даже если пакет не создался правильно, можно это проигнорировать, так как функция возвращает специальный пакет net_dummy,
+			с ним можно производить те же операции, что и с остальными, только просто он ничего не делает. Зачем он нужен? Он полезен при условных обработках пакетов,
+			пример:
+			local pk = xs_netpk.monster(obj)
+			if not pk:isOk() then
+				pk = xs_netpk.stalker(obj)
+			end
+			local data = pk:get()
+			data.health = health
+			data.updhealth = health
+			pk:set(data)
+			Здесь мы НЕ проверяем, правильный ли пакет получился, когда у нас и НЕ монстр и НЕ сталкер. Потому что в результате мы получаем net_dummy
+			и работаем как с обычным пакетом. Меньше кода и проверок. Но злоупотреблять этим свойством не рекомендуется. Используйте лучше isOk() в критичных
+			на ошибки местах. (Код, приведенный в примере, станет понятен ниже)
+			
+	2) читаем данные из пакета:
+		local data = pk:get()				-- в результате получаем таблицу, содержащую ВСЕ свойства объекта
+		
+	3) меняем нужные нам свойства:
+		data.xxx = yyy						-- простое присваивание значения нужному элементу таблицы
+		
+	3.1) если мы не знаем, какие свойства есть у объекта, то используем функцию:
+		local description = pk:dumpDesc()	-- возвращает строку, содержащую читабельное описание пакета. Можно его, например, вывести в лог.
+		
+	4) после изменения, данные записываем в объект:
+		pk:set(data)
+		
+	5) А все :) Работа сделана. Дополнительный профит: такие "пакеты" - это объекты, их можно передавать в разные функции, хранить в таблицах и т.д.
+		Они "помнят", с каким игровым объектом они связаны.
+		
+	6) Существует специальный пакет, какой - читаем ниже и все, надеюсь, станет понятно.
+
+---=======================================================================---
+	Короткоименные хелперы-врапперы для распространенных объектов, чтобы не мучиться с подбором нужных пакетов:
+		сталкеры - xs_netpk.stalker(obj)
+		монстры - xs_netpk.monster(obj) (что характерно - работает со всеми монстрами, даже с разными пакетами, просто возвращает нужный, так что запариваться не надо.)
+		оружие - xs_netpk.weapon(obj) (сама определяет тип оружия и возвращает подходящий пакет)
+		рестриктор - xs_netpk.space_restrictor(obj)
+		левел_ченджер - xs_netpk.level_changer(obj)
+		аномалии - xs_netpk.anomaly(obj) (аномалии как с визуалом типа хваталки, так и обычные)
+		+ будут еще
+		
+---=======================================================================---
+--- Если же нет функции-хелпера, а работать с объектом надо, то узнать, какой класс использовать можно очень просто:
+	1) смотрим секцию объекта
+	2) идем в папку со спавном и открываем ACDC (или качаем его отдельно) скрипт в редакторе
+	3) листаем в конец - там есть сопоставление "секция -> пакет"
+	4) смотрим пакет, меняем префикс с cse_ или se_ на net_
+	Все.
+	----------------------
+	Пример:
+	В АСДС нашли
+		physic_object         => 'cse_alife_object_physic',
+
+	Значит, чтобы получить обертку для работы с пакетом надо сделать так:
+
+		local pk = xs_netpk.net_alife_object_physic(obj)
+		local data = pk:get()   -- прочитали пакет
+		...                		-- тут изменили данные
+		pk:set(data)         	-- записали пакет обратно
+
+---=======================================================================---
+--- Про специальный нет-пакет.
+	Библиотека может работать с абстрактной частью пакета, которая доступна ТОЛЬКО при сохранении объекта. 
+	Поэтому напрямую прочитать и записать такие данные нельзя (методами set и get). Для этого используется специальный нет_пакет net_abstract
+	Хотя принцип работы отличается от работы остальных классов, но все же очень похож. Исключение составляет то, как изменять данные в пакете.
+	Рассмотрю сразу на примере:
+	
+		local obj = alife():create("exo_outfit", pos, lv, gv)
+		local pk = net_abstract(obj)
+		pk:setCallback(function(data)
+			data.direction = vector():set(1,1,1)
+		end)
+		
+	Здесь мы создали объект и захотели изменить абстрактную часть. Мы указали пакету колбек, который будет вызван как только станет доступна абстрактная часть объекта.
+	В колбек передается таблица с параметрами пакета, мы можем смело их менять, в примере мы наклонили объект по всем осям на 1 радиану. Изменения вступят в силу, как
+	только мы выйдем из текущей скриптовой работы и управление вернется движку - он создаст объект и начнет записывать в него параметры.
+	Как получить возможность менять абстрактную часть пакетов?
+	
+	1) этот тип объектов должен иметь класс, который представляет такой тип объектов в игре (можно назвать биндером, а можно никак не называть)
+		(то есть то, что будет вызвано, когда объект появится в игре)
+		Завязка из class_registrator.script:
+		cs_register	(object_factory, "CStalkerOutfit",  "se_item.se_outfit",		"E_STLK",	"equ_stalker_s")
+
+	2) обязательно сделать метод биндера STATE_Write
+		Для примера с броней я сделала так:
+		function se_outfit:STATE_Write(packet)
+			event("se_outfit:STATE_Write_begin"):trigger({packet = packet, id = self.id})
+			cse_alife_item_custom_outfit.STATE_Write (self, packet)
+		end
+
+	3) кинуть событие и передать туда таблицу вида {packet = packet, id = self.id}
+		См. выше:
+			event("se_outfit:STATE_Write_begin"):trigger({packet = packet, id = self.id})
+		PS все можно сделать не используя песочницу xs_sandbox, но как - уже не буду расписывать. Кто знает, сам разберется.
+
+	4) если вдруг объект удалится ДО того, как будет записана его абстракная часть, то необходимо стереть данные, которые мы хотели изменить
+		Для этого необходимо наличие метода on_unregister у класса-биндера, в нем необходимо кинуть аналогичное событие и передать id объекта:
+		function se_outfit:on_unregister()
+			...
+			event("se_outfit:on_unregister"):trigger({id = self.id})
+		end
+	
+	5) прописать в init() этого файла подписчики на эти события (один на запись пакета, второй на его удаление, функции-подписчики обязательно такие)
+		Например:
+		function init()
+			event("se_outfit:STATE_Write_begin"):register(on_se_state_write_begin)
+			event("se_outfit:on_unregister"):register(on_se_unregister)
+		end
+	
+	Выполнение этих действий ОБЯЗАТЕЛЬНО. 
+	Зачем это нужно? Ну, например, можно поменять дирекшн или позишн, так как это read_only свойства объектов.
+	А позишн при спавне смещается так, чтобы объект находился на ИИ сетке.
+	То есть, можем спавнить всякие там лампочки, физические объкты так, чтоб они оказывались повернутыми в пространстве.
+	Так же можно менять те свойства, которые, обычно, только для чтения. Например story_id, или position
+	
+---=======================================================================---
+--- Дополнительно - классы шейпов, комплексные шейпы состоят из пачки простых
+	Шейпы бывают сферические и параллелепипеды. 
+	Сфера задается радиусом(число с запятой) и центром(смещение, вектор), параллелепипед - 4-мя векторами: 
+	три вектора (три ребра: длина, ширина, высота; можно делать, получается, "косые" параллелепипеды) и смещение
+	Пример: 
+		data.shapes:addSphere(10):addSphere(5, vector():set(10,0,0)) 
+	Это пример работы с левелченджером, в свойстве shapes находится complex_shape, добавляем две сферы.
+	
+---=======================================================================---
+	Заметки:				
+	- Версия нетпакетов: ТЧ(оригинал)
+	- Позволяет полностью повторить работу утилиты ACDC, гарантирует правильную структуру пакета.
+	- Легко расширяется, почти что копипастом, данных из скрипта ACDC
+	- has NO derived - означает, что наследников у него нет, финальный класс, но это не значит, что его предки не могу существовать сами по себе
+
+---=======================================================================---
+--- TODO: 
+		~Обязательно проверить все пакеты, которые будут использовать, так как был сделан простой копипаст. 
+			+Проверено оружие - безпатронное (нож), простое(дада, бинокль тут же), с устанавливаемым подстволом
+			+Левелченджеры
+			+Монстры
+			+Сталкеры
+		~Посмотреть АСДС - при чтении у некоторых пакетов есть проверки - сделать
+			+Для ТЧ сделано
+		~Расставить STATE_Write (если необходимо - создать биндеры и зарегистрировать) для необходимых объектов, 
+		чтоб можно было менять абстрактную часть пакетов
+			+ броня
+			
+--- Depends on:
+		xs_sandbox (optionally)
+		xs_helpers
+--]]---------------------------------------------------------------------
+
+-------------------------------------------------------------------------
+--- xStream, 13/01/2012                                               ---
+--- version 1.7                                                       ---
+-------------------------------------------------------------------------
+
+-- private members
+
+-- config - для тех, кто любит все контроллировать самостоятельно
+local disable_net_dummy = false					-- отключить использование net_dummy в хелперах
+local disable_client2server_convert = false		-- отключить проверку на тип объекта и конвертирование в серверную сущность
+
+local convert_obj = function (o) return o end
+if not disable_client2server_convert then
+	convert_obj = xs_helpers.get_server_obj
+end
+
+--
+
+local abstract_to_save = {}
+
+local function on_se_state_write_begin(e)
+	local desc = abstract_to_save[e.id]
+	
+	if not desc then return end
+	
+	local data = desc.pk:__get(e.packet)
+	desc.callback(data)
+	desc.pk:__set(data, e.packet)
+	
+	abstract_to_save[e.id] = nil
+end
+
+local function on_se_unregister(e)
+	if abstract_to_save[e.id] then
+		abstract_to_save[e.id] = nil
+	end
+end
+
+-- public members
+
+function init()
+	-- outfit
+	event("se_outfit:STATE_Write_begin"):register(on_se_state_write_begin)
+	event("se_outfit:on_unregister"):register(on_se_unregister)
+	
+	-- pysic objects
+	event("se_physic:STATE_Write_begin"):register(on_se_state_write_begin)
+	event("se_physic:on_unregister"):register(on_se_unregister)
+	
+	-- turrets
+	event("se_turret_mgun:STATE_Write_begin"):register(on_se_state_write_begin)
+	event("se_turret_mgun:on_unregister"):register(on_se_unregister)
+	
+	-- cars
+	event("se_car:STATE_Write_begin"):register(on_se_state_write_begin)
+	event("se_car:on_unregister"):register(on_se_unregister)
+
+end
+
+-- helper functions --
+
+-- in: any
+-- out: {net_alife_item_weapon | net_alife_item_weapon_magazined | net_alife_item_weapon_magazined_gl | net_alife_item_weapon_shotgun}, {"weapon" | "weapon_magazined" | "weapon_magazined_gl" | "weapon_shotgun"} | net_dummy, nil
+function weapon(obj)
+	local o = convert_obj(obj)
+	if not o then 
+		return net_dummy() 
+	end
+	
+	-- help table with clsids
+	local clsid2net = {
+		-- no ammo
+		[clsid.wpn_knife_s] = "weapon",
+		-- with ammo
+		[clsid.wpn_lr300_s] = "weapon_magazined",
+		[clsid.wpn_binocular_s] = "weapon_magazined",
+		[clsid.wpn_svd_s] = "weapon_magazined",
+		[clsid.wpn_hpsa_s] = "weapon_magazined",
+		[clsid.wpn_pm_s] = "weapon_magazined",
+		[clsid.wpn_rpg7_s] = "weapon_magazined",
+		[clsid.wpn_svu_s] = "weapon_magazined",
+		[clsid.wpn_usp45_s] = "weapon_magazined",
+		[clsid.wpn_val_s] = "weapon_magazined",
+		[clsid.wpn_vintorez_s] = "weapon_magazined",
+		[clsid.wpn_walther_s] = "weapon_magazined",
+		-- with ammo and grenade launcher
+		[clsid.wpn_ak74_s] = "weapon_magazined_w_gl",
+		[clsid.wpn_groza_s] = "weapon_magazined_w_gl",
+		-- shotguns
+		[clsid.wpn_bm16_s] = "weapon_shotgun",
+		[clsid.wpn_rg6_s] = "weapon_shotgun",
+		[clsid.wpn_shotgun_s] = "weapon_shotgun"
+	}
+	
+	local cls = o:clsid()
+	local fn = clsid2net[cls]
+	if not fn then 
+		return net_dummy() 
+	end
+	
+	return this["net_alife_item_"..fn](o), fn
+end
+
+-- in: any
+-- out: net_alife_space_restrictor | net_dummy
+function space_restrictor(obj)
+	local o = convert_obj(obj)
+	if not o then 
+		return net_dummy() 
+	end
+	
+	local cls = o:clsid()
+	if cls ~= clsid.script_restr then --clsid.space_restrictor
+		return net_dummy() 
+	end
+	
+	return net_alife_space_restrictor(o)
+end
+
+-- in: any
+-- out: net_alife_level_changer | net_dummy
+function level_changer(obj)
+	local o = convert_obj(obj)
+	if not o then 
+		return net_dummy() 
+	end
+	
+	local cls = o:clsid()
+	if cls ~= clsid.level_changer then
+		return net_dummy() 
+	end
+	
+	return net_alife_level_changer(o)
+end
+
+-- in: any
+-- out: {net_zone_anom | net_alife_zone_visual}, {"anomaly" | "anomaly_visual"} | net_dummy, nil
+function anomaly(obj)
+	local o = convert_obj(obj)
+	if not o then 
+		return net_dummy() 
+	end
+	
+	local cls = o:clsid()
+	
+	if cls == clsid.zone_bfuzz_s then 
+		return net_alife_zone_visual(o), "anomaly_visual"
+	elseif cls == clsid.zone_mbald_s or cls == clsid.zone_galant_s or cls == clsid.zone_mincer_s then
+		return net_zone_anom(o), "anomaly"
+	end
+	
+	return net_dummy()
+end
+
+-- in: any
+-- out: net_stalker | net_dummy
+function stalker(obj)
+	local o = convert_obj(obj)
+	if not o then 
+		return net_dummy() 
+	end
+	
+	local cls = o:clsid()
+	if cls ~= clsid.script_stalker then
+		return net_dummy() 
+	end
+	
+	return net_stalker(o)
+end
+
+-- in: any
+-- out: {net_monster | net_alife_monster_zombie | net_alife_creature_crow | net_alife_creature_phantom}, {"net_monster" | "net_alife_monster_zombie" | "net_alife_creature_crow" | "net_alife_creature_phantom"} | net_dummy, nil
+function monster(obj)
+	local o = convert_obj(obj)
+	if not o then 
+		return net_dummy() 
+	end
+	
+		-- help table with clsids
+	local clsid2net = {
+		-- crow
+		[clsid.crow] = "net_alife_creature_crow",
+		-- phantom
+		[clsid.phantom] = "net_alife_creature_phantom",
+		-- zombie
+		[clsid.zombie_s] = "net_alife_monster_zombie",	--TODO: check if it is true
+		-- other monsters
+		[clsid.bloodsucker_s] = "net_monster",
+		[clsid.boar_s] = "net_monster",
+		[clsid.dog_s] = "net_monster",
+		[clsid.flesh_s] = "net_monster",
+		[clsid.pseudodog_s] = "net_monster",
+		[clsid.burer_s] = "net_monster",
+		[clsid.cat_s] = "net_monster",
+		[clsid.chimera_s] = "net_monster",
+		[clsid.controller_s] = "net_monster",
+		[clsid.fracture_s] = "net_monster",
+		[clsid.poltergeist_s] = "net_monster",
+		[clsid.gigant_s] = "net_monster",
+		[clsid.snork_s] = "net_monster",
+		[clsid.tushkano_s] = "net_monster",
+		[clsid.psy_dog_s] = "net_monster",
+		[clsid.psy_dog_phantom_s] = "net_monster"
+	}
+	
+	local cls = o:clsid()
+	local fn = clsid2net[cls]
+	if not fn then 
+		return net_dummy() 
+	end
+	
+	return this[fn](o), fn
+
+end
+
+-- end helpers --
+
+-- _global_ constants/flags can be used with packets --
+-- alife_object
+_G.alife_object_flag = {}
+_G.alife_object_flag.UseSwitches		= 1
+_G.alife_object_flag.SwitchOnline		= 2
+_G.alife_object_flag.SwitchOffline		= 4
+_G.alife_object_flag.Interactive		= 8
+_G.alife_object_flag.VisibleForAI		= 16
+_G.alife_object_flag.UsefulForAI		= 32
+_G.alife_object_flag.OfflineNoMove		= 64
+_G.alife_object_flag.UsedAI_Locations	= 128
+_G.alife_object_flag.UseGroupBehaviour	= 256
+_G.alife_object_flag.CanSave			= 512
+_G.alife_object_flag.VisibleForMap		= 1024
+_G.alife_object_flag.UseSmartTerrains	= 2048
+_G.alife_object_flag.CheckForSeparator	= 4096
+_G.alife_object_flag.CorpseRemoval		= 8192
+--visual
+_G.visual_flag = {}
+_G.visual_flag.Obstacle					= 1
+--weapon
+_G.weapon_addons = {}
+_G.weapon_addons.silencer				= 1
+_G.weapon_addons.launcher				= 2
+_G.weapon_addons.scope					= 4
+--shape
+_G.shape_type = {}
+_G.shape_type.sphere 					= 0
+_G.shape_type.box 						= 1
+--hanging lamp
+_G.hanging_lamp = {}
+_G.hanging_lamp.Physic					= 1
+_G.hanging_lamp.CastShadow				= 2
+_G.hanging_lamp.R1						= 4
+_G.hanging_lamp.R2						= 8
+_G.hanging_lamp.TypeSpot				= 16
+_G.hanging_lamp.PointAmbient			= 32
+--trader 
+_G.trader_flags = {}
+_G.trader_flags.InfiniteAmmo			= 1
+_G.trader_flags.Dummy					= 0
+--restrictor
+_G.restrictor_flags = {}
+_G.restrictor_flags.DefaultRestrictorTypeNone	= 0
+_G.restrictor_flags.DefaultRestrictorTypeOut	= 1
+_G.restrictor_flags.DefaultRestrictorTypeIn		= 2
+_G.restrictor_flags.RestrictorTypeNone			= 3
+_G.restrictor_flags.RestrictorTypeIn			= 4
+_G.restrictor_flags.RestrictorTypeOut			= 5
+--torch
+_G.torch_flags = {}
+_G.torch_flags.Active							= 1
+_G.torch_flags.NightVisionActive				= 2
+_G.torch_flags.Unknown							= 4
+-- end constants --
+
+--shape type classes for use in scripts
+class "shape"
+function shape:__init(sh_type, ...)
+	if not sh_type or sh_type==shape_type.sphere then
+		self:setSphere(...)
+	else
+		self:setBox(...)
+	end
+end
+function shape:setSphere(r, offset)
+	self.offset = offset or vector()
+	self.r = r or 1
+	self.type = shape_type.sphere	
+end
+function shape:setBox(box_matrix)
+	self.box_matrix = box_matrix or matrix()
+	self.type = shape_type.box
+end
+function shape:isSphere()
+	return self.type == shape_type.sphere
+end
+function shape:isBox()
+	return self.type == shape_type.box
+end
+
+class "complex_shape"
+function complex_shape:__init()
+	self.shapes = {}
+end
+function complex_shape:add(shp)
+	table.insert(self.shapes, shp)
+	return self
+end
+function complex_shape:addBox(box_matrix)
+	table.insert(self.shapes, shape(shape_type.box, box_matrix))
+	return self
+end
+function complex_shape:addSphere(r, offset)
+	table.insert(self.shapes, shape(shape_type.sphere, r, offset))
+	return self
+end
+function complex_shape:remove(n)
+	table.remove(self.shapes, n)
+end
+function complex_shape:count()
+	return #self.shapes
+end
+function complex_shape:get(n)
+	return self.shapes[n]
+end
+--- end shape classes ---
+
+---============================= main section with classes ===============---
+-- datatypes. look ACDC's data_packet.pm for them --
+--char/byte
+function _r_u8(pk) return pk:r_u8() end
+function _w_u8(pk, val) pk:w_u8(val) end
+function _r_h8(pk) return pk:r_u8() end
+function _w_h8(pk, val) pk:w_u8(val) end
+function _r_q8(pk) return pk:r_u8() end
+function _w_q8(pk, val) pk:w_u8(val) end
+--int
+function _r_u16(pk) return pk:r_u16() end
+function _w_u16(pk, val) pk:w_u16(val) end
+function _r_h16(pk) return pk:r_u16() end
+function _w_h16(pk, val) pk:w_u16(val) end
+--int32
+function _r_s32(pk) return pk:r_s32() end
+function _w_s32(pk, val) pk:w_s32(val) end
+function _r_u32(pk) return pk:r_s32() end
+function _w_u32(pk, val) pk:w_s32(val) end
+function _r_h32(pk) return pk:r_s32() end
+function _w_h32(pk, val) pk:w_s32(val) end
+--float
+function _r_f32(pk) return pk:r_float() end
+function _w_f32(pk, val) pk:w_float(val) end
+--string
+function _r_sz(pk) return pk:r_stringZ() end
+function _w_sz(pk, val) pk:w_stringZ(val) end
+--vector
+function _r_f32v3(pk) return pk:r_vec3() end
+function _w_f32v3(pk, val) pk:w_vec3(val) end
+-- packed binary string - look perl's or php's pack function format
+function _r_q8v(pk, n) 
+	local val={}
+	for i=1,n do
+		table.insert( val, pk:r_u8() )
+	end
+	return val
+end
+function _w_q8v(pk, val) 
+	for _,v in ipairs(val) do
+		pk:w_u8(v)
+	end
+end
+function _r_l32u16v(packet)
+	local v={}
+	local len=packet:r_s32()
+	for i=1,len do
+		table.insert(v,packet:r_u16())
+	end
+	return v
+end
+function _w_l32u16v(pk,val)
+	pk:w_s32(#val)
+	for _,v in ipairs(val) do
+		pk:w_u16(v)
+	end
+end
+function _r_l32u8v(packet)
+	local v={}
+	local len=packet:r_s32()
+	for i=1,len do
+		table.insert(v,packet:r_u8())
+	end
+	return v
+end
+function _w_l32u8v(pk,val)
+	pk:w_s32(#val)
+	for _,v in ipairs(val) do
+		pk:w_u8(v)
+	end
+end
+function _r_l8u16v(packet)
+	local v={}
+	local len=packet:r_u8()
+	for i=1,len do
+		table.insert(v,packet:r_u16())
+	end
+	return v
+end
+function _w_l8u16v(pk,val)
+	pk:w_u8(#val)
+	for _,v in ipairs(val) do
+		pk:w_u16(v)
+	end
+end
+function _r_l8u8v(packet)
+	local v={}
+	local len=packet:r_u8()
+	for i=1,len do
+		table.insert(v,packet:r_u8())
+	end
+	return v
+end
+function _w_l8u8v(pk,val)
+	pk:w_u8(#val)
+	for _,v in ipairs(val) do
+		pk:w_u8(v)
+	end
+end
+function _r_l16u8v(packet)
+	local v={}
+	local len=packet:r_u16()
+	for i=1,len do
+		table.insert(v,packet:r_u8())
+	end
+	return v
+end
+function _w_l16u8v(pk,val)
+	pk:w_u16(#val)
+	for _,v in ipairs(val) do
+		pk:w_u8(v)
+	end
+end
+--custom data
+function _r_cd(pk)
+	return xs_helpers.custom_data(pk:r_stringZ())
+end
+function _w_cd(pk, val)
+	pk:w_stringZ(val:getString())
+end
+--skeleton
+function _r_skeleton(pk)
+	local ret = {}
+	
+	ret.bones_mask = {}
+	for k = 1,4 do
+		table.insert(ret.bones_mask, pk:r_u16())
+	end
+	
+	ret.root_bone = pk:r_u16()	
+	ret.ph_angular_velosity = pk:r_vec3()
+	ret.ph_linear_velosity = pk:r_vec3()
+	
+	ret.bones = {}
+	local bones_count, bone = pk:r_u16()
+	for k = 1, bones_count do
+		bone = {}
+		bone.ph_position = _r_q8v(pk,3)
+		bone.ph_rotation = _r_q8v(pk,4)
+		bone.enabled = pk:r_u8()
+		
+		table.insert(ret.bones, bone)
+	end
+	
+	return ret
+end
+function _w_skeleton(pk, val)
+
+	for k = 1,4 do
+		pk:w_u16(val.bones_mask[k])
+	end
+	
+	pk:w_u16(val.root_bone)	
+	pk:w_vec3(val.ph_angular_velosity)
+	pk:w_vec3(val.ph_linear_velosity)
+	pk:w_u16(#val.bones)
+	
+	for _,bone in ipairs(val.bones) do
+		_w_q8v(pk,bone.ph_position)
+		_w_q8v(pk,bone.ph_rotation)
+		pk:w_u8(bone.enabled)
+	end
+	
+end
+--shapes
+function _r_shape(pk)
+	local shp = complex_shape()
+	local shapes_count = pk:r_u8()
+	for k = 1, shapes_count do
+		local sh_type = pk:r_u8()
+		if sh_type == shape_type.sphere then
+			local offset, r = pk:r_vec3(), pk:r_float()
+			shp:add( shape(sh_type, r, offset) )
+		else
+			local m = matrix()
+			pk:r_matrix(m)
+			shp:add( shape(sh_type, m) )
+		end
+	end
+	return shp
+end
+function _w_shape(pk, val)
+	local shapes_count = val:count()
+	pk:w_u8(shapes_count)
+	for k = 1, shapes_count do
+		local shp = val:get(k)
+		if shp:isSphere() then
+			pk:w_u8(shape_type.sphere)
+			pk:w_vec3(shp.offset)
+			pk:w_float(shp.r)
+		else
+			pk:w_u8(shape_type.box)
+			pk:w_matrix(shp.box_matrix)
+		end
+	end
+end
+
+class "tail_data"
+
+function tail_data:__init()
+	self.pk = false
+end
+
+function tail_data:peekFrom(orig_packet)
+	self.pk = net_packet()
+	
+	while not orig_packet:r_eof() do
+		self.pk:w_u8(orig_packet:r_u8())
+	end
+	
+	return self
+end
+
+function tail_data:peekPartFrom(orig_packet, target_pos)
+	self.pk = net_packet()
+	
+	while orig_packet:r_tell() < target_pos do
+		self.pk:w_u8(orig_packet:r_u8())
+	end
+
+	return self
+end
+
+function tail_data:pushTo(orig_packet)
+	if not self.pk then
+		return
+	end
+	
+	self.pk:r_seek(0)
+	
+	while not self.pk:r_eof() do
+		orig_packet:w_u8(self.pk:r_u8())
+	end
+	
+	return self
+end
+
+-- end datatypes --
+
+--========================== base class ========================--
+
+-- constants for disabling read/write of state/update parts of subpacket.
+local skip_type = {
+	state = 1,
+	update = 2
+}
+
+class "net_base"
+
+function net_base:__init(obj, skip)
+	self.obj = convert_obj(obj)
+	self.skip = skip or 0
+end
+
+function net_base:_read_bases(ret,stpk,updpk)
+	for _,sub_packet in ipairs(self.bases) do
+		sub_packet:_read(ret,stpk,updpk)
+	end
+end
+function net_base:_read_props(ret,stpk,updpk)
+	for _,prop in ipairs(self.props) do
+		ret[prop.name] = this["_r_"..prop.type](stpk, prop.len)
+	end
+end
+function net_base:_read_updprops(ret,stpk,updpk)
+	for _,prop in ipairs(self.updprops) do
+		ret["upd"..prop.name] = this["_r_"..prop.type](updpk, prop.len)
+	end
+end
+function net_base:_read(ret,stpk,updpk)
+	self:_read_bases(ret,stpk,updpk)
+	if self.skip~=skip_type.state then
+		self:_read_props(ret,stpk,updpk)
+	end
+	if self.skip~=skip_type.update then
+		self:_read_updprops(ret,stpk,updpk)
+	end
+end
+
+function net_base:_write_bases(data,stpk,updpk)
+	for _,sub_packet in ipairs(self.bases) do
+		sub_packet:_write(data,stpk,updpk)
+	end
+end
+function net_base:_write_props(data,stpk,updpk)
+	for _,prop in ipairs(self.props) do
+		this["_w_"..prop.type](stpk, data[prop.name] or prop.default or 0)
+	end
+end
+function net_base:_write_updprops(data,stpk,updpk)
+	for _,prop in ipairs(self.updprops) do
+		this["_w_"..prop.type](updpk, data["upd"..prop.name] or prop.default or 0)
+	end
+end
+function net_base:_write(data,stpk,updpk)
+	self:_write_bases(data,stpk,updpk)
+	if self.skip~=skip_type.state then
+		self:_write_props(data,stpk,updpk)
+	end
+	if self.skip~=skip_type.update then
+		self:_write_updprops(data,stpk,updpk)
+	end
+end
+
+function net_base:get()
+	ASSERT(self.obj, "xs_netpk.net_base:get: self.obj is a nil reference")
+	local stpk = net_packet()
+	local updpk = net_packet()
+	self.obj:STATE_Write(stpk)
+	self.obj:UPDATE_Write(updpk)
+	stpk:r_seek(0)
+	updpk:r_seek(0)
+	
+	local t = {}
+	self:_read(t, stpk, updpk)
+	
+	t.__tail = tail_data():peekFrom(stpk)
+	t.__updtail = tail_data():peekFrom(updpk)
+	
+	return t
+end
+
+function net_base:set(data)
+	if not self.obj then return end
+	
+	local stpk = net_packet()
+	local updpk = net_packet()
+	self:_write(data,stpk,updpk)
+	
+	data.__tail:pushTo(stpk)
+	data.__updtail:pushTo(updpk)
+
+	local size=stpk:w_tell()
+	local size1=updpk:w_tell()
+	self.obj:STATE_Read(stpk,size)
+	self.obj:UPDATE_Read(updpk)
+
+end
+
+function net_base:__dump()
+	local str = ""
+	for _,sub_packet in ipairs(self.bases) do
+		str = str .. sub_packet:__dump()
+	end
+	str = str .. "==== "..self.name.." part ====\n"
+	for _,prop in ipairs(self.props) do
+		str = str .. "     " .. prop.name .. " => " .. prop.type .. "\n"
+	end
+	for _,prop in ipairs(self.updprops) do
+		str = str .. "     upd" .. prop.name .. " => " .. prop.type .. "\n"
+	end
+	return str
+end
+
+function net_base:dumpDesc()
+	return ">>>> dump of "..self.name.." desctiption >>>>\n" .. self:__dump() .. ">>>> end dump >>>>\n"
+end
+
+function net_base:isOk() return self.obj~=nil end
+--===================== end base class ======================--
+
+--=================dummy class, used in helpers==============--
+net_dummy = nil
+
+if disable_net_dummy then
+	net_dummy = function () end
+else
+	class "net_dummy"
+	function net_dummy:__init(obj) end
+	function net_dummy:get() return {} end
+	function net_dummy:set(data) end
+	function net_dummy:isOk() return false end
+	function net_dummy:dumpDesc()
+		return ">>>dump of net_dummy desctiption>>>\n>>>> end dump >>>>\n"
+	end
+end
+--=====================end dummy class=======================--
+
+--==========specific case - abstract part of packet==========--
+-- 		works ONLY when used as sandbox's module!
+--		also works only for entities with binders
+-- 		can not be used directly! Only via callbacks
+
+class "net_abstract" (net_base)
+
+function  net_abstract:__init(obj)
+	super(obj)
+
+	self.name = "cse_abstract"	--for packet dumping
+	
+	self.bases = {}
+	self.props = {
+		{ name = 'section_name',	type = 'sz',	default = '' },
+		{ name = 'name',			type = 'sz',	default = '' },
+		{ name = 's_gameid',		type = 'h8',	default = 0 },
+		{ name = 's_rp',			type = 'h8',	default = 254 },
+		{ name = 'position',		type = 'f32v3',	default = vector() },
+		{ name = 'direction',		type = 'f32v3',	default = vector() },
+		{ name = 'respawn_time',	type = 'h16',	default = 0 },
+		{ name = 'unknown_id',		type = 'h16',	default = -1 },
+		{ name = 'parent_id',		type = 'h16',	default = -1 },
+		{ name = 'phantom_id',		type = 'h16',	default = -1 },
+		{ name = 's_flags',			type = 'h16',	default = 33 },
+		{ name = 'version',			type = 'h16',	default = 118 },
+		{ name = 'script_version',	type = 'u16',	default = 6 },
+		{ name = 'unused_pad',		type = 'l16u8v',default = {} },
+		{ name = 'spawn_id',		type = 'u16',	default = 0 },
+		{ name = 'extended_size',	type = 'u16',	default = 0 }
+	}
+	self.updprops = {}
+end
+
+function net_abstract:setCallback(callback)
+	if type(callback)~='function' then return end
+	abstract_to_save[self.obj.id] = { pk = self, callback = callback }
+end
+
+function net_abstract:__get(pk)
+	local rpos = pk:w_tell()
+	pk:r_seek(0)
+	local t = {}
+	t.dummy16 = pk:r_u16()
+	self:_read_props(t, pk)
+	t.__tail = tail_data():peekPartFrom(pk, rpos)
+	return t
+end
+
+function net_abstract:__set(data, pk)
+	pk:w_begin(data.dummy16)
+	self:_write_props(data, pk)
+	data.__tail:pushTo(pk)
+end
+
+function net_abstract:set(data) end
+function net_abstract:get() end
+
+-- end of specific case
+
+
+---------------------------------------------------------------------------------
+-- classes below are netpacket's "sections" OOP-style "mirror"                 --
+-- use: just create one of them, it will init all "secions" on wich it depends --
+---------------------------------------------------------------------------------
+
+-- has derived
+class "net_shape" (net_base)
+
+function  net_shape:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_shape"	--for packet dumping
+	
+	self.bases = {}
+	self.props = {
+		{ name = 'shapes', type = 'shape', default = complex_shape() }
+	}
+	self.updprops = {}
+end
+
+-- has derived
+class "net_visual" (net_base)
+
+function  net_visual:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_visual"	--for packet dumping
+	
+	self.bases = { }
+	self.props = {
+		{ name = 'visual_name',		type = 'sz',	default = '' },
+		{ name = 'visual_flags',	type = 'u8',	default = 0 }
+	}
+	self.updprops = {}
+end
+
+-- has derived
+class "net_motion" (net_base)
+function  net_motion:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_motion"	--for packet dumping
+	
+	self.bases = { }
+	self.props = {
+		{ name = 'motion_name',		type = 'sz',	default = '' }
+	}
+	self.updprops = {}
+end
+
+-- has derived
+class "net_ph_skeleton" (net_base)
+function net_ph_skeleton:__init(obj, skip)
+	super(obj, skip)
+	
+	self.name = "cse_ph_skeleton"	--for packet dumping
+	
+	self.bases = { }
+	self.props = {
+		{ name = 'skeleton_name',	type = 'sz',	default = '$editor' },
+		{ name = 'skeleton_flags',	type = 'u8',	default = 0 },
+		{ name = 'source_id',		type = 'h16',	default = -1 },
+		{ name = 'skeleton',		type = 'skeleton' }
+	}
+	self.updprops = {}
+end
+function net_ph_skeleton:_read_props(ret,stpk,updpk)
+	for _,prop in ipairs(self.props) do
+		if prop.name~="skeleton" or bit_and(ret.skeleton_flags, 4)==4 then --can use ret.skeleton_flags because it is already read
+			ret[prop.name] = this["_r_"..prop.type](stpk, prop.len)
+		end
+	end
+end
+function net_ph_skeleton:_write_props(data,stpk,updpk)
+	for _,prop in ipairs(self.props) do
+		if prop.name~="skeleton" or bit_and(data.skeleton_flags, 4)==4 then
+			this["_w_"..prop.type](stpk, data[prop.name] or prop.default or 0)
+		end
+	end
+end
+
+-- has derived
+class "net_alife_object" (net_base)
+
+function  net_alife_object:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_object"	--for packet dumping
+	
+	self.bases = {}
+	self.props = {
+		{ name = 'game_vertex_id',	type = 'u16',	default = -1 },	
+		{ name = 'distance',		type = 'f32',	default = 0.0 },	
+		{ name = 'direct_control',	type = 'u32',	default = 1 },		
+		{ name = 'level_vertex_id',	type = 'u32',	default = -1 },
+		{ name = 'object_flags',	type = 'h32',	default = 0 },		
+		{ name = 'custom_data',		type = 'cd',	default = xs_helpers.custom_data() },	
+		{ name = 'story_id',		type = 's32',	default = -1 },	
+		{ name = 'spawn_story_id',	type = 's32',	default = -1 }
+	}
+	self.updprops = {}
+end
+function net_alife_object:_write(data,stpk,updpk)
+	if self.obj then
+		local cls = self.obj:clsid()
+		if cls==clsid.inventory_box then
+			data.object_flags = -197
+		end
+	end
+	if self.skip~=skip_type.state then
+		self:_write_props(data,stpk,updpk)
+	end
+end
+
+-- has derived
+class "net_alife_dynamic_object" (net_base)
+
+function  net_alife_dynamic_object:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_dynamic_object"	--for packet dumping
+	
+	self.bases = { net_alife_object() }
+	self.props = {}
+	self.updprops = {}
+end
+
+-- has derived
+class "net_alife_dynamic_object_visual" (net_base)
+
+function  net_alife_dynamic_object_visual:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_dynamic_object_visual"	--for packet dumping
+	
+	--forward obj only becase of hook for 'inventory box'
+	self.bases = { net_alife_object(obj, skip_type.update), net_visual(nil, skip_type.update) }
+	self.props = {}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_object_climable" (net_base)
+
+function  net_alife_object_climable:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_object_climable"	--for packet dumping
+	
+	self.bases = { net_alife_dynamic_object(nil, skip_type.update), net_shape(nil, skip_type.update) }
+	self.props = {}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_object_physic" (net_base)
+
+function  net_alife_object_physic:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_object_physic"	--for packet dumping
+	
+	self.bases = { net_alife_dynamic_object_visual(nil, skip_type.update), net_ph_skeleton(nil, skip_type.update) }
+	self.props = {
+		{ name = 'physic_type',	type = 'h32',	default = 0 },
+		{ name = 'mass',		type = 'f32',	default = 0.0 },
+		{ name = 'fixed_bones',	type = 'sz',	default = '' }
+	}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_object_hanging_lamp" (net_base)
+
+function  net_alife_object_hanging_lamp:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_object_hanging_lamp"	--for packet dumping
+	
+	self.bases = { net_alife_dynamic_object_visual(nil, skip_type.update), net_ph_skeleton(nil, skip_type.update) }
+	self.props = {
+		{ name = 'main_color',			type = 'h32',	default = 16777215 },
+		{ name = 'main_brightness',		type = 'f32',	default = 0.0 },	
+		{ name = 'main_color_animator',	type = 'sz',	default = '' },	
+		{ name = 'main_range',			type = 'f32',	default = 0.0 },	
+		{ name = 'light_flags',			type = 'h16',	default = 0 },		
+		{ name = 'startup_animation',	type = 'sz',	default = '$editor' },	
+		{ name = 'lamp_fixed_bones',	type = 'sz',	default = '' },	
+		{ name = 'health',				type = 'f32',	default = 1.0 },	
+		{ name = 'main_virtual_size',	type = 'f32',	default = 0.0 },	
+		{ name = 'ambient_radius',		type = 'f32',	default = 0.0 },	
+		{ name = 'ambient_power',		type = 'f32',	default = 0.0 },	
+		{ name = 'ambient_texture',		type = 'sz',	default = '' },	
+		{ name = 'main_texture',		type = 'sz',	default = '' },	
+		{ name = 'main_bone',			type = 'sz',	default = '' },	
+		{ name = 'main_cone_angle',		type = 'f32',	default = 0.0 },	
+		{ name = 'glow_texture',		type = 'sz',	default = '' },	
+		{ name = 'glow_radius',			type = 'f32',	default = 0.0 },	
+		{ name = 'ambient_bone',		type = 'sz',	default = '' }
+	}
+	self.updprops = {}
+	
+end
+
+-- has NO derived
+class "net_alife_object_projector" (net_base)
+
+function  net_alife_object_projector:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_object_projector"	--for packet dumping
+	
+	self.bases = { net_alife_dynamic_object_visual(nil, skip_type.update) }
+	self.props = {}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_inventory_box" (net_base)
+
+function  net_alife_inventory_box:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_inventory_box"	--for packet dumping
+	
+	--forward obj only becase of hook for 'inventory box'
+	self.bases = { net_alife_dynamic_object_visual(obj, skip_type.update) }
+	self.props = {}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_object_breakable" (net_base)
+
+function  net_alife_object_breakable:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_object_breakable"	--for packet dumping
+	
+	self.bases = { net_alife_dynamic_object_visual(nil, skip_type.update) }
+	self.props = {
+		{ name = 'health', type = 'f32', default = 1.0 }
+	}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_mounted_weapon" (net_base)
+
+function  net_alife_mounted_weapon:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_mounted_weapon"	--for packet dumping
+	
+	self.bases = { net_alife_dynamic_object_visual() }
+	self.props = {}
+	self.updprops = {
+		{ name = 'working',					type = 'u8' },
+		{ name = 'dest_enemy_direction',	type = 'f32v3' }
+	}
+end
+function net_alife_mounted_weapon:_read(ret,stpk,updpk)
+	self:_read_bases(ret,stpk,updpk)
+	
+	local sect = self.obj:section_name()
+	if sect~='stationary_mgun' then
+		return
+	end
+	
+	self:_read_updprops(ret,stpk,updpk)
+end
+function net_alife_mounted_weapon:_write(data,stpk,updpk)
+	self:_write_bases(data,stpk,updpk)
+	
+	local sect = self.obj:section_name()
+	if sect~='stationary_mgun' then
+		return
+	end
+	
+	if self.skip~=skip_type.update then
+		self:_write_updprops(data,stpk,updpk)
+	end
+end
+
+-- has NO derived
+class "net_alife_ph_skeleton_object" (net_base)
+
+function  net_alife_ph_skeleton_object:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_ph_skeleton_object"	--for packet dumping
+	
+	self.bases = { net_alife_dynamic_object_visual(nil, skip_type.update), net_ph_skeleton() }
+	self.props = {}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_car" (net_base)
+
+function  net_alife_car:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_car"	--for packet dumping
+	
+	self.bases = { net_alife_dynamic_object_visual(nil, skip_type.update), net_ph_skeleton() }
+	self.props = {
+		{ name = 'health', type = 'f32', default = 1.0 }
+	}
+	self.updprops = {}
+end
+
+-- has derived, but spawnable
+class "net_alife_helicopter" (net_base)
+
+function  net_alife_helicopter:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_helicopter"	--for packet dumping
+	
+	self.bases = { net_alife_dynamic_object_visual(nil, skip_type.update), net_motion(nil, skip_type.update), net_ph_skeleton() }
+	self.props = {
+		{ name = 'startup_animation',	type = 'sz', default = '$editor' },
+		{ name = 'engine_sound',		type = 'sz', default = '' }
+	}
+	self.updprops = {}
+end
+-- hook for painless spawn
+local heli_defaults_hook = {
+	startup_animation = 'idle',
+	engine_sound = '$no_sound'
+}
+function net_alife_helicopter:_read_props(ret,stpk,updpk)
+	for _,prop in ipairs(self.props) do
+		ret[prop.name] = this["_r_"..prop.type](stpk, prop.len)
+		if ret[prop.name]==prop.default then
+			ret[prop.name] = heli_defaults_hook[prop.name] or ''
+		end
+	end
+end
+function net_alife_helicopter:_write_props(data,stpk,updpk)
+	for _,prop in ipairs(self.props) do
+		if data[prop.name]==prop.default then
+			data[prop.name] = heli_defaults_hook[prop.name] or ''
+		end
+		this["_w_"..prop.type](stpk, data[prop.name] or prop.default or 0)
+	end
+end
+
+-- has NO derived
+class "net_turret_mgun" (net_base)
+
+function  net_turret_mgun:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "se_turret_mgun"	--for packet dumping
+	
+	self.bases = { net_alife_helicopter(nil, skip_type.update) }
+	self.props = {
+		{ name = 'health', type = 'f32', default = 1.0 }
+	}
+	self.updprops = {}
+end
+
+-- has derived
+class "net_alife_creature_abstract" (net_base)
+
+function  net_alife_creature_abstract:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_creature_abstract"	--for packet dumping
+	
+	self.bases = { net_alife_dynamic_object_visual(nil, skip_type.update) }
+	self.props = {
+		{ name = 'g_team',						type = 'u8',		default = -1 },	
+		{ name = 'g_squad',						type = 'u8',		default = -1 },	
+		{ name = 'g_group',						type = 'u8',		default = -1 },	
+		{ name = 'health',						type = 'f32',		default = 1.0 },	
+		{ name = 'dynamic_out_restrictions',	type = 'l32u16v', 	default = {} },	
+		{ name = 'dynamic_in_restrictions',		type = 'l32u16v', 	default = {} },	
+		{ name = 'killer_id',					type = 'h16', 		default = -1 },	
+		{ name = 'game_death_time',				type = 'q8v', 		default = {0,0,0,0,0,0,0,0}, len = 8 }
+	}
+	self.updprops = {
+		{ name = 'health',						type = 'f32' },	
+		{ name = 'timestamp',					type = 'h32' },	
+		{ name = 'creature_flags',				type = 'h8' },		
+		{ name = 'position',					type = 'f32v3' },	
+		{ name = 'o_model',						type = 'f32' },	
+		{ name = 'o_torso',						type = 'f32v3' },	
+		{ name = 'g_team',						type = 'u8' },		
+		{ name = 'g_squad',						type = 'u8' },		
+		{ name = 'g_group',						type = 'u8' }	
+	}
+end
+
+-- has derived
+class "net_alife_monster_abstract" (net_base)
+
+function  net_alife_monster_abstract:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_monster_abstract"	--for packet dumping
+	
+	self.bases = { net_alife_creature_abstract() }
+	self.props = {
+		{ name = 'base_out_restrictors',		type = 'sz',	default = '' },
+		{ name = 'base_in_restrictors',			type = 'sz',	default = '' },
+		{ name = 'smart_terrain_id',			type = 'u16',	default = 65535 },
+		{ name = 'smart_terrain_task_active',	type = 'u8',	default = 0 }
+	}
+	self.updprops = {
+		{ name = 'next_game_vertex_id',	type = 'u16' },	
+		{ name = 'prev_game_vertex_id',	type = 'u16' },	
+		{ name = 'distance_from_point',	type = 'f32' },	
+		{ name = 'distance_to_point',	type = 'f32' }
+	}
+end
+
+-- has derived
+class "net_alife_trader_abstract" (net_base)
+
+function  net_alife_trader_abstract:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_trader_abstract"	--for packet dumping
+	
+	self.bases = {}
+	self.props = {
+		{ name = 'money',				type = 'u32',	default = 0 },		
+		{ name = 'specific_character',	type = 'sz',	default = '' },	
+		{ name = 'trader_flags',		type = 'h32',	default = 1 },	
+		{ name = 'character_profile',	type = 'sz',	default = '' },	
+		{ name = 'community_index',		type = 'h32',	default = -1 },
+		{ name = 'rank',				type = 'h32',	default = -2147483647 },
+		{ name = 'reputation',			type = 'h32',	default = -2147483647 },
+		{ name = 'character_name',		type = 'sz',	default = '' }
+	}
+	self.updprops = {}
+end
+
+-- has derived
+class "net_alife_human_abstract" (net_base)
+
+function  net_alife_human_abstract:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_human_abstract"	--for packet dumping
+	
+	self.bases = { net_alife_trader_abstract(nil, skip_type.update), net_alife_monster_abstract() }
+	self.props = {
+		{ name = 'predicate5',	type = 'l32u8v', default = {} },
+		{ name = 'predicate4',	type = 'l32u8v', default = {} }
+	}
+	self.updprops = {}
+end
+
+-- has derived
+class "net_alife_human_stalker" (net_base)
+
+function  net_alife_human_stalker:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_human_stalker"	--for packet dumping
+	
+	self.bases = { net_alife_human_abstract(), net_ph_skeleton(nil, skip_type.update) }
+	self.props = {}
+	self.updprops = {
+		{ name = 'start_dialog', type = 'sz', default = '' }
+	}
+end
+
+-- has NO derived
+class "net_stalker" (net_base)
+
+function  net_stalker:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "se_stalker"	--for packet dumping
+	
+	self.bases = { net_alife_human_stalker() }
+	self.props = {
+		{ name = 'job_online',				type = 'u8',	default = 2 },
+		{ name = 'job_online_condlist',		type = 'sz',	default = '' },
+		{ name = 'was_in_smart_terrain',	type = 'u8',	default = 0 },
+		{ name = 'death_dropped',			type = 'u8',	default = 0 },
+	}
+	self.updprops = {}
+end
+function net_stalker:_read_props(ret,stpk,updpk)
+	for _,prop in ipairs(self.props) do
+		if prop.name~="job_online_condlist" or ret.job_online==3 then --can use ret.job_online because it is already read
+			ret[prop.name] = this["_r_"..prop.type](stpk, prop.len)
+		end
+	end
+end
+function net_stalker:_write_props(data,stpk,updpk)
+	for _,prop in ipairs(self.props) do
+		if prop.name~="job_online_condlist" or data.job_online==3 then
+			this["_w_"..prop.type](stpk, data[prop.name] or prop.default or 0)
+		end
+	end
+end
+
+-- has derived
+class "net_alife_trader" (net_base)
+
+function  net_alife_trader:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_trader"	--for packet dumping
+	
+	self.bases = { net_alife_dynamic_object_visual(nil, skip_type.update), net_alife_trader_abstract(nil, skip_type.update) }
+	self.props = {}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_creature_actor" (net_base)
+
+function  net_alife_creature_actor:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_creature_actor"	--for packet dumping
+	
+	self.bases = { net_alife_creature_abstract(), net_alife_trader_abstract(nil, skip_type.update), net_ph_skeleton(nil, skip_type.update) }
+	self.props = {
+		{ name = 'holder_id', 				type = 'h16', 	default = -1 }
+	}
+	self.updprops = {
+		{ name = 'actor_state',				type = 'h16' },	
+		{ name = 'actor_accel_header',		type = 'h16' },	
+		{ name = 'actor_accel_data',		type = 'h32' },	
+		{ name = 'actor_velocity_header',	type = 'h16' },	
+		{ name = 'actor_velocity_data',		type = 'h32' },	
+		{ name = 'actor_radiation',			type = 'f32' },	
+		{ name = 'actor_weapon',			type = 'u8' },		
+		{ name = 'num_items',				type = 'u16' }
+	}
+end
+
+-- has NO derived
+class "net_alife_creature_crow" (net_base)
+
+function  net_alife_creature_crow:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_creature_crow"	--for packet dumping
+	
+	self.bases = { net_alife_creature_abstract() }
+	self.props = {}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_creature_phantom" (net_base)
+
+function  net_alife_creature_phantom:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_creature_phantom"	--for packet dumping
+	
+	self.bases = { net_alife_creature_abstract() }
+	self.props = {}
+	self.updprops = {}
+end
+
+-- has derived
+class "net_alife_monster_base" (net_base)
+
+function  net_alife_monster_base:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_monster_base"	--for packet dumping
+	
+	self.bases = { net_alife_monster_abstract(), net_ph_skeleton(nil, skip_type.update) }
+	self.props = {
+		{ name = 'spec_object_id', type = 'u16', default = 65535 }
+	}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_monster" (net_base)
+
+function  net_monster:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "se_monster"	--for packet dumping
+	
+	self.bases = { net_alife_monster_base() }
+	self.props = {
+		{ name = 'job_online',				type = 'u8',	default = 2 },
+		{ name = 'job_online_condlist',		type = 'sz',	default = '' },
+		{ name = 'was_in_smart_terrain',	type = 'u8',	default = 0 },
+	}
+	self.updprops = {}
+end
+function net_monster:_read_props(ret,stpk,updpk)
+	for _,prop in ipairs(self.props) do
+		if prop.name~="job_online_condlist" or ret.job_online==3 then --can use ret.job_online because it is already read
+			ret[prop.name] = this["_r_"..prop.type](stpk, prop.len)
+		end
+	end
+end
+function net_monster:_write_props(data,stpk,updpk)
+	for _,prop in ipairs(self.props) do
+		if prop.name~="job_online_condlist" or data.job_online==3 then
+			this["_w_"..prop.type](stpk, data[prop.name] or prop.default or 0)
+		end
+	end
+end
+
+-- has NO derived
+class "net_alife_monster_zombie" (net_base)
+
+function  net_alife_monster_zombie:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_monster_zombie"	--for packet dumping
+	
+	self.bases = { net_alife_monster_abstract() }
+	self.props = {
+		{ name = 'field_of_view',		type = 'f32',	default = 0.0 },	
+		{ name = 'eye_range',			type = 'f32',	default = 0.0 },	
+		{ name = 'minimum_speed',		type = 'f32',	default = 0.0 },	
+		{ name = 'maximum_speed',		type = 'f32',	default = 0.0 },	
+		{ name = 'attack_speed',		type = 'f32',	default = 0.0 },	
+		{ name = 'pursuit_distance',	type = 'f32',	default = 0.0 },	
+		{ name = 'home_distance',		type = 'f32',	default = 0.0 },	
+		{ name = 'hit_power',			type = 'f32',	default = 0.0 },	
+		{ name = 'hit_interval',		type = 'u16',	default = 0 },		
+		{ name = 'distance',			type = 'f32',	default = 0.0 },	
+		{ name = 'maximum_angle',		type = 'f32',	default = 0.0 },	
+	}
+	self.updprops = {}
+end
+
+-- has derived
+class "net_alife_space_restrictor" (net_base)
+
+function  net_alife_space_restrictor:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_space_restrictor"	--for packet dumping
+	
+	self.bases = { net_alife_object(nil, skip_type.update), net_shape(nil, skip_type.update) }
+	self.props = {
+		{ name = 'restrictor_type', type = 'u8', default = -1 },
+	}
+	self.updprops = {}
+end
+
+-- has derived
+class "net_alife_smart_zone" (net_base)
+
+function  net_alife_smart_zone:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_smart_zone"	--for packet dumping
+	
+	self.bases = { net_alife_space_restrictor(nil, skip_type.update) }
+	self.props = {}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_anomaly_field" (net_base)
+
+function  net_anomaly_field:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "se_anomaly_field"	--for packet dumping
+	
+	self.bases = { net_alife_space_restrictor() }
+	self.props = {
+		{ name = 'initialized', type = 'u8', default = 0 }
+	}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_respawn" (net_base)
+
+function  net_respawn:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "se_respawn"	--for packet dumping
+	
+	self.bases = { net_alife_smart_zone(nil, skip_type.update) }
+	self.props = {
+		{ name = 'spawned_objects', type = 'l8u16v', default = {} }
+	}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_smart_terrain" (net_base)
+
+function  net_smart_terrain:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "se_smart_terrain"	--for packet dumping
+	
+	self.bases = { net_alife_smart_zone(nil, skip_type.update) }
+	self.props = {
+		{ name = 'duration_end_present',	type = 'u8',	default = 0 },
+		{ name = 'idle_end_present',		type = 'u8',	default = 0 },
+		{ name = 'gulag_working',			type = 'u8',	default = 0 }
+	}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_level_changer" (net_base)
+
+function  net_alife_level_changer:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_level_changer"	--for packet dumping
+	
+	self.bases = { net_alife_space_restrictor(nil, skip_type.update) }
+	self.props = {
+		{ name = 'dest_game_vertex_id',		type = 'u16',	default = 0 },
+		{ name = 'dest_level_vertex_id',	type = 'u32',	default = 0 },
+		{ name = 'dest_position',			type = 'f32v3',	default = vector():set(0,0,0) },
+		{ name = 'dest_direction',			type = 'f32v3',	default = vector():set(0,0,0) },
+		{ name = 'dest_level_name',			type = 'sz',	default = '' },
+		{ name = 'dest_graph_point',		type = 'sz',	default = '' },
+		{ name = 'silent_mode',				type = 'u8',	default = 0 }
+	}
+	self.updprops = {}
+end
+
+-- has derived
+class "net_alife_custom_zone" (net_base)
+
+function  net_alife_custom_zone:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_custom_zone"	--for packet dumping
+	
+	self.bases = { net_alife_space_restrictor(nil, skip_type.update) }
+	self.props = {
+		{ name = 'max_power',			type = 'f32',	default = 0.0 },	
+		{ name = 'owner_id',			type = 'h32',	default = -1 },
+		{ name = 'enabled_time',		type = 'u32',	default = 0 },		
+		{ name = 'disabled_time',		type = 'u32',	default = 0 },		
+		{ name = 'start_time_shift',	type = 'u32',	default = 0 },	
+	}
+	self.updprops = {}
+end
+
+-- has derived
+class "net_alife_anomalous_zone" (net_base)
+
+function  net_alife_anomalous_zone:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_anomalous_zone"	--for packet dumping
+	
+	self.bases = { net_alife_custom_zone(nil, skip_type.update) }
+	self.props = {
+		{ name = 'offline_interactive_radius',	type = 'f32',	default = 0.0 },	
+		{ name = 'artefact_spawn_count',		type = 'u16',	default = 0 },		
+		{ name = 'artefact_position_offset',	type = 'h32',	default = 0 }	
+	}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_zone_anom" (net_base)
+
+function  net_zone_anom:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "se_zone_anom"	--for packet dumping
+	
+	self.bases = { net_alife_anomalous_zone(nil, skip_type.update) }
+	self.props = {
+		{ name = 'last_spawn_time_present', type = 'u8', default = 0 }
+	}
+	self.updprops = {}
+end
+
+-- has derived
+class "net_alife_zone_visual" (net_base)
+
+function  net_alife_zone_visual:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_zone_visual"	--for packet dumping
+	
+	self.bases = { net_alife_anomalous_zone(), net_visual() }
+	self.props = {
+		{ name = 'idle_animation',		type = 'sz',	default = '' },	
+		{ name = 'attack_animation',	type = 'sz',	default = '' }
+	}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_zone_visual" (net_base)
+
+function  net_zone_visual:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "se_zone_visual"	--for packet dumping
+	
+	self.bases = { net_alife_zone_visual(nil, skip_type.update) }
+	self.props = {
+		{ name = 'last_spawn_time_present', type = 'u8', default = 0 }
+	}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_torrid_zone" (net_base)
+
+function  net_alife_torrid_zone:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_torrid_zone"	--for packet dumping
+	
+	self.bases = { net_alife_custom_zone(nil, skip_type.update), net_motion(nil, skip_type.update) }
+	self.props = {}
+	self.updprops = {}
+end
+
+--has derived, but spawnable
+class "net_alife_item" (net_base)
+
+function  net_alife_item:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_item"	--for packet dumping
+	
+	self.bases = { net_alife_dynamic_object_visual(nil, skip_type.update) }
+	self.props = {
+		{ name = 'condition', type = 'f32' }	
+	}
+	self.updprops = {
+		{ name = 'num_items',		type = 'h8' },		
+		-- optional nonnumeric params MUST have defaults
+		{ name = 'ph_position',		type = 'f32v3', default = vector():set(0,0,0) },	
+		{ name = 'ph_rotation',		type = 'q8v', 	default = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}, 	len = 4*4 },	--quaterinon
+		{ name = 'ph_angular_vel',	type = 'q8v', 	default = {0,0,0,0,0,0,0,0,0,0,0,0}, 			len = 3*4 },	
+		{ name = 'ph_linear_vel',	type = 'q8v', 	default = {0,0,0,0,0,0,0,0,0,0,0,0}, 			len = 3*4 }
+	}
+end
+function net_alife_item:_read_updprops(ret,stpk,updpk)
+	-- item packet hooks
+	local info_mask = 0
+	local skip_updprops = {}
+	local updnum_items = 0
+	for _,prop in ipairs(self.updprops) do
+		if not skip_updprops[prop.name] then
+			ret["upd"..prop.name] = this["_r_"..prop.type](updpk, prop.len)
+		end
+		if prop.name == "num_items" then
+			updnum_items = ret["upd"..prop.name]
+			if updnum_items==0 then
+				return
+			end
+			if bit_and(ret.num_items, 64) ~= 64 then
+				skip_updprops.ph_angular_vel = true
+			end
+			if bit_and(ret.num_items, 128) ~= 128 then
+				skip_updprops.ph_linear_vel = true
+			end			
+		end
+	end
+end
+function net_alife_item:_write_updprops(data,stpk,updpk)
+	--item packet hooks
+	local updnum_items = data.updnum_items
+	if updnum_items==0 then
+		return
+	end
+	local skip_updprops = {}
+	if bit_and(data.num_items, 64) ~= 64 then
+		skip_updprops.ph_angular_vel = true
+	end
+	if bit_and(data.num_items, 128) ~= 128 then
+		skip_updprops.ph_linear_vel = true
+	end
+	for _,prop in ipairs(self.updprops) do
+		if not skip_updprops[prop.name] then
+			this["_w_"..prop.type](updpk, data["upd"..prop.name] or prop.default or 0)
+		end
+	end
+end
+
+-- has NO derived
+class "net_alife_item_torch" (net_base)
+
+function  net_alife_item_torch:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_item_torch"	--for packet dumping
+	
+	self.bases = { net_alife_item() }
+	self.props = {}
+	self.updprops = {
+		{ name = 'torch_flags', type = 'u8' }
+	}
+end
+
+-- has NO derived
+class "net_alife_item_detector" (net_base)
+
+function  net_alife_item_detector:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_item_detector"	--for packet dumping
+	
+	self.bases = { net_alife_item() }
+	self.props = {}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_item_artefact" (net_base)
+
+function  net_alife_item_artefact:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_item_artefact"	--for packet dumping
+	
+	self.bases = { net_alife_item() }
+	self.props = {}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_item_grenade" (net_base)
+
+function  net_alife_item_grenade:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_item_grenade"	--for packet dumping
+	
+	self.bases = { net_alife_item() }
+	self.props = {}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_item_explosive" (net_base)
+
+function  net_alife_item_explosive:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_item_explosive"	--for packet dumping
+	
+	self.bases = { net_alife_item() }
+	self.props = {}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_item_bolt" (net_base)
+
+function  net_alife_item_bolt:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_item_bolt"	--for packet dumping
+	
+	self.bases = { net_alife_item() }
+	self.props = {}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_item_custom_outfit" (net_base)
+
+function  net_alife_item_custom_outfit:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_item_custom_outfit"	--for packet dumping
+	
+	self.bases = { net_alife_item() }
+	self.props = {}
+	self.updprops = {
+		{ name = 'condition', type = 'q8' }
+	}
+end
+
+-- has NO derived
+class "net_alife_item_pda" (net_base)
+
+function  net_alife_item_pda:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_item_pda"	--for packet dumping
+	
+	self.bases = { net_alife_item() }
+	self.props = {	
+		{ name = 'original_owner',		type = 'u16',	default = 0 },
+		{ name = 'specific_character',	type = 'sz',	default = '' },
+		{ name = 'info_portion',		type = 'sz',	default = '' }
+	}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_item_document" (net_base)
+
+function  net_alife_item_document:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_item_document"	--for packet dumping
+	
+	self.bases = { net_alife_item() }
+	self.props = {
+		{ name = 'info_portion', type = 'sz', default = '' }
+	}
+	self.updprops = {}
+end
+
+-- has NO derived
+class "net_alife_item_ammo" (net_base)
+
+function  net_alife_item_ammo:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_item_ammo"	--for packet dumping
+	
+	self.bases = { net_alife_item() }
+	self.props = {
+		{ name = 'ammo_left', type = 'u16', default = 0 }
+	}
+	self.updprops = {
+		{ name = 'ammo_left', type = 'u16' }
+	}
+end
+
+-- has derived, but spawnable
+class "net_alife_item_weapon" (net_base)
+
+function  net_alife_item_weapon:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_item_weapon"	--for packet dumping
+	
+	self.bases = { net_alife_item() }
+	self.props = {
+		{ name = 'ammo_current',	type = 'u16' },	
+		{ name = 'ammo_elapsed',	type = 'u16' },	
+		{ name = 'weapon_state',	type = 'u8' },	
+		{ name = 'addon_flags',		type = 'u8' },	
+		{ name = 'ammo_type',		type = 'u8' }
+	}
+	self.updprops = {
+		{ name = 'condition',		type = 'q8' },
+		{ name = 'weapon_flags',	type = 'u8' },		
+		{ name = 'ammo_elapsed',	type = 'u16' },	
+		{ name = 'addon_flags',		type = 'u8' },	
+		{ name = 'ammo_type',		type = 'u8' },		
+		{ name = 'weapon_state',	type = 'u8' },	
+		{ name = 'weapon_zoom',		type = 'u8' }	
+	}
+end
+
+-- has derived, but spawnable
+class "net_alife_item_weapon_magazined" (net_base)
+
+function  net_alife_item_weapon_magazined:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_item_weapon_magazined"	--for packet dumping
+	
+	self.bases = { net_alife_item_weapon() }
+	self.props = {}
+	self.updprops = {
+		{ name = 'current_fire_mode', type = 'u8' }
+	}
+end
+
+-- has NO derived
+class "net_alife_item_weapon_magazined_w_gl" (net_base)
+
+function  net_alife_item_weapon_magazined_w_gl:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_item_weapon_magazined_w_gl"	--for packet dumping
+	
+	self.bases = { net_alife_item_weapon_magazined() }
+	self.props = {}
+	self.updprops = {
+		{ name = 'grenade_mode', type = 'u8' }
+	}
+end
+function net_alife_item_weapon_magazined_w_gl:_read(ret,stpk,updpk)
+	for _,prop in ipairs(self.updprops) do
+		ret["upd"..prop.name] = this["_r_"..prop.type](updpk, prop.len)
+	end
+	
+	self:_read_bases(ret,stpk,updpk)
+end
+function net_alife_item_weapon_magazined_w_gl:_write(data,stpk,updpk)
+	for _,prop in ipairs(self.updprops) do
+		this["_w_"..prop.type](updpk, data["upd"..prop.name] or prop.default or 0)
+	end
+	
+	self:_write_bases(data,stpk,updpk)
+end
+
+-- has NO derived
+class "net_alife_item_weapon_shotgun" (net_base)
+
+function  net_alife_item_weapon_shotgun:__init(obj, skip)
+	super(obj, skip)
+
+	self.name = "cse_alife_item_weapon_shotgun"	--for packet dumping
+	
+	self.bases = { net_alife_item_weapon_magazined() }
+	self.props = {}
+	self.updprops = {
+		{ name = 'ammo_ids', type = 'l8u8v', default = {} }
+	}
+end

@@ -1,0 +1,287 @@
+--[[---------------------------------------------------------------------
+Содержит различные функции-хелперы, для выполнения разных задач.
+--]]---------------------------------------------------------------------
+
+-------------------------------------------------------------------------
+--- xStream, 04/01/2012                                               ---
+--- version 1.0                                                       ---
+-------------------------------------------------------------------------
+
+-- used as module for apply math, _G expantion
+function init()
+
+end
+
+--===========================simple client->server object helper=========
+-- returns server object if possible (convert client object if passed to server object)
+-- in: any
+-- out: <server_side_object> | nil
+function get_server_obj(obj)
+	if obj~=nil and obj.id~=nil then
+		if type(obj.id)=="function" then
+			return alife():object(obj:id())
+		end
+		return obj
+	end
+end
+
+--==========================math expantion===============================
+-- defines new math constants
+math.inf = 1/0
+math.nan = -(0/0)
+
+-- expands math functionality
+math.isinf = function(value)
+	if value == math.inf then 
+		return 1
+	elseif value == -math.inf then 
+		return -1
+	else
+		return 0
+	end
+end
+-- The following assume type(value) == "number":
+math.isnan = function(value)
+	return value ~= value
+end
+math.isfinite = function (value)
+	return value > -math.inf and value < math.inf
+end
+
+--==========================tables=======================================
+-- finds element in table
+function table.find(tbl, val)
+  for _, v in pairs(tbl) do
+    if v==val then
+      return true
+    end
+  end
+  return false
+end
+
+-- serialize table to string reprezentation
+-- in: table|nil|string|number|boolean, nil
+-- out: string|nil, boolean(error)
+function table.serialize(x, recur)
+	local t = type(x)
+	recur = recur or {}
+
+	if t == "nil" then
+		return "nil"
+	elseif t == "string" then
+		return string.format("%q", x)
+	elseif t == "number" then
+		return tostring(x), false
+	elseif t == "boolean" then
+		return x and "true" or "false"
+	elseif getmetatable(x) then
+		-- Can not serialize a table that has a metatable associated with it.
+		return nil, true
+	elseif t == "table" then
+		if recur[x] then
+			-- Can not serialize recursive tables.
+			return nil, true
+		end
+		recur[x] = true
+
+		if not next(x) then return "{}" end -- need to check if table is empty
+		local s, key, val = "{"
+		for k, v in pairs(x) do
+			key, err = table.serialize(k, recur)
+			if err then	--if something srong with table's keys
+				return nil, true
+			end
+			val, err = table.serialize(v, recur)
+			if err then	--if something srong with table's values
+				return nil, true
+			end
+			s = s .. "[" .. key .. "]" .. "=" .. val .. ","
+		end
+
+		return s:sub(0, s:len() - 1) .. "}"
+	end
+
+	-- Can not serialize value of passed type
+	return nil, true
+end
+
+--unserialize table from string
+function table.unserialize(str)
+	if type(str)~='string' or str=='' then return {} end
+	return loadstring("return " .. str)() or {}
+end
+
+--clones table (metatables are cloned too), userdatas are not cloned
+function table.clone(object)
+    local lookup_table = {}
+    local function _copy(object)
+        if type(object) ~= "table" then
+            return object
+        elseif lookup_table[object] then
+            return lookup_table[object]
+        end
+        local new_table = {}
+        lookup_table[object] = new_table
+        for index, value in pairs(object) do
+            new_table[_copy(index)] = _copy(value)
+        end
+        return setmetatable(new_table, _copy( getmetatable(object)) )
+    end
+    return _copy(object)
+end
+
+--==========================strings======================================
+-- trim of string
+if string.trim then
+	_G.trim = string.trim
+else
+	_G.trim = function (s)
+		return (string.gsub(s, "^%s*(.-)%s*$", "%1"))
+	end
+end
+
+-- explode string by divider (PHP-like function)
+_G.explode = function(div,str,clear)
+	local t = {}
+	
+	if type(str)~='string' then
+		return t
+	end
+	
+	local cpt = string.find(str,div,1,true)
+	if cpt then
+		repeat
+			if clear then
+				table.insert(t, trim(string.sub(str,1,cpt-1)))
+			else
+				table.insert(t,string.sub(str,1,cpt-1))
+			end
+			str = string.sub(str,cpt+string.len(div))
+			cpt = string.find(str,div,1,true)
+		until cpt == nil
+	end
+	if clear then
+		table.insert(t, trim(str))
+	else
+		table.insert(t,str)
+	end
+	return t
+end
+
+--===========================custom data (ini-style strings)=============
+
+local function parse_ini(str)
+	local t = {}
+	
+	if type(str) ~= 'string' then
+		return t, false
+	end
+	
+	str = trim( string.gsub(str, ";.-\n", "\n") ) -- cleanup comments, symbol ';' is denied in sections names and keys/values!
+	
+	for section, section_data in string.gfind(str,"%s*%[([^%]]*)%]%s*([^%[%z]*)%s*") do -- get sections names and their's data
+		section = trim(section)
+		t[section]={}
+		
+		for line in string.gfind(trim(section_data), "([^\n]*)\n*") do
+			if string.len(line)>0 then
+				if string.find(line,"=")~=nil then -- 'key=val' sequence
+					for k, v in string.gfind(line, "([^=]-)%s*=%s*(.*)") do
+						k = trim(k)
+						if k~=nil and k~='' and v~=nil then 
+							if v == "<<true>>" then
+								t[section][k] = true
+							elseif v == "<<false>>" then
+								t[section][k] = false
+							else
+								t[section][k]=trim(v) 
+							end
+						end
+					end
+				else -- 'key' sequence
+					for k in string.gfind(line, "(.+)") do
+						k = trim(k)
+						if k~=nil and k~='' then
+							t[section][k] = math.nan --use nan instead nil for key existance
+						end
+					end
+				end
+			end
+		end
+	end
+	
+	return t, true
+end
+
+local function generate_ini(tbl)
+	local str=''
+	
+	if type(tbl) ~= 'table' then
+		return str
+	end
+	
+	for key, value in pairs(tbl) do
+		str = str.."\n["..key.."]\n"
+		for k, v in pairs(value) do
+			k = tostring(k)
+			if not math.isnan(v) then --use nan instead nil for key existance
+				if type(v) == "boolean" then
+					if v then
+						v = "<<true>>"
+					else
+						v = "<<false>>"
+					end
+				else 
+					v = tostring(v)
+				end
+				str=str..k.." = "..v.."\n"
+			else
+				str=str..k.."\n"
+			end
+		end
+	end
+	
+	return str
+end
+
+-- class for storing and manipulating ini-style custom data
+class "custom_data"
+
+function custom_data:__init(input)
+	self:set(input)
+end
+
+function custom_data:set(input)
+	if type(input)=='string' then
+		self:setString(input)
+	elseif type(input)=='table' then
+		self:setTable(input)
+	else
+		self.data = {}
+	end
+end
+
+-- self.data is generated from string on the fly
+-- in: string
+-- out: boolean (succes flag)
+function custom_data:setString(str)
+	local ret
+	self.data, ret = parse_ini(str)
+	return ret
+end
+
+-- in: table
+function custom_data:setTable(new_tbl)
+	self.data = type(new_tbl)=='table' and table.clone(new_tbl) or {}
+end
+
+-- string is generated from self.data on the fly
+-- out: string
+function custom_data:getString()
+	return generate_ini(self.data)
+end
+
+-- out: table
+function custom_data:getTable()
+	return table.clone(self.data)
+end
