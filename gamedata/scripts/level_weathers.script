@@ -1,0 +1,481 @@
+-- [[ Dynamic Weather v0.9.5 script ]] --
+
+-- enable/disable printing debug messages to console
+local debug = 0
+
+
+-- stubs for OL2.2
+function dynamic_weather_time(level_name)
+    return false
+end
+
+function dynamic_weather_level(level_name)
+    return false
+end
+-- end of OL2.2 stubs
+
+
+-- check if level name corresponds to one of the levels
+-- that should use special indoor level as configured
+-- in game_maps_single.ltx
+local function is_indoor(level_name)
+    return (level_name == "l03u_agr_underground"
+            or level_name == "l04u_labx18"
+            or level_name == "peshera"
+            or level_name == "av_peshera"
+            or level_name == "warlab"
+            or level_name == "marsh"
+            or level_name == "jupiter_underground"
+            or level_name == "labx8"
+            or level_name == "l08u_brainlab"
+            or level_name == "l10u_bunker"
+            or level_name == "l12u_sarcofag"
+            or level_name == "l12u_control_monolith")
+end
+
+
+-- time in minutes since midnight
+local function dayminute()
+    return level.get_time_hours() * 60 + level.get_time_minutes()
+end
+
+
+-- returns true if t1 <= t <= t2 assuming 24 hour clock
+local function is_time_between(t, t1, t2)
+    return (t1 < t2 and (t >= t1 and t <= t2))
+        or (t1 > t2 and (t >= t1 or  t <= t2))
+end
+
+
+-- absolute time difference between two times in minutes
+local function delta_time(t1, t2)
+    return (t2 + 1440 - t1) % 1440
+end
+
+
+class "WeatherManager"
+function WeatherManager:__init()
+    self.ini = ini_file("weathers\\environment.ltx")
+    self.time = 0
+    self.lvl_suffix  = ""    -- suffix used for this level's weather cycle variation (if any)
+    self.lvl_weather = ""    -- weather for the level as set in game_maps_single.ltx
+    self.dyn_weather = ""    -- currently selected dynamic weather cycle name
+    self.cur_weather = ""    -- weather that should be used right now in current level
+                             -- NOTE: this is equal to lvl_weather..lvl_suffix for indoor levels
+                             -- and to dyn_weather..lvl_suffix for outdoor levels 
+
+    self.cycle_time = 0      -- the time that the current cycle has run
+    self.cycles = {}         -- weather cycle info table by cycle id
+    self.cycle_idx = {}      -- cycle name to cycle id lookup table
+    self.trans_lists = {}    -- master list of transition lists by time of day
+    self.trans_times = {}    -- corresponding table of transition times
+
+    self.last_time_idx = 0   -- index into trans_times for last update time
+    self.next_time_idx = 0   -- ditto for next update time
+    self.last_time = 0       -- last update time of day in minutes since midnight
+    self.next_time = 0       -- ditto for next
+
+    local rand, res, key, val, n
+
+    n = self.ini:line_count("weather_cycles")
+
+    -- randomly select a cycle ID for a default cycle
+    rand = math.random(n) - 1
+
+    -- load cycle information from the .ltx
+    for i = 0, n - 1 do
+        res, key, val = self.ini:r_line("weather_cycles", i, "", "")
+
+        -- setup a default weather cycle for initialization etc.
+        if self.default_cycle_id == nil or rand == i then
+            self.default_cycle_id = key
+        end
+
+        -- temporary table of tokens from comma separated string
+        local tmptab = {}
+
+        -- split the comma separated string and store the tokens
+        for w in string.gmatch(val, "[%w_-]+") do 
+            table.insert(tmptab, w)
+        end
+
+        -- construct the cycle info from the string tokens
+        self.cycles[key]             = {}
+        self.cycles[key].name        = tmptab[1]
+        self.cycles[key].to          = tonumber(tmptab[2])
+        self.cycles[key].from        = tonumber(tmptab[3])
+        self.cycles[key].to_weight   = tonumber(tmptab[4])
+        self.cycles[key].from_weight = tonumber(tmptab[5])
+
+        -- least-frequently-used counter, incremented each time this
+        -- cycle is NOT transitioned to
+        self.cycles[key].skipped     = 0
+
+        -- provide a cycle name to cycle id lookup
+        self.cycle_idx[self.cycles[key].name] = key
+    end
+
+    n = self.ini:line_count("weather_transition_times")
+
+    -- read a by-minute-of-day list of transition list sections
+    for i = 0, n - 1 do
+        res, key, val = self.ini:r_line("weather_transition_times", i, "", "")
+        table.insert(self.trans_times, tonumber(key))
+        self.trans_lists[tonumber(key)] = val
+    end
+
+    -- sort the table since reading from .ltx does not guarantee any order
+    -- table needs to be sorted for the sliding time window indexes to work
+    table.sort(self.trans_times)
+end
+
+
+-- debug message print function - can be disabled by setting debug to false
+function WeatherManager:dbgmsg(fmt, ...)
+    if debug ~= 0 then
+        local msgtext = string.format("%02d:%02d idx:%d->%d,time:%02d:%02d->%02d:%02d ",
+                                      level.get_time_hours(), level.get_time_minutes(),
+                                      self.last_time_idx, self.next_time_idx,
+                                      math.floor(self.last_time / 60), self.last_time % 60, 
+                                      math.floor(self.next_time / 60), self.next_time % 60)
+
+        msgtext = msgtext .. string.format(fmt, ...)
+        msgtext = string.gsub(msgtext, "%s", "_")
+        get_console():execute("load ~level_weathers~: "..msgtext)
+    end
+end
+
+
+-- get cycle name for the weather that should be in use right now
+function WeatherManager:current_weather()
+    if is_indoor(level.name()) then
+        return self.lvl_weather
+    end
+    return self.dyn_weather .. self.lvl_suffix
+end
+
+
+-- update the sliding time window indexes
+function WeatherManager:update_times(last_idx)
+    self.last_time_idx = last_idx
+    self.next_time_idx = last_idx % #self.trans_times + 1
+    self.last_time = self.trans_times[self.last_time_idx]
+    self.next_time = self.trans_times[self.next_time_idx]
+end
+
+
+-- adjust time indexes so that current time is within the window
+-- that is defined by these indexes
+function WeatherManager:fix_times()
+    self.next_time_idx = 1
+    repeat
+       self:update_times(self.next_time_idx)
+    until is_time_between(self.time, self.last_time, self.next_time)
+end
+
+
+-- setup a valid weather cycle name and the correct time indexes
+-- used if savedgame is from an incompatible version and when a new game is started
+function WeatherManager:convert_savedgame()
+    self.cycle_time = 0
+    if self.cycle_idx[self.dyn_weather] == nil then
+        self.dyn_weather = self.cycles[self.default_cycle_id].name
+    end
+    self:fix_times()
+end
+
+
+-- update weather selection
+-- used on game load / level change with force = 0 to resume last weather
+-- and on timed update with force = 1 to do dynamic weather updates
+function WeatherManager:select_weather(force)
+    local tmp_dyn_weather = self.dyn_weather
+    if force then
+        -- load list of transitions that complete / initiate at this time of day
+        local list_sect = self.trans_lists[self.next_time]
+
+        -- update time that this weather has been active by time since last time update
+        self.cycle_time = self.cycle_time + delta_time(self.last_time, self.next_time)
+
+        -- if there is a transition from currect weather at this time of day
+        if self.ini:section_exist(list_sect) and self.ini:line_exist(list_sect, self.dyn_weather) then
+            -- load the string with possible transitions from current weather
+            local transdef = self.ini:r_string(list_sect, self.dyn_weather)
+
+            -- get id for current weather cycle - if not found then this must be a transition
+            local cycle_id = self.cycle_idx[self.dyn_weather]
+
+            if cycle_id ~= nil then
+                -- probability of transition based on the time this cycle has been active
+                local trans_prob = 20 + self.cycles[cycle_id].from_weight * self.cycle_time / 1800
+
+                if math.random(1000) <= 10 * trans_prob then
+                    local min_skips        -- skip count for the least skipped cycle
+                    local max_skips        -- ditto for most skipped
+                    local transtab    = {} -- array of available transitions
+                    local weighttab   = {} -- weight table for available transitions
+                    local weightsum   = 0  -- sum of weights for these transitions
+
+                    -- find minimum and maximum skip counts
+
+                    min_skips = self.cycles[self.default_cycle_id].skipped
+                    max_skips = min_skips
+
+                    for cycle_id, cycle in ipairs(self.cycles) do
+                        if cycle.skipped < min_skips then
+                            min_skips = cycle.skipped
+                        end
+                        if cycle.skipped > max_skips then
+                            max_skips = cycle.skipped
+                        end
+                    end
+
+                    -- assume that transdef is a comma separated list of transition_name:cycle_id
+                    for trans, cycle_id in string.gmatch(transdef, "([%w_-]+):(%d+)") do
+                        local skipped_weight
+
+                        -- least skipped cycle gets 0.5 weight, most skipped used gets 1.5
+                        if min_skips < max_skips then
+                            skipped_weight = 0.5
+                                           + (self.cycles[cycle_id].skipped - min_skips)
+                                                   / (max_skips - min_skips)
+                        else
+                            skipped_weight = 1
+                        end
+
+                        weightsum = weightsum + self.cycles[cycle_id].to_weight * skipped_weight
+                        table.insert(weighttab, weightsum)
+                        table.insert(transtab, trans)
+
+                        -- use the opportunity to mark all these cycles as skipped 
+                        --  note: the cycle that will be picked for transition will be "unmarked"
+                        self.cycles[cycle_id].skipped = self.cycles[cycle_id].skipped + 1
+                    end
+
+                    local rand = math.random(weightsum)
+
+                    -- use weight table for random transition selection
+                    for i = 1, #weighttab do
+                        if rand <= weighttab[i] then
+                            self.dyn_weather = transtab[i]
+                            self.cycle_time = 0
+                            break
+                        end
+                    end
+                end
+            else -- current weather is a transition phase so complete the transition
+                local cycle_id = self.cycle_idx[transdef]
+                self.dyn_weather = transdef
+                self.cycle_time = 0
+
+                -- undo skip increment since this cycle has just been selected
+                self.cycles[cycle_id].skipped = self.cycles[cycle_id].skipped - 1
+            end
+        end
+
+        self:update_times(self.next_time_idx)
+
+        if not is_time_between(self.time, self.last_time, self.next_time) then
+            --self:dbgmsg("need to fix times")
+            self:fix_times()
+
+            -- HACK: transition was initiated at wrong time so undo it
+            if self.cycle_idx[self.dyn_weather] == nil then
+                self.dyn_weather = tmp_dyn_weather
+            end
+        end
+
+        -- OL2.2 mod updates (if applicable)
+        if olp_mod and amk.load_variable("blowout", 0) == 0 then
+            if olp_mod and olp_mod.anoms
+               and amk.load_variable("blowout_happened", 0) == 0
+            then
+                -- self:dbgmsg("remove/create anoms")
+                amk.mod_call("remove_anoms")  
+                amk.mod_call("create_anoms")
+            end
+            amk.del_variable("blowout_happened")
+        end
+
+    end
+
+    -- for cycle testing set the weather here like this:
+    -- self.dyn_weather = "thunder"
+
+    self.cur_weather = self:current_weather()
+    
+    -- tell the script in DEXXX's blowout mod to use this weather instead of default
+    if ogsm_funcs then
+        ogsm_funcs.wthr = self.cur_weather
+    end
+
+    -- if blowout is not in progress then apply the current weather
+    if (not olp_mod or amk.load_variable("blowout", 0) == 0)
+       and (not blowout or blowout.GetBlowout().is_blowout_on == false)
+       and (not ogsm_funcs or ogsm_funcs.load_variable("blt", 0) == 0)
+       and (not Psy or (db.Flag2 == 0 and db.Flag3 == 0 and db.Flag4 == 0 and db.Flag5 == 0))
+    then
+        level.set_weather(self.cur_weather)
+    elseif olp_mod and amk_mod.blowout_type() < 1 then
+        level.set_weather("pre_blow")
+        level.set_weather_fx("amk_surge_day")
+    end
+
+    --self:dbgmsg("weather:%s,cycle_time:%d", level.get_weather(), self.cycle_time)
+     
+end
+
+
+-- called on game begin, game load and level change
+function WeatherManager:reset()
+    local ini = ini_file("game.ltx")
+    local postprocess = utils.cfg_get_string(ini, level.name(), "postprocess", db.actor, false, "")
+
+    self.lvl_weather = utils.cfg_get_string(ini, level.name(), "weathers", db.actor, false, "", "default")
+
+    if postprocess ~= nil then
+        level.add_pp_effector(postprocess, 999, true)	
+    else
+        level.remove_pp_effector(999)
+    end
+
+    if self.ini:section_exist("level_suffix_table")
+       and self.ini:line_exist("level_suffix_table", level.name())
+    then
+        self.lvl_suffix = self.ini:r_string("level_suffix_table", level.name()) or ""
+    else
+        self.lvl_suffix = ""
+    end
+
+
+    if self.dyn_weather == "" then
+        self.time = dayminute()
+        self:convert_savedgame()
+    end
+
+    self:select_weather(false)
+end
+
+
+-- save states by encoding the necessary state variables
+-- to fit inside existing vanilla savegame structure
+function WeatherManager:save(F)
+    local composite = self.cycle_time * 1440 + self.last_time_idx
+
+    -- encode a string with comma separated cycle:count pairs that keep
+    -- track of the skip count for each cycle
+    -- the first element in this list is the name of current cycle
+
+    local info_str = self.dyn_weather
+
+    for id, cycle in pairs(self.cycles) do
+        info_str = info_str .. "," .. cycle.name .. ":" .. cycle.skipped
+    end
+
+    -- set_save_marker(F, "save", false, "WeatherManager")
+    F:w_stringZ(info_str)
+    F:w_u32(composite)
+    -- set_save_marker(F, "save", true, "WeatherManager")
+end
+
+
+-- load and decode state variables - if they don't make sense setup from scratch
+function WeatherManager:load(F)
+    -- set_save_marker(F, "load", false, "WeatherManager")
+    local info_str = F:r_stringZ()
+    local composite = F:r_u32()
+    -- set_save_marker(F, "load", true, "WeatherManager")
+
+    local lastidx = composite % 1440
+    self.cycle_time = math.floor(composite / 1440)
+    self.time = dayminute()
+
+    -- recover current cycle name as first element of the saved info string
+    self.dyn_weather = string.sub(info_str, string.find(info_str, "^[%w-_]*"))
+
+    -- load the skip counters from the remaining portion of the string
+    for name, skipped in string.gmatch(info_str, "([%w-_]+):(%d+)") do
+        local cycle_id = self.cycle_idx[name]
+
+        if cycle_id ~= nil then
+            self.cycles[cycle_id].skipped = skipped
+        else
+            --self:dbgmsg("Warning: unknown cycle '%s' with skip count %d", name, skipped)
+            lastidx = 0    -- set to invalid value so the savedgame is "converted"
+        end
+    end
+
+    if lastidx > 0
+       and lastidx <= #self.trans_times
+       and self.cycle_time <= 14400
+       and self.ini:line_exist("weather_dynamic", self.dyn_weather)
+    then
+        self.cur_weather = self:current_weather()
+        self:update_times(lastidx)
+
+        -- allow up to 5 minute tolerance
+        if is_time_between(self.time, self.last_time, self.next_time)
+           or delta_time(self.time, self.next_time) <= 5
+        then
+            -- set default weather in DEXXX's blowout mod script
+            if ogsm_funcs then
+                ogsm_funcs.wthr = self.cur_weather
+            end
+            return
+        end        
+    end
+
+    --self:dbgmsg("savedgame is incompatible")
+
+    self:convert_savedgame()
+end
+
+
+-- update function called from bind_stalker.script
+function WeatherManager:update()
+    local time = dayminute()
+    local update_flag = 0
+
+    -- weather is not what it should be so unless a blowout is underway
+    -- the correct weather should be resumed
+
+    if level.get_weather() ~= self.cur_weather
+       and ((olp_mod and amk.load_variable("blowout_happened", 0) ~= 0)
+            or (blowout and blowout.GetBlowout().is_blowout_on == false))
+    then
+        --self:dbgmsg("restoring weather after blowout")
+        update_flag = 1
+    end
+
+    -- check if time has increased by at least one minute
+    -- care must be taken around midnight when time wraps around
+    if time <= self.time and self.time < time + 1380 and update_flag == 0 then
+        -- don't do anyhitng this minute
+        return
+    else
+        self.time = time
+    end
+
+    -- time of next available transition is reached
+    if self.time == self.next_time
+       or not is_time_between(self.time, self.last_time, self.next_time)
+    then
+        self:select_weather(true)
+
+    -- something makes it necessary to update now (e.g. post-blowout state)
+    elseif update_flag ~= 0 then
+        self:select_weather(false)
+    end
+end
+
+
+-- singleton object
+local weather_manager = nil
+
+
+function get_weather_manager()
+    if weather_manager == nil then
+        weather_manager = WeatherManager()
+    end
+    return weather_manager
+end
