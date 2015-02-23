@@ -332,25 +332,67 @@ function action_patrol:process_danger()
 		return false
 	end
 
+	-- Отсеиваем реакцию на денжеры своих чуваков
+	local bd_type = best_danger:type()
+	local danger_obj = best_danger:object()
+	
+	if not danger_obj then	
+		return false
+	end	
+	
+	local is_monster_obj = IsMonster(danger_obj)
+	local is_stalker_obj = IsStalker(danger_obj)
+	local is_still_alive = danger_obj:alive()	
+	
 	local passed_time = time_global() - best_danger:time()
+	
 	-- Отсеиваем по инерции
 	if xr_danger.check_danger_inertion_time(self.object, best_danger, passed_time) == false then
 		return false
 	end
-
-	-- Отсеиваем реакцию на денжеры своих чуваков
-	local bd_type = best_danger:type()
-	local danger_obj = best_danger:object()
-	if bd_type == danger_object.attack_sound then
-		if danger_obj and danger_obj:character_community() == self.object:character_community() then
+	
+	if is_monster_obj or is_stalker_obj then
+		if is_still_alive == false then
 			return false
 		end
 	end
 	
+	-- Отсеиваем далёких монстров
+	if is_monster_obj then
+		if not self.object:see(danger_obj) and danger_obj:position():distance_to(self.object:position()) > 40 then
+			return false
+		end
+	-- И неписей
+	elseif is_stalker_obj then	
+		if not self.object:see(danger_obj) and not danger_obj:see(self.object) and danger_obj:position():distance_to(self.object:position()) > 150 then
+			return false
+		end		
+	end
+	
+	-- Проверка на запрещенный денжер от актера
+	if danger_obj ~= nil and
+	   (db.actor and danger_obj:id() == db.actor:id()) and
+	   (bd_type == danger_object.attack_sound or
+	   bd_type == danger_object.bullet_ricochet)
+	then
+		if db.actor and self.object:best_enemy() == nil and
+		   self.object:relation(db.actor) ~= game_object.enemy 
+		then
+			-- printf("DANGER [%s] [FALSE] actor_danger", self.object:name())
+			return false
+		end	
+	end	
+	
+	--' Игнорим денжеры от своих.
+	if is_stalker_obj and danger_obj:character_community() == self.object:character_community()  then
+		if not self.object:relation(danger_obj) == game_object.enemy then 
+			return false
+		end
+	end	
+	
 	-- Отсеиваем по расстоянию
 --	if not self:on_place() then
 		if xr_danger.check_danger_distance(self.object, best_danger) == false then
-			printf("DANGER [%s] [FALSE] danger_distance camper", self.object:name())
 			return false
 		end
 --	end
@@ -366,6 +408,7 @@ function action_patrol:process_danger()
 	-- Опасный денжер - хит или очень близкий рикошет.
 	local urgent_danger = (danger_obj ~= nil) and
 						  (bd_type == danger_object.attacked) and
+						  (self.object:see(danger_obj)) and
 						  (time_global() - best_danger:time() < 5000)
 	
 	if urgent_danger == true then

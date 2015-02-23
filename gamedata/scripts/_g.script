@@ -1301,15 +1301,12 @@ function local_hours()
     return math.floor( math.mod( game.time()/1000, 86400 )/ 3600 )
 end
 
--- Ї абЁв бва®Єг ўЁ¤  "   , ЎЎЎ, ўўў..." ў в Ў«Ёжг { "   ", "ЎЎЎ", "ўўў", ... }
--- —гЈ ©
+--/ парсит строку вида "ааа, ббб, ввв ..." в таблицу { "ааа", "ббб", "ввв", ... }
 function parse_names( s )
-    local t = {}
-    for name in string.gfind( s, "([%w_\\]+)%p*" ) do
-    --for name in string.gfind( s, "%s*([^%,]+)%s*" ) do
-        table.insert( t, name )
-    end
-
+	local t = {}
+	for name in s:gmatch("[^,%s]+" ) do
+		table.insert( t, name )
+	end
     return t
 end
 
@@ -1344,15 +1341,20 @@ end
     return t
 end]]
 
--- Ї абЁв бва®Єг ўЁ¤  "n1, n2, n3..." ў в Ў«Ёжг { n1, n2, n3, ... } Ј¤Ґ n1, n2, n3... - ¤а®Ў­лҐ зЁб« 
+--/ парсит строку вида "n1, n2, n3..." в таблицу { n1, n2, n3, ... } где n1, n2, n3... - дробные числа
 function parse_nums( s )
-  local t = {}
-
-  for entry in string.gfind( s, "([%d%.]+)%,*" ) do
-    table.insert( t, tonumber( entry ) )
-  end
-
-  return t
+    local t = {}
+    for i,entry in ipairs(parse_names( s )) do
+		local v = tonumber( entry )
+		if not v then
+			--log1("xxxxxxxxxxxxxxxxxxxxxxxxxx")
+			--log3("parse_nums: '%s', stopped at %d:'%s'", tostring(s), i, tostring(entry))
+			--ASSERT(v, "parse_nums: '%s', stopped at %d:'%s'", tostring(s), i, tostring(entry))
+			abort("aaaaaaaaaaaaaaa")
+		end
+		table.insert(t,  v)
+    end
+    return t
 end
 
 -- Їа®ўҐапҐв, Ґбвм «Ё ®ЎкҐЄв ў ®­« ©­Ґ
@@ -1919,7 +1921,23 @@ function IAmAMonsterInit()
        [clsid.tushkano_s] = true,
        [clsid.snork_s] = true
     }
-end-------------------------------------------------------------------------------------------
+end
+-------------------------------------------------------------------------------------------
+function isIndoor(level_name)
+    return (level_name == "l03u_agr_underground"
+            or level_name == "l04u_labx18"
+            or level_name == "peshera"
+            or level_name == "av_peshera"
+            or level_name == "warlab"
+--            or level_name == "marsh"
+            or level_name == "jupiter_underground"
+            or level_name == "labx8"
+            or level_name == "l08u_brainlab"
+            or level_name == "l10u_bunker"
+            or level_name == "l12u_sarcofag"
+            or level_name == "l12u_control_monolith")
+end
+-------------------------------------------------------------------------------------------
 function level_object_by_sid( sid )
   local sim = alife()
 
@@ -2164,7 +2182,255 @@ function ASSERT(cond, msg, ...)
 		abort(msg, ...)
 	end
 end
+-- служебные функции для чтения параметров из секций объектов
+local sys_ini = system_ini()
 
+function get_string(section, param, def_val, ini_file)
+	ASSERT(section, "get_string: section not defined, param="..param)
+	local ini = ini_file or sys_ini
+	ASSERT(ini:section_exist(section), "get_string: section '"..section.."' doesn't exist")
+	if ini:line_exist(section, param) then
+		return ini:r_string(section, param)
+	else
+		return def_val
+	end
+end
+function get_string_wq(section, param, def_val, ini_file)
+	ASSERT(section, "get_string: section not defined, param="..param)
+	local ini = ini_file or sys_ini
+	ASSERT(ini:section_exist(section), "get_string: section '"..section.."' doesn't exist")
+	if ini:line_exist(section, param) then
+		return ini:r_string_wq(section, param)
+	else
+		return def_val
+	end
+end
+function get_u32(section, param, def_val, ini_file)
+	ASSERT(section, "get_u32: section not defined, param="..param)
+	local ini = ini_file or sys_ini
+	ASSERT(ini:section_exist(section), "get_u32: section '"..section.."' doesn't exist")
+	if ini:line_exist(section, param) then
+		return ini:r_u32(section, param)
+	else
+		return def_val
+	end
+end
+function get_bool(section, param, def_val, ini_file)
+	ASSERT(section, "get_bool: section not defined, param="..param)
+	local ini = ini_file or sys_ini
+	ASSERT(ini:section_exist(section), "get_bool: section '"..section.."' doesn't exist")
+	if ini:line_exist(section, param) then
+		return ini:r_bool(section, param)
+	else
+		return not (not def_val)
+	end
+end
+function get_float(section, param, def_val, ini_file)
+	ASSERT(section, "get_float: section not defined, param="..param)
+	local ini = ini_file or sys_ini
+	ASSERT(ini:section_exist(section), "get_float: section '"..section.."' doesn't exist")
+	if ini:line_exist(section, param) then
+		return ini:r_float(section, param)
+	else
+		return def_val
+	end
+end
+-- получить класс из секции, полезно в том случае, если нет объекта (и недоступен метод clsid), а есть только имя секции
+function get_class(section)
+	ASSERT(section, "get_class: section parameter is not defined")
+	ASSERT(sys_ini:section_exist(section), "get_class: section '"..section.."' doesn't exist")
+	ASSERT(sys_ini:line_exist(section, "class"), "get_class: there is no 'class' parameter in the section '"..section.."'")
+	return sys_ini:r_clsid(section, "class")
+end
+-- делит строку в виде "aaa,bbb,ccc" на строки "aaa", "bbb", "ccc" и возвращает их в виде массива
+function split_comma_separated_list(s)
+	local res = {}
+	for v in string.gmatch(s, "[^,]+") do
+		table.insert(res, v)
+	end
+	return res
+end
+-- читает время, сохранённое в виде строки со значениями, разделёнными запятой, и конвертирует в значение класса CTime
+function unpack_time_from_string(str_time)
+	local time_values = {}
+	for i,s in ipairs(split_comma_separated_list(str_time)) do
+		local value = tonumber(s)
+		ASSERT(value, "unpack_time_from_string: problem with unpacking saved time '%s', value #%d (%s)", str_time, i, tostring(s))
+		table.insert(time_values, value)
+	end
+	ASSERT(#time_values == 7, "unpack_time_from_string: packed time '%s' has wrong number of components. Must be equal to seven.")
+	local res = game.CTime()
+	res:set(unpack(time_values))
+	return res
+end
+-- упаковать время в виде объекта CTime в строку значений, разделённых запятой
+function pack_time_to_string(t)
+	ASSERT(t, "pack_time_to_string: t is a nil reference")
+	return table.concat({t:get()}, ',')
+end
+-- читает строку вида "s1,s2,s3" и парсит на строковые значения, разделённые запятой, в таблицу вида {s1, s2, s3}
+function get_names(section, param, ini_file)
+	ASSERT(section, "get_names: section not defined, param="..param)
+	local ini = ini_file or sys_ini
+	ASSERT(ini:section_exist(section), "get_names: section '"..section.."' doesn't exist")
+	local s = ini:r_string(section, param)
+	return split_comma_separated_list(s)
+end
+-- читает строку вида "s1,s2,s3" и парсит на численные значения, разделённые запятой, в таблицу вида {n1, n2, n3}
+function get_numbers(section, param, ini_file)
+	local t = {}
+	for i,sv in ipairs(get_names(section, param, ini_file)) do
+		local v = tonumber(sv)
+		ASSERT(v, "get_numbers: can not convert to number item ["..i.."]: "..tostring(sv))
+		table.insert(t, v)
+	end
+	return t
+end
+
+function get_section_keys(section, ini_file)
+	local ini = ini_file or sys_ini
+	ASSERT(ini:section_exist(section), "get_section_keys: section '"..section.."' doesn't exist")
+	local t = {}
+	for i=0,ini:line_count(section)-1 do
+		local v1,key = ini:r_line(section, i)
+		t[i+1] = key
+	end
+	return t
+end
+
+function get_vector(section, param, def_val, ini_file)
+	ASSERT(section, "get_vector: section not defined, param="..param)
+	local ini = ini_file or sys_ini
+	ASSERT(ini:section_exist(section), "get_vector: section '"..section.."' doesn't exist")
+	if ini:line_exist(section, param) then
+		local pos = get_names(section, param, ini)
+		return vector():set(tonumber(pos[1]), tonumber(pos[2]), tonumber(pos[3]))
+	else
+		return def_val
+	end
+end
+
+-- значение по умолчанию должно задаваться таблицей {num1, num2}
+function get_vector2(section, param, def_val, ini_file)
+	ASSERT(section, "get_vector2: section not defined, param=%s", param)
+	local ini = ini_file or sys_ini
+	ASSERT(ini:section_exist(section), "get_vector2: section '"..section.."' doesn't exist")
+	if ini:line_exist(section, param) then
+		local pos = get_names(section, param, ini)
+		return tonumber(pos[1]), tonumber(pos[2])
+	else
+		return def_val and unpack(def_val)
+	end
+end
+
+-- Берём параметры иконки из конфигов
+function get_inventory_icon_rect(sect)
+	return 50*sys_ini:r_u32(sect, "inv_grid_x"), 50*sys_ini:r_u32(sect, "inv_grid_y"), 50*sys_ini:r_u32(sect, "inv_grid_width"), 50*sys_ini:r_u32(sect, "inv_grid_height")
+end
+-- получить номер локации по номеру глобального вертекса
+function location_id_by_gvid(gvid)
+	return game_graph():vertex(gvid):level_id()
+end
+-- получить номер локации для клиентского объекта
+function object_location_id(obj)
+	local gvid = obj.game_vertex_id and obj:game_vertex_id() or obj.m_game_vertex_id
+	return location_id_by_gvid(gvid)
+end
+function object_level_name(obj)
+	return level_system_name_by_lid(object_location_id(obj))
+end
+function level_system_name_by_lid(lid)
+	return alife():level_name(lid)
+end
+function level_name_by_level_system_name(lname)
+	return game.translate_string(lname)
+	--string.lower(lname))
+end
+--системное имя уровня
+function level_system_name_by_gvid(gvid)
+	return level_system_name_by_lid(location_id_by_gvid(gvid))
+end
+--Внятное имя уровня (не системное, а то, которое изображается на карте):
+function level_name_by_gvid(gvid)
+	return level_name_by_level_system_name(level_system_name_by_gvid(gvid))
+end
+
+function clear_log()
+	get_console():execute("clear_log")	
+end
+function flush_log()
+	get_console():execute("flush")
+end
+-- просто удобная обёртка для log1
+function log2(fmt,...)
+	ASSERT(fmt, "log2: has no format string")
+	log1(fmt:format(...))
+end
+-- делает дополнительную работу по конвертации некоторых параметров, которые не воспринимаются родной функцией string.format
+-- невоспринимаемые параметры (nil, boolean, userdata) должны в строке формата стоять как %s (потому, что будут заменены на строки)
+-- работает медленней, чем log2
+function log3(fmt,...)
+	ASSERT(fmt, "log3: has no format string")
+	local args = {...}
+	for i=1,#args do -- Цикл ipairs здесь не работает, поскольку останавливается на первом _значении_ nil, что исключает возможность иметь nil-аргументы
+		local arg = args[i]
+		local typ = type(arg)
+		if typ == "boolean" then
+			args[i] = tostring(arg)
+		elseif typ == "userdata" then
+			args[i] = "userdata"
+		elseif typ == "table" then
+			args[i] = "table"
+		elseif typ == "nil" then
+			args[i] = "nil"
+		end
+	end
+	local res,msg = pcall(log2, fmt, unpack(args))
+	if not res then
+		log1("log3 failed:\n"..msg)
+	end
+end
+
+function get_item_weight_by_section(section)
+	local res = get_float(section, "inv_weight")
+	ASSERT(res, "get_item_weight_by_section: there is no 'inv_weight' parameters in section '"..section.."'")
+	return res
+end
+
+function get_ammo_weight_by_section(section, count)
+	local box_weight = get_item_weight_by_section(section)
+	local box_size = get_int(section, "box_size", 0)
+	ASSERT(box_size > 0, "get_ammo_weight_by_section: 'box_size' parameters in section '"..section.."' is zero or missed")
+	return box_weight * count / box_size
+end
+
+function print_vector(name, v)
+	log1(string.format("%s: %9.3f, %9.3f, %9.3f", name, v.x, v.y, v.z))
+end
+function print_matrix(name, m)
+	log1(name..":")
+	log1(string.format("[%9.3f, %9.3f, %9.3f, %9.3f]", m.i.x, m.i.y, m.i.z, m._14_))
+	log1(string.format("[%9.3f, %9.3f, %9.3f, %9.3f]", m.j.x, m.j.y, m.j.z, m._24_))
+	log1(string.format("[%9.3f, %9.3f, %9.3f, %9.3f]", m.k.x, m.k.y, m.k.z, m._34_))
+	log1(string.format("[%9.3f, %9.3f, %9.3f, %9.3f]", m.c.x, m.c.y, m.c.z, m._44_))
+end
+function time2string(time, fmt, order)
+	ASSERT(time, "[_g.time2string] 'time' is a nil reference")
+	local a,b = time:get_value()
+	if not fmt then
+		return time:timeToString(game.CTime.TimeToMilisecs).." "..time:dateToString(game.CTime.DateToDay)..string.format(" [%04x %04x]", a,b)
+	else
+		local y,m,d,h,min,s,ms = time:get()
+		local args = {y=y,m=m,d=d,h=h,min=min,s=s,ms=ms,a=a,b=b}
+		if order then
+			args = {args[order[1]], args[order[2]], args[order[3]], args[order[4]], args[order[5]], args[order[6]], args[order[7]], args[order[8]], args[order[9]]}
+		end
+		return fmt:format(unpack(args))
+	end
+end
+function print_time(title, time)
+	log1(title..": "..time2string(time))
+end
 local fs = getFS()
 function check_module(module_name)
 	local script_name = fs:update_path("$game_scripts$", module_name..".script")
@@ -2175,6 +2441,30 @@ function check_module(module_name)
 		log1("module: "..script_name.."\nerror: "..err)
 	end
 	return res, err
+end
+
+function seconds2ctime(time_sec)
+	local s,ms = math.modf(time_sec)
+	local t = game.CTime()
+	t:setHMSms(0,0,s,ms*1000)
+	return t
+end
+
+-- поверхностное (простое) клонирование таблицы: 
+--  создаётся копия таблицы и копии всех элементов без их клонирования,
+--  т.е. для ссылочных типов обе таблицы будут содержать ссылки на одни и те же данные
+--  метатаблицы не копируются
+function table.clone_simple(tbl)
+	local res = {}
+	for k,v in pairs(tbl) do
+		res[k] = v
+	end
+	return res
+end
+
+function get_day_time_sec(t)
+	local y,m,d,h,min,s,ms = t:get()
+	return h * 3600.0 + min * 60.0 + s + ms * 1e-3
 end
 
 -- коды дополнительных колбеков
@@ -2208,3 +2498,5 @@ function cmd(scmd, ...)
 	end
 	con:execute(scmd)
 end
+
+get_game_id = ogse_unist.get_game_id

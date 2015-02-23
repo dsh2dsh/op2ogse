@@ -1,4 +1,4 @@
-----------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------
 -- ogse_weather_mgr.script
 -- Менеджер динамической погоды
 -- OGS Evolution Teamб 2014
@@ -34,8 +34,8 @@ on_update -- при переходе через границу погодного фрейма выполняет обновление пр
 
 function attach(sm) -- для менеджера сигналов
 	sm:subscribe({signal = "on_init", fun = this.on_actor_init})
-	sm:subscribe({signal = "on_update", fun = this.on_update})
-	sm:subscribe({signal = "on_key_down", fun = this.on_key_down})
+--	sm:subscribe({signal = "on_update", fun = this.on_update})
+--	sm:subscribe({signal = "on_key_down", fun = this.on_key_down})
 	sm:subscribe({signal = "on_first_update", fun = this.on_first_update})
 	sm:subscribe({signal = "on_save", fun = this.on_save})
 end
@@ -45,7 +45,7 @@ function on_actor_init()
 	wm = WeatherManager() -- создание
 end
 
-local total_debug = true
+local total_debug = false
 --local always_reset = true
 
 -- если вторая граница фрейма с выбросом будет ближе пяти минут к моменту выброса,
@@ -226,7 +226,18 @@ search_step:setHMS(0,0,1)
 -- that should use special indoor level as configured
 -- in game_maps_single.ltx
 local function is_scenario(level_name)
-    return (( level_name == "l12_stancia" or level_name == "l12_stancia_2") and not has_alife_info("pri_what_the_fuck"))	
+    return (level_name == "l03u_agr_underground"
+            or level_name == "l04u_labx18"
+            or level_name == "peshera"
+            or level_name == "av_peshera"
+            or level_name == "warlab"
+            or level_name == "marsh"
+            or level_name == "jupiter_underground"
+            or level_name == "labx8"
+            or level_name == "l08u_brainlab"
+            or level_name == "l10u_bunker"
+            or level_name == "l12u_sarcofag"
+            or level_name == "l12u_control_monolith")
 end
 
 local weather_ini = ini_file("weathers\\environment.ltx")
@@ -913,6 +924,14 @@ function WeatherManager:__init()
 	-- проверяем, что уровень имеет свою погоду (обычно подземный)
 	local level_name = level.name()
 	self.indoor_weather = isIndoor(level_name) and weather_by_level[level_name]
+
+        if weather_ini:section_exist( "level_suffix_table" )
+           and weather_ini:line_exist( "level_suffix_table", level.name() )
+        then
+          self.lvl_suffix = weather_ini:r_string( "level_suffix_table", level.name() ) or ""
+        else
+          self.lvl_suffix = ""
+        end
 	
 	self.forecasts = {} -- таблица со всеми прогнозами
     -- перебираем все уровни, создаём соответстсвующие прогнозы
@@ -993,7 +1012,8 @@ end
 function WeatherManager:on_load()
 	ogse_surge_mgr.surge_log("WeatherManager:on_load")
 	
-	if self.reset_weather then
+	if self.reset_weather
+           or not ogse.var_exists("ogse_weather_next_surge_time") then
 		ogse_surge_mgr.surge_log("resetting weather was requested: will delete all saved data")
 		if ogse.var_exists("ogse_weather_next_surge_time") then
 			ogse.delete_var("ogse_weather_next_surge_time")
@@ -1061,6 +1081,7 @@ function WeatherManager:dump_state2lines(max_lines)
 	
 	local str_tab = {}
 	table.insert(str_tab, string.format("engine weather: %s",   level.get_weather()))
+	table.insert(str_tab, string.format("level suffix: %s",     self.lvl_suffix))
 	table.insert(str_tab, string.format("time factor: %5.1f",    level.get_time_factor()))
 	table.insert(str_tab, string.format("frame progress: %4.2f", tf))
 	table.insert(str_tab, string.format("next surge time: %s", time2string(self.next_surge_time)))
@@ -1211,22 +1232,23 @@ local function get_weather_cycle(section)
 	return t
 end
 -- задать параметры границы фрейма и вернуть в виде специальной таблицы
-local function compile_frame_point(point_data)
+function WeatherManager:compile_frame_point(point_data)
 	local y,m,d,h,min,sec,ms = point_data.time:get()
 	local tab = get_weather_cycle(point_data.data.section)
 	tab.exec_time = (h * 3600.0 + min * 60.0 + sec + ms / 1000.0) -- или может быть point_data.data.time_orig
+        tab.env_ambient = tab.env_ambient .. self.lvl_suffix
 	local az,za = sun_pos.sunpos_table(h,min,sec)
 	-- позицию солнца берём из глобального конфига
 	tab.sun_dir = string.format("%f,%f", az,za)
 	return tab
 end
 -- установить текущий погодный фрейм в движке
-local function setup_frame(p1, p2)
+function WeatherManager:setup_frame(p1, p2)
 	ogse_surge_mgr.surge_log("setup_frame: %s - %s", p1.data.section, p2.data.section)
 	ASSERT("ogse_script_weather" == level.get_weather(), "")
 	
-	local t1 = compile_frame_point(p1)
-	local t2 = compile_frame_point(p2)
+	local t1 = self:compile_frame_point(p1)
+	local t2 = self:compile_frame_point(p2)
 	--print_table_inlog(t2, "t2")
 	--
 	SetEnvDescData(t1, t2)
@@ -1275,7 +1297,7 @@ function WeatherManager:update()
 	local script_weather_section = afc:get_p1().data.section
 	if self.script_weather_enabled then
 		level.set_weather("ogse_script_weather", true)
-		setup_frame(afc:get_first_frame())
+		self:setup_frame(afc:get_first_frame())
 		monitoring_weather_sect = script_weather_section
 	elseif self.indoor_weather then
 		monitoring_weather_sect = script_weather_section

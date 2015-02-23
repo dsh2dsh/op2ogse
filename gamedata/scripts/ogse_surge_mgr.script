@@ -28,10 +28,10 @@ function surge_log(f,...)
 	fsurgelog:flush()
 end
 
-local first_surge_wait_time = 9  --get_float("options", "t_first_surge") -- время от начала игры до первого выброса, час.
-local first_surge_time_disp = 2  -- разброс времени первого выброса, час.
-local base_surge_wait_time  = 36 --get_float("options", "t_surge") -- среднее время между выбросами, час.
-local surge_wait_time_disp  = 8  -- разброс времени ожидания, час.
+local first_surge_wait_time = 72 --get_float("options", "t_first_surge") -- время от начала игры до первого выброса, час.
+local first_surge_time_disp = 12 -- разброс времени первого выброса, час.
+local base_surge_wait_time  = 72 --get_float("options", "t_surge") -- среднее время между выбросами, час.
+local surge_wait_time_disp  = 12 -- разброс времени ожидания, час.
 local surge_postpone_time   = 10 -- [час.], время откладывания выброса в случае невозможности его начать по сюжетным ограничениям
 local horror_flag           = system_ini():r_s32("options","horror_flag")
 local psyzones_flag         = system_ini():r_s32("options","psyzones_flag")
@@ -148,9 +148,11 @@ end
 
 function can_start_surge_now()
 	return not (
+--[[
 	   (lname == "l05_bar" and (has_alife_info("aem_fight_wait") or has_alife_info("bar_arena_fight"))) or
 	   (lname == "l06_rostok" and not has_alife_info("bar_rescue_research_done") and not has_alife_info("bar_rescue_research_fail")) or
 	   (lname == "l08_yantar" and not has_alife_info("yan_find_scientist_done") and not has_alife_info("yan_scientist_die") and not has_alife_info("yan_scientist_return_to_bunker")) or
+]]
 	   (lname == "l12u_sarcofag") or 
 	   (lname == "l12u_control_monolith") or 
 	   (lname == "l12_stancia") or 
@@ -159,11 +161,11 @@ function can_start_surge_now()
 	   )
 end
 function get_first_surge_wait_time()
-	local wait_time_sec = (first_surge_wait_time + (math.random() - 0.5) * first_surge_time_disp) * 3600
+	local wait_time_sec = (first_surge_wait_time + math.random( -first_surge_time_disp, first_surge_time_disp ) ) * 3600
 	return seconds2ctime(wait_time_sec)
 end
 function get_surge_wait_time()
-	local wait_time_sec = (base_surge_wait_time + (math.random() - 0.5) * surge_wait_time_disp) * 3600
+	local wait_time_sec = (base_surge_wait_time + math.random( -surge_wait_time_disp, surge_wait_time_disp ) ) * 3600
 	return seconds2ctime(wait_time_sec)
 end
 function get_surge_postpone_time()
@@ -234,7 +236,11 @@ function surge_db_init()
 	surge_db.surge_process_stage_01 = {
 		on_info = {
 			call1 = this.set_info_preblow,  -- инфо предвыброса
-			call2 = news_main_new.vubros_msg,  -- новость о выбросе
+                        call2 = function()
+                          sleep_manager.stopper()
+                          amk.save_variable("blowout",1)
+                        end,
+			call3 = news_main_new.vubros_msg,  -- новость о выбросе
 		},
 		on_info_deferred = {
 			if_surface = {
@@ -261,6 +267,9 @@ function surge_db_init()
 	surge_db.surge_process_stage_03 = {
 		on_info = {
 			call1 = this.set_info_blow,
+                        call2 = function()
+                          amk.save_variable("blowout",2)
+                        end,
 			if_surface = {
 				Flag2 = 1,
 			},
@@ -276,7 +285,8 @@ function surge_db_init()
 	}
 	surge_db.surge_process_stage_04 = {-- первые визуальные признаки выброса
 		on_info = {
-			call1 = ogse_anomaly.blow_flags, -- нужно делать без вариантов незаависимо от подземки
+			call1 = amk_anoms.pre_blow_off, -- нужно делать без вариантов незаависимо от подземки
+                        call2 = amk_mod.blowout_modif_arts,
 			if_surface = {Flag2 = 1,},
 			if_underground = {Flag2 = 0,},
 		},
@@ -291,7 +301,7 @@ function surge_db_init()
 			},
 		},
 		on_reinit = {
-			call1 = ogse_anomaly.blow_flags, -- Поднимаем флаги выброса для локаций
+			call1 = amk_anoms.pre_blow_off, -- Поднимаем флаги выброса для локаций
 			if_surface = {Flag2 = 1},
 			if_underground = {Flag2 = 0},
 		},
@@ -299,7 +309,7 @@ function surge_db_init()
 	surge_db.surge_process_stage_05 = { --3. Проигрываем промежуточные эффекты
 		on_info = {
 			call1 = news_main_data.on_disconnect_vbs, -- выдаем сообщение о дисконнекте
-			call2 = this.f_vibros_meter, -- счётчик выбросов - нужен чтобы гарантировано игроку показать пси-выброс, но не слишком рано
+--			call2 = this.f_vibros_meter, -- счётчик выбросов - нужен чтобы гарантировано игроку показать пси-выброс, но не слишком рано
 			call3 = this.set_no_net_signal,
 			if_surface = {Flag2 = 1,},
 			if_underground = {Flag2 = 0,},
@@ -340,7 +350,10 @@ function surge_db_init()
 	}
 	surge_db.surge_process_stage_07 = {-- 5. Начинаем расколбас
 		on_info = {
-			call1 = this.deadly_blowout, -- addon by KamikaZze
+--			call1 = this.deadly_blowout, -- addon by KamikaZze
+                        call1 = function()
+                          amk.save_variable("blowout",3)
+                        end,
 			if_surface = {
 				call2 = ogse.kill_crow,
 				Flag2 = 1, 
@@ -461,6 +474,9 @@ function surge_db_init()
 	surge_db.surge_process_stage_12 = surge_db.surge_process_stage_09
 	surge_db.surge_process_stage_13 = {-- 6. Выброс близится к концу
 		on_info = {
+                        call1 = function()
+                          amk.save_variable("blowout",4)
+                        end,
 			if_surface = {
 				Flag2 = 1, 
 				Dead2 = 1,				
@@ -516,7 +532,7 @@ function surge_db_init()
 	surge_db.surge_process_stage_15 = {-- 6. Выброс близится к концу
 		on_info = {
 			if_surface = {
-				call1 = ogse.spawn_crow,
+--				call1 = ogse.spawn_crow,
 			},
 			call1 = this.surge_final,
 		},
@@ -526,7 +542,7 @@ function surge_db_init()
 end
 
 function on_surge_end()
-
+--[[
 	local blowout_count = ogse.load_variable("blowout_count",0)
 	blowout_count = blowout_count + 1
 	ogse.save_variable("blowout_count",blowout_count)
@@ -548,13 +564,22 @@ function on_surge_end()
 	this.horror_and_arts()
 	ogsm_respawn.level_spawn()
 	move_mgr.invalidate_pp_accessibility()
+]]
+	amk_anoms.after_blow_on()
+	sak.off_testobj()
+	amk.del_variable("blowout")
 	db.actor:disable_info_portion("blowout")
 	db.actor:disable_info_portion("pre_blowout2")
 	if news_main_data then news_main_data.on_connect_vbs() end -- выдаем сообщение о коннекте
 	if news_main_new then news_main_new.vubros_out_msg() end  -- сообщение о завершении выброса
 	db.actor:give_info_portion("net_signal") -- связь восстановлена	
+        if game_options.zombie_team == 1 then
+            tag_spb.zombie_team()
+        end 
+	amk.start_timer("autosave_blowout", 10, "") -- autosave
+--[[
 	ogse_yan_random_quest.reinit_item_list() -- получаем новый список предметов у Сахарова (Mixser)
-	
+]]	
 end
 
 function surge_final()
@@ -620,9 +645,11 @@ local function parse_and_process_surge_stage(stage_info)
 				parse_and_process_surge_stage(item)
 			end
 		elseif key == "if_not_safe" then
+		  if not amk_mod.outfit_hideout() then -- защита от выброса броником
 			if not ogse_hideouts.npc_inside_safe_zone(db.actor) then
 				parse_and_process_surge_stage(item)
 			end
+                  end
 		elseif key == "rnd" then
 			local stage = item
 			stage = item[math.random(1,#item)]
@@ -670,7 +697,7 @@ function on_actor_update()
 		end	
 		if db.Dead2 == 1 and db.FlagEsc == 0 then
 			g_R_Vibros:Run()
-			hit_actor()
+--			hit_actor()
 			play_sounds()
 			level.add_pp_effector("dead_zone.ppe", 1003, true)
 			-- level.add_pp_effector("radiation.ppe", 1003, true)
@@ -874,7 +901,7 @@ function play_sounds()
 		elseif j==2 then
 			sound_obj_right = sound_object([[ambient\rnd_outdoor\rnd_moan1]])
 		elseif j==3 then
-			sound_obj_right = sound_object([[ambient\rnd_outdoor\rnd_moan1]])
+			sound_obj_right = sound_object([[ambient\rnd_outdoor\rnd_moan2]])
 		elseif j==4 then
 			sound_obj_right = sound_object([[ambient\rnd_outdoor\rnd_dark6]])
 		end
