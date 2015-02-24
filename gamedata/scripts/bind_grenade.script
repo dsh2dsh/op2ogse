@@ -1,0 +1,105 @@
+--[[
+Биндер гранаты. Модмейкеру на заметку:
+Граната движком обрабатывается следующим образом:
+При броске граната в руках удаляется, вместо нее спавнится другая и она уже летит. Соответственно, вызывается сначала net_spawn для новой, а затем net_destroy для первой гранаты.
+А при взрыве net_destroy вызывается примерно через секунду после фактического взрыва, когда отыграны все звуки и партиклы. Для обхода этого момента контролируется время спавна гранаты spawn_time. Если оно больше 10 секунд (примерное время от броска (переспавна) до взрыва и вызова net_destroy), то граната не взорвалась.
+]]
+
+function init(obj)
+	-- Биндить гранату нужно только в особых случаях. 
+	if (not has_alife_info("stealth3_done") or has_alife_info("stealth_blow_sidor_have") or obj:section() ~= "grenade_f1") and 
+		not string.find(obj:section(), "grenade_flash")
+	then
+		return
+	end
+
+    local new_binder = grenade_binder(obj)
+    obj:bind_object(new_binder)
+end
+
+---------------------------------------------------------------------------------------------
+-- Порядок загрузки:
+-- reload
+-- reinit
+-- load
+-- net_spawn
+---------------------------------------------------------------------------------------------
+class "grenade_binder" (object_binder)
+function grenade_binder:__init(obj) super(obj)
+end 
+
+function grenade_binder:reload(section)
+    object_binder.reload(self, section)
+end
+
+function grenade_binder:reinit()
+    object_binder.reinit(self)
+end
+
+function grenade_binder:net_save_relevant()
+    return true
+end
+
+function grenade_binder:save(packet)
+    object_binder.save(self, packet)
+end
+
+function grenade_binder:load(reader)
+	object_binder.load(self, reader)
+end
+
+function grenade_binder:net_spawn(data)
+	self.spawn_time = time_global()
+--	get_console():execute("load ~~~ net_spawn: "..self.object:section().." "..self.spawn_time)
+	
+    if not object_binder.net_spawn(self, data) then
+        return false
+    end
+    return true
+end
+
+function grenade_binder:net_destroy()
+--	get_console():execute("load ~~~ net_destroy: "..self.object:section().." "..time_global())
+	
+	if db.actor and time_global()-self.spawn_time < 10000 then		-- меньше 10 секунд от спавна = взрыв
+		--get_console():execute("load ~~~ blow: "..self.object:id().." "..time_global())
+
+		-- проверка светошумовой гранаты
+		if string.find(self.object:section(), "grenade_flash") and 
+			db.actor:position():distance_to(self.object:position()) < 9
+		then
+			db.actor:give_info_portion("grenade_flash_blow")
+		end
+
+		-- подрыв Сидора
+		if 	has_alife_info("stealth_can_blow_sidor") and
+--			db.actor:position():distance_to(vector():set(-246.994735717773,-18.7829532623291,-134.143127441406)) < 2 and
+			level.name() == "l12_stancia_2"
+		then
+			db.actor:give_info_portion("stealth_blow_sidor_have")
+		end
+	end
+
+	object_binder.net_destroy(self)
+end
+
+function grenade_binder:update(delta)
+    object_binder.update(self, delta)
+end
+
+function flash_bum1()
+	level.add_pp_effector("snd_shock.ppe", 2994, true)
+		amk.start_timer("run", 7.0, "bind_grenade.flash_bum2()")
+end
+function flash_bum2()
+	level.add_pp_effector("total_recall.ppe", 2993, true)
+	level.remove_pp_effector(2994)
+		amk.start_timer("run", 2.0, "bind_grenade.flash_bum3()")
+end
+function flash_bum3()
+	level.remove_pp_effector(2993)
+end
+function grenade_flash_disable()
+	amk.start_timer("grenade_flash_disable", 0.2)
+end
+
