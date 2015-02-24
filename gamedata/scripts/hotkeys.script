@@ -1,14 +1,14 @@
 -- Скриптовая обработка "горячих" клавиш в игре. Основано на решении от charsi
 
-local con = nil -- переменная для объекта консоли
+local con = get_console() -- переменная для объекта консоли
 local con_command = "mm_net_player_name" -- консольная команда
 local def_value = "_" -- значение по умолчанию - символ подчеркивания
 local str = ""
+local grenade_fix_on = false
  
 function init()
 	-- инициализируем схему
 	local key
-	con = get_console() -- кешируем консоль
 	con:execute( con_command .." ".. def_value ) -- инициализируем дефотлным значением, т.к. кнопка не нажата
 	
 	-- снимаем предыдущие назначения
@@ -29,7 +29,6 @@ function init()
 	set_event_callback(key_bindings.kNIGHT_VISION, "pnv")
 	set_event_callback(key_bindings.kSCORES, "reminds")
 	set_event_callback(key_bindings.kCAM_4, "runner")
-	--set_event_callback(key_bindings.kWPN_NEXT, "grenade_fix")
 	-- еще на допопции можно использовать kCAM_ZOOM_IN, kCAM_ZOOM_OUT
 end
 
@@ -43,6 +42,16 @@ function set_event_callback(event, func)
 	end
 end
 
+function remove_event_callback(event)
+	local key
+	for k,v in ipairs(bind_to_keyname(event)) do
+		if DIK_keys["DIK_"..v] then
+			key = "k"..string.gsub(v,"dik_","") -- формируем ключ
+			con:execute("unbind_console "..key) -- разбиндиваем функцию
+		end
+	end
+end
+
 function update()
 	-- получаем из консоли значение параметра для нашей команды
 	str = con:get_string(con_command) 
@@ -52,6 +61,19 @@ function update()
 	if str~=def_value and this[str] then
 		this[str]()
 		con:execute(con_command.." "..def_value) -- записываем значение по умолчанию
+	end
+	
+	-- скриптовый фикс смены гранат
+	if db.actor:active_slot() == 3 then
+		if not grenade_fix_on then
+			set_event_callback(key_bindings.kWPN_NEXT, "grenade_change")
+			grenade_fix_on = true
+		end
+	else
+		if grenade_fix_on then
+			remove_event_callback(key_bindings.kWPN_NEXT)
+			grenade_fix_on = false
+		end
 	end
 end
 
@@ -74,6 +96,11 @@ local keys = {
 	[200] = 'UP', [201] = 'PRIOR', [203] = 'LEFT', [205] = 'RIGHT', [207] = 'END', [208] = 'DOWN', [209] = 'NEXT',
 	[210] = 'INSERT', [211] = 'DELETE', [219] = 'LWIN', [220] = 'RWIN', [221] = 'APPS'
 	}
+--[[Еще есть кнопки мыши, но мы их не биндим:
+    const MOUSE_1 = 256;
+    const MOUSE_2 = 512;
+    const MOUSE_3 = 1024;
+--]]
 
 -- Снятие предыдущих назначений bind_console
 function unbind_all_keys()
@@ -123,7 +150,7 @@ function runner()
 end
 
 -- фикс смены типа гранаты
-function grenade_fix()
+function grenade_change()
 	if db.actor:active_slot() ~= 3 or not db.actor:active_item() then return end
 
 	local grenade = db.actor:active_item()
@@ -163,6 +190,105 @@ function grenade_fix()
 	alife():create(section, vector():set(0,0,0), 0, 0, db.actor:id())
 end
 
+-- Групповой перенос предметов в/из нычки/трупа
+local carbody_addons, used_box
+
+function on_info(info_id)
+	if info_id == "ui_car_body" and used_box then
+		carbody_addons = CCarbodyAddons(level.main_input_receiver(), used_box)
+		
+	elseif info_id == "ui_car_body_hide" and used_box then
+		carbody_addons:Remove()
+		carbody_addons = nil
+		used_box = nil
+	end
+end
+
+function on_use(obj, who)
+	used_box = obj
+end
+
+function on_item_drop(obj)
+	if not has_alife_info("ui_car_body") or not carbody_addons or obj:section() == "separator" then return end
+	
+	carbody_addons.droped_section = obj:section()
+	carbody_addons.taken_section = nil
+	carbody_addons.items_in_box[obj:id()] = carbody_addons.droped_section
+end
+
+function on_item_take(obj)
+	if not has_alife_info("ui_car_body") or not carbody_addons or obj:section() == "separator" then return end
+
+	carbody_addons.taken_section = obj:section()
+	carbody_addons.droped_section = nil
+	carbody_addons.items_in_box[obj:id()] = nil
+end
+
+-------------------------
+class "CCarbodyAddons" (CUIScriptWnd)
+
+function CCarbodyAddons:__init(owner, used_box) super()
+	self.owner = owner
+	self.used_box = used_box
+	self:InitControls()
+	self:InitCallBacks()
+	self:ScanInventory()
+	self:Show(true)
+end
+
+function CCarbodyAddons:InitControls()
+	self:Init(0,0,1024,768)
+	self:Enable(true)
+
+	local xml = CScriptXmlInit()
+	xml:ParseFile("carbody_addons.xml")
+	self:Register(xml:Init3tButton("move_btn", self), "move_btn")
+	self.owner:AttachChild(self)
+end
+
+function CCarbodyAddons:InitCallBacks()
+	self:AddCallback("move_btn", ui_events.BUTTON_CLICKED, self.move_items, self)
+end
+
+function CCarbodyAddons:ScanInventory()
+	self.items_in_box = {}
+	local obj
+	for id = 1,65534 do
+		obj = level.object_by_id(id)
+		
+		if obj and obj:parent() and obj:parent():id() == self.used_box:id() then
+			self.items_in_box[id] = obj:section()
+		end
+	end
+end
+
+function CCarbodyAddons:Remove()
+	self.owner:DetachChild(self)
+end
+
+function CCarbodyAddons:move_items()
+	if self.droped_section then
+		db.actor:iterate_inventory(function (dummy, item)
+			if item:section() == self.droped_section then
+				db.actor:transfer_item(item, self.used_box)
+				self.items_in_box[item:id()] = self.droped_section
+			end 
+		end, nil)
+
+	elseif self.taken_section then
+		for id,section in pairs(self.items_in_box) do
+			if section == self.taken_section then
+				self.used_box:transfer_item(level.object_by_id(id), db.actor)
+				self.items_in_box[id] = nil
+			end
+		end
+	end
+
+	self.droped_section = nil
+	self.taken_section = nil
+end
+------------------------------
+
 function dik_f3()
 	run_file("..\\gamedata\\scripts\\test.script")
 end
@@ -181,3 +307,4 @@ end
 function run_chunk(file)
     local chunk, err = dofile(file)
 end
+
