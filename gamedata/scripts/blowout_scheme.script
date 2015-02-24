@@ -1,0 +1,766 @@
+----------------------------------------------
+-- Copyright (c) 2007 Dmitri 'Red75' Roschin                                              
+----------------------------------------------
+-- Blowout hide v0.25 Behavioral scheme 
+----------------------------------------------
+
+evid_blowout=18572
+evid_outside=evid_blowout+1
+evid_preblowout=evid_blowout+2
+evid_anomaly=evid_blowout+3
+--evid_regen=evid_blowout+4
+
+actid_runtohide=evid_blowout
+actid_inhide=evid_blowout+1
+actid_preblow=evid_blowout+2
+actid_monopray=evid_blowout+3
+actid_anomaly=evid_blowout+4
+
+--[[
+class "evaluator_regen" (property_evaluator)
+
+function evaluator_regen:__init(st,fullhealthtime) super(nil,"evaluator_regen")
+  self.st=st
+  self.fhtime=fullhealthtime
+end
+
+function evaluator_regen:evaluate()
+  local npc=self.object
+  if not npc:alive() then
+    amk.mylog("regen nonalive")
+    return false
+  end
+  if not self.prevtime then
+    self.prevtime=time_global()
+  end
+  local delta=time_global()-self.prevtime
+  self.prevtime=time_global()
+  local healthinc=npc:max_health()/self.fhtime*delta
+  amk.mylog("regen for "..npc:character_name().." "..healthinc.." "..npc.health)
+  if npc.health>0 and npc.health<npc:max_health() then
+    npc.health=npc.health+healthinc
+  amk.mylog("postregen for "..npc:character_name().." "..healthinc.." "..npc.health)
+  end
+  return false
+end
+]]
+
+class "evaluator_anomaly" (property_evaluator)
+
+function evaluator_anomaly:__init(st) super(nil,"evaluator_anomaly")
+  self.st=st
+  self.prevstr=""
+  self.st.anomnotdone=false
+  self.st.prevanom=""
+  self.st.curanom=""
+end
+
+function evaluator_anomaly:evaluate()
+  local npc=self.object
+  if not self.prev_pos then
+    self.prev_pos=vector():set(0,-100,0)
+  end
+  if self.prev_pos:distance_to(npc:position())>15 then
+    self.st.avg_dir=npc:position():sub(self.prev_pos):normalize()
+    self.prev_pos=npc:position()
+    local list=amk_anoms.get_anomaly_list(npc,20)
+    for i,o in ipairs(list) do
+			amk_anoms.add_restriction(npc,o.id,o.name)
+    end
+  end
+  return amk_anoms.have_pending_sync(npc)
+end
+
+
+class "evaluator_blowout" (property_evaluator)
+
+function evaluator_blowout:__init(st) super(nil,"evaluator_blowout")  
+  self.st=st
+  self.prevblow=0
+end
+
+function evaluator_blowout:evaluate()
+  local npc=self.object
+  --get_console():execute("load ~~~eval blowout "..npc:character_name())
+  --get_console():execute("flush")
+  if amk_mod.blowout_type()>0 or xr_wounded.is_wounded(npc) then return false end
+  local blowout=amk.load_variable("blowout",0)
+  if self.prevblow==3 and blowout~=3 then
+    self.prevblow=blowout
+    npc.health=1
+  end
+  if blowout==0 and self.st.out_rest then
+    npc:add_restrictions(self.st.out_rest,"") --self.st.in_rest)
+    self.st.out_rest=nil
+    self.st.in_rest=nil
+  end
+  if blowout==0 then
+    self.st.need_run=false
+  end
+  if blowout==3 then
+    if self.hittime==nil or self.hittime<time_global() then
+      self.hittime=time_global()+1000
+      if amk_mod.on_blowout_hit(npc,self.st.hide) then
+        self.st.need_run=true
+        if npc:alive() then
+          xr_wounded.hit_callback(npc:id())
+        end
+      end
+    end
+  end
+  if self.st.washitat and self.st.washitat>time_global() then
+    return false
+  end  
+  return blowout>=2 and (not self.st.nohide)
+end
+
+class "evaluator_monolith_blowout" (property_evaluator)
+
+function evaluator_monolith_blowout:__init(st) super(nil,"evaluator_monolith_blowout")  
+  self.st=st
+end
+
+function evaluator_monolith_blowout:evaluate()
+  if amk_mod.blowout_type()>0 then return false end
+  local blowout=amk.load_variable("blowout",0)
+  return blowout==3
+end
+
+class "evaluator_preblowout" (property_evaluator)
+
+function evaluator_preblowout:__init(st) super(nil,"evaluator_preblowout")  
+  self.st=st
+end
+
+function evaluator_preblowout:evaluate()
+  if amk_mod.blowout_type()>0 then return false end
+  local npc=self.object
+  local blowout=amk.load_variable("blowout",0)
+  return blowout==1
+end
+
+class "evaluator_outside" (property_evaluator)
+
+function evaluator_outside:__init(st) super(nil,"evaluator_outside")  
+  self.st=st
+  self.prev=false
+  self.uptime=nil
+end
+
+local ret_points={}
+
+function evaluator_outside:evaluate()
+  local npc=self.object
+  --get_console():execute("load ~~~eval inhide exec "..npc:character_name())
+  --get_console():execute("flush")
+  if self.st.washitat and self.st.washitat>time_global() then
+    return false
+  end
+  self.st.washitat=nil
+  if amk_mod.blowout_type()>0 then return false end
+  local blowout=amk.load_variable("blowout",0)
+  if blowout>=2 then
+    if self.st.nohide then
+      -- Если укрытие невозможно найти, то игнорируем выброс
+      return false
+    end
+    -- Для фазы 2 разрешим неписям выбегать из укрытия если есть враг или опасность
+    if npc:best_danger() and npc:best_danger():type()==danger_object.grenade then
+      return false
+    end
+
+    local inhide=amk_mod.check_npc_in_hideout(npc,self.st.hide)
+    local retpt=false
+    for i,o in ipairs(ret_points) do
+      if o.pos:distance_to(npc:position())<0.7 then
+        retpt=true
+        break
+      end
+    end
+    if self.prev and (not inhide) and (not retpt) then
+    -- Непись пытается вылезти из укрытия. Поставим точку возвращения
+      table.insert(ret_points,{pos=npc:position()})
+    end
+    self.prev=inhide
+    -- Непись считается вылезшим из укрытия если он снаружи или рядом с точкой возврата
+    inhide=inhide and (not retpt)
+    
+    -- Если непись зашёл в укрытие, то дадим ему ещё 1 сек чтобы зайти глубже
+    if inhide and self.uptime and self.uptime>time_global() then
+      -- Уже в укрытии, но секунда ещё не прошла
+--      if npc:character_name()=="Волк" then amk.mylog(npc:character_name().." outside1") end
+      return true
+    elseif inhide and self.uptime and self.uptime<=time_global() then
+      -- В укрытии. Секунда только что прошла - спрятался
+	  self.st.hide.hidden = true
+    elseif inhide and (not self.uptime) then
+      -- Только что зашёл в укрытие
+      self.uptime=time_global()+1000
+--      if npc:character_name()=="Волк" then amk.mylog(npc:character_name().." outside2") end
+      return true
+    elseif not inhide then
+      -- Не в укрытии
+      self.uptime=nil
+    end
+    if inhide then 
+      self.st.need_run=false
+    end
+    return (not inhide)
+  else
+    self.st.hidefound=nil
+    
+    return false
+  end
+end
+
+class "action_anomaly" (action_base)
+
+function action_anomaly:__init(st) super(nil,"action_anomaly")
+  self.st=st
+end
+
+function action_anomaly:initialize()
+  action_base.initialize(self)
+  local npc=self.object
+	amk_anoms.syncronize(npc)
+	npc:set_path_type(game_object.level_path)
+	npc:set_detail_path_type(move.line)
+	npc:set_desired_position()
+	npc:set_desired_direction()
+	local lvid=npc:vertex_in_direction(npc:level_vertex_id(),npc:direction(),2)
+	utils.send_to_nearest_accessible_vertex(npc,lvid)
+end
+
+function action_anomaly:execute()
+  action_base.execute(self)
+  local npc=self.object
+
+	--[[  amk.mylog("now he has...")
+  local inr=npc:in_restrictions()
+  for r in string.gmatch(inr, "[^,]+") do
+    amk.mylog(r)
+  end
+  get_console():execute("load ~~~actexec anomaly end "..npc:character_name())
+  get_console():execute("flush")
+  ]]
+end
+
+class "action_runtohide" (action_base)
+
+function action_runtohide:__init(st) super(nil,"action_runtohide")
+  self.st=st
+end
+
+function action_runtohide:initialize()
+  action_base.initialize(self)
+  local npc=self.object
+  npc:set_detail_path_type(move.line)
+  npc:set_path_type(game_object.level_path)
+  -- get_console():execute("load ~~~runtohide init "..npc:character_name())
+  -- get_console():execute("flush")
+  -- Ищем ближайшее укрытие
+  if not self.st.hidefound then
+    local hide,lvid=nearest_hide(npc) --  ищем укрытия без удаления рестрикторов
+    if not hide then
+      if self.st.out_rest==nil then
+        self.st.out_rest=npc:out_restrictions()
+        self.st.in_rest=npc:in_restrictions()
+				npc:remove_restrictions(self.st.out_rest,"")
+--        npc:remove_all_restrictions()
+      end
+      hide,lvid=nearest_hide(npc) -- ищем укрытие с удалёнными рестрикторами
+    end
+    if hide==nil then
+      self.st.nohide=true
+      amk.mylog(npc:character_name().." has no hide")
+      return
+    end
+    self.st.hidefound=true
+    self.st.hide=hide
+    self.st.lvid=lvid
+    -- if npc:name()=="mil_freedom_member0021" then
+      -- amk.mylog(npc:character_name().." hc "..hide.center.." lvid "..lvid)
+    -- end
+  end
+  if level.vertex_position(self.st.lvid):distance_to(npc:position())>30 then
+    self.st.need_run=true
+  end
+  if self.st.need_run then
+    state_mgr.set_state(npc,"sprint")
+  else
+    state_mgr.set_state(npc,"assault")
+    self.nosprint=true
+  end
+  -- amk.mylog(npc:name().." to "..self.st.lvid.." center "..self.st.hide.center)
+  utils.send_to_nearest_accessible_vertex(npc,self.st.lvid)
+  self.kicktime=time_global()
+  self.ttchst=0
+  self.sprinttime=time_global()+10000
+end
+
+function action_runtohide:execute()
+  action_base.execute(self)
+  local npc=self.object
+  -- get_console():execute("load ~~~runtohide exec "..npc:character_name())
+  -- get_console():execute("flush")
+  if self.st.hide==nil then
+    return
+  end
+  if self.st.lvid and self.st.lvid~=self.st.hide.center and level.vertex_position(self.st.lvid):distance_to(npc:position())<3 then
+    self.st.lvid=self.st.hide.center
+    utils.send_to_nearest_accessible_vertex(npc,self.st.lvid)
+  end
+  if (self.st.need_run or self.sprinttime<time_global()) and self.nosprint and self.ttchst<time_global() then
+    self.ttchst=time_global()+2000
+    state_mgr.set_state(npc,"sprint")
+    self.nosprint=false
+  elseif npc:best_enemy() and npc:see(npc:best_enemy()) and self.ttchst<time_global() then
+    self.ttchst=time_global()+4000
+    state_mgr.set_state(npc,"assault_fire",nil,nil,{look_object=npc:best_enemy()})
+    self.nosprint=true
+  end
+  if self.kicktime<time_global() then
+    self.kicktime=time_global()+2000
+    local vid=level.vertex_in_direction(npc:level_vertex_id(),level.vertex_position(self.st.lvid):sub(npc:position()),30)
+    if level.vertex_position(vid):distance_to(npc:position())>29 then
+      utils.send_to_nearest_accessible_vertex(npc,vid)
+    else
+      utils.send_to_nearest_accessible_vertex(npc,self.st.lvid)
+    end
+--   state_mgr.set_state(npc,"assault")
+  end
+end
+
+function nearest_hide(npc)
+  local lname=level.name()
+  local hides=amk_hideouts.hide[lname]
+  local mindist=1000000
+  local lvid=npc:level_vertex_id()
+  local hide
+  if hides then
+    for i,o in ipairs(hides) do
+      if o.center and npc:accessible(o.center) then
+        local dist=level.vertex_position(o.center):distance_to(npc:position())
+        if o.community and o.community==npc:character_community() then dist=dist/2 end
+        if dist<mindist then
+          mindist=dist
+          lvid=o.center
+          hide=o
+        end
+        for j,v in ipairs(o.entrances) do
+          if npc:accessible(v) then
+            dist=level.vertex_position(v):distance_to(npc:position())
+            if o.community and o.community==npc:character_community() then dist=dist/2 end
+            if dist<mindist then
+              mindist=dist
+              lvid=v
+              hide=o
+            end
+          end
+        end
+      end
+    end
+  end
+  return hide,lvid,mindist
+end
+
+class "action_inhide" (action_base)
+
+function action_inhide:__init(st) super(nil,"action_inhide")
+  self.st=st
+end
+
+local wstates={"caution","choose","press","ward","search","salut","trans_0","trans_1","trans_zombied"}
+
+function action_inhide:initialize()
+  action_base.initialize(self)
+  local npc=self.object
+  npc:set_detail_path_type(move.line)
+  npc:set_path_type(game_object.level_path)
+  if self.st.hide==nil then self.st.hide={} end
+  if self.st.hide.place==nil then self.st.hide.place={} end
+  -- get_console():execute("load ~~~inhide init "..npc:character_name())
+  -- get_console():execute("flush")
+  -- Выбираем точку внутри укрытия
+  local ang0=math.random(0,360)
+  local r0=math.random(1,15)
+  local v0=vector():set(1,0,0)
+  self.lvid=npc:level_vertex_id()
+  local stop=false
+  for r=r0,0,-1 do
+    for ang=ang0,ang0+360,30 do
+      local v=utils.vector_rotate_y(v0,ang)
+      local lvid=level.vertex_in_direction(self.st.hide.center,v,r)
+      if npc:accessible(lvid) and (not self.st.hide.place[lvid]) and
+         amk_mod.check_npc_in_hideout(level.vertex_position(lvid),self.st.hide) and 
+         level.vertex_position(lvid):distance_to(level.vertex_position(self.st.hide.center))>r/1.5 then
+        self.lvid=lvid
+        stop=true
+        break
+      end
+      if stop then break end
+    end
+  end
+  state_mgr.set_state(npc,"raid")
+  self.begin=time_global()
+  self.kicktime=time_global()+5000
+  utils.send_to_nearest_accessible_vertex(npc,self.lvid)
+  self.tgtvec=control_entrance_vec(self.lvid,self.st.hide)
+  self.st.hide.place[self.lvid]=true
+ end
+
+function action_inhide:execute()
+  action_base.execute(self)
+  local npc=self.object
+  -- get_console():execute("load ~~~inhide exec "..npc:character_name())
+  -- get_console():execute("flush")
+  if npc:level_vertex_id()==self.lvid and self.begin and self.begin<time_global() then
+    self.begin=nil
+    state_mgr.set_state(npc,"hide_na",nil,nil,{look_position=self.tgtvec})
+  elseif npc:level_vertex_id()~=self.lvid then
+    if self.kicktime<time_global() then
+      if not self.begin then
+        state_mgr.set_state(npc,"raid")
+      end
+      self.kicktime=time_global()+5000
+      utils.send_to_nearest_accessible_vertex(npc,self.lvid)
+      self.begin=0
+    end
+  end
+end
+
+function action_inhide:finalize()
+  action_base.finalize(self)
+  local npc=self.object
+  if self.st.hide and self.st.hide.place then
+    self.st.hide.place[self.lvid]=nil
+  end
+  -- get_console():execute("load ~~~inhide fin "..npc:character_name())
+  -- get_console():execute("flush")
+end
+
+function control_entrance_vec(vtx,hide)
+  local delt=level.vertex_position(vtx):sub(level.vertex_position(hide.center))
+  local tgtvtx=vector():set(0,0,0)
+  local maxdist=-10000
+  for i,v in ipairs(hide.entrances) do
+    local delt1=level.vertex_position(v):sub(level.vertex_position(hide.center))
+    local dist=delt1:dotproduct(delt)
+    if dist>maxdist then
+      maxdist=dist
+      tgtvtx=level.vertex_position(v)
+    end
+  end
+  return tgtvtx
+end
+
+class "action_preblow" (action_base)
+
+function action_preblow:__init(st) super(nil,"action_preblow")
+  self.st=st
+end
+
+local pstates={"preblow"}
+
+function random_cylinder(r0,r1,h0,h1)
+  local ang=math.random()*2*math.pi
+  local r=r0+math.random()*(r1-r0)
+  local h=h0+math.random()*(h1-h0)
+  return vector():set(r*math.sin(ang),h,r*math.cos(ang))
+end
+
+function action_preblow:initialize()
+  action_base.initialize(self)
+  local npc=self.object
+  self.state="preblow"
+  if npc:object("wpn_binoc") then
+    self.state="binocular"
+  end
+  -- Ищем открытое направление. Чтобы не смотрели в стену
+  local vec=vector():set(1,0.5,0)
+  vec:normalize()
+  local maxdist=0
+  if not self.prefang then self.prefang=math.random(0,360) end
+  local preflook
+  preflook,self.prefang=find_open_dir(npc,self.prefang,30)
+  state_mgr.set_state(npc,self.state,nil,nil,{look_position=preflook})
+  stop_play_sound(npc)
+  xr_sound.set_sound(npc,"")
+  self.nextupd=time_global()+math.random(5000,10000)
+  self.st.nohide=nil
+  -- get_console():execute("load ~~~preblow init "..npc:character_name())
+  -- get_console():execute("flush")
+ end
+
+function action_preblow:execute()
+  action_base.execute(self)
+  local npc=self.object
+  if self.nextupd<time_global() then
+    self.nextupd=time_global()+math.random(5000,10000)
+    local preflook
+    preflook,self.prefang=find_open_dir(npc,self.prefang,45)
+    state_mgr.set_state(npc,self.state,nil,nil,{look_position=preflook})
+  end
+  -- get_console():execute("load ~~~preblow exec "..npc:character_name())
+  -- get_console():execute("flush")
+end
+
+function find_open_dir(npc,excludeang,excludewidth)
+  local vec=vector():set(1,0.5,0)
+  vec:normalize()
+  local maxdist=0
+  local preflook=vector():set(0,0,0)
+  local prefang=0
+  for ang=excludeang+excludewidth/2,excludeang+360-excludewidth/2,20 do
+    local vec1=utils.vector_rotate_y(vec,ang)
+    local vtx=level.vertex_in_direction(npc:level_vertex_id(),vec1,100)
+    local dist=level.vertex_position(vtx):distance_to(npc:position())
+    if dist>maxdist then
+      maxdist=dist
+      preflook=level.vertex_position(vtx)
+      prefang=ang
+    end
+  end
+  return preflook,prefang
+end 
+
+class "action_monolith_pray" (action_base)
+
+function action_monolith_pray:__init(st) super(nil,"action_monolith_pray")
+  self.st=st
+end
+
+function action_monolith_pray:initialize()
+  action_base.initialize(self)
+  local npc=self.object
+  self.state="trans_"..math.random(0,1)
+  state_mgr.set_state(npc,self.state)
+  stop_play_sound(npc)
+  xr_sound.set_sound(npc,"")
+end
+
+function action_monolith_pray:execute()
+  action_base.execute(self)
+  local npc=self.object
+end
+
+function set_hide(npc, ini, scheme, section)
+  local st = xr_logic.assign_storage_and_bind(npc, ini, scheme, section)
+end
+
+function add_to_binder(object, char_ini, scheme, section, st)
+  bind_scheme(object,st)
+end
+
+local cnt=0
+
+--Задаем список неписей с игнором на выброс(например постовых, которые уже находятся в зоне укрытия и могут спокойно выполнять свою работу во время выброса)
+--[[------------------------------ ignor blowout -------------------------------]]
+local npcNameBlowoutIgnore = {
+    ["mil_stalker0012"]         = true, --Псих на АС
+    ["yantar_ecolog_general"]   = true, --Сахаров
+    ["mil_freedom_member0009"]  = true, --Охранник Лукаша
+    ["mil_freedom_member0012"]  = true, --Лукаш
+    ["mil_freedom_member0019"]  = true, --Охранник Лукаша
+    ["mil_freedom_member0021"]  = true, --Скряга
+    ["bar_bar_guard"]           = true, --Гарик в баре
+    ["bar_bar_osvedomitel"]     = true, --Информатор в баре
+    ["bar_bar_guard_2"]         = true, --Жорик в баре
+}
+local npcCommunityBlowoutIgnore = {
+    ["zombied"]     = true,
+    ["trader"]      = true,
+    ["arena_enemy"] = true
+}
+local npcSectionBlowoutIgnore = {
+	["kotobegemot_bar"] = true,
+	["kotobegemot_zaton"] = true,
+	["ariadna_bar"] = true,
+	["ariadna_zaton"] = true,
+	["fenrir_zaton"] = true,
+	["fenrir_2chaes"] = true,
+	["fenrir_jupiter"] = true,
+	["wolffrend_talk_zaton"] = true,
+	["wolffrend_talk_zaton2"] = true,
+	["resident_evil_zaton"] = true,
+	["resident_evil_jupiter"] = true,
+	["bibliofrend_talk_zaton"] = true,
+	["bibliofrend_talk_black_zaton"] = true,
+	["anna_zaton"] = true,
+	["anna_zaton2"] = true,
+	["anna_jupiter"] = true,
+	["ludmila_zaton"] = true,
+	["elsa_yantar"] = true,
+	["gena_oso"] = true,
+	["snegir_2chaes"] = true,
+	["snegir2_2chaes"] = true,
+	["snegir3_2chaes"] = true,
+	["bubulyka_zaton"] = true,
+	["lobsang_zaton"] = true,
+	["brodaga_mg"] = true,
+	["brodaga_zaton"] = true,
+	["boroda_jupiter"] = true,
+	["boroda_zaton"] = true,
+	["vesker_zaton"] = true,
+	["proper70_limansk"] = true,
+	["proper70_jupiter"] = true,
+	["proper70_zaton"] = true,
+	["tm_jupiter1"] = true,
+	["parad_tm"] = true,
+	["tm_brother_labirint"] = true,
+	["tm_brother_2chaes"] = true,
+	["volazar"] = true,
+	["volazar_new"] = true,
+	["ozersky"] = true,
+	["predator_npc"] = true
+}
+function bind_scheme(npc,storage)  
+  local evid_wounded=xr_evaluators_id.sidor_wounded_base
+  local monolith=npc:character_community()=="monolith"
+    local zombi = npcCommunityBlowoutIgnore[npc:character_community()] or
+        npcNameBlowoutIgnore[npc:name()] or
+        npcSectionBlowoutIgnore[npc:section()] or
+npc:out_restrictions()=="bar_arena_restrictor" or
+string.find(npc:name(), "aem_a")
+--[[--------------------------------- -----------------------------------]] 
+
+  local manager = npc:motivation_action_manager ()
+  if zombi then
+    manager:add_evaluator (evid_blowout, property_evaluator_const(false))
+    manager:add_evaluator (evid_outside, property_evaluator_const(false))
+    manager:add_evaluator (evid_preblowout, property_evaluator_const(false))
+    manager:add_evaluator (evid_anomaly, property_evaluator_const(false))
+  elseif monolith then
+    manager:add_evaluator (evid_blowout, evaluator_monolith_blowout(storage))
+    manager:add_evaluator (evid_outside, property_evaluator_const(false))
+    manager:add_evaluator (evid_preblowout, property_evaluator_const(false))
+    manager:add_evaluator (evid_anomaly, evaluator_anomaly(storage))
+    local action = action_monolith_pray(storage)
+    action:add_precondition(world_property(stalker_ids.property_alive, true))
+    action:add_precondition(world_property(evid_wounded, false))
+    action:add_precondition(world_property(evid_anomaly, false))
+    action:add_precondition(world_property(evid_blowout, true))
+    action:add_effect(world_property(evid_blowout, false))
+    action:add_effect(world_property(evid_wounded, true))
+    manager:add_action(actid_monopray, action)
+    
+    action=action_anomaly(storage)
+    action:add_precondition(world_property(stalker_ids.property_alive, true))
+    action:add_precondition(world_property(evid_wounded, false))
+    action:add_precondition(world_property(evid_anomaly, true))
+    action:add_effect(world_property(evid_anomaly, false))
+    manager:add_action(actid_anomaly, action)
+   
+    action = manager:action (xr_actions_id.alife)
+    action:add_precondition(world_property(evid_anomaly, false))
+    action:add_precondition (world_property(evid_blowout, false))
+
+    action = manager:action (stalker_ids.action_combat_planner)
+    action:add_precondition(world_property(evid_anomaly, false))
+    action:add_precondition (world_property(evid_blowout, false))
+
+    action = manager:action (stalker_ids.action_danger_planner)
+    action:add_precondition(world_property(evid_anomaly, false))
+    action:add_precondition (world_property(evid_blowout, false))
+  else
+    manager:add_evaluator (evid_blowout, evaluator_blowout(storage))
+    manager:add_evaluator (evid_outside, evaluator_outside(storage))
+    manager:add_evaluator (evid_preblowout, evaluator_preblowout(storage))  
+    manager:add_evaluator (evid_anomaly, evaluator_anomaly(storage))
+    local action = action_runtohide(storage)
+    action:add_precondition(world_property(stalker_ids.property_alive, true))
+    action:add_precondition(world_property(evid_wounded, false))
+    action:add_precondition(world_property(evid_anomaly, false))
+    action:add_precondition(world_property(evid_blowout, true))
+    action:add_precondition(world_property(evid_outside, true))
+    action:add_effect(world_property(evid_outside, false))
+    action:add_effect(world_property(evid_blowout, false))
+    action:add_effect(world_property(evid_wounded, true))
+    manager:add_action(actid_runtohide, action)
+
+    action = action_monolith_pray(storage) -- Фейковый экшн для невозможного случая outside=true blowout=false, который стал возможным вероятно из-за асинхронности hit_callback
+    action:add_precondition(world_property(stalker_ids.property_alive, true))
+    action:add_precondition(world_property(evid_wounded, false))
+    action:add_precondition(world_property(evid_anomaly, false))
+    action:add_precondition(world_property(evid_blowout, false))
+    action:add_precondition(world_property(evid_outside, true))
+    action:add_effect(world_property(evid_outside, false))
+    action:add_effect(world_property(evid_wounded, true))
+    manager:add_action(actid_monopray, action)
+    
+    action=action_inhide(storage)
+    action:add_precondition(world_property(stalker_ids.property_alive,true))
+    action:add_precondition(world_property(stalker_ids.property_enemy, false))
+    action:add_precondition(world_property(stalker_ids.property_danger, false))
+    action:add_precondition(world_property(evid_wounded, false))
+    action:add_precondition(world_property(evid_anomaly, false))
+    action:add_precondition(world_property(evid_blowout,true))
+    action:add_precondition(world_property(evid_outside,false))
+    action:add_effect(world_property(evid_blowout,false))
+    action:add_effect(world_property(evid_wounded, true))
+    manager:add_action(actid_inhide, action)
+
+    action=action_anomaly(storage)
+    action:add_precondition(world_property(stalker_ids.property_alive, true))
+    action:add_precondition(world_property(evid_wounded, false))
+    action:add_precondition(world_property(evid_anomaly, true))
+    action:add_effect(world_property(evid_anomaly, false))
+    manager:add_action(actid_anomaly, action)
+   
+    action=action_preblow(storage)
+    action:add_precondition(world_property(stalker_ids.property_alive,true))
+    action:add_precondition(world_property(evid_wounded, false))
+    action:add_precondition(world_property(stalker_ids.property_enemy, false))
+    action:add_precondition(world_property(stalker_ids.property_danger, false))
+    action:add_precondition(world_property(evid_anomaly, false))
+    action:add_precondition(world_property(evid_preblowout,true))
+    action:add_effect(world_property(evid_preblowout,false))
+    action:add_effect(world_property(evid_wounded, true))
+    manager:add_action(actid_preblow, action)
+    
+    action = manager:action (xr_actions_id.alife)
+    action:add_precondition (world_property(evid_outside, false))
+    action:add_precondition (world_property(evid_blowout, false))
+    action:add_precondition(world_property(evid_anomaly, false))
+
+    action = manager:action (stalker_ids.action_combat_planner)
+    action:add_precondition (world_property(evid_outside, false))
+    action:add_precondition(world_property(evid_anomaly, false))
+
+    action = manager:action (stalker_ids.action_danger_planner)
+    action:add_precondition (world_property(evid_outside, false))
+    action:add_precondition(world_property(evid_anomaly, false))
+--    action:add_precondition (world_property(evid_blowout, false))
+
+    -- action = manager:action (stalker_ids.action_danger_in_direction_search)
+    -- action:add_precondition (world_property(evid_outside, false))
+    -- action:add_precondition (world_property(evid_blowout, false))
+    
+    -- action = manager:action (xr_actions_id.stohe_kamp_base + 3)
+    -- action:add_precondition (world_property(evid_preblowout, false))    
+  end
+  npc:set_enemy_callback(ecall,nil)
+  -- get_console():execute("load ~~~bind scheme end "..npc:character_name())
+  -- get_console():execute("flush")
+end
+
+function ecall(p1,obj,enemy)
+  local near=obj:position():distance_to(enemy:position())<300
+  if not near then
+    obj:enable_memory_object(enemy,false)
+  end
+  if obj:clsid()==clsid.script_stalker and enemy:clsid()==clsid.controller_s and obj:character_community()=="zombied" then
+    return false
+  end
+  if near and db.storage[obj:id()] and db.storage[obj:id()].combat_ignore and db.storage[obj:id()].combat_ignore.action and db.storage[obj:id()].combat_ignore.action.enemy_callback then
+    -- amk.mylog("Calling combat ignore handler for "..obj:name())
+    return db.storage[obj:id()].combat_ignore.action:enemy_callback(obj,enemy)
+  end
+  return near
+end
+
+function hit_callback(obj)
+  if db.storage[obj:id()] and db.storage[obj:id()].blowout_scheme then
+    db.storage[obj:id()].blowout_scheme.washitat=time_global()+20000
+  end
+end
