@@ -1,0 +1,105 @@
+function attach( sm )
+  sm:subscribe({ signal = "on_drop", fun = this.on_drop })
+--  sm:subscribe({ signal = "on_take", fun = this.on_take })
+--  sm:subscribe({ signal = "on_use",  fun = this.on_use })
+end
+
+local inv_mines = {
+  bomba_mina_b_inv = "bomba_mina_b",
+  bomba_mina_n_inv = "bomba_mina_n",
+}
+
+function on_take( obj, sobj )
+  if not sobj then return end
+  local sect = obj:section()
+  if babah.mines.sect[ sect ] then
+      remove_mine( obj )
+      ogse.remove_item_from_inventory( obj )
+      ogse.spawn_item_in_inv( sect .. "_inv" )
+    return true
+  end
+end
+
+function on_use( obj, sobj )
+  if not sobj then return end
+  local real = inv_mines[ obj:section() ]
+  if real then
+    local pos = calc_new_mine_pos()
+    local new = alife():create( real, pos, db.actor:level_vertex_id(), db.actor:game_vertex_id() )
+    dsh.timeout_timer(
+      babah.mines.sect[ real ].delay * 1000,
+      function()
+        babah.addMine( alife():object( new.id ) )
+      end
+    ):start()
+    if level.main_input_receiver() then
+      level.start_stop_menu( level.main_input_receiver(), true )
+    end
+    return true
+  end
+end
+
+function on_drop( obj, sobj )
+  if not sobj then return end
+  local real = inv_mines[ obj:section() ] or (
+    babah.mines.sect[ obj:section() ] and obj:section()
+  )
+  if real and sobj.parent_id == 65535 then
+    remove_mine( obj )
+    ogse.remove_item( obj )
+    local pos = calc_new_mine_pos()
+    local new = alife():create( real, pos, db.actor:level_vertex_id(), db.actor:game_vertex_id() )
+    dsh.timeout_timer(
+      babah.mines.sect[ real ].delay * 1000,
+      function()
+        babah.addMine( alife():object( new.id ) )
+      end
+    ):start()
+    if level.main_input_receiver() then
+      level.start_stop_menu( level.main_input_receiver(), true )
+    end
+    return true
+  end
+end
+
+function remove_mine( obj )
+  local mine = babah.mines.sect[ obj:section() ]
+  if not mine then return end
+  local found = false
+  for k, onLevel in pairs( mine.onLevels ) do
+    for i, id in ipairs( onLevel ) do
+      if obj.id == id then
+        table.remove( onLevel, i )
+        found = true
+        break
+      end
+    end
+    if found then break end
+  end
+  for i, id in ipairs( mine.ids ) do
+    if obj.id == id then
+      table.remove( mine.ids, i )
+      found = true
+      break
+     end
+  end
+  for i, id in ipairs( mine.inInventory ) do
+    if obj.id == id then
+      table.remove( mine.inInventory, i )
+      found = true
+      break
+    end
+  end
+  if found then
+    babah.mines.count = babah.mines.count - 1
+    ASSERT(
+      not babah.mines.count < 0,
+      "babah.mines.count is negative, %d", babah.mines.count
+    )
+  end
+end
+
+function calc_new_mine_pos()
+  local pos = vector():mad( db.actor:position(), db.actor:direction(), 0.5 )
+  return pos
+end
