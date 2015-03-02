@@ -1,0 +1,155 @@
+local weight_normal = 90
+local weight_max = 0
+local items_dropped_max = 10
+
+local kolco = {from = 0.5, to = 1.5}
+local visota = {from = 0.5, to = 1.5}
+
+-- предметы, которые не выбрасываются
+local keep_items = {
+	["fake_wpn_kuvalda"] = true,
+	["fake_wpn_topor"] = true,
+	["wpn_fot"] = true
+}
+
+local sim
+local actor
+local weight_rukzak
+local weight_item
+local ini
+local items = {}
+local items_dropped = {}
+local slot0_id, slot1_id, slot2_id -- предмет в слотах игнорируется, но вес его учитывается
+local slot6_id -- одетый бронежилет игнорируется, но вес его учитывается
+
+function do_vbr()
+	sim = alife()
+	actor = db.actor
+	weight_max = weight_normal+add_weight()
+	if weight_max > 350 then weight_max = 350 end
+	if sim and actor then
+		calc_inventory_weight()
+		-- get_console():execute("load ~~~ вес всего, что на и у ГГ: "..weight_rukzak.." от "..weight_max)
+		if weight_rukzak > weight_max then
+			-- выбрасываем предметы рандомно
+			local items_count = #items
+			local iterations = 0
+			local items_dropped_count = 0
+			local i
+			
+			db.actor:give_info_portion("biznes_remove_special_item")
+			while weight_rukzak > weight_max
+				and iterations < items_count
+				and items_dropped_count < items_dropped_max
+			do
+				i = math.random(items_count) -- случайный предмет
+				if not items_dropped[i] then -- если он еще не был выброшен
+					items_dropped[i] = true
+					items_dropped_count = items_dropped_count + 1
+					actor:drop_item_and_teleport(items[i][1], actor:position():add(calc_vector_add()))
+					weight_rukzak = weight_rukzak - items[i][2]
+					iterations = iterations + 1
+				end
+			end
+			db.actor:disable_info_portion("biznes_remove_special_item")
+			
+			news_manager.send_tip(db.actor, "Из-за перегруза порвался рюкзак.", nil, "nano", 30000)
+		end
+	end
+end
+
+function calc_inventory_weight()
+	items = {}
+	items_dropped = {}
+	weight_rukzak = 0
+	ini = system_ini()
+	
+	slot0_id = (db.actor:item_in_slot(0) and db.actor:item_in_slot(0):id()) or -1
+	slot1_id = (db.actor:item_in_slot(1) and db.actor:item_in_slot(1):id()) or -1
+	slot2_id = (db.actor:item_in_slot(2) and db.actor:item_in_slot(2):id()) or -1
+	slot6_id = (db.actor:item_in_slot(6) and db.actor:item_in_slot(6):id()) or -1
+
+	db.actor:inventory_for_each(process_calc) -- не будет просматривать скрытые слоты
+end
+
+function process_calc(item, npc)
+	if item then 
+	local section = item:section()
+		if section ~= "arc_ballast"
+			and section ~= "ballast"
+			and ini:section_exist(section)
+			and ini:line_exist(section, "inv_weight")
+		then
+			weight_item = ini:r_float(section, "inv_weight")
+			--get_console():execute("load ~~~ в рюкзаке: "..section.." весом: "..weight_item)
+			if weight_item > 0 then
+				local item_id = item:id()
+				-- игнорируем предмет в слотах, на поясе, одетый бронежилет или "защищённый" предмет
+				if  slot0_id ~= item_id
+					and slot1_id ~= item_id
+					and slot2_id ~= item_id
+					and slot6_id ~= item_id
+					and not inventory.on_belt(section)
+					and not keep_items[section]
+					and protected_items.actor_items_keep(section) == false
+				then 
+					table.insert(items, {item, weight_item})
+					table.insert(items_dropped, false)
+				end
+				-- но вес его учитываем
+				weight_rukzak = weight_rukzak + weight_item
+			end
+		end
+	end
+end
+
+function calc_vector_add()
+	local a = math.random() * 2 * math.pi
+	local r = kolco.from + math.random() * math.abs(kolco.to - kolco.from)
+	local x = math.cos(a) * r
+	local z = math.sin(a) * r
+	local y = visota.from + math.random() * math.abs(visota.to - visota.from)
+	return vector():set(x, y, z)
+end
+
+function add_weight()
+	local item = db.actor:item_in_slot(6)
+	if not item then return 0 end
+
+    local ini = system_ini()
+	local section = item:section()
+	if not (ini:section_exist(section) and ini:line_exist(section, "additional_inventory_weight")) then return 0 end
+
+	local diff = level.get_game_difficulty()
+	local cond = item:condition()
+	return ini:r_float(section, "additional_inventory_weight")*(cond+(1-cond)*(3-diff)/3)
+end
+
+function vbr()
+	if  db.vbr > time_global() or
+		db.actor:is_talking() or
+		has_alife_info("ui_car_body") or
+		has_alife_info("actor_fly") or
+		has_alife_info("teleport_started") or
+		db.no_cheat or
+		not db.actor:alive() or
+		(db.actor:active_slot() == 4 and device().fov < 60)
+	then return end
+
+	db.vbr = next_vbr()
+	do_vbr()
+end
+
+function weight_ok()
+	weight_max = weight_normal+add_weight()
+	if weight_max > 350 then weight_max = 350 end
+	calc_inventory_weight()
+	return weight_rukzak <= weight_max
+end
+
+function next_vbr()
+	return time_global()+300000+math.random(-60000,60000)
+end
+
+function vibros()
+end
