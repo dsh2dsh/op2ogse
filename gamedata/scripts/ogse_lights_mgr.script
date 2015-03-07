@@ -1,0 +1,125 @@
+-------------------------------------------------------------------------------
+--| ogse_lights_mgr.script                                                  |--
+--| Lights Manager (диспетчер источников света)                             |--
+--| Malandrinus, OGS Evolution Team, 2012                                   |--
+--| version 1.0                                                             |--
+-------------------------------------------------------------------------------
+
+function attach(sm)
+	sm:subscribe({signal = "on_spawn", fun = this.on_spawn})
+	sm:subscribe({signal = "on_update", fun = this.on_update, queued = true})
+end
+
+local registry = {}
+function schedule_for_signal_exist(signal_name)
+	--log1("lights schedules")
+	--for k,v in pairs(registry) do
+	--	log3("%s: %s", k, type(v))
+	--end
+	return registry[signal_name] ~= nil
+end
+-- регистрация расписаний переключений, заданных в файле ogse_light_schedules.script
+function on_spawn()
+	for signal_name,switch_times in pairs(ogse_light_schedules.light_schedules) do
+		add_light_schedule(signal_name, switch_times)
+	end
+end
+
+-- служебная функция добавления элемента в таблицу с добавлением повторного (теневого) со смещением времени на сутки
+local function add_item(tbl, pos, item)
+	local current_count = #tbl / 2 -- количество "реальных" элементов (без учёта теневой половины массива)
+	table.insert(tbl, pos, item)
+	local item24 = table.clone_simple(item) -- создаём копию элемента расписания (нужен для упрощения алгоритма поиска в диапазоне)
+	item24.time = item.time + 24.0 -- смещаем время на сутки
+	table.insert(tbl, pos + current_count + 1, item24) -- добавляем его тоже во вторую половину массива
+end
+-- служебная функция удаления элемента и его теневого двойника
+local function remove_item(tbl, pos)
+	table.remove(tbl, pos + #tbl) -- удаляем теневой
+	table.remove(tbl, pos) -- удаляем основной
+end
+-- Найти позицию вставки элемента расписания. Аргументы - таблица и элемент с заданным временем.
+-- для корректной работы алгоритма подразумевается, что переданное время находится строго в диапазоне [0, 24) (вторая граница не включена)
+-- вызывающая функция должна за этим следить
+local function find_insert_pos(t, item)
+	for i,it in ipairs(t) do
+		-- ищем первый элемент в массиве со временем больше заданного
+		if it.time > item.time then return i end -- это и будет место вставки
+	end
+	-- если дошли до конца массива и не нашли такой (или массив просто пуст)
+	return #t + 1 -- то выдаём индекс пустой ячейки в конце массива
+end
+-- получить предыдущий сработавший индекс
+local function get_previous_scheduled_index(schedule_data, time)
+	--log1("get_previous_scheduled_index")
+	local i = find_insert_pos(schedule_data, {time = get_game_day_time_h()})
+	local count_2 = #schedule_data / 2
+	return math.fmod(i - 2 + count_2, count_2) + 1
+end
+-- регистрация нового расписания
+function add_light_schedule(
+					signal_name, -- имя сигнала для менеджера сигналов, должно быть уникальным
+					switch_times) -- таблица с расписанием в формате {t1, -t2, t3, -t4}
+	--log2("add_light_schedule: %s, %d", signal_name, #switch_times)
+	ASSERT(not registry[signal_name], "ogse_lights_mgr.register_light_schedule: signal '%' already registred", signal_name)
+	local schedule_data = {last_index = -1, schedule = {}}
+	registry[signal_name] = schedule_data
+	ASSERT(#switch_times > 0, "ogse_lights_mgr.register_light_schedule: registering signal '%'. Schedule is empty!", signal_name)
+	for i,t in ipairs(switch_times) do
+		--log2("i=%d, t=%f", i, t)
+		local abs_t = math.abs(t)
+		ASSERT(abs_t>=0 and abs_t < 24, "ogse_lights_mgr.add_light_schedule: while registering '%s' have wrong time value %d:%f (must be in range [0,24) )", signal_name, i, abs_t)
+		local switching_item = {time = abs_t, turn_on = t > 0}
+		-- вставка элемента расписания
+		--log1("add_light_schedule")
+		local insert_pos = find_insert_pos(schedule_data.schedule, switching_item)
+		add_item(schedule_data.schedule, insert_pos, switching_item)
+	end
+	-- инициализируем последний сработавший индекс
+	schedule_data.last_index = get_previous_scheduled_index(schedule_data.schedule, get_game_day_time_h())
+end
+-- запросить последний сработаший сигнал расписания
+-- используется для инициализации начального состояния лампочки
+function request_last_signal(signal_name)
+	--log2("request_last_signal: %s", signal_name)
+	local schedule_data = registry[signal_name]
+	--if not schedule_data then return end
+	--log2("schedule count = %d", #schedule_data.schedule)
+	--log2("last_index=%d", schedule_data.last_index)
+	local switch_item = schedule_data.schedule[schedule_data.last_index]
+	ogse_signals.get_mgr():call(signal_name, switch_item.turn_on)
+end
+-- удалить источник сигналов расписания
+function remove_light_schedule(signal_name)
+	registry[signal_name] = nil
+end
+-- получить список индексов расписания, сработавших с последнего раза
+local function get_switchers_up_to_the_time(schedule_data, current_time)
+	local schedule = schedule_data.schedule
+	local count = #schedule
+	local count_2 = count / 2
+	local res = {}
+	local last_index = schedule_data.last_index
+	if schedule[last_index].time > current_time then -- если текущий момент всё ещё впереди по времени суток
+		current_time = current_time + 24.0
+	end
+	while current_time >= schedule[last_index + 1].time do
+		last_index = last_index + 1
+		local next_item = schedule[last_index]
+		table.insert(res, next_item)
+	end
+	schedule_data.last_index = math.fmod(last_index - 1, count_2) + 1
+	return res
+end
+
+function on_update()
+	local sm = ogse_signals.get_mgr()
+	local current_time = get_game_day_time_h()
+	for signal_name, schedule_data in pairs(registry) do
+		local switchers = get_switchers_up_to_the_time(schedule_data, current_time)
+		for _,switch_item in pairs(switchers) do
+			--log1("turn_lamp: t="..switch_item.time.." lamp="..switch_item.signal_base.." on="..tostring(switch_item.turn_on))
+			sm:call(signal_name, switch_item.turn_on)
+		end
+	end
+end
