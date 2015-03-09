@@ -1,0 +1,513 @@
+-----------------------------------------------------------------------
+--- ogse_sleep_mgr.script
+--- Менеджер сна и бодрствования ГГ
+--- Исходная версия: xStream, Ab@dDon & DEXXX 2007-2008
+--- Правки и адаптация: KamikaZze, Dusty79 (c) OGS Evolution Team
+--- Версия 2: Malandrinus
+--- version 2.1.1 (02/2013)
+-----------------------------------------------------------------------
+function attach(sm)
+	sm:subscribe({signal = "on_spawn", fun = this.on_spawn})
+	sm:subscribe({signal = "on_use", fun = this.on_item_use})
+	sm:subscribe({signal = "on_update", fun = this.on_update})
+	sm:subscribe({signal = "on_save", fun = this.on_save})
+end
+--auto_attach = true
+--[[
+каждый час сна компенсирует количество часов бодрствования, задаваемое параметром
+	sleep_compensation_factor (по умолчанию == 3)
+индикация недосыпа начинается с накопленного времени бодрствования, задаваемого параметром
+	normal_sleep_deprivation (по умолчанию 20 часов)
+негативные эффекты увеличиваются со временем недосыпа и достигают максимума при времени
+	critical_sleep_deprivation (по умолчанию 36 часов)
+]]
+-- TODO: прописать в конфиге
+local sleep_compensation_factor = get_float("options","sleep_compensation_factor",3.0)
+local normal_sleep_deprivation = get_float("options","normal_sleep_deprivation", 20.0) * 3600.0 	-- 20 часов
+local critical_sleep_deprivation = get_float("options","critical_sleep_deprivation", 28.0) * 3600.0	-- 28 часов
+local critical_health = get_float("options","critical_health", 0.2) -- здоровье, ниже кторого спать нельзя, если состояние ухудшается
+-- минимальный интервал между проявлениями недосыпа, соответствует максимальному недосыпу
+local min_sleep_deprivation_effector_interval = 15.0 * 1000 -- [ms] 
+-- максимальный интервал между проявлениями недосыпа, соответствует минимальному недосыпу
+local max_sleep_deprivation_effector_interval = 60.0 * 1000 -- [ms]
+local sleep_thresholds = {
+	{value = 0.00, color = GetARGB(255,   0, 255, 0)}, -- зелёный
+	{value = 0.25, color = GetARGB(255, 200, 255, 0)}, -- салатный
+	{value = 0.50, color = GetARGB(255, 255, 255, 0)}, -- жёлтый
+	{value = 0.75, color = GetARGB(255, 255, 200, 0)}, -- оранжевый
+	{value = 0.90, color = GetARGB(255, 255,   0, 0)}, -- красный
+}
+local sleep_thresholds_number = #sleep_thresholds
+
+local hud_update_interval = 2000 -- период обновления худа и эффектов недосыпа
+
+local sleeping_now = false
+function is_sleep_active()
+	return sleeping_now
+end
+local dev = device()
+--
+local awakening_time -- "time" - когда проснулся последний раз
+local last_need_for_sleep -- "float" - накопленная необходимость во сне в секундах !!!на момент окончания последнего сна!!!
+
+local function need_for_sleep() -- реальная текущая потребность во сне
+	return game.get_game_time():diffSec(awakening_time) + last_need_for_sleep
+end
+local depr_range = critical_sleep_deprivation - normal_sleep_deprivation -- чтобы не вычислять всякий раз
+function sleep_deprivation_factor()
+	return (need_for_sleep() - normal_sleep_deprivation) / depr_range
+end
+local sleep_supressed = false
+-- момент окончания действия веществ
+local sleep_suppressed_until_time
+local function remained_sleep_suppression_time()
+	return sleep_suppressed_until_time:diffSec(game.get_game_time())
+end
+
+local actor_need_surprise = false -- подляночка
+
+
+-------------------------------<| Процесс сна |>-------------------------------
+local break_sleep_request = false -- флажок запроса на прерывание сна
+function begin_sleep(desired_sleep_time)
+	break_sleep_request = false -- если кто-то запрашивал прерывание сна во время бодрствования, то сбрасываем это
+	
+	db.actor:stop_talk()
+	db.actor:hide_weapon()
+	--
+
+	sleeping_now = true
+	local urgent_awakening = false
+	local start_sleep_time = game.get_game_time()
+	-- каждый час сна делим на периоды по три минуты (20 отсчётов на час)
+	local sleep_counts = math.ceil(desired_sleep_time * 20)
+	local dt_ms = math.ceil(desired_sleep_time * 3600 * 1000 / sleep_counts)
+	local actor_binder = db.actor:binded_object()
+	local prev_health = db.actor.health
+	for i=1,sleep_counts do
+		-- переводим стрелки
+		level.advance_game_time(dt_ms)
+		-- обновляем движковые эффекты здоровья
+		db.actor:update_condition()
+		-- учитываем все возможные скриптовые эффекты
+		--actor_binder:update(0) -- бесполезно делать из-за работающей системы распределения нагрузки
+		-- приходится явно обновлять каждую подсистему, требующую обновления
+		-- при необходимости расширить список!
+		ogse.check_timers()
+		ogse_signals.get_mgr():call("on_update", 0)
+		event("actor_update"):trigger({delta = 0})
+		ogse_actor_conditions_mgr.on_update()
+
+		-- проверяем останов по разным событиям
+		if break_sleep_request then -- кто-то запросил останов сна
+			--log1("break_sleep_request")
+			urgent_awakening = true
+			break
+		end
+		
+		-- начался выброс
+		if has_alife_info("pre_blowout") then 
+			ogse.autohiding_msg("ogse_sleep_mgr_warn_1_text", 1500)
+			--log1("surge")
+			urgent_awakening = true
+			break
+		end
+		-- начался пси-выброс
+		if has_alife_info("horror_time") then
+			ogse.autohiding_msg("ogse_sleep_mgr_warn_2_text", 1500)
+			--log1("psy")
+			urgent_awakening = true
+			break
+		end
+		
+		-- начинается выброс
+		if ogse_weather_mgr.get_weather_mgr():is_surge_in_process() then
+			ogse.autohiding_msg("ogse_sleep_mgr_warn_3_text", 1500)
+			urgent_awakening = true
+			break		
+		end
+		
+		-- проверяем условие останова сна по состоянию здоровья
+		local cur_health = db.actor.health
+		local dh = cur_health - prev_health
+		--log3("cur_health: %d, %f, dh: %f", i, cur_health, dh)
+		if cur_health < critical_health and dh < 0 then -- здоровье снизилось до критической величины и продолжает снижаться
+			--log1("trouble")
+			ogse.autohiding_msg("ogse_sleep_mgr_warn_4_text", 1500)
+			urgent_awakening = true
+			break
+		end
+		prev_health = cur_health
+	end
+	db.actor:update_condition()
+	set_ignore_game_state_update()
+	sleeping_now = false
+	break_sleep_request = false
+	ogse_weather_mgr.get_weather_mgr():update() -- обновили менеджер погоды
+	-- сколько реально спали
+	awakening_time = game.get_game_time()
+	local real_sleep_time = awakening_time:diffSec(start_sleep_time)
+	-- пересчитываем потребность во сне
+	last_need_for_sleep = last_need_for_sleep - real_sleep_time * sleep_compensation_factor
+	if last_need_for_sleep < 0 then last_need_for_sleep = 0 end
+	-- здравствуй монстры
+	if actor_need_surprise then 
+		actor_need_surprise = false
+		surprise()
+	end
+	-- привет кошмары
+	if not urgent_awakening then -- если проснулись своим ходом
+		-- выбираем и запускаем ролик сна
+		local dream = dream.sleep_video_name_callback()
+		log1("!!Trying to start dream ["..tostring(dream).."]")
+		if dream == "" then dream = "without_dream" end
+		game.start_tutorial(dream)
+	end
+	-- постпроцессы просыпания
+	-- привет похмелье
+	if real_sleep_time > 600 then -- если проспали больше 10-и минут
+		level.add_cam_effector("camera_effects\\prison_1.anm", 25, false, "")
+		level.add_pp_effector("yantar_underground_psi.ppe", 2007, false)
+		level.add_pp_effector("total_recall.ppe", 2008, false)
+	end
+	db.actor:restore_weapon()
+	local snd_obj = xr_sound.get_safe_sound_object([[characters_voice\human_01\stalker\states\breath\breath_2]])
+	if snd_obj then
+		snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 15.0)
+	end
+	-- привет мир
+	ogse_signals.get_mgr():call("on_sleep_finished")
+end
+
+function break_sleep() -- принудительное прерывание сна
+	break_sleep_request = true
+end
+
+-------------------<| управление худом, связанное со сном |>-------------------
+local warning_level = 0
+
+local function update_sleep_static(warn_lvl)
+	local hud = get_hud()
+	hud:RemoveCustomStatic("need_sleep_static_16")
+	hud:RemoveCustomStatic("need_sleep_static")
+	hud:RemoveCustomStatic("can_not_sleep_static_16")
+	hud:RemoveCustomStatic("can_not_sleep_static")
+	--log("update_sleep_static: warn_lvl=%d\n", warn_lvl)
+	if warn_lvl > 0 then
+		--log("dev.aspect_ratio=%5.2f\n", dev.aspect_ratio)
+		local wide_scr = dev.aspect_ratio < 0.7
+		local static_name
+		if remained_sleep_suppression_time() > 0 then
+			static_name = wide_scr and "can_not_sleep_static_16" or "can_not_sleep_static"
+		else
+			static_name = wide_scr and "need_sleep_static_16" or "need_sleep_static"
+		end
+		local st = hud:AddCustomStatic(static_name, true):wnd()
+		st:SetColor(sleep_thresholds[warn_lvl].color)
+	end
+end
+local last_effector_time = 0
+local last_aspect_ratio = 0
+function update_sleep_effects(force_update)
+	local current_aspect_ratio = dev.aspect_ratio
+	--log1("sleep suppresion = "..tostring(remained_sleep_suppression_time()))
+	local depr_factor = sleep_deprivation_factor()
+	-- сперва обновляем уровень недосыпа и индикатор
+	local need_update_static = false
+	if warning_level > 0 and depr_factor < sleep_thresholds[warning_level].value then
+		-- надо скорректировать вниз
+		local i = warning_level
+		while i > 0 and depr_factor < sleep_thresholds[i].value do
+			i = i - 1
+		end
+		warning_level = i
+		need_update_static = true
+	elseif warning_level < sleep_thresholds_number and depr_factor >= sleep_thresholds[warning_level + 1].value then
+		-- надо скорректировать вверх
+		local i = warning_level
+		while i < sleep_thresholds_number and depr_factor >= sleep_thresholds[i+1].value do
+			i = i + 1
+		end
+		warning_level = i
+		need_update_static = true
+		if not db.actor:has_info("encyclopedy_tutorial_sleep") then -- если ещё не видели, то выдаём совет по недосыпу
+			db.actor:give_info_portion("encyclopedy_tutorial_sleep")
+			game.start_tutorial("part_17_sleep")	
+		end
+	end
+	if sleep_supressed and remained_sleep_suppression_time() < 0 then
+		-- если закончился эффект веществ
+		sleep_supressed = false
+		need_update_static = true
+	end
+	-- при необходимости обновляем индикатор сна
+	if force_update or need_update_static or current_aspect_ratio ~= last_aspect_ratio then
+		last_aspect_ratio = current_aspect_ratio
+		update_sleep_static(warning_level)
+	end
+	-- при необходимости вызываем визуальные эффекты недосыпа
+	if warning_level > 0 then
+		local depr_factor_clamped = math.min(depr_factor, 1.0)
+		local sleep_effector_interval = 
+			max_sleep_deprivation_effector_interval - 
+			(max_sleep_deprivation_effector_interval - min_sleep_deprivation_effector_interval) * depr_factor_clamped
+		local tg = time_global()
+		--log1("int="..((last_effector_time + sleep_effector_interval - tg)/1000).." suppr="..remained_sleep_suppression_time())
+		if tg > last_effector_time + sleep_effector_interval and remained_sleep_suppression_time() < 0 then
+			last_effector_time = tg
+			level.add_pp_effector("yantar_underground_psi.ppe", 999, false) -- установить эффекты недосыпа
+			level.set_pp_effector_factor(999, depr_factor_clamped)
+			if warning_level == 5 then -- при предельном недосыпе начинает колбасить сильнее
+				-- в ушах бъёт кровь
+				local snd_obj = xr_sound.get_safe_sound_object([[affects\heartbeat]])
+				snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
+				-- краснеет в глазах
+				level.add_pp_effector("controller_hit1.ppe", 9999, false)
+			end
+		end
+	end
+end
+
+local last_time_checked = 0
+
+function on_update()
+	if not sleeping_now then  -- если не спит
+		local tg = time_global()
+		if tg - last_time_checked > hud_update_interval then
+			last_time_checked = tg
+			update_sleep_effects()
+		end
+	end
+end
+--
+function on_spawn()
+	-- событие on_spawn здесь используется для загрузки значений
+	awakening_time = ogse.load_var("sleep_mgr__awakening_time", game.get_game_time(), "time")
+	last_need_for_sleep = ogse.load_var("sleep_mgr__last_need_for_sleep", 0.0, "float")
+	sleep_suppressed_until_time = ogse.load_var("sleep_mgr__sleep_suppressed_until_time", game.get_game_time(), "time")
+	-- time2string(time)
+	-- log1("!!DEBUG SLEEP_LOAD AWK ["..time2string(awakening_time).."] NEED ["..tostring(last_need_for_sleep).."] SUPP ["..time2string(sleep_suppressed_until_time).."]")
+	
+	sleep_supressed = remained_sleep_suppression_time() > 0
+	update_sleep_effects(true)
+	on_update()
+end
+
+function on_save()
+
+	-- log1("!!DEBUG SLEEP_SAVE AWK ["..time2string(awakening_time).."] NEED ["..tostring(last_need_for_sleep).."] SUPP ["..time2string(sleep_suppressed_until_time).."]")
+
+	ogse.save_var("sleep_mgr__awakening_time", awakening_time, "time")
+	ogse.save_var("sleep_mgr__last_need_for_sleep", last_need_for_sleep, "float")
+	ogse.save_var("sleep_mgr__sleep_suppressed_until_time", sleep_suppressed_until_time, "time")
+end
+
+-- Проверки использования вещи, работающей со сном 
+function on_item_use(obj)
+	if obj == nil or alife():object(obj:id()) == nil then return end
+	local section = obj:section()
+	
+	if section == "matras" then -- если это матрас
+		use_matras() -- пытаемся спать
+		return true -- матрас больше никому не надо использовать
+	elseif use_stimulant(section) then -- проверяем, не приняли ли мы вещества
+		return true
+	end
+end
+
+function use_stimulant(section)
+	local additional_awake_time = get_float(section, "sleep_suppression_time")
+	if additional_awake_time then -- вещества содержат в секции параметр влияния на сон
+		local time_sec = additional_awake_time * 3600
+		if remained_sleep_suppression_time() < time_sec then
+			sleep_suppressed_until_time = game.CTime(game.get_game_time() + seconds2ctime(time_sec))
+			sleep_supressed = true
+		end
+		update_sleep_effects(true)
+		return true
+	end
+	return false
+end
+
+local non_sleep_locations = {
+	["l08u_brainlab"] = true,
+	["l10u_bunker"] = true,
+	["l04u_labx18"] = true,
+	["l12u_control_monolith"] = true,
+	["l23_x9"] = true,
+	["l12u_sarcofag"] = true
+}
+
+function use_matras()
+	local is_enemy_around = false
+	local friends_count = 0
+	for id in pairs(db.creature) do
+	if id ~= nil then
+		local obj=level.object_by_id(id)
+		if obj and obj:is_custom_monster() and obj:alive() then
+			local is_stalker = IsStalker(obj)
+			local dist = obj:position():distance_to(db.actor:position())
+			local is_enemy_to_actor = ogse.get_npc_relation(obj,db.actor) == "enemy"
+			if ((is_stalker and is_enemy_to_actor) or IsMonster(obj)) and (dist < 20 or obj:see(db.actor)) then
+				is_enemy_around = true
+				break
+			elseif is_stalker and dist < 30 then
+				friends_count = friends_count + 1
+			end
+		end
+	end end
+	if has_alife_info("pre_blowout") then 
+		ogse.autohiding_msg("ogse_sleep_mgr_warn_1_text", 1500)
+	elseif has_alife_info("horror_time") then
+		ogse.autohiding_msg("ogse_sleep_mgr_warn_2_text", 1500)
+	elseif is_enemy_around then
+		ogse.autohiding_msg("ogse_sleep_mgr_warn_5_text", 1500)
+	elseif (ogse_car_control.current_car and not ogse_car_control.in_btr) and not db.actor:has_info("blessing_of_old_man") then
+		ogse.autohiding_msg("ogse_sleep_mgr_warn_6_text", 1500)
+	elseif (level.rain_factor() > 0 and not isIndoor(level.name()) and not ogse_hideouts.npc_inside_safe_zone(db.actor) and not db.actor:has_info("blessing_of_old_man")) then	
+		ogse.autohiding_msg("ogse_sleep_mgr_warn_7_text", 1500)
+	elseif non_sleep_locations[level.name()] and not is_af_mopheus_on_belt() then	
+		ogse.autohiding_msg("ogse_sleep_mgr_warn_8_text", 1500)
+	elseif remained_sleep_suppression_time() > 0 then
+		ogse.autohiding_msg("ogse_sleep_mgr_warn_9_text", 1500)
+	elseif not db.actor:has_info("master_quest_soup_ready") and level.name() == "l09_deadcity_ogse" and not utils.npc_in_zone(db.actor, db.zone_by_name["deadcity_bar"]) then
+		ogse.autohiding_msg("ogse_sleep_mgr_warn_10_text", 1500)
+	else
+		-- закрываем инвентарь
+		local wnd = level.main_input_receiver()
+		if wnd then
+			wnd:GetHolder():start_stop_menu(wnd, true)
+		end
+		-- открываем диалог сна
+		level.start_stop_menu(ui_sleep.sleep(),true)
+		-- запоминаем, делать ли подлянку
+		actor_need_surprise = (friends_count == 0 and math.random() < 0.8 and not is_af_mopheus_on_belt() and not db.actor:has_info("blessing_of_old_man"))
+	end
+end
+
+function is_af_mopheus_on_belt()
+	for i=0, db.actor:belt_count()-1 do
+		local item = db.actor:item_on_belt(i)
+		if item and item:section() == "af_mopheus" then
+			return true
+		end
+	end
+	return false
+end
+
+local suprises = {
+	["l01_escape"] = {
+		"dog_normal",
+		"boar_normal",
+		"flesh_strong",
+		"zombie_normal",
+		"esc_bandit_respawn_1",
+		"esc_bandit_respawn_2"},
+	["l02_garbage"] = {
+		"dog_normal", 
+		"boar_normal", 
+		"flesh_strong", 
+		"gar_bandit_respawn_1", 
+		"gar_bandit_respawn_2"},
+	["l03_agroprom"] = {
+		"dog_normal", 
+		"boar_normal", 
+		"pseudodog_normal", 
+		"agr_soldier_regular", 
+		"agr_soldier_veteran"},
+	-- ["l03u_agr_underground"] = {
+		-- "bloodsucker_weak", 
+		-- "bloodsucker_normal", 
+		-- "bloodsucker_strong", 
+		-- "agr_bandit_respawn_1", 
+		-- "agr_bandit_respawn_2"},
+	["l04_darkvalley"] = {
+		"bloodsucker_normal", 
+		"burer_weak", 
+		"burer_strong", 
+		"gar_bandit_respawn_1", 
+		"gar_bandit_respawn_2"},
+	["l06_rostok"] = {
+		"bloodsucker_normal", 
+		"ros_killer_respawn_1", 
+		"ros_killer_respawn_2", 
+		"gar_bandit_respawn_2"},
+	["l08_yantar"] = {
+		"snork_weak", 
+		"snork_normal", 
+		"rad_zombied_respawn_1", 
+		"rad_zombied_respawn_2"},
+	["l07_military"] = {
+		"dog_normal", 
+		"boar_normal", 
+		"rad_zombied_respawn_1", 
+		"rad_zombied_respawn_2", 
+		"mil_killer_respawn_3"},
+	["l10_radar"] = {
+		"zombie_strong", 
+		"zombie_immortal", 
+		"rad_zombied_respawn_1", 
+		"rad_zombied_respawn_2", 
+		"pseudodog_strong", 
+		"psy_dog", 
+		"snork_strong"},
+	["l11_pripyat"] = { 
+		"zombie_strong", 
+		"zombie_immortal", 
+		"rad_zombied_respawn_1", 
+		"rad_zombied_respawn_2", 
+		"pseudodog_strong", 
+		"psy_dog", 
+		"snork_strong"},
+	["l12_stancia"] = {
+		"zombie_strong", 
+		"zombie_immortal", 
+		"rad_zombied_respawn_1", 
+		"rad_zombied_respawn_2", 
+		"pseudodog_strong", 
+		"psy_dog", 
+		"snork_strong"},
+	["l12_stancia_2"] = { 
+		"zombie_strong", 
+		"zombie_immortal", 
+		"rad_zombied_respawn_1", 
+		"rad_zombied_respawn_2", 
+		"pseudodog_strong", 
+		"psy_dog", 
+		"snork_strong"},
+	["k01_darkscape_ogse"] = { 
+		"bloodsucker_normal", 
+		"pseudodog_strong", 
+		"burer_strong", 
+		"gar_bandit_respawn_1", 
+		"gar_bandit_respawn_2"},
+	["l09_deadcity_ogse"] = { 
+		"bloodsucker_normal", 
+		"pseudodog_strong", 
+		"m_controller_normal", 
+		"m_controller_old",
+		"m_controller_old_fat",
+		"city_zombied_respawn_1", 
+		"city_zombied_respawn_2"},
+	["l13_generators_ogse"] = { 
+		"snork_strong", 
+		"pseudodog_strong", 
+		"rad_zombied_respawn_1", 
+		"rad_zombied_respawn_2"},
+	["l22_marsh"] = { 
+		"bloodsucker_normal", 
+		"pseudodog_strong", 
+		"snork_strong", 
+		"psy_dog"}
+}
+-- вызывается по окончанию сна
+function surprise() -- Сюрприз!!!!
+	if suprises[level.name()] then
+		local section_table = suprises[level.name()]
+		alife():create(
+			section_table[math.random(table.getn(section_table))],
+			db.actor:position():add(vector():set(math.random(-2,2), 1, 0)),
+			db.actor:level_vertex_id(),
+			db.actor:game_vertex_id())
+	end
+end
