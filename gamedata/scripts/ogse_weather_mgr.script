@@ -202,6 +202,21 @@ local weather_transitions = {
 	cloudy_dark_rain  = {end_w =  98, tr_w = {cloudy_dark = 20, clear = 20, clear_alt    = 30, cloudy_dark_rain = 10, storm = 20,}},
 }
 
+local weather_norain_transitions = {
+  storm             = {end_w =  50, tr_w = {cloudy_dark = 10, clear_alt    = 30, cloudy_light = 30, clear = 30,}},
+  clear             = {end_w = 119, tr_w = {cloudy_dark = 10, clear_alt    = 50, cloudy_light = 20, clear = 20,}},
+  clear_alt         = {end_w = 137, tr_w = {cloudy_dark = 10, clear_alt    = 20, cloudy_light = 20, clear = 50,}},
+  cloudy_light      = {end_w =  84, tr_w = {cloudy_dark = 40, cloudy_light = 30, clear = 20, clear = 10,}},
+  cloudy_light_rain = {end_w = 101, tr_w = {cloudy_dark = 70, clear_alt = 10, clear    = 20,}},
+  cloudy_dark       = {end_w =  68, tr_w = {cloudy_dark = 60, clear_alt    = 40,}},
+  cloudy_dark_rain  = {end_w =  98, tr_w = {cloudy_dark = 50, clear = 20, clear_alt    = 30,}},
+}
+local rain2norain = {
+  storm             = "cloudy_dark",
+  cloudy_light_rain = "cloudy_light",
+  cloudy_dark_rain  = "cloudy_dark",
+}
+
 --================ внутренние параметры менеджера погоды ===========================================
 -- Количество часов, на которое просчитывается погода.
 -- Число задаётся таким, чтобы "прогноз" с гарантией был больше времени сна, чтобы погода не менялась
@@ -546,6 +561,9 @@ function StaticForecast:update()
 	if #self.forecast == 0 then -- массив с предпросчитанными точками пустой
 		-- поскольку массив пустой, то погоду выбираем случайно
 		local cycle_name = self.idx2cycle[math.random(1,self.cycles_number)]
+		if self.norain and rain2norain[ cycle_name ] then
+		  cycle_name = rain2norain[ cycle_name ]
+		end
 		local points = self.cycles[cycle_name].points
 		local fd1, fd2 = get_frame_by_time(points, current_time)
 		-- время начала текущих суток
@@ -693,6 +711,7 @@ end
 class "DynamicForecast" (StaticForecast)
 function DynamicForecast:__init()
 	ogse_surge_mgr.surge_log("DynamicForecast:__init")
+	self.weather_transitions = weather_transitions
 	self.surge_frame_assigned = false
 	self.forecast = {} -- таблица с временнЫми точками на ближайшие forecast_time+ часов
 	
@@ -809,7 +828,7 @@ function DynamicForecast:aux_choose_next_weather()
 	-- это не переходный цикл, решаем куда переходим
 	local next_cycle
 	
-	local wtr = weather_transitions[last_point.cycle] -- данные по переходам в/из последнего цикла
+	local wtr = self.weather_transitions[last_point.cycle] -- данные по переходам в/из последнего цикла
 	local trans_prob = (wtr.end_w * self.last_weather_time / 300. + 33.0) / 100.
 	-- проверяем, что пора соскочить с этого цикла
 	if math.random() > trans_prob then -- если ещё рано
@@ -932,6 +951,14 @@ function WeatherManager:__init()
         else
           self.lvl_suffix = ""
         end
+
+	self.weather_norain = ui_mm_opt_main.GetOption( "weather_norain" )
+	local wt
+	if self.weather_norain then
+	  wt = weather_norain_transitions
+        else
+	  wt = weather_transitions
+        end
 	
 	self.forecasts = {} -- таблица со всеми прогнозами
     -- перебираем все уровни, создаём соответстсвующие прогнозы
@@ -941,6 +968,8 @@ function WeatherManager:__init()
 				and DynamicForecast()
 				or  StaticForecast(weather_name)
 			self.forecasts[weather_name].name = weather_name
+			self.forecasts[weather_name].norain = self.weather_norain
+			self.forecasts[weather_name].weather_transitions = wt
 		end
 	end
 	self.active_forecast = self.forecasts[weather_by_level[level_name]]
@@ -1309,4 +1338,10 @@ function WeatherManager:update()
 	--	process_weather_section_inf(script_weather_section) -- выдать
 	--end
 	--self:check_and_fail()
+end
+
+function WeatherManager:force_new_weather()
+  self:on_destroy()
+  wm = WeatherManager() -- создание
+  wm:on_actor_spawn()
 end
