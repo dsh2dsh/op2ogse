@@ -2449,6 +2449,114 @@ function seconds2ctime(time_sec)
 	return t
 end
 
+-- надёжнее, чем device().aspect_ratio, поскольку не зависит от инициализированности рендера
+-- однако медленная. Не рекомендуется использовать часто
+function get_aspect_ratio()
+	local s =  get_console():get_string("vid_mode")
+	local sw,sh = string.match(s, "(%d+)x(%d+)")
+	return tonumber(sh)/tonumber(sw)
+end
+----------------------------------------------------------------------
+-- Работа с актором
+----------------------------------------------------------------------
+-- константы для функций get_actor_flags и set_actor_flags
+actor_flags = {
+	invincible     =  1,
+	invisible      =  2, -- useless
+	always_run     =  4,
+	unlimited_ammo =  8,
+	run_backward   = 16,
+	autopickup     = 32,
+	psp            = 64, -- вид от третьего лица
+}
+function set_actor_invincible(invincible)
+	local flags = get_actor_flags()
+	local mask = actor_flags.invincible
+	set_actor_flags(invincible and bit_or(flags, mask) or bit_and(flags, bit_not(mask)))
+end
+
+-- получение некоторых значений с плавающей запятой
+-- параметры бега
+function get_walk_accel()         return db.actor:get_actor_float(1440) end
+function get_jump_speed()         return db.actor:get_actor_float(1444) end
+function get_run_factor()         return db.actor:get_actor_float(1448) end
+function get_run_back_factor()    return db.actor:get_actor_float(1452) end
+function get_walk_back_factor()   return db.actor:get_actor_float(1456) end
+function get_crouch_factor()      return db.actor:get_actor_float(1460) end
+function get_climb_factor()       return db.actor:get_actor_float(1464) end
+function get_sprint_factor()      return db.actor:get_actor_float(1468) end
+function get_walk_strafe_factor() return db.actor:get_actor_float(1472) end
+function get_run_strafe_factor()  return db.actor:get_actor_float(1476) end
+-- параметры стрельбы
+function get_disp_base()          return db.actor:get_actor_float(1484) end -- в радианах
+function get_disp_aim()           return db.actor:get_actor_float(1488) end -- в радианах
+function get_disp_vel_factor()    return db.actor:get_actor_float(1492) end
+function get_disp_accel_factor()  return db.actor:get_actor_float(1496) end
+function get_disp_crouch_factor() return db.actor:get_actor_float(1500) end
+function get_disp_crouch_no_accel_factor()  return db.actor:get_actor_float(1504) end
+-- получение некоторых целых и логических значений
+-- режим прицеливания
+function zoom_mode() return bit_and(db.actor:get_actor_int(nil, 1480), 1) end -- возвращает 0/1
+
+-- установка некоторых значений
+-- параметры бега
+function set_sprint_factor(v)      db.actor:set_actor_float(nil, v, 1468) end
+function set_jump_speed(v)         db.actor:set_actor_float(nil, v, 1444) end
+function set_walk_accel(v)         db.actor:set_actor_float(nil, v, 1440) end
+function set_run_factor(v)         db.actor:set_actor_float(nil, v, 1448) end
+function set_run_back_factor(v)    db.actor:set_actor_float(nil, v, 1452) end
+function set_walk_back_factor(v)   db.actor:set_actor_float(nil, v, 1456) end
+function set_crouch_factor(v)      db.actor:set_actor_float(nil, v, 1460) end
+function set_climb_factor(v)       db.actor:set_actor_float(nil, v, 1464) end
+function set_walk_strafe_factor(v) db.actor:set_actor_float(nil, v, 1472) end
+function set_run_strafe_factor(v)  db.actor:set_actor_float(nil, v, 1476) end
+-- параметры стрельбы
+function set_disp_base(v)          db.actor:set_actor_float(nil, v, 1484) end -- в радианах
+
+local body_states = { -- флажки состояния тела актора
+[1]		= "fwd",
+[2]		= "back",
+[4]		= "l_strafe",
+[8]		= "r_strafe",
+[16]	= "crouch",
+[32]	= "accel",
+[64]	= "turn",
+[128]	= "jump",
+[256]	= "fall",
+[512]	= "landing",
+[1024]	= "landing2",
+[2048]	= "climb",
+[4096]	= "sprint",
+[8192]	= "l_lookout",
+[16384]	= "r_lookout"
+}
+-- получения флагов состояния тела актора
+function actor_body_state()
+	local body_state = body_states[db.actor:get_actor_int(nil, 1432)]
+	if body_state ~= nil then
+		return body_state
+	else
+		return ""
+	end
+end
+-- установка флагов состояния тела актора
+function set_actor_body_state(flags_to_set, value)
+	local current_flags = db.actor:get_actor_int(nil, 1432)
+	local new_flags = value and bit_or(current_flags, flags_to_set) or bit_and(current_flags, bit_not(flags_to_set))
+	db.actor:set_actor_int(1432, new_flags)
+end
+local anomaly_invisibility_flag = tonumber("80000000", 16)
+-- установка невидимости сталкера со стороны аномалий
+function set_anomaly_invisibility(npc, vis)
+	local fl = npc:get_actor_relation_flags()
+	fl:set(anomaly_invisibility_flag, vis)
+	npc:set_actor_relation_flags(fl)
+end
+-- получение статуса невидимости сталкера со стороны аномалий
+function get_anomaly_invisibility(npc)
+	local fl = npc:get_actor_relation_flags()
+	return fl:test(anomaly_invisibility_flag)
+end
 -- поверхностное (простое) клонирование таблицы: 
 --  создаётся копия таблицы и копии всех элементов без их клонирования,
 --  т.е. для ссылочных типов обе таблицы будут содержать ссылки на одни и те же данные
@@ -2556,6 +2664,12 @@ function cmd(scmd, ...)
 		scmd = scmd..' '..table.concat(args, ' ')
 	end
 	con:execute(scmd)
+end
+function get_con_float(param)
+	return con:get_float(param)
+end
+function get_con_string(param)
+	return con:get_string(param)
 end
 
 get_game_id = ogse_unist.get_game_id
