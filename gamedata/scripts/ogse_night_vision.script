@@ -4,6 +4,33 @@
 --/ version 2.5 (27/04/2011)/--
 
 --/ Модуль приборов ночного видения /--
+function attach(sm)
+  sm:subscribe({ signal = "on_destroy", fun = this.remove_PNV_rec_wnd })
+  sm:subscribe({ signal = "on_drop", fun = this.chek_drop_pnv })
+  sm:subscribe({ signal = "on_first_update", fun = this.try_to_restart_nv_fx })
+  sm:subscribe({ signal = "on_info", fun = this.on_inventory_info })
+--  sm:subscribe({ signal = "on_item_to_belt", fun = this.chek_belt_double_pnv })
+--  sm:subscribe({ signal = "on_item_to_ruck", fun = this.chek_drop_pnv })
+--  sm:subscribe({ signal = "on_item_to_slot", fun = this.chek_outfit_double_pnv })
+  sm:subscribe({ signal = "on_key_down", fun = this.call_pnv })
+--  sm:subscribe({ signal = "on_spawn", fun = this.add_nv_fx_faile_hud })
+  sm:subscribe({ signal = "on_update", fun = this.on_update })
+  sm:subscribe({ signal = "on_use", fun = this.on_use })
+end
+auto_attach = true
+
+function on_update()
+  PNV_noise_update()
+end
+
+function on_use( obj, sobj )
+  if not sobj then return end
+  local nv_sect = obj:section()
+  if sys_ini:line_exist(nv_sect, "nightvision_sect") then
+    local nightvision_section = sys_ini:r_string(nv_sect,"nightvision_sect")
+    quicklaunch_nv_call( nightvision_section )
+  end
+end
 
 -- Параметры
 -- флаги
@@ -26,9 +53,9 @@ local night_vision_noise_fx_on = false		-- флаг наложения эффекта визуального шу
 local night_vision_noise_fx_intensity = 200	-- интенсивность налагаемого эффекта визуального шума (0-255)
 
 -- звуки
-local snd_nv_start = xr_sound.get_safe_sound_object("weapons\\nv_start_old")	-- звук включения ПНВ
-local snd_nv_work = xr_sound.get_safe_sound_object("weapons\\nv_loop_old")		-- звук работающего ПНВ
-local snd_nv_stop = xr_sound.get_safe_sound_object("weapons\\nv_off_old")		-- звук выключения ПНВ
+local snd_nv_start = xr_sound.get_safe_sound_object("weapons\\nv_start")	-- звук включения ПНВ
+local snd_nv_work -- = xr_sound.get_safe_sound_object("weapons\\nv_loop_old")		-- звук работающего ПНВ
+local snd_nv_stop = xr_sound.get_safe_sound_object("weapons\\nv_off")		-- звук выключения ПНВ
 -- уровень громкости звуков
 local snd_nv_fx_volume = 0.5		-- общий уровень громкости звуков
 local snd_nv_start_subvolume = 1	-- громкость звука включения ПНВ
@@ -179,9 +206,9 @@ function call_pnv(key, bind)
 end
 
 -- Включение/выключение ПНВ из меню быстрого доступа
-function quicklaunch_nv_call()
+function quicklaunch_nv_call( nightvision_section )
 	if night_vision_fx_on == false then
-		nv_fx(true)
+		nv_fx( true, nightvision_section )
 	else
 		nv_fx(false)
 	end
@@ -189,17 +216,17 @@ end
 
 -- Попытаемся восстановить работу ПНВ после загрузки сейва
 function try_to_restart_nv_fx()
-	local nv_fx_restore = tonumber(ogse.load_variable("pnv", 0))
-	if nv_fx_restore == 1 then
+	local nv_fx_restore = ogse.load_var( "pnv", false )
+	if nv_fx_restore then
 		if db.actor:alive() and night_vision_fx_on == false then
-			nv_fx(true)
+			nv_fx( true, nv_fx_restore )
 			chek_nv_fx_noise()
 		end
 	end
 end
 
 -- Открытие/закрытие инвентаря
-function on_inventory_info(info_id)
+function on_inventory_info( npc, info_id )
 	-- if info_id == "ui_inventory" or info_id == "ui_trade" then
 		-- night_vision_fx_not_inventory = false
 		-- standby_nv_fx(true)
@@ -319,16 +346,18 @@ function chek_drop_pnv(obj)
 	
 	local obj_sec = s_obj:section_name()
 	
+--[[	
 	local outfit_slot = db.actor:item_in_slot(6)
-	local outfit_slot_nv = outfit_slot and system_ini():line_exist(outfit_slot:section(), "nightvision_sect")
-	
+	local outfit_slot_nv = outfit_slot and sys_ini:line_exist(outfit_slot:section(), "nightvision_sect")
+
 	local pnv_slot =  db.actor:item_in_slot(11)
-	local pnv_slot_nv = pnv_slot and system_ini():line_exist(pnv_slot:section(), "nightvision_sect")
+	local pnv_slot_nv = pnv_slot and sys_ini:line_exist(pnv_slot:section(), "nightvision_sect")
+]]
 	
-	if not outfit_slot_nv and not pnv_slot_nv then
+	if sys_ini:line_exist( obj_sec, "nightvision_sect" ) then
 		if night_vision_fx_on == true then
 			turn_off_nv_fx(obj_sec)
-			ogse.del_variable("pnv")
+			ogse.delete_var("pnv")
 		end
 	end
 end
@@ -337,9 +366,9 @@ end
 function chek_belt_double_pnv(obj)
 	if obj == nil or alife():object(obj:id()) == nil then return end
 	local obj_section = obj:section()
-	if system_ini():line_exist(obj_section, "nightvision_sect") then
+	if sys_ini:line_exist(obj_section, "nightvision_sect") then
 		for k, v in pairs (inventory.belt) do
-			if system_ini():line_exist(k, "nightvision_sect") then
+			if sys_ini:line_exist(k, "nightvision_sect") then
 				ogse.remove_item(obj) 
 				ogse.spawn_item_in_inv(obj_section) 
 				return
@@ -347,7 +376,7 @@ function chek_belt_double_pnv(obj)
 		end
 		local outfit_item = db.actor:item_in_slot(6)
 		if outfit_item then
-			if system_ini():line_exist(outfit_item:section(), "nightvision_sect") then
+			if sys_ini:line_exist(outfit_item:section(), "nightvision_sect") then
 				ogse.remove_item(obj) 
 				ogse.spawn_item_in_inv(obj_section) 
 				return
@@ -361,10 +390,10 @@ function chek_outfit_double_pnv(obj)
 	
 	if not obj then return end
 	local nv_slot   = db.actor:item_in_slot(11)
-	local is_nv_obj = system_ini():line_exist(obj:section(), "nightvision_sect")
+	local is_nv_obj = sys_ini:line_exist(obj:section(), "nightvision_sect")
 	
 	local outfit_slot     = db.actor:item_in_slot(6)
-	local outfit_slot_nv = outfit_slot and system_ini():line_exist(outfit_slot:section(), "nightvision_sect")
+	local outfit_slot_nv = outfit_slot and sys_ini:line_exist(outfit_slot:section(), "nightvision_sect")
 	
 	local is_outfit_nv  = isOutfit(obj) and is_nv_obj
 	
@@ -376,7 +405,7 @@ function chek_outfit_double_pnv(obj)
 		
 		if night_vision_fx_on == true then
 		    turn_off_nv_fx(nv_slot:section())
-			ogse.del_variable("pnv")
+			ogse.delete_var("pnv")
 		end
 		
 	elseif is_nv_obj then
@@ -411,42 +440,50 @@ end
 
 -- Функции работы ПНВ
 -- Старт/остановка работы ПНВ
-function nv_fx(mode)
+function nv_fx( mode, nightvision_section )
 	if mode == true and night_vision_fx_on == false and night_vision_fx_not_inventory == true and night_vision_fx_not_sniper == true and night_vision_fx_not_trunk == true and night_vision_fx_not_btr == true then
-		local nightvision_section = nil
+--		local nightvision_section = nil
 		local nv_item_section = nil
 --[[	for k, v in pairs (inventory.belt) do
-			if system_ini():line_exist(k, "nightvision_sect") then
+			if sys_ini:line_exist(k, "nightvision_sect") then
 				nv_item_section = k
 				break
 			end
 		end]]
 		
 		local nv_in_outfit = db.actor:item_in_slot(6)
-		if nv_in_outfit then
+		if nv_in_outfit and not nightvision_section then
 			local  nv_sect = nv_in_outfit:section()
-			if system_ini():line_exist(nv_sect, "nightvision_sect") then
-				nightvision_section = system_ini():r_string(nv_sect,"nightvision_sect")
+			if sys_ini:line_exist(nv_sect, "nightvision_sect") then
+				nightvision_section = sys_ini:r_string(nv_sect,"nightvision_sect")
 			end
 		end
 		
 		if not nightvision_section then
 		    local nv_in_slot = db.actor:item_in_slot(11)
+			if not nv_in_slot then
+			  local pnvs = { "nv_bast", "nv_good", "nv_bad" }
+			  for _, pnv in ipairs( pnvs ) do
+			    if db.actor:object( pnv ) then
+			      nv_in_slot = db.actor:object( pnv )
+			    end
+			  end
+			end
 			if nv_in_slot then
 				local nv_sect = nv_in_slot:section()
-				if system_ini():line_exist(nv_sect, "nightvision_sect") then
-					nightvision_section = system_ini():r_string(nv_sect,"nightvision_sect")
+				if sys_ini:line_exist(nv_sect, "nightvision_sect") then
+					nightvision_section = sys_ini:r_string(nv_sect,"nightvision_sect")
 				end
 			end
 		end
 		
 		if nightvision_section then
 			turn_on_nv_fx(nightvision_section)
-			ogse.save_variable("pnv", 1)
+			ogse.save_var( "pnv", nightvision_section )
 		end
 	elseif mode == false and night_vision_fx_on == true then
 		turn_off_nv_fx()
-		ogse.del_variable("pnv")
+		ogse.delete_var("pnv")
 	end
 end
 
@@ -457,8 +494,8 @@ function turn_on_nv_fx(nightvision_section)
 			cmd("r2_render_mode thermal")
 			night_vision_fx_on = true
 			snd_fx_start()
-		elseif system_ini():line_exist(nightvision_section, "pp_eff_name") then
-			local nightvision_fx = system_ini():r_string(nightvision_section,"pp_eff_name")
+		elseif sys_ini:line_exist(nightvision_section, "pp_eff_name") then
+			local nightvision_fx = sys_ini:r_string(nightvision_section,"pp_eff_name")
 			level.add_pp_effector(nightvision_fx, 2997, true)
 			level.set_pp_effector_factor(2997, nv_ppe_factor)
 			night_vision_fx_on = true
@@ -485,7 +522,7 @@ end
 function nv_to_ruck(section)
     if night_vision_fx_on == true then
 	    turn_off_nv_fx(section)
-		ogse.del_variable("pnv")
+		ogse.delete_var("pnv")
 	end
 end
 
@@ -506,7 +543,7 @@ function snd_fx_stop()
 	if snd_nv_start:playing() then 
 		snd_nv_start:stop() 
 	end
-	if snd_nv_work:playing() then 
+	if snd_nv_work and snd_nv_work:playing() then 
 		snd_nv_work:stop() 
 	end
 	if snd_nv_stop then
@@ -530,12 +567,12 @@ function nv_scope_fx(mode)
 	if mode == true and night_vision_scope_fx_on == false and night_vision_fx_not_sniper == false then
 		local act_it = db.actor:active_item()
 		if act_it and alife():object(act_it:id()) ~= nil and isWeapon(act_it) then
-			if system_ini():line_exist(act_it:section(), "scope_status") and system_ini():line_exist(act_it:section(), "scope_name") then
-				local scope_status = system_ini():r_u32(act_it:section(), "scope_status")
-				local scope_section = system_ini():r_string(act_it:section(), "scope_name")
+			if sys_ini:line_exist(act_it:section(), "scope_status") and sys_ini:line_exist(act_it:section(), "scope_name") then
+				local scope_status = sys_ini:r_u32(act_it:section(), "scope_status")
+				local scope_section = sys_ini:r_string(act_it:section(), "scope_name")
 				if scope_status ~= 0 and scope_section then
-					if system_ini():line_exist(scope_section, "nightvision_sect") then
-						local nightvision_section = system_ini():r_string(scope_section, "nightvision_sect")
+					if sys_ini:line_exist(scope_section, "nightvision_sect") then
+						local nightvision_section = sys_ini:r_string(scope_section, "nightvision_sect")
 						if nightvision_section then
 							if scope_status == 1 then
 								turn_on_nv_scope_fx(nightvision_section)
@@ -561,8 +598,8 @@ end
 
 -- Старт ночника в прицеле (не использовать напрямую)
 function turn_on_nv_scope_fx(nightvision_section)
-	if system_ini():line_exist(nightvision_section, "pp_eff_name") then
-		local nightvision_fx = system_ini():r_string(nightvision_section,"pp_eff_name")
+	if sys_ini:line_exist(nightvision_section, "pp_eff_name") then
+		local nightvision_fx = sys_ini():r_string(nightvision_section,"pp_eff_name")
 		level.add_pp_effector(nightvision_fx, 2998, true)
 		level.set_pp_effector_factor(2998, nv_scope_ppe_factor)
 		night_vision_scope_fx_on = true
@@ -591,8 +628,8 @@ function nv_binocular_fx(mode)
 		local act_it = db.actor:active_item()
 		if act_it and alife():object(act_it:id()) ~= nil then
 			if act_it:clsid() == clsid.wpn_binocular_s then
-				if system_ini():line_exist(act_it:section(), "nightvision_sect") then
-					local nightvision_section = system_ini():r_string(act_it:section(),"nightvision_sect")
+				if sys_ini:line_exist(act_it:section(), "nightvision_sect") then
+					local nightvision_section = sys_ini:r_string(act_it:section(),"nightvision_sect")
 					if nightvision_section then
 						turn_on_nv_binocular_fx(nightvision_section)
 					end
@@ -606,8 +643,8 @@ end
 
 -- Старт ночника в бинокле (не использовать напрямую)
 function turn_on_nv_binocular_fx(nightvision_section)
-	if system_ini():line_exist(nightvision_section, "pp_eff_name") then
-		local nightvision_fx = system_ini():r_string(nightvision_section,"pp_eff_name")
+	if sys_ini:line_exist(nightvision_section, "pp_eff_name") then
+		local nightvision_fx = sys_ini:r_string(nightvision_section,"pp_eff_name")
 		level.add_pp_effector(nightvision_fx, 2999, true)
 		level.set_pp_effector_factor(2999, nv_binocular_ppe_factor)
 		night_vision_binocular_fx_on = true
@@ -641,8 +678,8 @@ end
 
 -- Старт ПНВ БТР (не использовать напрямую)
 function turn_on_nv_btr_fx(nightvision_section)
-	if system_ini():line_exist(nightvision_section, "pp_eff_name") then
-		local nightvision_fx = system_ini():r_string(nightvision_section,"pp_eff_name")
+	if sys_ini:line_exist(nightvision_section, "pp_eff_name") then
+		local nightvision_fx = sys_ini:r_string(nightvision_section,"pp_eff_name")
 		level.add_pp_effector(nightvision_fx, 2996, true)
 		level.set_pp_effector_factor(2996, nv_btr_ppe_factor)
 		night_vision_btr_fx_on = true

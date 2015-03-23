@@ -5,6 +5,9 @@
 
 function attach(sm)
   sm:subscribe({ signal = "on_destroy", fun = this.on_destroy })
+  sm:subscribe({ signal = "on_key_down", fun = this.chek_keys })
+  sm:subscribe({ signal = "on_key_up", fun = this.chek_keys_free })
+  sm:subscribe({ signal = "on_update", fun = this.on_update })
 end
 auto_attach = true
 
@@ -27,6 +30,16 @@ local blood_intensity = 0
 
 function on_destroy()
   switch_shader_effects( "off" )
+end
+
+function on_update()
+-- Обновление шкалы радиации и худа при использовании бинокля/прицела
+	check_sniper()
+	update_hud_elements()
+-- Обновление шкалы радиации и худа при использовании бинокля/прицела
+-- Динамический худ
+	doabcevents()
+-- Динамический худ
 end
 
 -- global functions -------------------------------------------------------------------------------------------------
@@ -55,12 +68,14 @@ function check_sniper()
 				    (launcher == 1 and wpn_state.updgrenade_mode == 0)) or 
 				   string.find(act_it:section(), "wpn_binoc") then
 					sniper_mode = true
+					bind_stalker.scopeUsed = true
 					return
 				end
 			end
 		end
 	end
 	sniper_mode = false
+	bind_stalker.scopeUsed = false
 end
 
 -- вызывается из ogse.on_actor_update
@@ -71,16 +86,20 @@ function update_hud_elements()
 		if act_it and (string.find(act_it:section(), "wpn_") or string.find(act_it:section(), "hunters_toz")) then
 			if sniper_mode == true then
 				if suithud_enable == 1 then
-					set_blood_intensity(0)
+--					set_blood_intensity(0)
 					suithud_enable = 0
 					set_my_suit_hud(nil)
 				end
-				ui_rad.update(false)
+				if amk.load_variable( "option_rad", 1) > 0 then
+				  ui_rad.update(false)
+				end
 				biodetector.update("off")
 				ogse_night_vision.on_sniper_mode(true)
 			else
-				biodetector.update()
-				ui_rad.update(true)			
+--				biodetector.update()
+				if amk.load_variable( "option_rad", 1) > 0 then
+				  ui_rad.update(true)
+				end
 				if suithud == 1 and suithud_enable == 0 then
 					suithud_enable = 1
 					check_my_suit_hud()			
@@ -88,18 +107,22 @@ function update_hud_elements()
 				ogse_night_vision.on_sniper_mode(false)
 			end
 		else
-			biodetector.update()
-			ui_rad.update(true)
+--			biodetector.update()
+			if amk.load_variable( "option_rad", 1) > 0 then
+			  ui_rad.update(true)
+			end
 			ogse_night_vision.on_sniper_mode(false)
 		end
 	else	
 		if suithud_enable == 1 then
-			set_blood_intensity(0)
+--			set_blood_intensity(0)
 			suithud_enable = 0
 			set_my_suit_hud(nil)
 		end
 		biodetector.update("off")
-		ui_rad.update(false)
+		if amk.load_variable( "option_rad", 1) > 0 then
+		  ui_rad.update(false)
+		end
 	end
 end
 
@@ -113,17 +136,18 @@ function doabcevents()
 	if freemem == 0 then freemem = time_global() + 1000 end
 	if chkfreetime > freemem then
 		freemem = 0
-		remove_m134()
+--		remove_m134()
 		check_my_suit_hud()
 		bleed_condition()
-		set_blood()
+--		set_blood()
 	end
 	local chkfreetime2 = time_global()
 	if freemem2 == 0 then freemem2 = time_global() + 40 end
 	if chkfreetime2 > freemem2 then
 		freemem2 = 0
 		init_blurs()
-		init_blood()
+		amk_mod.blood()
+		amk_mod.set_blood()
 	end
 end
 
@@ -168,7 +192,7 @@ end
 
 -- вызывается из ogse_car_control.show_car_hud
 function on_show_car_hud()
-	set_blood_intensity(0)
+--	set_blood_intensity(0)
 	suithud_enable = 0
 	set_my_suit_hud(nil)
 end
@@ -197,66 +221,48 @@ function check_my_suit_hud()
 		local csuithud = db.actor:get_current_outfit()
 		local suithudtype, isitbino, suithudname
 		if csuithud ~= nil then suithudname = csuithud:section() end
+		local dynamic_hud_enable = false
 		if suithudname ~= nil then
 			suit_condition = ""
-			if csuithud:condition() <= 0.25 then suit_condition = "red3" end
-			if csuithud:condition() > 0.25 then suit_condition = "red2" end
-			if csuithud:condition() > 0.60 then suit_condition = "yellow" end
-			if csuithud:condition() > 0.87 then suit_condition = "blue" end
+			if     csuithud:condition() > 0.87 then
+			  suit_condition = "blue"
+			elseif csuithud:condition() > 0.69 then
+			  suit_condition = "green"
+			elseif csuithud:condition() > 0.60 then
+			  suit_condition = "yellow"
+			elseif csuithud:condition() > 0.40 then
+			  suit_condition = "red"
+			elseif csuithud:condition() > 0.25 then
+			  suit_condition = "red2"
+			else
+			  suit_condition = "red3"
+			end
 		
-			if string.find(suithudname, "scientific_outfit") then
-				suithudtype = "hud_sci_" .. suit_condition
-				wotsuittype = "hud_sci"
+			dynamic_hud_enable = get_bool( suithudname, "dynamic_hud_enable", false )
+			if dynamic_hud_enable then
+		          wotsuittype = get_string( suithudname, "dynamic_hud_type", nil )
+			  if wotsuittype then suithudtype = wotsuittype .. "_" .. suit_condition end
+			else
+			  for k,v in pairs( amk_mod.suitHudName_wotType ) do
+			    if string.find( suithudname, k ) then
+			      suithudtype = v .. "_" .. suit_condition
+			      wotsuittype = v
+			      break
+			    end
+			  end
 			end
-			if string.find(suithudname, "ecolog_outfit") then
-				suithudtype = "hud_sci_" .. suit_condition
-				wotsuittype = "hud_sci"
-			end
-			if string.find(suithudname, "protection_outfit") then
-				suithudtype = "hud_sci_" .. suit_condition
-				wotsuittype = "hud_sci"
-			end
-			if string.find(suithudname, "military_outfit") then
-				suithudtype = "hud_mil_" .. suit_condition
-				wotsuittype = "hud_mil"
-			end
-			if string.find(suithudname, "specops_outfit") then
-				suithudtype = "hud_mil_" .. suit_condition
-				wotsuittype = "hud_mil"
-			end
-			if string.find(suithudname, "outfit_specnaz") then
-				suithudtype = "hud_mil_" .. suit_condition
-				wotsuittype = "hud_mil"
-			end				
-			if string.find(suithudname, "svoboda_heavy_outfit") then
-				suithudtype = "hud_gaz_" .. suit_condition
-				wotsuittype = "hud_gaz"
-			end
-			if string.find(suithudname, "outfit_dolg") then
-				suithudtype = "hud_gaz_" .. suit_condition
-				wotsuittype = "hud_gaz"
-			end			
-			if string.find(suithudname, "monolit_exoskeleton") then
-				suithudtype = "hud_exo_" .. suit_condition
-				wotsuittype = "hud_exo"
-			end
-			if string.find(suithudname, "killer_outfit") then
-				suithudtype = "hud_kill_" .. suit_condition
-				wotsuittype = "hud_kill"
-			end			
-			--- 
 		else
 			suithudtype = nil
 		end
 		if not db.actor:alive() then suithudtype = nil end
-		set_my_suit_hud(suithudtype)
+		set_my_suit_hud( dynamic_hud_enable, suithudtype )
 	end
 end
 
 local suitfirstrun = "yes"
 
-function set_my_suit_hud(hudtype)
-	if hudtype == nil then
+function set_my_suit_hud( dynamic_hud_enable, hudtype )
+	if not hudtype and not dynamic_hud_enable then
 		local wchud = get_hud():GetCustomStatic(mycurrent_suithud)
 		if wchud ~= nil then get_hud():RemoveCustomStatic(mycurrent_suithud) end
 		mycurrent_suithud = nil
@@ -382,7 +388,7 @@ function set_blood()
 			m_blood = get_hud():GetCustomStatic("hud_blood_merc"):wnd()
 			m_blood:SetColor(GetARGB(blood_intensity,255,255,255))
 			if blood_intensity > 50 then blood_intensity = blood_intensity - 50 else blood_intensity = 0 end
-		elseif string.find(mycurrent_suithud,"hud_gaz") and get_hud():GetCustomStatic("hud_blood_gas") then
+		elseif string.find(mycurrent_suithud,"hud_gas") and get_hud():GetCustomStatic("hud_blood_gas") then
 			m_blood = get_hud():GetCustomStatic("hud_blood_gas"):wnd()
 			m_blood:SetColor(GetARGB(blood_intensity,255,255,255))
 			if blood_intensity > 50 then blood_intensity = blood_intensity - 50 else blood_intensity = 0 end
@@ -392,6 +398,7 @@ end
 
 function init_blurs()
 	if blurs_enable == 0 then return end
+	if amk.load_variable( "option_hud", 2 ) < 2 then return end
 	if mycurrent_suithud ~= nil and not string.find(mycurrent_suithud,"_red3") and not string.find(mycurrent_suithud,"hud_sci_") then
 		local zoom=67.5/device().fov
 		zoom=(zoom-1)*1.5+1
