@@ -1,0 +1,1213 @@
+--[[ -----------------------------------------------------------------------------------------------
+ File       : m_net_utils.script [optional]
+ Description: Функции чтения-записи net-пакетов
+ Copyright  : 2008 © SIMBION:SHOC mod
+ Author     : Artos (по материалам Red75, xStream, Sokol_jack)
+ Last edit  : 22.05.2009 (by Artos)
+--]] -----------------------------------------------------------------------------------------------
+--/ TODO: 
+--/-------------------------------------------------------------------
+
+--/ ------------------------------------------------------------------
+--/ Settings (установка переменных окружения)
+--/ ------------------------------------------------------------------
+local f_module = "m_net_utils" --/ строковое имя имя файла-модуля
+
+local wmx       = 8 --/ max. кол-во попыток (пере)записи пакета
+local rssz,rusz = 0,0
+local func_name = nil
+--/ ------------------------------------------------------------------
+--/ Print-Log (вывод отладочной информации)
+--/ ------------------------------------------------------------------
+function printf(fmt, ...)
+	-- log1(f_module..":"..fmt,...)
+end
+--/ ------------------------------------------------------------------
+
+--/-------------------------------------------------------------------
+--/ GET|SET (на входе: [таблица параметров,] серверный объект, функция и стринг)
+--/-------------------------------------------------------------------
+function get_sobj_params(sobj,func_name,str)
+	ASSERT(sobj, "get_sobj_params: sobj is a nil reference")
+	local spk = net_packet()
+	--spk:w_begin(0)
+	sobj:STATE_Write(spk)
+	rssz = spk:w_tell() --printf("get_sobj_params:%s:size=[%s]:[%s]",str,rssz,">" ) --/#~#
+	spk:r_seek(0)
+	local t = {}
+	func_name(t,spk,rssz) --printf("get_sobj_params:%s:size=[%s],drs=[%s],elapsed=[%s]:<%s>",str,rssz,spk:w_tell()-rssz,spk:r_elapsed(),"R" ) --/#~#
+	--if spk:r_elapsed() ~= 0 then abort("m_net_utils:get_sobj_params:[%s]:left=[%d]",str, spk:r_elapsed()) end --/#~#
+	spk = nil
+	return t
+end
+function set_sobj_params(t,sobj,func_name,str)
+--	printf("set_sobj_params:[%s],name=[%s]:(%s)",str, sobj:name(), ">" ) --/#~#
+	local cnt = 0
+	local ssz = {}
+	local spk = fake_net_packet()
+	for i=0,wmx+1 do
+		cnt = i
+		if i > 0 then spk = net_packet() end
+		ssz[i] = spk:w_tell()
+		if ssz[i] == 0 then
+			func_name(t,spk)
+			ssz[i] = spk:w_tell() --printf("set_sobj_params:[%s]:size=[%s]/[%s]:(%s)",str,ssz[i],rssz-2, i ) --/#~#
+		else
+			printf("set_sobj_params:%s(%s):start_size=[%s]/[%s]:<%s>", str, i, ssz[i], rssz, "Warning!" )
+			if i == 0 then
+				return false
+			end
+			ssz[i] = -1
+		end
+		if i > 0 then
+			if ssz[i] == ssz[0] then
+				break
+			elseif i == wmx then
+				printf("set_sobj_params:%s(%s):read=[%s],fake=[%s],size=[%s]:<%s>",str,i,rssz,ssz[0],ssz[i], "Error!" )
+				return false
+			end
+		end
+	end
+	spk:r_seek(0)
+	sobj:STATE_Read(spk,ssz[cnt]) --printf("set_sobj_params:%s(%s):size=[%s]/[%s],dws=[%s]:<%s>",str,cnt,ssz[cnt],rssz-2,spk:w_tell()-ssz[cnt],"W" ) --/#~#
+	spk = nil
+	return true
+end
+
+function get_sobj_full_params(sobj,func_name,str)
+	local spk = net_packet()
+	local upk = net_packet()
+	--spk:w_begin(0)
+	--upk:w_begin(0)
+	sobj:STATE_Write(spk)
+	sobj:UPDATE_Write(upk)
+	rssz = spk:w_tell()
+	rusz = upk:w_tell() --printf("get_sobj_full_params:%s:sizes=[%s]+[%s]:[%s]",str,rssz,rusz, ">" ) --/#~#
+	spk:r_seek(0)
+	upk:r_seek(0)
+	local t = {}
+	func_name(t,spk,upk,rssz) --printf("get_sobj_full_params:%s:sizes=[%s]+[%s],drf=[%s]+[%s],elapsed=[%s]+[%s]:<%s>",str,rssz,rusz,spk:w_tell()-rssz,upk:w_tell()-rusz,spk:r_elapsed(),upk:r_elapsed(),"R" ) --/#~#
+	--if spk:r_elapsed() ~= 0 or upk:r_elapsed() ~= 0 then abort("m_net_utils:get_sobj_params:[%s]:left_s=[%d],left_u=[%d]",str, spk:r_elapsed(), upk:r_elapsed()) end --/#~#
+	spk, upk = nil, nil
+	return t
+end
+function set_sobj_full_params(t,sobj,func_name,str)
+--	printf("set_sobj_full_params:[%s],name=[%s]:(%s)",str, sobj:name(), ">" ) --/#~#
+	local cnt = 0
+	local ssz = {}
+	local usz = {}
+	local spk = fake_net_packet()
+	local upk = fake_net_packet()
+	for i=0,wmx+1 do
+		cnt = i
+		if i > 0 then
+			spk = net_packet()
+			upk = net_packet()
+		end
+		ssz[i] = spk:w_tell()
+		usz[i] = upk:w_tell()
+		if ssz[i] == 0 and usz[i] == 0 then
+--			printf("set_sobj_full_params:[%s]:size=[%s]/[%s]:(%s)",str,ssz[i],rssz-2, i ) --/#~#
+			func_name(t,spk,upk)
+			ssz[i] = spk:w_tell()
+			usz[i] = upk:w_tell()
+		else
+			printf("set_sobj_full_params:%s(%s):read=[%s]+[%s],fake=[%s]+[%s],sizes=[%s]+[%s]:<%s>",str,i,rssz,rusz,ssz[0],usz[0],ssz[i],usz[i], "Warning!" )
+			if i == 0 then
+				return false
+			end
+			ssz[i] = -1
+			usz[i] = -1
+		end
+		if i > 0 then
+			if (ssz[i] == ssz[0]) and (usz[i] == usz[0]) then
+				break
+			elseif i == wmx then
+				printf("set_sobj_full_params:%s(%s):read=[%s]+[%s],fake=[%s]+[%s],sizes=[%s]+[%s]:<%s>",str,i,rssz,rusz,ssz[0],usz[0],ssz[i],usz[i], "Error!" )
+				return false
+			end
+		end
+	end
+	spk:r_seek(0)
+	upk:r_seek(0)
+	sobj:STATE_Read(spk,ssz[cnt])
+	sobj:UPDATE_Read(upk,usz[cnt])
+--	printf("set_sobj_full_params:%s(%s):sizes=[%s]/[%s]+[%s]/[%s,dwf=[%s]+[%s]:<%s>",str,cnt,ssz[cnt],rssz,usz[cnt],rusz,spk:w_tell()-ssz[cnt],upk:w_tell()-usz[cnt],"W" ) --/#~#
+	spk, upk = nil, nil
+	return true
+end
+--/-------------------------------------------------------------------
+
+function get_vu8u8(pk)
+	local v = {}
+	for i=1,8 do
+		table.insert(v,pk:r_u8())
+	end
+	return v
+end
+function set_vu8u8(pk,v)
+	for i=1,8 do
+		pk:w_u8(v[i])
+	end
+end
+
+function get_vu8uN(pk,n)
+	local v = {}
+	for i=1,n do
+		table.insert(v,pk:r_u8())
+	end
+	return v
+end
+function set_vu8uN(pk,v)
+	local len = #v
+	for i=1,len do
+		pk:w_u8(v[i])
+	end
+end
+
+function get_vu32u8(pk)
+	local v = {}
+	local len = pk:r_s32()
+	for i=1,len do
+		table.insert(v,pk:r_u8())
+	end
+	return v
+end
+function set_vu32u8(pk,v)
+	local len = #v
+	pk:w_s32(len)
+	for i=1,len do
+		pk:w_u8(v[i])
+	end
+end
+
+function get_vu32u16(pk)
+	local v = {}
+	local len = pk:r_s32()
+	for i=1,len do
+		table.insert(v,pk:r_u16())
+	end
+	return v
+end
+function set_vu32u16(pk,v)
+	local len = #v
+	pk:w_s32(len)
+	for i=1,len do
+		pk:w_u16(v[i])
+	end
+end
+
+function get_rest(pk) --/#+# неопределенный остаток
+	local v = {}
+	local len = pk:w_tell() - pk:r_tell()
+	if len then
+		for i=1,len do
+			table.insert(v,pk:r_u8())
+		end
+	end
+	return v
+end
+function set_rest(pk,v) --/#+# неопределенный остаток
+	if v and #v > 0 then
+		local len = #v
+		for i=1,len do
+			pk:w_u8(v[i])
+		end
+	end
+end
+
+--/-------------------------------------------------------------------
+--/ (параметры объекта)
+function parse_object_packet(ret,spk) --/cse_alife_object
+	ret.gvid    = spk:r_u16()
+	ret.obf32u1 = spk:r_float()
+	ret.obs32u2 = spk:r_s32()
+	ret.lvid    = spk:r_s32()
+	ret.oflags  = spk:r_s32()
+	ret.custom  = spk:r_stringZ()
+	ret.sid     = spk:r_s32()
+	ret.obs32u3 = spk:r_s32()
+	return ret
+end
+function fill_object_packet(ret,spk) --/cse_alife_object
+	spk:w_u16    (ret.gvid)
+	spk:w_float  (ret.obf32u1)
+	spk:w_s32    (ret.obs32u2)
+	spk:w_s32    (ret.lvid)
+	spk:w_s32    (ret.oflags)
+	spk:w_stringZ(ret.custom)
+	spk:w_s32    (ret.sid)
+	spk:w_s32    (ret.obs32u3)
+end
+
+function parse_visual_packet(ret,spk) --/cse_visual
+	ret.visual = spk:r_stringZ()
+	ret.vsu8u1 = spk:r_u8()
+	return ret
+end
+function fill_visual_packet(ret,spk) --/cse_visual
+	spk:w_stringZ(ret.visual)
+	spk:w_u8     (ret.vsu8u1)
+end
+
+function parse_motion_packet(ret,spk) --/cse_motion
+	ret.motion_name = spk:r_stringZ()
+	return ret
+end
+function fill_motion_packet(ret,spk) --/cse_motion
+	spk:w_stringZ(ret.motion_name)
+end
+
+function parse_skeleton_packet(ret,spk) --/cse_ph_skeleton
+	ret.skeleton_name  = spk:r_stringZ()
+	ret.skeleton_flags = spk:r_u8()
+	ret.source_id      = spk:r_u16()
+	return ret
+end
+function fill_skeleton_packet(ret,spk) --/cse_ph_skeleton
+	spk:w_stringZ(ret.skeleton_name)
+	spk:w_u8(ret.skeleton_flags)
+	spk:w_u16(ret.source_id)
+end
+
+function parse_dynamic_object_packet(ret,spk) --/cse_alife_dynamic_object
+	parse_object_packet(ret,spk)
+	return ret
+end
+function fill_dynamic_object_packet(ret,spk) --/cse_alife_dynamic_object
+	fill_object_packet(ret,spk)
+end
+
+function parse_dynamic_object_visual_packet(ret,spk) --/cse_alife_dynamic_object_visual
+	parse_object_packet(ret,spk)
+	parse_visual_packet(ret,spk)
+	return ret
+end
+function fill_dynamic_object_visual_packet(ret,spk) --/cse_alife_dynamic_object_visual
+	fill_object_packet(ret,spk)
+	fill_visual_packet(ret,spk)
+end
+
+function parse_creature_packet(ret,spk) --/cse_alife_creature_abstract
+	parse_dynamic_object_visual_packet(ret,spk)
+	ret.team            = spk:r_u8()
+	ret.squad           = spk:r_u8()
+	ret.group           = spk:r_u8()
+	ret.health          = spk:r_float()
+	ret.crvu32u16u1     = get_vu32u16(spk)
+	ret.crvu32u16u2     = get_vu32u16(spk)
+	ret.killerid        = spk:r_u16()
+	ret.game_death_time = get_vu8u8(spk)
+	return ret
+end
+function fill_creature_packet(ret,spk) --/cse_alife_creature_abstract
+	fill_dynamic_object_visual_packet(ret,spk)
+	spk:w_u8   (ret.team)
+	spk:w_u8   (ret.squad)
+	spk:w_u8   (ret.group)
+	spk:w_float(ret.health)
+	set_vu32u16 (spk,ret.crvu32u16u1)
+	set_vu32u16 (spk,ret.crvu32u16u2)
+	spk:w_u16  (ret.killerid)
+	set_vu8u8   (spk,ret.game_death_time)
+end
+
+function parse_creature_full_packet(ret,spk,upk) --/cse_alife_creature_abstract
+	parse_creature_packet(ret,spk)
+	
+	ret.updhealth   = upk:r_float()
+	ret.upds32u1    = upk:r_s32()
+	ret.updu8u2     = upk:r_u8()
+	ret.updposition = upk:r_vec3()
+	ret.updmodel    = upk:r_float()
+	ret.updtorso    = upk:r_vec3()
+	ret.updteam     = upk:r_u8()
+	ret.updsquad    = upk:r_u8()
+	ret.updgroup    = upk:r_u8()
+	return ret
+end
+function fill_creature_full_packet(ret,spk,upk) --/cse_alife_creature_abstract
+	fill_creature_packet(ret,spk)
+	
+	upk:w_float(ret.updhealth)
+	upk:w_s32  (ret.upds32u1)
+	upk:w_u8   (ret.updu8u2)
+	upk:w_vec3 (ret.updposition)
+	upk:w_float(ret.updmodel)
+	upk:w_vec3 (ret.updtorso)
+	upk:w_u8   (ret.updteam)
+	upk:w_u8   (ret.updsquad)
+	upk:w_u8   (ret.updgroup)
+end
+
+function parse_trader_packet(ret,spk) --/cse_alife_trader_abstract
+	ret.money       = spk:r_s32()
+	ret.profile     = spk:r_stringZ()
+	ret.infammo     = spk:r_s32()
+	ret.class       = spk:r_stringZ()
+	ret.communityid = spk:r_s32()
+	ret.rank        = spk:r_s32()
+	ret.reputation  = spk:r_s32()
+	ret.charname    = spk:r_stringZ()
+	return ret
+end
+function fill_trader_packet(ret,spk) --/cse_alife_trader_abstract
+	spk:w_s32    (ret.money)
+	spk:w_stringZ(ret.profile)
+	spk:w_s32    (ret.infammo)
+	spk:w_stringZ(ret.class)
+	spk:w_s32    (ret.communityid)
+	spk:w_s32    (ret.rank)
+	spk:w_s32    (ret.reputation)
+	spk:w_stringZ(ret.charname)
+end
+
+function parse_monster_packet(ret,spk) --/cse_alife_monster_abstract
+	parse_creature_packet(ret,spk)
+	ret.baseoutr       = spk:r_stringZ()
+	ret.baseinr        = spk:r_stringZ()
+	ret.smtrid         = spk:r_u16()
+	ret.smtrtaskactive = spk:r_u8()
+	return ret
+end
+function fill_monster_packet(ret,spk) --/cse_alife_monster_abstract
+	fill_creature_packet(ret,spk)
+	spk:w_stringZ(ret.baseoutr)
+	spk:w_stringZ(ret.baseinr)
+	spk:w_u16    (ret.smtrid)
+	spk:w_u8     (ret.smtrtaskactive)
+end
+
+function parse_monster_full_packet(ret,spk,upk) --/cse_alife_monster_abstract
+	parse_creature_full_packet(ret,spk,upk)
+	ret.baseoutr       = spk:r_stringZ()
+	ret.baseinr        = spk:r_stringZ()
+	ret.smtrid         = spk:r_u16()
+	ret.smtrtaskactive = spk:r_u8()
+	
+	ret.updu16u1 = upk:r_u16()
+	ret.updu16u2 = upk:r_u16()
+	ret.upds32u3 = upk:r_s32()
+	ret.upds32u4 = upk:r_s32()
+	return ret
+end
+function fill_monster_full_packet(ret,spk,upk) --/cse_alife_monster_abstract
+	fill_creature_full_packet(ret,spk,upk)
+	spk:w_stringZ(ret.baseoutr)
+	spk:w_stringZ(ret.baseinr)
+	spk:w_u16    (ret.smtrid)
+	spk:w_u8     (ret.smtrtaskactive)
+	
+	upk:w_u16(ret.updu16u1)
+	upk:w_u16(ret.updu16u2)
+	upk:w_s32(ret.upds32u3)
+	upk:w_s32(ret.upds32u4)
+end
+
+function parse_human_packet(ret,spk) --/cse_alife_human_abstract
+	parse_trader_packet(ret,spk)
+	parse_monster_packet(ret,spk)
+	ret.huvu32u8u1 = get_vu32u8(spk)
+	ret.huvu32u8u2 = get_vu32u8(spk)
+	return ret
+end
+function fill_human_packet(ret,spk) --/cse_alife_human_abstract
+	fill_trader_packet(ret,spk)
+	fill_monster_packet(ret,spk)
+	set_vu32u8(spk,ret.huvu32u8u1)
+	set_vu32u8(spk,ret.huvu32u8u2)
+end
+
+function parse_human_full_packet(ret,spk,upk) --/cse_alife_human_abstract
+	parse_trader_packet(ret,spk)
+	parse_monster_full_packet(ret,spk,upk)
+	ret.huvu32u8u1 = get_vu32u8(spk)
+	ret.huvu32u8u2 = get_vu32u8(spk)
+	return ret
+end
+function fill_human_full_packet(ret,spk,upk) --/cse_alife_human_abstract
+	fill_trader_packet(ret,spk)
+	fill_monster_full_packet(ret,spk,upk)
+	set_vu32u8(spk,ret.huvu32u8u1)
+	set_vu32u8(spk,ret.huvu32u8u2)
+end
+
+function parse_human_stalker_packet(ret,spk) --/cse_alife_human_stalker
+	parse_human_packet(ret,spk)
+	parse_skeleton_packet(ret,spk)
+	return ret
+end
+function fill_human_stalker_packet(ret,spk) --/cse_alife_human_stalker
+	fill_human_packet(ret,spk)
+	fill_skeleton_packet(ret,spk)
+end
+
+function parse_human_stalker_full_packet(ret,spk,upk) --/cse_alife_human_stalker
+	parse_human_full_packet(ret,spk,upk)
+	parse_skeleton_packet(ret,spk)
+	ret.updstart_dialog = upk:r_stringZ()
+	return ret
+end
+function fill_human_stalker_full_packet(ret,spk,upk) --/cse_alife_human_stalker
+	fill_human_full_packet(ret,spk,upk)
+	fill_skeleton_packet(ret,spk)
+	upk:w_stringZ(ret.updstart_dialog)
+end
+
+function parse_se_stalker_packet(ret,spk) --/se_stalker
+	parse_human_stalker_packet(ret,spk)
+	ret.rests = get_rest(spk) --/#?# неопределенный остаток
+	return ret
+end
+function fill_se_stalker_packet(ret,spk) --/se_stalker
+	fill_human_stalker_packet(ret,spk)
+	set_rest(spk,ret.rests) --/#?# неопределенный остаток
+end
+
+function parse_se_stalker_full_packet(ret,spk,upk) --/se_stalker
+	parse_human_stalker_full_packet(ret,spk,upk)
+	ret.hellodlg = upk:r_stringZ()
+	ret.rests = get_rest(spk) --/#?# неопределенный остаток
+	ret.restu = get_rest(upk) --/#?# неопределенный остаток
+	return ret
+end
+function fill_se_stalker_full_packet(ret,spk,upk) --/se_stalker
+	fill_human_stalker_full_packet(ret,spk,upk)
+	upk:w_stringZ(ret.hellodlg)
+	set_rest(spk,ret.rests) --/#?# неопределенный остаток
+	set_rest(upk,ret.restu) --/#?# неопределенный остаток
+end
+
+function parse_monster_base_packet(ret,spk) --/cse_alife_monster_base
+	parse_monster_packet(ret,spk)
+	parse_skeleton_packet(ret,spk)
+	ret.spec_obj_id = spk:r_u16()
+	return ret
+end
+function fill_monster_base_packet(ret,spk) --/cse_alife_monster_base
+	fill_monster_packet(ret,spk)
+	fill_skeleton_packet(ret,spk)
+	spk:w_u16(ret.spec_obj_id)
+end
+
+function parse_monster_base_full_packet(ret,spk,upk) --/cse_alife_monster_base
+	parse_monster_full_packet(ret,spk,upk)
+	parse_skeleton_packet(ret,spk)
+	ret.spec_obj_id = spk:r_u16()
+	return ret
+end
+function fill_monster_base_full_packet(ret,spk,upk) --/cse_alife_monster_base
+	fill_monster_full_packet(ret,spk,upk)
+	fill_skeleton_packet(ret,spk)
+	spk:w_u16(ret.spec_obj_id)
+end
+
+function parse_se_monster_packet(ret,spk) --/se_monster
+	parse_monster_base_packet(ret,spk)
+	ret.spec_obj_id = spk:r_u16()
+	ret.job_online  = spk:r_u8()
+	if ret.job_online > 3 then
+		ret.state = true
+		ret.job_online = ret.job_online-4
+	else
+		ret.state = false
+	end
+	if ret.job_online == 3 then
+		ret.job_online_condlist = spk:r_stringZ()
+	end
+	ret.was_in_smtr = spk:r_u8()
+	ret.rests = get_rest(spk) --/#?# неопределенный остаток
+	return ret
+end
+function fill_se_monster_packet(ret,spk) --/se_monster
+	fill_monster_base_packet(ret,spk)
+	spk:w_u16(ret.spec_obj_id)
+	local st = 0
+	if ret.state then
+		st = 4
+	end
+	spk:w_u8(ret.job_online+st)
+	if ret.job_online == 3 then
+		spk:w_stringZ(ret.job_online_condlist)
+	end
+	spk:w_u8(ret.was_in_smtr)
+	set_rest(spk,ret.rests) --/#?# неопределенный остаток
+end
+
+function parse_se_monster_full_packet(ret,spk,upk) --/se_monster
+	parse_monster_base_full_packet(ret,spk,upk)
+	ret.spec_obj_id = spk:r_u16()
+	ret.job_online  = spk:r_u8()
+	if ret.job_online > 3 then
+		ret.state = true
+		ret.job_online = ret.job_online-4
+	else
+		ret.state = false
+	end
+	if ret.job_online == 3 then
+		ret.job_online_condlist = spk:r_stringZ()
+	end
+	ret.was_in_smtr = spk:r_u8()
+	ret.rests = get_rest(spk) --/#?# неопределенный остаток
+	ret.restu = get_rest(upk) --/#?# неопределенный остаток
+	return ret
+end
+function fill_se_monster_full_packet(ret,spk,upk) --/se_monster
+	fill_monster_base_full_packet(ret,spk,upk)
+	spk:w_u16(ret.spec_obj_id)
+	local st = 0
+	if ret.state then
+		st = 4
+	end
+	spk:w_u8(ret.job_online+st)
+	if ret.job_online == 3 then
+		spk:w_stringZ(ret.job_online_condlist)
+	end
+	spk:w_u8(ret.was_in_smtr)
+	set_rest(spk,ret.rests) --/#?# неопределенный остаток
+	set_rest(upk,ret.restu) --/#?# неопределенный остаток
+end
+
+--/-------------------------------------------------------------------
+--/ STALKER (se_stalker)
+--/-------------------------------------------------------------------
+function get_stalker_data(sobj) --/ серверный объект на входе
+	return get_sobj_params(sobj,parse_se_stalker_packet,"npc")
+end
+function set_stalker_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_params(t,sobj,fill_se_stalker_packet,"npc")
+end
+
+function get_stalker_full_data(sobj) --/ серверный объект на входе
+	return get_sobj_full_params(sobj,parse_se_stalker_full_packet,"npc")
+end
+function set_stalker_full_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_full_params(t,sobj,fill_se_stalker_full_packet,"npc")
+end
+
+--/-------------------------------------------------------------------
+--/ MONSTER (se_monster)
+--/-------------------------------------------------------------------
+function get_monster_data(sobj) --/ серверный объект на входе
+	return get_sobj_params(sobj,parse_se_monster_packet,"mob")
+end
+function set_monster_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_params(t,sobj,fill_se_monster_packet,"mob")
+end
+
+function get_monster_full_data(sobj) --/ серверный объект на входе
+	return get_sobj_full_params(sobj,parse_se_monster_full_packet,"mob")
+end
+function set_monster_full_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_full_params(t,sobj,fill_se_monster_full_packet,"mob")
+end
+
+--/-------------------------------------------------------------------
+--/ TRADER (cse_alife_trader)
+--/-------------------------------------------------------------------
+function get_trader_params(ret,spk) --/cse_alife_trader
+	parse_dynamic_object_visual_packet(ret,spk)
+	parse_trader_packet(ret,spk)
+	return ret
+end
+function set_trader_params(ret,spk) --/cse_alife_trader
+	fill_dynamic_object_visual_packet(ret,spk)
+	fill_trader_packet(ret,spk)
+end
+
+function get_trader_data(sobj) --/ серверный объект на входе
+	return get_sobj_params(sobj,get_trader_params,"trader")
+end
+function set_trader_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_params(t,sobj,set_trader_params,"trader")
+end
+
+--/-------------------------------------------------------------------
+--/ INVBOX (cse_alife_inventory_box)
+--/-------------------------------------------------------------------
+function get_invbox_data(sobj) --/ серверный объект на входе
+	return get_sobj_params(sobj,parse_dynamic_object_visual_packet,"invbox")
+end
+function set_invbox_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_params(t,sobj,fill_dynamic_object_visual_packet,"invbox")
+end
+
+--/-------------------------------------------------------------------
+--/ HELICOPTER (cse_alife_helicopter)
+--/-------------------------------------------------------------------
+function get_helicopter_params(ret,spk)
+	parse_dynamic_object_visual_packet(ret,spk)
+	parse_motion_packet(ret,spk)
+	parse_skeleton_packet(ret,spk)
+	--/ cse_alife_helicopter
+	ret.cse_alife_helicopter__unk1_sz = spk:r_stringZ()
+	ret.engine_sound                  = spk:r_stringZ()
+	return ret
+end
+function set_helicopter_params(ret,spk)
+	fill_dynamic_object_visual_packet(ret,spk)
+	fill_motion_packet(ret,spk)
+	fill_skeleton_packet(ret,spk)
+	--/ cse_alife_helicopter
+	spk:w_stringZ(ret.cse_alife_helicopter__unk1_sz)
+	spk:w_stringZ(ret.engine_sound)
+end
+
+function get_helicopter_data(sobj) --/ серверный объект на входе
+	return get_sobj_params(sobj,get_helicopter_params,"helicopter")
+end
+function set_helicopter_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_params(t,sobj,set_helicopter_params,"helicopter")
+end
+
+--/-------------------------------------------------------------------
+--/ CAR (cse_alife_car)
+--/-------------------------------------------------------------------
+function get_car_params(ret,spk)
+	parse_dynamic_object_visual_packet(ret,spk)
+	parse_skeleton_packet(ret,spk)
+	ret.health = spk:r_float() --/ cse_alife_car
+	return ret
+end
+function set_car_params(ret,spk)
+	fill_dynamic_object_visual_packet(ret,spk)
+	fill_skeleton_packet(ret,spk)
+	spk:w_float(ret.health) --/ cse_alife_car
+end
+
+function get_car_data(sobj) --/ серверный объект на входе
+	return get_sobj_params(sobj,get_car_params,"car")
+end
+function set_car_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_params(t,sobj,set_car_params,"car")
+end
+
+--/-------------------------------------------------------------------
+--/ SHAPE (cse_shape)
+--/-------------------------------------------------------------------
+function parse_shape_packet(ret,spk)
+	local shape_count = spk:r_u8() --/ количество фигур
+	ret.shapes = {}
+	for i=1,shape_count do
+		ret.shapes[i] = {}
+		ret.shapes[i].shtype = spk:r_u8() --/ тип фигуры:
+		if ret.shapes[i].shtype == 0 then --/ sphere
+			ret.shapes[i].center = spk:r_vec3()
+			ret.shapes[i].radius = spk:r_float()
+		else --/ box
+			--ret.shapes[i] = spk:r_matrix() --/#x#
+			ret.shapes[i].v1 = spk:r_vec3()
+			ret.shapes[i].v2 = spk:r_vec3()
+			ret.shapes[i].v3 = spk:r_vec3()
+			ret.shapes[i].offset = spk:r_vec3()
+		end
+	end
+	return ret
+end
+function fill_shape_packet(ret,spk)
+	local shape_count = (table.getn(ret.shapes))
+	spk:w_u8(shape_count) --/ количество фигур
+	for i=1,(shape_count) do
+		spk:w_u8     (ret.shapes[i].shtype) --/ тип фигуры:
+		if ret.shapes[i].shtype == 0 then --/ sphere
+			spk:w_vec3 (ret.shapes[i].center)
+			spk:w_float(ret.shapes[i].radius)
+		else --/ box
+			--spk:w_matrix (ret.shapes[i]) --/#x#
+			spk:w_vec3 (ret.shapes[i].v1)
+			spk:w_vec3 (ret.shapes[i].v2)
+			spk:w_vec3 (ret.shapes[i].v3)
+			spk:w_vec3 (ret.shapes[i].offset)
+		end
+	end
+end
+
+--/-------------------------------------------------------------------
+--/ RESTRICTOR (cse_alife_space_restrictor)
+--/-------------------------------------------------------------------
+function get_restrictor_params(ret,spk)
+	parse_object_packet(ret,spk)
+	parse_shape_packet(ret,spk)
+	ret.restrictor_type = spk:r_u8()
+	return ret
+end
+function set_restrictor_params(ret,spk)
+	fill_object_packet(ret,spk)
+	fill_shape_packet(ret,spk)
+	spk:w_u8(ret.restrictor_type)
+end
+
+function get_restrictor_data(sobj) --/ серверный объект на входе
+	return get_sobj_params(sobj,get_restrictor_params,"restrictor")
+end
+function set_restrictor_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_params(t,sobj,set_restrictor_params,"restrictor")
+end
+
+--/-------------------------------------------------------------------
+--/ SPAWNER (se_respawn)
+--/-------------------------------------------------------------------
+function get_spawner_params(ret,spk)
+	get_restrictor_params(ret,spk)
+	ret.spawned_obj_count = spk:r_u8()
+	return ret
+end
+function set_spawner_params(ret,spk)
+	set_restrictor_params(ret,spk)
+	spk:w_u8(ret.spawned_obj_count)
+end
+
+function get_spawner_data(sobj) --/ серверный объект на входе
+	return get_sobj_params(sobj,get_spawner_params,"spawner")
+end
+function set_spawner_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_params(t,sobj,set_spawner_params,"spawner")
+end
+
+--/-------------------------------------------------------------------
+--/ ANOMALY (se_zone_anom)
+--/-------------------------------------------------------------------
+function get_anomaly_params(ret,spk)
+	get_restrictor_params(ret,spk)
+	--/cse_alife_custom_zone
+	ret.max_power                  = spk:r_float()
+	ret.owner_id                   = spk:r_s32()
+	ret.enabled_time               = spk:r_s32()
+	ret.disabled_time              = spk:r_s32()
+	ret.start_time_shift           = spk:r_s32()
+	--/cse_alife_anomalous_zone
+	ret.offline_interactive_radius = spk:r_float()
+	ret.artefact_spawn_count       = spk:r_u16()
+	ret.artefact_position_offset   = spk:r_s32()
+	--/<
+	ret.last_spawn_time_present    = spk:r_u8()
+	--ret.rests                      = get_rest(spk) --/#?# неопределенный остаток
+	return ret
+end
+function set_anomaly_params(ret,spk)
+	set_restrictor_params(ret,spk)
+	--/cse_alife_custom_zone
+	spk:w_float(ret.max_power)
+	spk:w_s32  (ret.owner_id)
+	spk:w_s32  (ret.enabled_time)
+	spk:w_s32  (ret.disabled_time)
+	spk:w_s32  (ret.start_time_shift)
+	--/cse_alife_anomalous_zone
+	spk:w_float(ret.offline_interactive_radius)
+	spk:w_u16  (ret.artefact_spawn_count)
+	spk:w_s32  (ret.artefact_position_offset)
+	--/<
+	spk:w_u8   (ret.last_spawn_time_present)
+	--set_rest(spk,ret.rests) --/#?# неопределенный остаток
+end
+
+function get_anomaly_data(sobj) --/ серверный объект на входе
+	return get_sobj_params(sobj,get_anomaly_params,"anomaly")
+end
+function set_anomaly_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_params(t,sobj,set_anomaly_params,"anomaly")
+end
+
+--/-------------------------------------------------------------------
+--/ LEVEL_CHANGER (cse_alife_level_changer)
+--/-------------------------------------------------------------------
+function get_lc_params(ret,spk)
+	get_restrictor_params(ret,spk)
+	--/cse_alife_level_changer
+	ret.dest_game_vertex_id  = spk:r_u16()
+	ret.dest_level_vertex_id = spk:r_s32()
+	ret.dest_position        = spk:r_vec3()
+	ret.dest_direction       = spk:r_vec3()
+	ret.dest_level_name      = spk:r_stringZ()
+	ret.dest_graph_point     = spk:r_stringZ()
+	ret.silent_mode          = spk:r_u8()
+	return ret
+end
+function set_lc_params(ret,spk)
+	set_restrictor_params(ret,spk)
+	--/cse_alife_level_changer
+	spk:w_u16    (ret.dest_game_vertex_id)
+	spk:w_s32    (ret.dest_level_vertex_id)
+	spk:w_vec3   (ret.dest_position)
+	spk:w_vec3   (ret.dest_direction)
+	spk:w_stringZ(ret.dest_level_name)
+	spk:w_stringZ(ret.dest_graph_point)
+	spk:w_u8     (ret.silent_mode)
+end
+
+function get_lc_data(sobj) --/ серверный объект на входе
+	return get_sobj_params(sobj,get_lc_params,"lc")
+end
+function set_lc_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_params(t,sobj,set_lc_params,"lc")
+end
+
+--/-------------------------------------------------------------------
+--/ OBJECT PHYSIC / DESTROYABLE (cse_alife_object_physic)
+--/-------------------------------------------------------------------
+function parse_object_physic_packet(ret,spk)
+	parse_dynamic_object_visual_packet(ret,spk)
+	parse_skeleton_packet(ret,spk)
+	--/cse_alife_object_physic
+	ret.physic_type = spk:r_s32()
+	ret.mass        = spk:r_float()
+	ret.fixed_bones = spk:r_stringZ()
+	return ret
+end
+function fill_object_physic_packet(ret,spk)
+	fill_dynamic_object_visual_packet(ret,spk)
+	fill_skeleton_packet(ret,spk)
+	--/cse_alife_object_physic
+	spk:w_s32    (ret.physic_type)
+	spk:w_float  (ret.mass)
+	spk:w_stringZ(ret.fixed_bones)
+end
+
+function get_destroyable_data(sobj) --/ серверный объект на входе
+	return get_sobj_params(sobj,parse_object_physic_packet,"destroyable")
+end
+function set_destroyable_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_params(t,sobj,fill_object_physic_packet,"destroyable")
+end
+
+--/-------------------------------------------------------------------
+--/ BREAKABLE (cse_alife_object_breakable)
+--/-------------------------------------------------------------------
+function get_breakable_params(ret,spk)
+	parse_dynamic_object_visual_packet(ret,spk)
+	return ret
+end
+function set_breakable_params(ret,spk)
+	fill_dynamic_object_visual_packet(ret,spk)
+end
+
+function get_breakable_data(sobj) --/ серверный объект на входе
+	return get_sobj_params(sobj,get_breakable_params,"breakable")
+end
+function set_breakable_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_params(t,sobj,set_breakable_params,"breakable")
+end
+
+--/-------------------------------------------------------------------
+--/ ITEM (cse_alife_item)
+--/-------------------------------------------------------------------
+function parse_item_packet(ret,spk)
+	parse_dynamic_object_visual_packet(ret,spk)
+	ret.condition = spk:r_float()
+	return ret
+end
+function fill_item_packet(ret,spk)
+	fill_dynamic_object_visual_packet(ret,spk)
+	spk:w_float(ret.condition)
+end
+
+function parse_item_full_packet(ret,spk,upk)
+	parse_item_packet(ret,spk)
+	
+	ret.updnum_items = upk:r_u8()
+	ret.updpos       = upk:r_vec3()
+	ret.updcse_alife_item__unk1_q8v4 = get_vu8uN(upk,4)
+	ret.updcse_alife_item__unk2_q8v3 = get_vu8uN(upk,3)
+	ret.updcse_alife_item__unk3_q8v3 = get_vu8uN(upk,3)
+	return ret
+end
+function fill_item_full_packet(ret,spk,upk)
+	fill_item_packet(ret,spk)
+	
+	upk:w_u8   (ret.updnum_items)
+	upk:w_vec3 (ret.updpos)
+	set_vu8uN(upk,ret.updcse_alife_item__unk1_q8v4)
+	set_vu8uN(upk,ret.updcse_alife_item__unk2_q8v3)
+	set_vu8uN(upk,ret.updcse_alife_item__unk3_q8v3)
+end
+
+function get_item_data(sobj) --/ серверный объект на входе
+	return get_sobj_params(sobj,parse_item_packet,"item")
+end
+function set_item_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_params(t,sobj,fill_item_packet,"item")
+end
+
+function get_item_full_data(sobj) --/ серверный объект на входе
+	return get_sobj_full_params(sobj,parse_item_full_packet,"item")
+end
+function set_item_full_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_full_params(t,sobj,fill_item_full_packet,"item")
+end
+
+--/-------------------------------------------------------------------
+--/ AMMO (cse_alife_item_ammo)
+--/-------------------------------------------------------------------
+function parse_item_ammo_packet(ret,spk)
+	parse_item_packet(ret,spk)
+	ret.ammo_left    = spk:r_u16()
+	return ret
+end
+function fill_item_ammo_packet(ret,spk)
+	fill_item_packet(ret,spk)
+	spk:w_u16(ret.ammo_left)
+end
+
+function parse_item_ammo_full_packet(ret,spk,upk)
+	parse_item_full_packet(ret,spk)
+	ret.ammo_left    = spk:r_u16()
+	ret.updammo_left = upk:r_u16()
+	return ret
+end
+function fill_item_ammo_full_packet(ret,spk,upk)
+	fill_item_full_packet(ret,spk)
+	spk:w_u16(ret.ammo_left)
+	upk:w_u16(ret.updammo_left)
+end
+
+function get_ammo_data(sobj) --/ серверный объект на входе
+	return get_sobj_params(sobj,parse_item_ammo_packet,"ammo")
+end
+function set_ammo_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_params(t,sobj,fill_item_ammo_packet,"ammo")
+end
+
+function get_ammo_full_data(sobj) --/ серверный объект на входе
+	return get_sobj_full_params(sobj,parse_item_ammo_full_packet,"ammo")
+end
+function set_ammo_full_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_full_params(t,sobj,fill_item_ammo_full_packet,"ammo")
+end
+
+--/-------------------------------------------------------------------
+--/ WEAPON (cse_alife_item_weapon)
+--/-------------------------------------------------------------------
+function parse_item_weapon_packet(ret,spk)
+	parse_item_packet(ret,spk)
+	ret.ammo_current      = spk:r_u16()
+	ret.ammo_elapsed      = spk:r_u16()
+	ret.weapon_state      = spk:r_u8()
+	ret.addon_flags       = spk:r_u8()
+	ret.ammo_type         = spk:r_u8()
+	return ret
+end
+function fill_item_weapon_packet(ret,spk)
+	fill_item_packet(ret,spk)
+	spk:w_u16(ret.ammo_current)
+	spk:w_u16(ret.ammo_elapsed)
+	spk:w_u8 (ret.weapon_state)
+	spk:w_u8 (ret.addon_flags)
+	spk:w_u8 (ret.ammo_type)
+end
+
+function parse_item_weapon_full_packet(ret,spk,upk)
+	parse_item_weapon_packet(ret,spk)
+	
+	ret.updcondition         = upk:r_u8()
+	ret.updweapon_flags      = upk:r_u8()
+	ret.updammo_elapsed      = upk:r_u16()
+	ret.updaddon_flags       = upk:r_u8()
+	ret.updammo_type         = upk:r_u8()
+	ret.updweapon_state      = upk:r_u8()
+	ret.updweapon_zoom       = upk:r_u8()
+	ret.updcurrent_fire_mode = upk:r_u8()
+	return ret
+end
+function fill_item_weapon_full_packet(ret,spk,upk)
+	fill_item_weapon_packet(ret,spk)
+	
+	upk:w_u8 (ret.updcondition)
+	upk:w_u8 (ret.updweapon_flags)
+	upk:w_u16(ret.updammo_elapsed)
+	upk:w_u8 (ret.updaddon_flags)
+	upk:w_u8 (ret.updammo_type)
+	upk:w_u8 (ret.updweapon_state)
+	upk:w_u8 (ret.updweapon_zoom)
+	upk:w_u8 (ret.updcurrent_fire_mode)
+end
+
+function parse_item_weapon_w_gl_full_packet(ret,spk,upk)
+	parse_item_weapon_packet(ret,spk)
+	
+	ret.updgrenade_mode      = upk:r_u8() --/#+#
+	ret.updcondition         = upk:r_u8()
+	ret.updweapon_flags      = upk:r_u8()
+	ret.updammo_elapsed      = upk:r_u16()
+	ret.updaddon_flags       = upk:r_u8()
+	ret.updammo_type         = upk:r_u8()
+	ret.updweapon_state      = upk:r_u8()
+	ret.updweapon_zoom       = upk:r_u8()
+	ret.updcurrent_fire_mode = upk:r_u8()
+	return ret
+end
+function fill_item_weapon_w_gl_full_packet(ret,spk,upk)
+	fill_item_weapon_packet(ret,spk)
+	
+	upk:w_u8 (ret.updgrenade_mode) --/#+#
+	upk:w_u8 (ret.updcondition)
+	upk:w_u8 (ret.updweapon_flags)
+	upk:w_u16(ret.updammo_elapsed)
+	upk:w_u8 (ret.updaddon_flags)
+	upk:w_u8 (ret.updammo_type)
+	upk:w_u8 (ret.updweapon_state)
+	upk:w_u8 (ret.updweapon_zoom)
+	upk:w_u8 (ret.updcurrent_fire_mode)
+end
+
+function get_weapon_data(sobj) --/ серверный объект на входе
+	return get_sobj_params(sobj,parse_item_weapon_packet,"weapon")
+end
+function set_weapon_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_params(t,sobj,fill_item_weapon_packet,"weapon")
+end
+
+function get_weapon_full_data(sobj) --/ серверный объект на входе
+	return get_sobj_full_params(sobj,parse_item_weapon_full_packet,"weapon")
+end
+function set_weapon_full_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_full_params(t,sobj,fill_item_weapon_full_packet,"weapon")
+end
+
+function get_weapon_w_gl_full_data(sobj) --/ серверный объект на входе
+	return get_sobj_full_params(sobj,parse_item_weapon_w_gl_full_packet,"weapon")
+end
+function set_weapon_w_gl_full_data(t,sobj) --/ таблица параметров и серверный объект на входе
+	return set_sobj_full_params(t,sobj,fill_item_weapon_w_gl_full_packet,"weapon")
+end
+
+
+----------------------------------------------------------------------
+--/ FAKE_Net_Packet
+----------------------------------------------------------------------
+class "fake_net_packet"
+
+function fake_net_packet:__init()
+	self.size = 0
+end
+
+function fake_net_packet:w_tell()
+	return self.size
+end
+function fake_net_packet:w_bool()
+	self.size = self.size+1
+end
+function fake_net_packet:w_u8()
+	self.size = self.size+1
+end
+function fake_net_packet:w_u16()
+	self.size = self.size+2
+end
+function fake_net_packet:w_u24()
+	self.size = self.size+3
+end
+function fake_net_packet:w_u32()
+	self.size = self.size+4
+end
+function fake_net_packet:w_u64()
+	self.size = self.size+8
+end
+function fake_net_packet:w_s16()
+	self.size = self.size+2
+end
+function fake_net_packet:w_s32()
+	self.size = self.size+4
+end
+function fake_net_packet:w_s64()
+	self.size = self.size+8
+end
+function fake_net_packet:w_angle8()
+	self.size = self.size+1
+end
+function fake_net_packet:w_angle16()
+	self.size = self.size+2
+end
+function fake_net_packet:w_float()
+	self.size = self.size+4
+end
+function fake_net_packet:w_stringZ(str)
+	self.size = self.size + string.len(str)+1
+end
+function fake_net_packet:w_vec3()
+	self.size = self.size+12
+end
+
+function fake_net_packet:w_begin()
+	abort("w_begin unsupported in fake_net_packet")
+end
+function fake_net_packet:w_chunk_open8()
+	abort("w_chunk_open8 unsupported in fake_net_packet")
+end
+function fake_net_packet:w_chunk_close8()
+	abort("w_chunk_close8 unsupported in fake_net_packet")
+end
+function fake_net_packet:w_chunk_open16()
+	abort("w_chunk_open16 unsupported in fake_net_packet")
+end
+function fake_net_packet:w_chunk_close16()
+	abort("w_chunk_close16 unsupported in fake_net_packet")
+end
+function fake_net_packet:w_float_q8()
+	abort("w_float_q8 unsupported in fake_net_packet")
+end
+function fake_net_packet:w_float_q16()
+	abort("w_float_q16 unsupported in fake_net_packet")
+end
+function fake_net_packet:w_matrix()
+	abort("w_matrix unsupported in fake_net_packet")
+end
+function fake_net_packet:w_dir()
+	abort("w_dir unsupported in fake_net_packet")
+end
+function fake_net_packet:w_sdir()
+	abort("w_sdir unsupported in fake_net_packet")
+end
+function fake_net_packet:w_clientID()
+	abort("w_clientID unsupported in fake_net_packet")
+end
+
+--/-------------------------------------------------------------------
+--/ Строковые функции
+--/-------------------------------------------------------------------
+--/ для правильного парсинга запрещены комментарии!!!
+function parse_custom_data(str)
+	local t = {}
+	if str then
+		for section, section_data in string.gfind(str,"%s*%[([^%]]*)%]%s*([^%[%z]*)%s*") do
+			section = string.trim(section)
+			t[section] = {}
+			for line in string.gfind(string.trim(section_data), "([^\n]*)\n*") do
+				if string.find(line,"=") ~= nil then
+					for k, v in string.gfind(line, "([^=]-)%s*=%s*(.*)") do
+						k = string.trim(k)
+						if k ~= nil and k ~= "" and v ~= nil then
+							t[section][k] = string.trim(v)
+						end
+					end
+				else
+					for k, v in string.gfind(line, "(.*)") do
+						k = string.trim(k)
+						if k ~= nil and k ~= "" then
+							t[section][k] = "<<no_value>>"
+						end
+					end
+				end
+			end
+		end
+	end
+	return t
+end
+
+function gen_custom_data(tbl)
+	local str = ""
+	for key, value in pairs(tbl) do
+		str = str.."\n["..key.."]\n"
+		for k, v in pairs(value) do
+			if v ~= "<<no_value>>" then
+				if type(v) == "table" then
+					print_table_inlog_v2(v, "ABORT:["..key.."]>>")
+					abort("TABLE NOT ALLOWED IN PARSE TABLE")
+				end
+				str = str..k.." = "..v.."\n"
+			else
+				str = str..k.."\n"
+			end
+		end
+	end
+	return str
+end
+--/-------------------------------------------------------------------
