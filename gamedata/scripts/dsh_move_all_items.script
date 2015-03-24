@@ -2,111 +2,178 @@ function attach( sm )
   sm:subscribe({ signal = "on_body_hide",     fun = this.on_body_hide })
   sm:subscribe({ signal = "on_body_open",     fun = this.on_body_open })
   sm:subscribe({ signal = "on_drop",          fun = this.on_drop })
+  sm:subscribe({ signal = "on_key_up",        fun = this.on_key_up })
+  sm:subscribe({ signal = "on_select_item",   fun = this.on_select_item })
   sm:subscribe({ signal = "on_take",          fun = this.on_take })
   sm:subscribe({ signal = "on_take_from_box", fun = this.on_take_from_box })
 end
 
 local is_body_opened = false
-local transferred    = {}
+local last_selected_item;
+local transferred = {}
 
 function on_body_hide( npc )
   is_body_opened = false
+  last_selected_item = nil
 end
 
 function on_body_open( npc )
   is_body_opened = true
+  last_selected_item = nil
+end
+
+function on_select_item( obj, sobj )
+  if is_body_opened then last_selected_item = obj end
+end
+
+function on_key_up( key, bind )
+  if is_body_opened and last_selected_item and key == DIK_keys.DIK_Z then
+    local sobj = alife():object( last_selected_item:id() )
+    if sobj then
+      local from, to
+      if sobj.parent_id == 0 then
+        from = db.actor
+        to   = level.get_target_obj()
+      else
+        from = level.get_target_obj()
+        to   = db.actor
+      end
+      if from and to then
+        local items = {}
+        if from:is_inventory_box() then
+          for i = 0, from:inv_box_count() - 1 do
+            local item = from:object_from_inv_box( i )
+            if item:section() == last_selected_item:section() then
+              table.insert( items, item )
+            end
+          end
+        else
+          for i = 0, from:object_count() - 1 do
+            local item = from:object( i )
+            if item:section() == last_selected_item:section() then
+              table.insert( items, item )
+            end
+          end
+        end
+        for i, v in ipairs( items ) do
+          local found = alife():object( v:id() )
+          if found and found.parent_id == from:id() then
+            from:transfer_item( v, to )
+          end
+        end
+      end
+    end
+    last_selected_item = nil
+    return true
+  end
 end
 
 function on_drop( obj, sobj )
   if sobj == nil then return end
-  if transferred[ obj:id() ] then
-    if transferred[ obj:id() ] == 2 then transferred = {} end
-    return
+  local sect  = obj:section()
+  if transferred[ sect ] then
+    if transferred[ sect ][ obj:id() ] then
+      if transferred[ sect ][ obj:id() ] == 2 then
+        transferred[ sect ] = nil
+      end
+      return
+    end
+  else
+    transferred[ sect ] = {}
   end
   if not GetShift() then return end
   local box_id = sobj.parent_id
   if not ( box_id == 0 or box_id == 65535 ) then
-    transferred[ obj:id() ] = 1
+    transferred[ sect ][ obj:id() ] = 1
     local last_item = obj:id()
-    local sect  = obj:section()
     local sim   = alife()
     local items = {}
     for i = 0, db.actor:object_count() - 1 do
       local item_from_inv = db.actor:object( i )
       if item_from_inv:section() == sect then
-        local found = sim:object( item_from_inv:id() )
-        if found.parent_id == 0 then
           table.insert( items, item_from_inv )
-        end
       end
     end
     local box = level.object_by_id( box_id )
     for i, v in ipairs( items ) do
-      db.actor:transfer_item( v, box )
-      transferred[ v:id() ] = 1
-      last_item = v:id()
+      local found = sim:object( v:id() )
+      if found.parent_id == 0 then
+        db.actor:transfer_item( v, box )
+        transferred[ sect ][ v:id() ] = 1
+        last_item = v:id()
+      end
     end
-    transferred[ last_item ] = 2
+    transferred[ sect ][ last_item ] = 2
   end
 end
 
 function on_take( obj, sobj )
   if sobj == nil then return end
-  if obj:section() == "separator" then return end
-  if transferred[ obj:id() ] then
-    if transferred[ obj:id() ] == 2 then transferred = {} end
-    return
+  local sect = obj:section()
+  if sect == "separator" then return end
+  if transferred[ sect ] then
+    if transferred[ sect ][ obj:id() ] then
+      if transferred[ sect ][ obj:id() ] == 2 then
+        transferred[ sect ] = nil
+      end
+      return
+    end
+  else
+    transferred[ sect ] = {}
   end
   if not GetShift() then return end
   if not is_body_opened then return end
   local from = level.get_target_obj()
   if from then
-    transferred[ obj:id() ] = 1
+    transferred[ sect ][ obj:id() ] = 1
     local last_item = obj:id()
-    local sect  = obj:section()
     local sim   = alife()
     local items = {}
     for i = 0, from:object_count() - 1 do
       local item_from_inv = from:object( i )
       if item_from_inv:section() == sect then
-        local found = sim:object( item_from_inv:id() )
-        if found.parent_id == from:id() then
-          table.insert( items, item_from_inv )
-        end
+        table.insert( items, item_from_inv )
       end
     end
     for i, v in ipairs( items ) do
-      from:transfer_item( v, db.actor )
-      transferred[ v:id() ] = 1
-      last_item = v:id()
+      local found = sim:object( v:id() )
+      if found.parent_id == from:id() then
+        from:transfer_item( v, db.actor )
+        transferred[ sect ][ v:id() ] = 1
+        last_item = v:id()
+      end
     end
-    transferred[ last_item ] = 2
+    transferred[ sect ][ last_item ] = 2
   end
 end
 
 function on_take_from_box( box, item, sitem )
   if sitem == nil then return end
-  if transferred[ item:id() ] then return end
   if not GetShift() then return end
-  transferred[ item:id() ] = 1
+  local sect = item:section()
+  if transferred[ sect ] then
+    if transferred[ sect ][ item:id() ] then return end
+  else
+    transferred[ sect ] = {}
+  end
+  transferred[ sect ][ item:id() ] = 1
   local last_item = item:id()
-  local sect   = item:section()
   local box_id = box:id()
   local sim    = alife()
   local items  = {}
   for i = 0, box:inv_box_count() - 1 do
       local item_from_box = box:object_from_inv_box( i )
       if item_from_box:section() == sect then
-        local obj = sim:object( item_from_box:id() )
-        if obj and obj.parent_id == box_id then
           table.insert( items, item_from_box )
-        end
       end
   end
   for i, v in ipairs( items ) do
-    box:transfer_item( v, db.actor )
-    transferred[ v:id() ] = 1
-    last_item = v:id()
+    local obj = sim:object( v:id() )
+    if obj and obj.parent_id == box_id then
+      box:transfer_item( v, db.actor )
+      transferred[ sect ][ v:id() ] = 1
+      last_item = v:id()
+    end
   end
-  transferred[ last_item ] = 2
+  transferred[ sect ][ last_item ] = 2
 end
