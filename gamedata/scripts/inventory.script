@@ -4,7 +4,7 @@ local belt = {}
 local belt_id = {}
 local belt_status = false
 local inventory_open = false
-local separator_spawned = false
+-- local separator_spawned = false
 local separator = "separator"
 local af_idol_monolita_on_belt = false
 
@@ -20,6 +20,7 @@ function update()
 	if debug == true and belt_status == true then get_console():execute("belt_status=false") end
 	belt_status = false
 
+--[[
 	-- Спавним разделяющий елемент
 	if (separator_spawned == false) then
 		alife():create(separator,
@@ -31,23 +32,27 @@ function update()
 		if debug == true then get_console():execute("separator_spawned") end
 		return
 	end
+]]
 
 	belt = {}
 	belt_id = {}
 	flag = 0
 
 	-- Сканируем инвентарь
-	db.actor:inventory_for_each(scan_inv)
+	scan_inv()
 --	вместо количества теперь идет проверка по иммунитетам
 --	remove_duplicate()
-	check_immunities()
+-- moved to dsh_inventory_proxy.script
+--	check_immunities()
 	check_idol_monolita()
 	
 	need_update = false
 
+--[[
 	-- Удаляем разделяющий елемент
 	db.actor:inventory_for_each(del_separator)
 	separator_spawned = false
+]]
 
 	if debug == true and belt_status == false then get_console():execute("belt_status=true") end
 	belt_status = true
@@ -61,21 +66,15 @@ function update()
 end
 
 -- Перебор предметов инвентаря
-function scan_inv(item)
-	local section = item:section()
-
-	if section == separator then
-		flag = 1
-		return
-	end
-
-	if flag == 1 then
-		if slot_item(item) ~= nil then
-			flag = 2
-		else
-			insert_to_table(belt, section)
-			belt_id[item:id()] = true
-		end
+function scan_inv()
+	local belt_count = db.actor:belt_count()
+	for i=1, belt_count do
+		local item = db.actor:item_on_belt(i-1)
+		local it_section = item:section()
+		local it_id = item:id()
+		insert_to_table(belt, it_section)
+		belt_id[item:id()] = true
+		---- log1("CHECK0:"..tostring(section).." "..tostring(it_id))
 	end
 end
 
@@ -90,11 +89,13 @@ end
 
 -- Удаление из таблицы
 function remove_from_table(tbl, section)
+  if tbl[ section ] then
 	if tbl[section] == 1 then
 		tbl[section] = nil
 	else
 		tbl[section] = tbl[section] - 1
 	end
+  end
 end
 
 -- Удаление разделяющего предмета
@@ -122,44 +123,33 @@ end
 
 -- Поднятие предмета
 function on_item_take(item)
-	if item:section() == separator then return end
-
-	if (inventory_open == false) then
-		if (separator_spawned == true) then
-			db.actor:inventory_for_each(del_separator)
-			separator_spawned = false
-		end
-
-		need_update = true
-		if debug == true then get_console():execute("item_take") end
-	end
+	need_update = true
+	if debug == true then get_console():execute("item_take") end
 end
 
 -- Выброс предмета
 function on_item_drop(item)
-	if item:section() == separator then return end
-
-	if (inventory_open == false) then
-		if (separator_spawned == true) then
-			db.actor:inventory_for_each(del_separator)
-			separator_spawned = false
-		end
-
-		need_update = true
-		if debug == true then get_console():execute("item_drop") end
-	end
+	need_update = true
+	if debug == true then get_console():execute("item_drop") end
 end
 
 -- Открытие/закрытие инвентаря
 function on_inventory_info(info_id)
-	if info_id == "ui_inventory" then
+	if info_id == "ui_inventory" or info_id == "ui_trade" then
 		inventory_open = true
-		if debug == true then get_console():execute("inventory_open") end
-
-	elseif info_id == "ui_inventory_hide" then
+		if debug == true then get_console():execute("inventory_open") end	
+	elseif info_id == "ui_inventory_hide" or info_id == "ui_trade_hide" then
 		inventory_open = false
 		need_update = true
 		if debug == true then get_console():execute("inventory_close") end
+	end
+end
+
+-- Принудительное обновление инвентаря
+function forced_inventory_update(mode)
+	need_update = true
+	if mode == true then
+		update()
 	end
 end
 
@@ -262,7 +252,7 @@ local immunities = {
 {sect="fire_wound_immunity",name="Пулестойкость",total=0}
 }
 
-function check_immunities()
+function check_immunities( obj )
 	if db.actor:object("af_invul") then return end
 
 	imm_limit = imm_limits[level.get_game_difficulty()+1]
@@ -275,7 +265,8 @@ function check_immunities()
 		bad_imm = bad_immunity()
 		if bad_imm then 
 			-- есть перебор в иммунитете - удаляем лишний арт и вновь считаем иммунитеты
-			imm_remove_art(bad_imm)
+			imm_remove_art(bad_imm, obj)
+			break
 		else
 			-- все ок
 			break
@@ -283,22 +274,25 @@ function check_immunities()
 	until false
 end
 
-function imm_remove_art(imm)
-	for k, v in pairs(belt_id) do
-		sobj = alife():object(k)
+function imm_remove_art(imm, obj)
+--	for k, v in pairs(belt_id) do
+		sobj = alife():object(obj:id())
 		if sobj then
 			sect = sobj:section_name()
 			imm_sect = rx_utils.read_from_ini(nil, sect, "hit_absorbation_sect", nil, 1)
 			if imm_sect and rx_utils.read_from_ini(nil, imm_sect, immunities[imm].sect, 1, 3) < 1 then -- арт увеличивает иммунитет
+				db.actor:move_to_ruck( obj )
+--[[
 				alife():release(sobj, true)
 				amk.spawn_item_in_inv(sect, db.actor)
 				remove_from_table(belt, sect)
-				belt_id[k] = nil
+				belt_id[ obj:id() ] = nil
+]]
 				news_manager.send_tip(db.actor, "Для текущего уровня сложности создаваемый артефактами имммунитет "..immunities[imm].name.." не должен превышать "..tostring(imm_limit).."%. Артефакт "..game.translate_string(amk.get_inv_name(sect)).." убран с пояса.", nil, "nano", 20000)
 				return
 			end
 		end
-	end
+--	end
 end
 
 function bad_immunity()
@@ -314,8 +308,10 @@ function total_immunities()
 	for i=1,#immunities do
 		immunities[i].total = 0
 	end
-	for k, v in pairs(belt_id) do
-		sobj = alife():object(k)
+	local belt_count = db.actor:belt_count()
+	for i=1, belt_count do
+		local item = db.actor:item_on_belt(i-1)
+		sobj = alife():object( item:id() )
 		if sobj then
 			sect = sobj:section_name()
 			imm_sect = rx_utils.read_from_ini(nil, sect, "hit_absorbation_sect", nil, 1)
