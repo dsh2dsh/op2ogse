@@ -1,0 +1,173 @@
+--//----------------------------------------
+--//Автор: Singapur22 переписано Proper70
+--//Дата выхода: 10.01.2010
+--//-----------------------------------------
+-- В эту таблицу вписывать только секции, которые не начинаются с af_
+local list_arts = {
+	["gold_art"] = true,
+	["artifact_electro_crystal_thorn"] = true,
+	["art_acumm"] = true,
+	["5.45x39_izomorf"] = true,
+	["5.45x39_izomorf_1"] = true,
+	["osnova_fotik"] = true,
+	["linza_fotik"] = true,
+	["pushka_fotik"] = true,
+	["rukzak_izomorf"] = true,
+	["izom_globus"] = true,
+	["izomorf_kristal"] = true,
+	["ammo_zhekan_izomorf"] = true,
+	["kaktus_izomorf"] = true,
+	["izomorf_kompas"] = true,
+	["wa2000_izomorf"] = true,
+	["7.62x54_izomorf"] = true,
+	["psevdokristall"] = true,
+	["izomorf_plastilin"] = true,
+}
+
+local snd_obj = xr_sound.get_safe_sound_object("ambient\\da_beep")
+local need_del_spot = nil
+
+function start_update()
+	db.artefacts = {}
+    local sobj, section
+    for id = 1, 65534 do
+	    sobj = alife():object(id)
+		-- Собираем в таблицу арты только на текущей территории
+		if sobj and
+			game_graph():valid_vertex_id(sobj.m_game_vertex_id) and
+			game_graph():vertex(sobj.m_game_vertex_id):level_id() == alife():level_id()
+		then
+			section = sobj:section_name()
+			if string.find(section, "^af_") or list_arts[section] then
+				db.artefacts[id] = {spot = false, tim_beep = 0}
+			end
+		end
+	end
+--    db.actor:set_fastcall(update, db.actor)
+end
+
+function update()
+--[[ детекторы артов перенесены на пояс
+    local n = db.actor:item_in_slot(1)
+	if n then
+        local sect = n:section()
+	    if sect == "det_artefact_indy" then
+		    this.det_indy()
+		elseif sect == "detektor_amorf" then
+		    this.det_izomorf()
+		elseif sect == "det_artefact_super" then
+		    this.det_super()
+		else
+		    this.iteration_del_spot()
+		end
+	end
+--]]
+
+	if inventory.on_belt("det_artefact_super") and has_alife_info("tel_dcity_kanaliy") then
+		this.det_super()
+		need_del_spot = true
+	elseif inventory.on_belt("detektor_amorf") then
+		this.det_izomorf()
+		need_del_spot = true
+	elseif inventory.on_belt("det_artefact_indy") then
+		this.det_indy()
+		need_del_spot = true
+	elseif need_del_spot then
+		this.iteration_del_spot()
+		need_del_spot = nil
+	end
+end
+
+function det_indy()
+    local obj, dist
+	local time_g = time_global()
+    for k,v in pairs(db.artefacts) do
+	    obj = level.object_by_id(k)
+		if obj then
+		    if not obj:parent() then
+			    dist = db.actor:position():distance_to_sqr(obj:position())
+           		if dist <= 40*40 and dist < time_g - v.tim_beep  then
+					if not snd_obj:playing() then
+					    db.artefacts[k].tim_beep = time_g
+					    snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
+					end
+				else
+					this.del_spot(k, v)
+				end
+			else
+			    this.del_spot(k, v)
+			end
+		end
+	end
+end
+
+function det_izomorf()
+    local obj, dist
+	local time_g = time_global()
+    for k,v in pairs(db.artefacts) do
+	    obj = level.object_by_id(k)
+		if obj then
+		    if not obj:parent() then
+			    dist = db.actor:position():distance_to_sqr(obj:position())
+				if dist < 60*60 then
+					if not v.spot then
+			            level.map_add_object_spot(k, "artefact_location", game.translate_string(system_ini():r_string(obj:section(), "inv_name")))
+				        db.artefacts[k].spot = true
+			        end
+					if v.tim_beep < time_g and not snd_obj:playing() then
+						db.artefacts[k].tim_beep = time_g + 2500
+					    snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
+					end
+				else
+					this.del_spot(k, v)
+				end
+			else
+			    this.del_spot(k, v)
+			end
+		end
+	end
+end
+
+function det_super()
+    local sobj, dist
+	local time_g = time_global()
+    for k,v in pairs(db.artefacts) do
+	    sobj = alife():object(k)
+		if sobj then
+			if sobj.parent_id == 65535 then
+				if not v.spot then
+			        level.map_add_object_spot(k, "artefact_location", game.translate_string(system_ini():r_string(sobj:section_name(), "inv_name")))
+				    db.artefacts[k].spot = true
+			    end
+				dist = db.actor:position():distance_to_sqr(sobj.position)
+				if dist < 60*60 then
+					if v.tim_beep < time_g and not snd_obj:playing() then
+						db.artefacts[k].tim_beep = time_g + 2500
+					    snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
+					end
+				end
+			else
+				this.del_spot(k, v)
+			end
+		end
+	end
+end
+
+function iteration_del_spot()
+	local sobj
+    for k,v in pairs(db.artefacts) do
+		if v.spot then
+	    	sobj = alife():object(k)
+		if sobj then
+		    this.del_spot(k, v)
+		end
+	end
+end
+end
+
+function del_spot(k, v)
+    if v.spot then
+		level.map_remove_object_spot(k, "artefact_location")
+		db.artefacts[k].spot = false
+	end
+end
