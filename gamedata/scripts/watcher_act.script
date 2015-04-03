@@ -1,0 +1,611 @@
+-- Red75 (c) 2008
+-- Marauder scheme v 1.1
+-- Part of AMK MOD
+
+local math_random = math.random
+local math_sqrt = math.sqrt
+local string_find = string.find
+
+evid_see_stuff=6931
+evid_near_stuff=evid_see_stuff+1
+evid_see_body=evid_see_stuff+2
+evid_position_corrected=evid_see_stuff+3
+
+actid_reach_item=evid_see_stuff
+actid_grab_item=evid_see_stuff+1
+actid_grab_body=evid_see_stuff+2
+actid_correct_position=evid_see_stuff+3
+
+-- Вызывает closure раз в period, obj[var] хранит время следующего срабатывания
+function timed(obj,var,period,closure)
+	if obj[var] and obj[var]<time_global() then
+		obj[var]=time_global()+period
+		closure()
+	elseif not obj[var] then
+		obj[var]=time_global()+period
+--		closure()
+	end
+end
+
+function trigger_timed(obj,var)
+	obj[var]=time_global()
+end
+
+local disabled_objects={}
+
+local corpse_checked={} -- true - has loot, false - hasn't loot, nil - not checked
+
+function checkCorpse(obj)
+    local obj_id = obj:id()
+	if (IAmAStalker[obj:clsid()] or IAmAMonster[obj:clsid()]) and obj:alive()==false then
+		if corpse_checked[obj_id]~=nil then
+			return corpse_checked[obj_id]
+		end
+		local cnt=0
+		obj:iterate_inventory(function (dummy, item)
+        if item:section()~="bolt" then
+          cnt=cnt+1
+        end
+			end, nil)
+		corpse_checked[obj_id]=cnt>0
+		return corpse_checked[obj_id]
+	end
+	return false
+end
+
+local valuable_clsid={
+    [clsid.art_bast_artefact]=true,
+    [clsid.art_black_drops]=true,
+    [clsid.art_dummy]=true,
+    [clsid.art_electric_ball]=true,
+    [clsid.art_faded_ball]=true,
+    [clsid.art_galantine]=true,
+    [clsid.art_gravi]=true,
+    [clsid.art_gravi_black]=true,
+    [clsid.art_mercury_ball]=true,
+    [clsid.art_needles]=true,
+    [clsid.art_rusty_hair]=true,
+    [clsid.art_thorn]=true,
+    [clsid.art_zuda]=true,
+    [clsid.artefact_s]=true,
+    [clsid.device_detector_simple]=true,
+    [clsid.device_pda]=true,
+    [clsid.device_torch_s]=true,
+    [clsid.equ_exo]=true,
+    [clsid.equ_military]=true,
+    [clsid.equ_scientific]=true,
+    [clsid.equ_stalker_s]=true,
+    [clsid.obj_antirad]=true,
+    [clsid.obj_attachable]=true,
+    [clsid.obj_bandage]=true,
+    [clsid.obj_bolt]=true,
+    [clsid.obj_bottle]=true,
+    [clsid.obj_food]=true,
+    [clsid.obj_medkit]=true,
+    [clsid.wpn_ak74_s]=true,
+    [clsid.wpn_ammo]=true,
+    [clsid.wpn_ammo_m209]=true,
+    [clsid.wpn_ammo_og7b]=true,
+    [clsid.wpn_ammo_vog25]=true,
+    [clsid.wpn_binocular_s]=true,
+    [clsid.wpn_bm16_s]=true,
+    [clsid.wpn_fn2000]=true,
+    [clsid.wpn_fort]=true,
+    [clsid.wpn_groza_s]=true,
+    [clsid.wpn_hpsa_s]=true,
+    [clsid.wpn_knife_s]=true,
+    [clsid.wpn_lr300_s]=true,
+    [clsid.wpn_pm_s]=true,
+    [clsid.wpn_rg6_s]=true,
+    [clsid.wpn_rpg7_s]=true,
+    [clsid.wpn_scope_s]=true,
+    [clsid.wpn_shotgun_s]=true,
+    [clsid.wpn_silencer]=true,
+    [clsid.wpn_svd_s]=true,
+    [clsid.wpn_svu_s]=true,
+    [clsid.wpn_usp45_s]=true,
+    [clsid.wpn_val_s]=true,
+    [clsid.wpn_vintorez_s]=true,
+    [clsid.wpn_walther_s]=true,
+    [clsid.wpn_wmagaz]=true,
+    [clsid.wpn_wmaggl]=true
+}
+
+local obj_owner={}
+
+--[[function bgwith(str,ptr)
+	local ps=string_find(str,ptr)
+ return ps~=nil and ps==1
+end]]
+
+ function isValuable(obj)
+    if obj then 
+ local sec=obj:section()
+        if sec then
+            if sec=="amk_metka" or protected_items.actor_items_keep(sec) then
+ return false,false
+ end
+ if valuable_clsid[obj:clsid()] then
+ return true, false
+ end
+            return string_find(sec,"^af_") or string_find(sec,"^ammo_") or string_find(sec,"^wpn_") or string_find(sec,"^energy_") or checkCorpse(obj), IAmAStalker[obj:clsid()] or IAmAMonster[obj:clsid()]
+        else
+            return false,false
+        end
+    else
+        return false,false
+    end
+ end
+
+ function objValue(obj)
+ local sec=obj:section()
+ local multiplier=1
+    if string_find(sec,"^ammo_") then
+        multiplier=30
+    elseif sec=="vodka" then
+        multiplier=20
+ end
+    return getIniValueFloat(sec,"cost",0,nil)*multiplier
+ end
+
+ function claimGObject(npc,st,obj)
+ if st.grabitemid then
+ obj_owner[st.grabitemid]=nil
+ end
+ st.grabitemid=obj:id()
+ obj_owner[obj:id()]=npc:id()
+ end
+
+ function freeGObject(st)
+ if st.grabitemid then
+ obj_owner[st.grabitemid]=nil
+ st.grabitemid=nil
+ end
+ end
+
+ function clearGObject(st)
+ st.grabitemid=nil
+ end
+
+ function getGObject(st)
+ if st.grabitemid then
+ local ret=level.object_by_id(st.grabitemid)
+ if ret==nil then
+ st.grabitemid=nil
+ end 
+return ret
+ end
+ return nil
+ end
+
+ function mypGObject(npc,st)
+ return st.grabitemid~=nil and obj_owner[st.grabitemid]~=nil and obj_owner[st.grabitemid]==npc:id()
+ end
+
+ class "ev_see_stuff" (property_evaluator)
+
+ function ev_see_stuff:__init(st,name) super(nil, name)
+ self.st=st
+ end
+
+ local bad_dangers={
+ [danger_object.hit]=true,
+ [danger_object.attacked]=true,
+ [danger_object.bullet_ricochet]=true,
+ [danger_object.grenade]=true,
+ [danger_object.entity_death]=true,
+ [danger_object.enemy_sound]=true
+ }
+
+ local inertion_time=30000
+
+ function bad_danger(npc)
+ local danger=npc:best_danger()
+ if danger then
+ return bad_dangers[danger:type()] and time_global()-danger:time()<inertion_time
+ end
+ return false
+ end
+
+ function ev_see_stuff:evaluate()
+ local res=getGObject(self.st)~=nil
+ local npc=self.object
+    local npc_id = npc:id()
+    local actsch=db.storage[npc_id].active_scheme
+    
+ if actsch and db.actor then
+        xr_logic.try_switch_to_another_section(npc, db.storage[npc_id][actsch], db.actor)
+ end
+    
+    local act_sec=db.storage[npc_id].active_section or ""
+ if (not npc:alive()) or xr_wounded.is_wounded(npc) or npc:best_enemy() or
+        bad_danger(npc) or (actsch and db.storage[npc_id][actsch].no_loot) then
+ if res then
+ freeGObject(self.st)
+ end
+ return false
+ end 
+    
+ local dist_limit=1000
+    if string_find(act_sec,"^camper") then
+        dist_limit=5
+ end 
+    
+ if res and self.st.block_search then
+ return true
+ end
+    
+    timed(self.st,"tm1",5000+math_random()*10000,
+ function ()
+ local min_dist=100000
+ local function check_item(o)
+ local obj=o:object()
+                local obj_id = obj:id()
+                if obj_owner[obj_id] and (level.object_by_id(obj_owner[obj_id])==nil or level.object_by_id(obj_owner[obj_id]):alive()==false) then
+                    obj_owner[obj_id]=nil
+ end
+                if (not self.st.disabled_objects[obj_id]) and (obj:parent()==nil or not IAmAStalker[obj:parent():clsid()]) and
+                (obj_owner[obj_id]==nil or obj_owner[obj_id]==npc_id) and npc:accessible(obj:level_vertex_id()) and
+ (db.actor==nil or db.actor:alive()==false or db.actor:position():distance_to_sqr(obj:position())>6) then
+ local valuable,corpse=isValuable(obj)
+ if valuable then
+ local value=3000
+                        if not corpse then
+                            value=objValue(obj)
+ end
+                        if value<=0 then
+                            value=0
+                        end
+                        local max_dist=5+math_sqrt(value)
+                        local busy=string_find(act_sec,"^walker") or string_find(act_sec,"^combat") or string_find(act_sec,"^danger")
+                        if busy then
+                            max_dist=max_dist/5
+ end
+ local dist=level.vertex_position(obj:level_vertex_id()):distance_to(npc:position())
+ local corrected_dist=dist
+ if dist>5 then
+                            corrected_dist=5+(dist-5)/math_sqrt(value)
+ end
+ if dist<max_dist and corrected_dist<min_dist and dist<dist_limit then
+ min_dist=corrected_dist
+ claimGObject(npc,self.st,obj)
+ res=true
+ end
+ end
+ end
+ end -- function check_item
+ for o in npc:memory_visible_objects() do
+ check_item(o)
+ end
+ for o in npc:memory_sound_objects() do
+ check_item(o)
+ end
+            --if res then
+            --end
+ end )
+ return res
+ end
+
+ class "ev_near_stuff" (property_evaluator)
+
+ function ev_near_stuff:__init(st,name) super(nil, name)
+ self.st=st
+ end
+
+ function ev_near_stuff:evaluate()
+ local npc=self.object
+ local gi=getGObject(self.st)
+ if gi then
+ if self.st.dest_lvid then
+ return npc:level_vertex_id()==self.st.dest_lvid
+ end
+ return level.vertex_position(gi:level_vertex_id()):distance_to_sqr(npc:position())<1
+ end
+ return false
+ end
+
+ class "ev_see_body" (property_evaluator)
+
+ function ev_see_body:__init(st) super(nil, "ev_see_body")
+ self.st=st
+ end
+
+ function ev_see_body:evaluate()
+ local npc=self.object
+ local gi=getGObject(self.st)
+    if gi then
+        return IAmAStalker[gi:clsid()] or IAmAMonster[gi:clsid()]
+ end
+ return false
+ end
+
+ class "ev_position_corrected" (property_evaluator)
+
+ function ev_position_corrected:__init(st) super(nil, "ev_position_corrected")
+ self.st=st
+ end
+
+ function ev_position_corrected:evaluate()
+--    local npc=self.object
+ return self.st.position_corrected==true
+ end
+
+ class "act_grab_item" (action_base)
+
+ function act_grab_item:__init (action_name, st) super (nil, action_name)
+ self.st = st
+ end
+
+ function act_grab_item:initialize()
+ action_base.initialize(self)
+ local npc=self.object
+ npc:set_item(object.idle,nil)
+ npc:set_movement_type(move.walk)
+ npc:set_mental_state(anim.danger)
+ npc:set_body_state(move.crouch)
+ npc:movement_enabled(true)
+ local gi=getGObject(self.st)
+ npc:set_sight(look.danger,nil,0)
+ self.st.block_search=true
+    if gi then
+        if(IAmAStalker[gi:clsid()] or IAmAMonster[gi:clsid()]) then
+ self.tt=time_global()+3000
+ else
+ self.tt=time_global()+1000
+ utils.send_to_nearest_accessible_vertex(npc,gi:level_vertex_id())
+ end
+ end
+ self.force=vector():set(0,0,0)
+ end
+
+ function act_grab_item:execute()
+ action_base.execute(self)
+ local npc=self.object
+ local gi=getGObject(self.st)
+ if not gi then
+ return
+ end
+ if self.tt<time_global() then
+ if gi and gi:parent()==nil then
+ gi:transfer_item(gi,npc)
+ npc:enable_memory_object(gi,false)
+ end
+-- Тут нельзя освобождать объект. transfer_item выполняется асинхронно. Поэтому делаем clearGObject
+ clearGObject(self.st)
+ end
+ end
+
+ function act_grab_item:finalize()
+ local npc=self.object
+ self.st.block_search=nil
+ npc:set_sight(look.danger,nil,0)
+ trigger_timed(self.st,"tm1")
+ self.st.dest_lvid=nil -- Очищаем скорректированную точку назначения
+ action_base.finalize(self)
+ end
+
+ class "act_grab_body" (action_base)
+
+ function act_grab_body:__init (st) super (nil, "act_grab_body")
+ self.st = st
+ end
+
+ function act_grab_body:initialize()
+ action_base.initialize(self)
+ local npc=self.object
+ local gi=getGObject(self.st)
+ self.st.block_search=true
+ if gi then
+ self.tt=time_global()+6000
+ state_mgr.set_state(npc,"search",nil,nil,{look_object=gi})
+ else
+ self.st.dest_lvid=nil
+ end
+ end
+
+ function act_grab_body:execute()
+ action_base.execute(self)
+ local npc=self.object
+ local gi=getGObject(self.st)
+ if not gi then
+ self.st.dest_lvid=nil
+ return
+ end
+ if self.tt<time_global() then
+ if gi and gi:parent()==nil then
+ gi:iterate_inventory(function (d,item)
+ if not protected_items.is_grab_body_item_keep(item:section()) then
+ gi:transfer_item(item,npc)
+ end
+            end,
+            nil)
+local num=gi:money() 
+		if num and num >0 then 
+				local deadmoney = num
+				local gi_rank
+		gi_rank = ranks.get_obj_rank_name(gi)
+		if gi_rank ~= nil then
+                    if gi_rank == "novice" and deadmoney >=70 then
+                        deadmoney=math_random(25,70)    
+                    elseif gi_rank == "experienced" and deadmoney >=150 then
+                        deadmoney=math_random(50,150)  
+                    elseif gi_rank == "veteran" and deadmoney >=220 then
+                        deadmoney=math_random(100,220) 
+                    elseif gi_rank == "master" and deadmoney >=300 then
+                        deadmoney=math_random(200,300)  
+		end
+		end
+		npc:give_money(deadmoney) 
+		gi:give_money(-num) 
+		end
+ corpse_checked[gi:id()]=false
+ end
+-- Тут нельзя освобождать объект. transfer_item выполняется асинхронно. Поэтому делаем clearGObject
+ clearGObject(self.st)
+ end
+ end
+
+ function act_grab_body:finalize()
+ local npc=self.object
+ self.st.block_search=nil
+ trigger_timed(self.st,"tm1")
+ self.st.dest_lvid=nil -- Очищаем скорректированную точку назначения
+ action_base.finalize(self)
+ end
+
+ function correct_position(gi,npc)
+    if IAmAStalker[gi:clsid()] then
+-- Вычисляем вектор разницы между координатами кости и level vertex. Пытаемся найти level vertex наиболее близкий к кости
+ local diff=gi:bone_position("bip01_head"):sub(level.vertex_position(gi:level_vertex_id()))
+ local len=diff:magnitude()
+ local diffp=vector():set(diff.z,0,-diff.x):mul(0.5)
+-- Сдвигаем целевую точку вбок, чтобы непись не залазил ногами в труп
+ diff:add(diffp)
+ return npc:vertex_in_direction(gi:level_vertex_id(),diff,len)
+ else
+ return gi:level_vertex_id()
+ end
+ end
+
+ class "act_reach_item" (action_base)
+
+ function act_reach_item:__init (action_name, st) super (nil, action_name)
+ self.st = st
+ end
+
+ function act_reach_item:initialize()
+ action_base.initialize(self)
+ local npc=self.object
+ local gi=getGObject(self.st)
+ self.st.dest_lvid=nil
+ self.tgt_lvid=0
+ if gi then
+ if npc:accessible(gi:level_vertex_id()) then
+ npc:set_detail_path_type(move.curve)
+ npc:set_path_type(game_object.level_path)
+ if npc:best_danger() and time_global()-npc:best_danger():time()<inertion_time then
+ npc:set_mental_state(anim.danger)
+ npc:set_body_state(move.crouch)
+ npc:set_movement_type(move.walk)
+ else 
+npc:set_body_state(move.standing)
+ npc:set_mental_state(anim.free)
+ npc:set_movement_type(move.walk)
+ end
+ npc:movement_enabled(true)
+            --if npc:best_weapon() and IAmAWeapon[npc:best_weapon():clsid()] then
+            --end
+ npc:set_sight(look.danger,nil,0)
+ self.st.dest_lvid=correct_position(gi,npc)
+ self.tgt_lvid=gi:level_vertex_id()
+ npc:set_dest_level_vertex_id(self.st.dest_lvid)
+ else
+ freeGObject(self.st)
+ end
+ end
+ self.ct=time_global()
+ self.clvid=npc:level_vertex_id()
+ self.st.position_corrected=false
+ end
+
+ function act_reach_item:execute()
+ action_base.execute(self)
+ local npc=self.object
+ local gi=getGObject(self.st)
+ if gi and gi:parent()~=nil then
+-- ГГ забрал вкусность. Можно добавить наезд на ГГ.
+ self.st.dest_lvid=nil
+ freeGObject(self.st)
+ elseif gi then
+ if self.clvid==npc:level_vertex_id() then
+ if time_global()-self.ct>10000 then
+ self.st.disabled_objects[gi:id()]=true
+ self.st.dest_lvid=nil
+ freeGObject(self.st)
+ end
+ else
+ self.clvid=npc:level_vertex_id()
+ self.ct=time_global()
+ end
+ if self.tgt_lvid~=gi:level_vertex_id() then
+ self.tgt_lvid=gi:level_vertex_id()
+ self.st.dest_lvid=correct_position(gi,npc)
+ npc:set_dest_level_vertex_id(self.st.dest_lvid)
+ end
+ end
+ end
+
+ function add_to_binder(object, char_ini, scheme, section, st)
+ local npc=object
+ st.disabled_objects={}
+ local manager = object:motivation_action_manager()
+
+ local zombi=npc:character_community()=="zombied" or npc:character_community()=="trader" or
+ npc:character_community()=="arena_enemy" or npc:name()=="mil_stalker0012" or npc:name()
+=="yantar_ecolog_general" or -- сумашедший на милитари и Сахаров
+ npc:name()=="mil_freedom_member0021" or -- Скрягу в зомби!
+ protected_items.is_no_offline_alife_npc(npc:section()) -- квестовики snp
+ local prop_idlecombat=xr_evaluators_id.state_mgr + 3
+ local prop_contact=xr_evaluators_id.stohe_meet_base + 1
+ if npc:story_id()~=4294967296 or zombi then
+ manager:add_evaluator(evid_see_stuff, property_evaluator_const(false))
+ manager:add_evaluator(evid_see_body, property_evaluator_const(false))
+ manager:add_evaluator(evid_near_stuff, property_evaluator_const(false))
+ manager:add_evaluator(evid_position_corrected, property_evaluator_const(false))
+ else
+ manager:add_evaluator(evid_see_stuff, ev_see_stuff(st,"ev_see_stuff"))
+ manager:add_evaluator(evid_see_body, ev_see_body(st))
+ manager:add_evaluator(evid_position_corrected, ev_position_corrected(st))
+ manager:add_evaluator(evid_near_stuff, ev_near_stuff(st,"ev_near_stuff"))
+ local action = act_grab_item("act_grab_item", st)
+ action:add_precondition(world_property(stalker_ids.property_alive,true))
+ action:add_precondition(world_property(stalker_ids.property_enemy,false))
+ action:add_precondition(world_property(xr_evaluators_id.sidor_wounded_base,false))
+ action:add_precondition(world_property(blowout_scheme.evid_anomaly,false))
+ action:add_precondition(world_property(blowout_scheme.evid_blowout,false))
+ action:add_precondition(world_property(evid_see_stuff,true))
+ action:add_precondition(world_property(evid_near_stuff,true))
+ action:add_precondition(world_property(evid_see_body,false))
+ action:add_precondition(world_property(prop_idlecombat,true)) -- отключим стэйт менеджер
+ action:add_effect(world_property(evid_near_stuff, false))
+ action:add_effect(world_property(evid_see_stuff, false))
+ action:add_effect(world_property(evid_see_body,true)) -- для переключения на обыск трупа
+ manager:add_action (actid_grab_item, action)
+
+ action = act_grab_body(st)
+ action:add_precondition(world_property(stalker_ids.property_alive,true))
+ action:add_precondition(world_property(stalker_ids.property_enemy,false))
+ action:add_precondition(world_property(xr_evaluators_id.sidor_wounded_base,false))
+ action:add_precondition(world_property(blowout_scheme.evid_anomaly,false))
+ action:add_precondition(world_property(blowout_scheme.evid_blowout,false))
+ action:add_precondition(world_property(evid_see_stuff,true))
+ action:add_precondition(world_property(evid_see_body,true))
+ action:add_precondition(world_property(evid_near_stuff,true))
+ action:add_effect(world_property(evid_near_stuff, false))
+ action:add_effect(world_property(evid_see_stuff, false))
+ action:add_effect(world_property(evid_see_body,false))
+ manager:add_action (actid_grab_body, action)
+
+ action = act_reach_item("act_reach_item", st)
+ action:add_precondition(world_property(stalker_ids.property_alive,true))
+ action:add_precondition(world_property(stalker_ids.property_enemy,false))
+ action:add_precondition(world_property(prop_contact,false))
+ action:add_precondition(world_property(xr_evaluators_id.sidor_wounded_base,false))
+ action:add_precondition(world_property(blowout_scheme.evid_anomaly,false))
+ action:add_precondition(world_property(blowout_scheme.evid_blowout,false))
+ action:add_precondition(world_property(evid_see_stuff,true))
+ action:add_precondition(world_property(evid_near_stuff,false))
+ action:add_precondition(world_property(prop_idlecombat,true))
+ action:add_effect (world_property(evid_near_stuff, true))
+ manager:add_action (actid_reach_item, action)
+
+ action = manager:action(xr_actions_id.alife)
+ action:add_precondition(world_property(evid_see_stuff,false))
+ action = manager:action(stalker_ids.action_danger_planner)
+ action:add_precondition(world_property(evid_see_stuff,false))
+ end
+ end
+
+ function set_scheme(npc, ini, scheme, section) local st = xr_logic.assign_storage_and_bind(npc, ini, scheme, section)
+ st.ini=ini
+ end 
