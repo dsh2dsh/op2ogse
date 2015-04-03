@@ -1,0 +1,131 @@
+----------------------------------------------
+-- Karavan simple
+-- Схема каравана простая - гг ведет чудиков
+-- 2008 - 2009 Rulix aka Bak
+----------------------------------------------
+
+
+class "evaluator_end" (property_evaluator)
+function evaluator_end:__init(name,storage) super (nil,name)
+	self.st = storage
+end
+function evaluator_end:evaluate()
+	return not xr_logic.is_active(self.object,self.st)
+end
+
+class "evaluator_karavan" (property_evaluator)
+function evaluator_karavan:__init(name,storage) super (nil, name)
+  self.st = storage
+end
+function evaluator_karavan:evaluate()
+	return db.actor and xr_logic.is_active(self.object,self.st) and self.st.enabled == true
+end
+
+class "action_karavan" (action_base)
+function action_karavan:__init(name,storage) super (nil, name)
+	self.st = storage
+end
+function action_karavan:initialize()
+	action_base.initialize(self)
+	local npc = self.object
+	npc:set_desired_position()
+	npc:set_desired_direction()
+	npc:set_detail_path_type(move.curve)
+	npc:set_path_type(game_object.level_path)
+	self.offset = vector():set(math.random()*6-3,0,math.random()*6-3)
+	self.offset:normalize()
+end
+function action_karavan:execute()
+	action_base.execute(self)
+	local npc = self.object
+	if xr_logic.try_switch_to_another_section(npc,self.st,db.actor) then
+		return
+	end
+	local dist = db.actor:position():distance_to(npc:position())
+	local state,look,anim = state_mgr.get_state(npc)
+	if dist <= self.st.radius then
+		state,look,anim = self.st.close_state,nil,true
+	elseif dist < self.st.close_dist then
+		state,look,anim = self.st.close_state,nil,true
+	elseif dist >= self.st.faraway_dist then
+		state,look,anim = self.st.wait_state,nil,true
+	elseif dist < self.st.near_dist then
+		state,look,anim = self.st.near_state,nil,true
+	elseif not (state and state_lib.states[state].movement == move.stand) then
+		state,look,anim = self.st.faraway_state,nil,true
+	end	
+	if self.st.look == true and state_lib.states[state].movement == move.stand then
+		look = true
+	end
+	if look == true then
+		look = {look_object = db.actor}
+	end
+	if anim == true then
+		anim = {animation = true}
+	end
+	if state then
+		state_mgr.set_state(npc,state,nil,nil,look,anim)
+	end
+	if state_lib.states[state].movement ~= move.stand then
+		local vertex_id = level.vertex_in_direction(db.actor:level_vertex_id(),self.offset,self.st.radius)
+		utils.send_to_nearest_accessible_vertex(npc,vertex_id)
+	end
+end
+function action_karavan:finalize()
+	self.object:clear_animations()
+end
+
+prop_karavan = 9651
+prop_end = prop_karavan+1
+act_karavan = prop_karavan
+
+function add_to_binder(object,char_ini,scheme,section,st)
+	local manager = object:motivation_action_manager()
+	manager:add_evaluator(prop_karavan,evaluator_karavan("evaluator_karavan",st))
+	local action = action_karavan("action_karavan",st)
+	action:add_precondition(world_property(stalker_ids.property_alive,true))
+	action:add_precondition(world_property(stalker_ids.property_enemy,false))
+	action:add_precondition(world_property(stalker_ids.property_danger,false))
+    xr_motivator.addCommonPrecondition(action)
+	if watcher_act then
+		action:add_precondition(world_property(watcher_act.evid_near_stuff,false))
+		action:add_precondition(world_property(watcher_act.evid_see_body,false))
+		action:add_precondition(world_property(watcher_act.evid_see_stuff,false))		
+	end
+	action:add_precondition(world_property(prop_karavan,true))
+	action:add_effect(world_property(prop_karavan,false))
+	manager:add_action(act_karavan,action)
+	local atbl = {xr_actions_id.alife}
+	for i,id in ipairs(atbl) do
+		action = manager:action(id)
+		if action then
+			action:add_precondition(world_property(prop_karavan,false))
+		end
+	end
+end
+
+function set_scheme(npc,ini,scheme,section,gulag_name)
+	local st = xr_logic.assign_storage_and_bind(npc,ini,scheme,section)
+	st.logic = xr_logic.cfg_get_switch_conditions(ini,section,npc)
+	st.close_dist = utils.cfg_get_number(ini,section,"close_dist",npc,false) or 7
+	st.near_dist = utils.cfg_get_number(ini,section,"near_dist",npc,false) or 14
+	st.faraway_dist = utils.cfg_get_number(ini,section,"faraway_dist",npc,false) or 32
+	st.close_state = utils.cfg_get_string(ini,section,"close_state",npc,false,"") or "guard"
+	st.near_state = utils.cfg_get_string(ini,section,"near_state",npc,false,"") or "rush"
+	st.faraway_state = utils.cfg_get_string(ini,section,"faraway_state",npc,false,"") or "sprint"
+	st.wait_state = utils.cfg_get_string(ini,section,"wait_state",npc,false,"") or "hide"
+	st.look = utils.cfg_get_bool(ini,section,"look_on_actor",npc,false)
+	st.radius = utils.cfg_get_number(ini,section,"radius",npc,false) or 4
+	st.no_loot = utils.cfg_get_bool(ini,section,"no_loot",npc,false)
+	if st.no_loot ~= true then
+		st.no_loot = nil
+	end
+	st.enabled = true
+end
+function disable_scheme(npc,scheme)
+	rx_ai.printf("disable")
+	local st = db.storage[npc:id()][scheme]
+	if st then
+		st.enabled = false
+	end
+end
