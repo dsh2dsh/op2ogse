@@ -102,7 +102,7 @@ function evaluator_wound:evaluate()
 	-- end ]]--
 
 	if tostring(xr_logic.pstor_retrieve(self.object, "wounded_state")) ~= "nil" then
-		ogse_debug.add_active_eval( self.object, script_name(), "wounded" )
+--		ogse_debug.add_active_eval( self.object, script_name(), "wounded" )
 		return true
 	else
 		return false
@@ -116,7 +116,7 @@ function evaluator_can_fight:__init(name, storage) super(nil, name)
 end
 function evaluator_can_fight:evaluate ()
   if self.object:critically_wounded() == true then
-	ogse_debug.add_active_eval( self.object, script_name(), "wounded_can_fight" )
+--	ogse_debug.add_active_eval( self.object, script_name(), "wounded_can_fight" )
 	return true
   end
 
@@ -143,6 +143,14 @@ function action_wounded:initialize ()
     self.object:wounded(true)
   end
 
+	if (news_main and news_main.on_wound and self.object and self.object.critically_wounded) then
+		if (self.object:critically_wounded() == true) then
+			news_main.on_wound(self.object)
+		else
+			news_main.on_wound(self.object)
+		end
+	end
+
 end
 function action_wounded:execute ()
     action_base.execute (self)
@@ -162,31 +170,12 @@ function action_wounded:execute ()
     end
   end
 
- --if self.object:relation(db.actor) == game_object.enemy then --/ если враг
-	local obj_community = self.object:character_community() --/#+#
-	if obj_community == "monolith" then
-		local posit = self.object:position()
-		local enemy = self.object:best_enemy()
-		if enemy and posit:distance_to(enemy:position()) < 1.5 and self.object:see(enemy) then
-			rnd = math.random(1, 3)
-			if rnd == 1 and not has_alife_info("enable_talk")  then
-				db.actor:give_info_portion("die")
-				soundtrack.monolith_die()
-				ogsm_mutants.blow_zombie(self.object)
-			end
-			if rnd == 2 and not has_alife_info("enable_talk")  then
-				db.actor:give_info_portion("die")
-				soundtrack.monolith_die()
-				ogsm_mutants.blow_zombie(self.object)
-			end
-			if rnd == 3 and not has_alife_info("die")  then
-				db.actor:give_info_portion("enable_talk")
-				self.object:enable_talk()
-			end
-		end
-	else
-		self.object:enable_talk()
-	end
+  if self.object:character_community()~="monolith" and 
+	self.object:character_community()~="zombied" then
+	self.object:enable_talk()
+  else
+	self.object:disable_talk()
+  end
     
   wound_manager_state = xr_logic.pstor_retrieve(self.object, "wounded_state")
   wound_manager_sound = xr_logic.pstor_retrieve(self.object, "wounded_sound")
@@ -227,7 +216,7 @@ function action_wounded:execute ()
 		wound_manager_state = "wounded"
 	end
 
-    state_mgr.set_state( script_name(), self.object, wound_manager_state, nil, nil, {look_object = victim}, emerg, synsound)
+    state_mgr.set_state(self.object, wound_manager_state, nil, nil, {look_object = victim}, emerg, synsound)
   end
 
   if synsound == nil then
@@ -262,10 +251,6 @@ function action_wounded:finalize ()
     self.object:disable_talk()
     xr_sound.set_sound(self.object, nil)
     self.object:wounded(false)
-	if has_alife_info("enable_talk")  then
-	db.actor:disable_info_portion("enable_talk")
-	db.actor:disable_info_portion("die")
-	end 
 end    
 
 ----------------------------------------------------------------------------------------------------------------------
@@ -284,7 +269,8 @@ function Cwound_manager:update()
 	local comm = self.npc:character_community()
 
 	local sobj=alife():object(self.npc:id())
-	if comm ~= "ecolog" and sobj.wounded and (not self.a.regen) and (not self.medkit_eaten) then
+	if not sobj then return end
+	if sobj.wounded and (not self.a.regen) and (not self.medkit_eaten) then
 		hp=1 -- симулируем раненость
 	end
 	
@@ -303,7 +289,7 @@ function Cwound_manager:update()
 				local snd_name = nil
 				if comm == "bandit" then
 					snd_name = dont_shoot["bandit_"..tostring(math.random(1,5))]
-				elseif comm == "csky" then
+				elseif comm == "nebo" then
 					snd_name = dont_shoot["csky_"..tostring(math.random(1,4))]
 				elseif comm == "freedom" then
 					snd_name = dont_shoot["freedom_"..tostring(math.random(1,4))]
@@ -314,7 +300,7 @@ function Cwound_manager:update()
 				elseif comm == "monolith" then
 					snd_name = dont_shoot["monolith_"..tostring(math.random(1,3))]
 				elseif comm == "stalker" then
-					local rank = ogse.armor_type(self.npc)
+					local rank = get_npc_rank(self.npc)
 					if rank and rank > 3 then
 						snd_name = dont_shoot["newbie_"..tostring(math.random(1,4))]
 					else
@@ -363,12 +349,15 @@ function Cwound_manager:update()
 	sobj.wounded=false
 	self.npc:wounded(false)
 	self.npc:enable_trade()
+--[[
 	if xr_companion.is_companion(self.npc:id()) then
 		self.npc.health = 1
 	end
+]]
   else
 	sobj.wounded = true
 	self.npc:disable_trade()
+--[[
 	if self.npc:get_bleeding() <= 0.0 and self.npc.health > 0.2 then
 		local figa_id = id_by_sid(story_ids.yan_figa)
 		if self.npc:id() == figa_id then -- И Фиге тем более нечего просто так валяться выздоравливать
@@ -377,13 +366,14 @@ function Cwound_manager:update()
 			self.npc.health = -0.0003	-- Нефиг тут внагляк лежать и выздоравливать если уложили
 		end
 	end
+]]
   end
   
 end
 function Cwound_manager:unlock_medkit()
 	self.can_use_medkit = true
 	xrs_medic.wounded[self.npc:id()]=nil
-	rx_facer.timeout[self.npc:id()] = time_global() + 6000
+--	rx_facer.timeout[self.npc:id()] = time_global() + 6000
 end
 function Cwound_manager:eat_medkit()
   if self.can_use_medkit == true then
@@ -565,6 +555,10 @@ function add_to_binder (object, ini, scheme, section, st)
     action = manager:action (stalker_ids.action_danger_planner)
 	action:add_precondition (world_property(properties["wounded"],      false))
     action:add_precondition (world_property(properties["can_fight"],       true))
+    
+    action = manager:action (stalker_ids.action_anomaly_planner)
+	action:add_precondition (world_property(properties["wounded"],      false))
+    action:add_precondition (world_property(properties["can_fight"],       true))
 
 end
 
@@ -628,9 +622,9 @@ function init_wounded(npc, ini, section, st, scheme)
     def.hp_cover      = "50|false"
     def.hp_fight      = "50|false"
     def.syndata       = ""
-    def.help_dialog     = "dm_help_wounded_medkit_dialog"
+    def.help_dialog     = nil
     def.help_start_dialog = nil
-    def.use_medkit      = true
+    def.use_medkit      = false
     
   elseif npc_community == "freedom" then
 	
@@ -660,6 +654,7 @@ function init_wounded(npc, ini, section, st, scheme)
     def.help_start_dialog	= nil
     def.use_medkit			= true		
 
+--[[
   elseif string.find(npc:name(), "prisoner") then
 	
     local state = wounded_by_state[math.mod(npc:id(), 3)]
@@ -673,6 +668,7 @@ function init_wounded(npc, ini, section, st, scheme)
     def.help_dialog			= "dm_help_wounded_medkit_dialog"
     def.help_start_dialog	= nil
     def.use_medkit			= true			
+]]
 		
   else
     local state = wounded_by_state[math.mod(npc:id(), 3)]
@@ -783,4 +779,141 @@ function horz_angle(vec1,vec2)
   local x=vec2.x*vec1.x+vec2.z*vec1.z
   local y=-vec2.z*vec1.x+vec2.x*vec1.z -- повернули систему координат     
   return math.atan2(y,x) -- угол доворота от -pi до pi
+end
+
+-- Помощь раненому
+function help_wounded(npc)
+local snd
+	if npc:name()=="esc_vagon_wounded" or npc:name()=="val_escort_bandit_halfdead" then return end
+	snd = xr_sound.get_safe_sound_object("characters_voice\\human_01\\newbie\\help\\wounded_thanx\\thanx_"..math_random(1,3))
+	snd:play_no_feedback(npc, sound_object.s3d, 0, npc:position(), 1.0)
+
+	--amk.start_timer("healing_enemies",math_random(20,30),amk.pack_array_to_string( {npc:id(), npc:character_community()} ))
+	amk.start_timer("healing_enemies",math_random(20,30), {npc:id(), npc:character_community()} )
+	npc:set_character_community("stalker", 0, 0)
+	npc:set_relation(game_object.friend, db.actor)
+end
+	local smarts = {
+		l01_escape = {
+			esc2_most = {0,1},
+			esc2_bandit_les = {0,1},
+			esc2_smart_stalker_exit = {0,1},
+			esc_farm_lager = {0,1},
+			esc2_st_fox_place = {0,1}
+		},
+		l02_garbage = {
+			gar_smart_graveyard = {0,1},
+			gar_smart_garage = {0,1},
+			gar_smart_bandit3 = {0,1},
+			gar_smart_stalkers_1 = {0,1}
+		},
+		l03_agroprom = {
+			agr2_st_factory = {0,1}
+		},
+		l03u_agr_underground = {
+			agr2_st_factory = {0,1}
+		},
+		l04_darkvalley = {
+			val_smart_bandit_1 = {0,3}
+		},
+		l04u_labx18 = {
+			val_smart_bandit_1 = {0,1}
+		},
+		l06_rostok = {
+			ros_smart_stalker1 = {1,2},
+			ros_smart_stalker3 = {1,2},
+			ros_smart_stalker_bandits1 = {1,2}
+		},
+		l07_military = {
+			mil_smart_dolg_kamp = {2,3},
+			mil_lager = {2,3}
+		},
+		l08_yantar = {
+			yan_st_stalker2 = {1,2}
+		},
+		l10_radar = {
+			rad2_loner_0000 = {2,3},
+			rad2_loner_0001 = {2,3},
+			rad2_loner_0002 = {2,3}
+		},
+		l11_pripyat = {
+			pri_smart_neutral_stalker1 = {3,3},
+			pri_stadium_help = {3,3}
+		},
+		marsh = {
+			stalker_green1 = {0,1,2,3},
+			stalker_green2 = {0,1,2,3},
+			kalmyak_marsh = {0,1,2,3}
+		}
+	}
+	
+local smarts_avail = {}
+--local smarts_other = {}
+local wound_id
+function custom_change(npc)
+	local obj = alife():object(npc:id())
+	local packet_wounded = amk.read_stalker_params(obj)
+	local level = level.name()
+	local obj_rank = get_npc_rank(npc)
+	if level and smarts[level] then
+		for k,v in pairs(smarts) do
+			for kk,vv in pairs(smarts[k]) do
+				local smarts_rank_min = vv[1] 
+				local smarts_rank_max = vv[2]	
+				if obj_rank and obj_rank >= smarts_rank_min and obj_rank <= smarts_rank_max then
+					local smart = alife():object(kk)
+					if smart and smart:is_gulag_available() and smart.gulag_working then
+						if string_find(level,string_sub(kk,1,3)) then
+							table.insert(smarts_avail,smart)
+						--else
+							--table.insert(smarts_other,smart)
+						end
+					end
+				end		
+			end
+		end
+	end	
+	wound_id = npc:id()
+	if smarts_avail and npc:alive() then 
+		if #smarts_avail > 1 then
+			table_sort(smarts_avail,max_comp)
+		end
+		if #smarts_avail > 0 then
+			packet_wounded.custom = "[smart_terrains]\n"..smarts_avail[1]:name().." = true"
+			packet_wounded.health = 1
+			packet_wounded.updhealth = 1
+			amk.write_stalker_params(packet_wounded,obj)
+		end
+	--elseif smarts_other then 
+	--	if table.getn(smarts_other) > 1 then
+	--		table_sort(smarts_other,max_comp)
+	--	end
+	--	if table.getn(smarts_other) > 0 then
+	--		packet_wounded.custom = "[smart_terrains]\n"..smarts_other[1]:name().." = true"
+	--		amk.write_stalker_params(packet_wounded,obj)
+	--	end
+	end
+	local unreg_id = obj:smart_terrain_id()    
+	if unreg_id ~= 65535 and npc:alive() then      
+		local unreg = alife():object(unreg_id)
+		if unreg then        
+			unreg:unregister_npc(obj) 
+		end  
+	end
+end
+
+function get_npc_rank(obj)
+	local sobj = alife():object(obj:id())
+	if sobj and sobj.rank and sobj:rank()  then
+		return math_floor(sobj:rank()/290)
+	end
+	return nil
+end
+
+function max_comp(i1,i2) -- возвращает true если i1 меньше i2
+	if wound_id then
+		local sobj = alife():object(wound_id)
+		local sobj_pos = sobj.position
+		return i1.position:distance_to(sobj_pos) < i2.position:distance_to(sobj_pos)
+	end
 end
