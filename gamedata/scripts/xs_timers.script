@@ -1,0 +1,330 @@
+--[[---------------------------------------------------------------------
+Таймеры на объектах. Колбеки - строки, указывающие на функцию. 
+Разделитель - точка. 
+Пример использования смотреть в функции test. Данные, передаваемые в 
+колбек - любые, поддерживаемые хранилищем.
+	
+Depends on:
+	xs_sandbox
+	xs_helpers (as sandbox's module)
+	xs_stor
+--]]---------------------------------------------------------------------
+
+-------------------------------------------------------------------------
+--- xStream, 06/01/2012                                               ---
+--- version 1.1                                                       ---
+-------------------------------------------------------------------------
+
+-- private members
+
+-- timer types
+local timer_type = {}
+timer_type.game_time = 1
+timer_type.real_time = 2
+-- 
+local timers_holder = {}
+local closest_real = 0
+local closest_game = 0
+local loaded = false
+
+local function get_new_id()
+	local i = 0
+	for idx in ipairs(timers_holder) do
+		i = idx
+	end
+	return i + 1
+end
+
+local function get_max_id()
+	local i = 0
+	for idx in pairs(timers_holder) do
+		if idx > i then
+			i = idx
+		end
+	end
+	return i
+end
+
+local function get_real_function_by_name(cb_name)
+	local tokens, obj = explode(".", cb_name), _G
+	for _, tok in ipairs(tokens) do
+		if obj[tok] then
+			obj = obj[tok]
+		else -- something gone wrong
+			return
+		end
+	end
+	
+	if type(obj)=='function' then
+		return obj
+	end
+end
+
+local function _trigger(idx)
+	if not idx then
+		return
+	end
+	
+	timers_holder[idx]:trigger()
+	if not timers_holder[idx].__once then
+		timers_holder[idx]:rearm()
+	else
+		timers_holder[idx]:stop()
+	end
+end
+
+local function trigger_timer(idx)
+	if not loaded then
+		return
+	end
+	
+	_trigger(idx)
+	
+	--find new closest timers
+	closest_real = 0
+	closest_game = 0
+	local current_time = time_global()
+	local current_game_time = game.time()
+	local timers_to_trigger = {}
+	local closest_real_time = 0
+	local closest_game_time = 0
+	
+	for k,t in pairs(timers_holder) do
+		if t.__type==timer_type.real_time then -- find realtime timers
+		
+			if t.__trigger_time <= current_time then -- may be this timer should trigger too?
+				table.insert(timers_to_trigger, t.id)
+			else -- find at last closest...
+				if closest_real_time==0 or closest_real_time > t.__trigger_time then
+					closest_real_time = t.__trigger_time
+					closest_real = t.id
+				end
+			end
+			
+		else -- find game timers
+		
+			if t.__trigger_time <= current_game_time then -- may be this timer should trigger too?
+				table.insert(timers_to_trigger, t.id)
+			else -- find at last closest...
+				if closest_game_time==0 or closest_game_time > t.__trigger_time then
+					closest_game_time = t.__trigger_time
+					closest_game = t.id
+				end
+			end
+		
+		end
+	end
+	
+	for _, idx in ipairs(timers_to_trigger) do
+		_trigger(idx)
+	end
+	
+end
+
+local prev_game_time = 0
+-- events 
+local function check_timers(e)
+	
+	local current_time = time_global()
+	local current_game_time = game.time()
+	
+	--check for date overflow
+	if current_time < prev_game_time then
+		local diff = prev_game_time - current_time
+		--find all game timers and reduce trigger time
+		for k,t in pairs(timers_holder) do
+			if t.__type==timer_type.game_time then -- find realtime timers
+				t.__trigger_time = __trigger_time - diff
+				t:__save()
+			end
+		end	
+	end
+	
+	if timers_holder[closest_real] and timers_holder[closest_real].__trigger_time <= current_time then
+		trigger_timer(closest_real)
+	end
+	if timers_holder[closest_game] and timers_holder[closest_game].__trigger_time <= current_game_time then
+		trigger_timer(closest_game)
+	end
+	prev_game_time = current_game_time
+end
+
+local function on_load(e)
+	local collected_timers = {}
+	local max_id, timer_desc, t = xs_stor.get("timers_last_id", 0)
+	
+	-- collect timers
+	for k = 1, max_id do
+		timer_desc = xs_stor.get("timers_timer_"..k)
+		if timer_desc then
+			-- create timer and setup it
+			t = timer()
+			t.__callback = timer_desc.cb
+			t.__callbackData = timer_desc.cbd
+			t.__type = timer_desc.type
+			t.__interval = tonumber(timer_desc.int)
+			t.__trigger_time = tonumber(timer_desc.when)
+			t.__once = timer_desc.once
+			table.insert(collected_timers, t)
+			
+			-- remove description
+			xs_stor.set("timers_timer_"..k)
+		end
+	end
+	
+	-- clear info
+	xs_stor.set("timers_last_id")
+	
+	-- run them all!
+	for _,t in ipairs(collected_timers) do
+		t:__run()
+	end
+	
+	loaded = true
+
+	trigger_timer()
+end
+
+-- example
+local function test()
+	-- skip second run
+	if get_max_id()>0 then
+		return
+	end
+	
+	local t = timer()
+	t:setCallback("xs_timers.kill_npc")
+	t:setCallbackData({ id = db.actor:id() })
+	t:runReal(60*1000)
+end
+
+function kill_npc(data)
+	local cobj = level.object_by_id(data.id or 0)
+	
+	if cobj then
+		cobj:kill(cobj)
+	end
+end
+--====================================================--
+
+-- public members
+
+function init()
+	-- translate to global namespace
+	_G.timer = timer
+	
+	event("actor_update"):register(check_timers)
+	event("actor_spawn"):register(on_load)
+	--event("actor_spawn"):register(test)
+end
+
+--====================================================--
+class "timer"
+
+function timer:__init()
+	self.__once = true
+	self.__type = timer_type.real_time	
+end
+
+function timer:once(is_once)
+	self.__once = is_once
+	return self
+end
+
+function timer:setCallback(callback)
+	if get_real_function_by_name(callback) then
+		self.__callback = callback
+	end
+	return self
+end
+
+function timer:setCallbackData(data)
+	self.__callbackData = data
+	return self
+end
+
+function timer:isOk()
+	return not ( not self.__callback )
+end
+
+function timer:__save()
+	xs_stor.set("timers_last_id", get_max_id())
+	local trigger_data = {
+		cb = self.__callback,
+		cbd = self.__callbackData,
+		type = self.__type,
+		int = ""..self.__interval,		--save as string due big value
+		when = ""..self.__trigger_time,	--save as string due big value
+		once = self.__once
+	}
+	xs_stor.set("timers_timer_"..self.id, trigger_data)
+end
+
+function timer:__run()
+	if self.__trigger_time then
+		self.id = get_new_id()
+		timers_holder[self.id] = self
+		
+		self:__save()
+		
+		--rebuild tables
+		trigger_timer()
+	end
+end
+
+function timer:runGame(seconds)
+	if seconds and self:isOk() then
+		self.__type = timer_type.game_time
+		self.__interval = seconds
+		self.__trigger_time = game.time() + seconds
+		self:__run()
+	end
+	return self
+end
+
+function timer:runReal(milliseconds)
+	if milliseconds and self:isOk() then
+		self.__type = timer_type.real_time
+		self.__interval = milliseconds
+		self.__trigger_time = time_global() + milliseconds
+		self:__run()
+	end
+	return self
+end
+
+function timer:stop()
+
+	timers_holder[self.id] = nil
+	xs_stor.set("timers_timer_"..self.id)
+	xs_stor.set("timers_last_id", get_max_id())
+
+	return self
+end
+
+function timer:rearm()
+
+	if self.id then
+		self:stop()
+	end
+	
+	if self.__type == timer_type.real_time then
+		self:runReal(self.__interval)
+	else
+		self:runGame(self.__interval)
+	end
+	
+	return self
+end
+
+function timer:trigger()
+	if not self:isOk() then
+		return
+	end
+	
+	local fn = get_real_function_by_name(self.__callback)
+	if fn then
+		fn(self.__callbackData, self)	-- pass timer object to manipulate with it inside callback
+	end
+	
+	return self
+end
