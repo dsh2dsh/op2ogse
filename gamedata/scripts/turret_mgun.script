@@ -1,0 +1,299 @@
+function bind(obj)
+--	printf("turret_mgun.bind")
+	local ini = obj:spawn_ini()
+	if ini == nil or not ini:section_exist("logic") then
+		abort("turret '%s' must have logic", obj:name())
+	end
+	obj:bind_object(turret_binder(obj, ini))
+end
+
+class "turret_binder" (object_binder)
+
+function turret_binder:__init(obj, ini) super(obj)
+	self.ini = ini
+	self.initialized = false
+	self.loaded = false
+end
+
+function turret_binder:reinit()
+	object_binder.reinit(self)
+	db.storage[self.object:id()] = {}
+	self.st = db.storage[self.object:id()]
+	self.heli = self.object:get_helicopter()
+	self.object:set_callback(callback.helicopter_on_hit, self.on_hit, self)
+end
+
+function turret_binder:update(delta)
+	object_binder.update(self, delta)
+	if not self.initialized and db.actor ~= nil then
+		xr_logic.initialize_obj(self.object, self.st, self.loaded, db.actor, modules.stype_heli)
+		self.initialized = true
+	end
+	if self.st.active_section ~= nil then
+		xr_logic.issue_event(self.object, self.st[self.st.active_scheme], "update", delta)
+	end
+	self:check_health()
+end
+
+function turret_binder:net_spawn(data)
+	if not object_binder.net_spawn(self, data) then
+		return false
+	end
+	self.se_obj = alife():object(self.object:id())
+	self.heli:SetfHealth(self.se_obj.health)
+	self.st.alive = self.se_obj.health > 0.005
+	db.add_turret(self.object)
+	return true
+end
+
+function turret_binder:net_destroy()
+	db.del_turret(self.object)
+	object_binder.net_destroy(self)
+end
+
+function turret_binder:net_save_relevant()
+	return true
+end
+
+function turret_binder:save(packet)
+	object_binder.save(self, packet)
+	xr_logic.save_obj(self.object, packet)
+end
+
+function turret_binder:load(packet)
+	object_binder.load(self, packet)
+	xr_logic.load_obj(self.object, packet)
+end
+
+function turret_binder:on_hit(power, impulse, hit_type, enemy_id)
+	dbglog("hit: power=%f impulse=%f hit_type=%d enemy_id=%d health=%f",
+			power, impulse, hit_type, enemy_id, self.heli:GetfHealth())
+	self.se_obj.health = self.heli:GetfHealth()
+	local enemy = level.object_by_id(enemy_id)
+	if enemy ~= nil and self.st.active_section ~= nil then
+		xr_logic.issue_event(self.object, self.st[self.st.active_scheme],
+				"hit_callback", self.object, power, nil, enemy, nil)
+	end
+end
+
+function turret_binder:check_health()
+	if self.st.alive and self.heli:GetfHealth() <= 0.005 then
+		explode_turret(self.object)
+	end
+end
+
+function explode_turret(turret)
+	local heli = turret:get_helicopter()
+	heli:ClearEnemy()
+	heli:Die()
+	local se_obj = alife():object(turret:id())
+	se_obj.health = 0
+	db.storage[turret:id()].alive = false
+	utils2.deferred_release(turret:id(), 5)
+end
+
+
+function is_friendly_turret(npc, turret, position)
+    -- сначала вы€сним, турель ли это вообще.
+    local k,v
+    if turret == nil then
+        -- ссылки на объект нет. что ж, бывает, попробуем
+        -- определить по месту расположени€.
+        for k,v in pairs(db.turret) do
+            local test_position = v:position()
+            if test_position.x == position.x and
+               test_position.z == position.z then
+                turret = v
+                break
+            end
+        end
+        if turret == nil then
+            return false
+        end
+    elseif (turret:section() ~= "turret_mgun") and (turret:section() ~= "turret_army") and (turret:section() ~= "turret_nato") then
+        return false
+    end
+    local community = db.storage[turret:id()].community
+    if community == nil then
+        return false
+    end
+    if utils2.community_relation(community, npc) > -400 then
+        return true
+    end
+    return false
+end
+
+function create_turret(turret_section_name, level_name, position, community, owner_gulag, search_dist, hunt_actor_prob, explode_dist, spawner)
+	local packet1 = utils2.packet_pool_get()
+	local packet2 = utils2.packet_pool_get()
+
+	local level_vertex_id, game_vertex_id = utils2.get_top_graph_ids(level_name)
+	local se_obj = alife():create(turret_section_name, position, level_vertex_id, game_vertex_id)
+	if se_obj == nil then
+		abort("can't create '%s' at (%f,%f,%f)")
+	end
+
+	-- лучше через table.concat()
+	local custom_data = "[logic]\nactive = turret\n[turret]\n"
+	if community ~= nil then
+		custom_data = custom_data.."community = "..community.."\n"
+	end
+	if owner_gulag ~= nil then
+		custom_data = custom_data.."owner_gulag = "..owner_gulag.."\n"
+	end
+	if hunt_actor_prob ~= nil then
+		custom_data = custom_data.."hunt_actor_prob = "..tostring(hunt_actor_prob).."\n"
+	else
+		custom_data = custom_data.."hunt_actor_prob = 50\n"
+	end
+	if search_dist ~= nil then
+		custom_data = custom_data.."search_dist = "..tostring(search_dist).."\n"
+	else
+		custom_data = custom_data.."search_dist = 90\n"
+	end
+	if explode_dist ~= nil then
+		custom_data = custom_data.."explode_dist = "..tostring(explode_dist).."\n"
+	else
+		custom_data = custom_data.."explode_dist = 1\n"
+	end
+	if spawner ~= nil then
+		custom_data = custom_data.."[spawner]\ncond = "..spawner.."\n"
+	end
+
+	se_obj:STATE_Write(packet1)
+	local dead_space = packet2:w_tell()
+
+	-- cse_alife_dynamic_object
+	utils2.packet_copy(packet2, packet1, 18)
+	packet1:r_stringZ()
+	packet2:w_stringZ(custom_data)
+	utils2.packet_copy(packet2, packet1, 8)
+	-- cse_visual
+	packet2:w_stringZ(packet1:r_stringZ())
+	utils2.packet_copy(packet2, packet1, 1)
+	-- cse_motion
+	packet2:w_stringZ(packet1:r_stringZ())
+	-- cse_ph_skeleton
+	packet2:w_stringZ(packet1:r_stringZ())
+	utils2.packet_copy(packet2, packet1, 3)
+	-- cse_alife_helicopter
+	packet2:w_stringZ("idle")
+	packet2:w_stringZ("$no_sound")
+	-- se_turret_mgun
+	packet2:w_float(1.0)
+
+	se_obj:STATE_Read(packet2, packet2:w_tell() - dead_space)
+
+	utils2.packet_pool_put(packet1)
+	utils2.packet_pool_put(packet2)
+end
+
+function create_dir_turret(turret_section_name, level_name, position, community, owner_gulag, search_dist, hunt_actor_prob, explode_dist, spawner)
+	local packet1 = utils2.packet_pool_get()
+	local packet2 = utils2.packet_pool_get()
+
+	local level_vertex_id, game_vertex_id = utils2.get_top_graph_ids(level_name)
+	local se_obj = alife():create(turret_section_name, position, level_vertex_id, game_vertex_id)
+
+	if se_obj == nil then
+		abort("can't create '%s' at (%f,%f,%f)")
+	end
+	-- лучше через table.concat()
+	local custom_data = "[logic]\nactive = turret\n[turret]\n"
+	if community ~= nil then
+		custom_data = custom_data.."community = "..community.."\n"
+	end
+	if owner_gulag ~= nil then
+		custom_data = custom_data.."owner_gulag = "..owner_gulag.."\n"
+	end
+	if hunt_actor_prob ~= nil then
+		custom_data = custom_data.."hunt_actor_prob = "..tostring(hunt_actor_prob).."\n"
+	else
+		custom_data = custom_data.."hunt_actor_prob = 50\n"
+	end
+	if search_dist ~= nil then
+		custom_data = custom_data.."search_dist = "..tostring(search_dist).."\n"
+	else
+		custom_data = custom_data.."search_dist = 90\n"
+	end
+	if explode_dist ~= nil then
+		custom_data = custom_data.."explode_dist = "..tostring(explode_dist).."\n"
+	else
+		custom_data = custom_data.."explode_dist = 3\n"
+	end
+	if spawner ~= nil then
+		custom_data = custom_data.."[spawner]\ncond = "..spawner.."\n"
+	end
+
+	se_obj:STATE_Write(packet1)
+
+	local dead_space = packet2:w_tell()
+
+	-- cse_alife_dynamic_object
+	utils2.packet_copy(packet2, packet1, 18)
+	packet1:r_stringZ()
+	packet2:w_stringZ(custom_data)
+	utils2.packet_copy(packet2, packet1, 8)
+	-- cse_visual
+	packet2:w_stringZ(packet1:r_stringZ())
+	utils2.packet_copy(packet2, packet1, 1)
+	-- cse_motion
+	packet2:w_stringZ(packet1:r_stringZ())
+	-- cse_ph_skeleton
+	packet2:w_stringZ(packet1:r_stringZ())
+	utils2.packet_copy(packet2, packet1, 3)
+	-- cse_alife_helicopter
+	packet2:w_stringZ("idle")
+	packet2:w_stringZ("$no_sound")
+	-- se_turret_mgun
+	packet2:w_float(1.0)
+
+	se_obj:STATE_Read(packet2, packet2:w_tell() - dead_space)
+
+	utils2.packet_pool_put(packet1)
+	utils2.packet_pool_put(packet2)
+
+---------------direction
+	se_obj.direction = vector():set(-1, 0, 0)
+---------------
+end
+
+-----------------------------------------------------------------------
+
+class "se_turret_mgun" (cse_alife_helicopter)
+
+function se_turret_mgun:__init(section) super(section)
+	self.spawner_present = false
+	self.health = 1.0
+	self.direction = vector():set(0, 0, 0)
+end
+
+function se_turret_mgun:can_switch_offline()
+	return cse_alife_helicopter.can_switch_offline(self)
+end
+
+function se_turret_mgun:can_switch_online()
+	if self.health <= 0.005 then
+		return false
+	end
+	if self.spawner_present == nil then
+		local ini = self:spawn_ini()
+		self.spawner_present = ini:section_exist("spawner")
+	end
+	if self.spawner_present == true then
+		return cse_alife_helicopter.can_switch_online(self)
+	end
+	return xr_spawner.check_spawn(self)
+end    
+
+function se_turret_mgun:STATE_Read(packet, size)
+	cse_alife_helicopter.STATE_Read(self, packet, size)
+	self.health = packet:r_float()
+	self.direction = packet:r_vec3()
+end
+
+function se_turret_mgun:STATE_Write(packet)
+	cse_alife_helicopter.STATE_Write(self, packet)
+	packet:w_float(self.health)
+	packet:w_vec3(self.direction)
+end
