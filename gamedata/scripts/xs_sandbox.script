@@ -1,0 +1,252 @@
+--[[---------------------------------------------------------------------
+Ñèñòåìà, ïîçâîëÿþùàÿ îðãàíèçîâûâàòü event-driven ìîäåëü ñ 
+äåëåãèðîâàíèåì ñîáûòèé
+--]]---------------------------------------------------------------------
+
+-------------------------------------------------------------------------
+--- xStream, 14/01/2011                                               ---
+--- version 1.4                                                       ---
+-------------------------------------------------------------------------
+
+--===========================================================================--
+--private members
+
+local register_modules = xs_sandbox_binds.binds	or {}
+-- prevent dublicate init
+local registered_modules = {}
+-- calback links storage
+local callbacks_recipients = {}
+-- triggered events debug
+local events_in_process = {}
+
+local function register(callback_name, funct)
+	if callback_name and funct and type(funct)=="function" then
+		if not callbacks_recipients[callback_name] then
+			callbacks_recipients[callback_name]={}
+		end
+		table.insert(callbacks_recipients[callback_name],funct)
+	else
+		vis_log("sandbox error: can't add callback with empty name OR invalid function was passed to registrator")
+	end
+end
+
+local function unregister(callback_name, funct)
+	if callback_name and funct and type(funct)=="function" then
+		if not callbacks_recipients[callback_name] then
+			return
+		end
+		for _,cb in ipairs(callbacks_recipients[callback_name]) do
+			if cb == funct then
+				table.remove(callbacks_recipients[callback_name], _)
+				return
+			end
+		end
+	end
+end
+
+-- event callbacks can trigger another events but they must have different type
+local function trigger(evt)
+	
+	local callback_name = evt:name()
+	if callback_name then
+		if callbacks_recipients[callback_name] then
+		
+			-- hang debug
+			events_in_process[#events_in_process+1] = evt
+		
+			local callbacks_to_remove = {}
+			for _,funct in ipairs(callbacks_recipients[callback_name]) do
+				if evt.__break == true then
+					break
+				end
+				funct(evt)
+				
+				-- remove callback from stack
+				if evt.__removeThisCallback then
+					callbacks_to_remove[#callbacks_to_remove+1] = _
+					evt.__removeThisCallback = nil
+				end
+				
+			end
+			
+			-- hang debug
+			events_in_process[#events_in_process] = nil
+			
+			-- remove collected callbacks from stack
+			if #callbacks_to_remove>0 then
+				for _, id in pairs(callbacks_to_remove) do
+					table.remove(callbacks_recipients[callback_name], id)
+				end
+			end
+			
+		end
+	else
+		vis_log("sandbox error: trying shot calback with empty name")
+	end
+
+end
+
+local function hanged_events_check()
+	if #events_in_process>0 then
+	
+		local cbFormData = {}
+		
+		for idx, lost_event in ipairs(events_in_process) do
+			local err = "sandbox error: event '" .. lost_event:name() .. "' has hanged with fingerprint: " .. (lost_event.__dbg_fingerprint or 0)
+			table.insert(cbFormData, err)
+			vis_log(err, true)
+		end
+		
+		if hang_visual_callback then
+			hang_visual_callback(cbFormData)
+		end
+		
+		abort("Sandbox fatal error. See info above")
+	end
+end
+
+--===========================================================================--
+-- public members
+
+-- helpers --
+
+-- shows onscreen text when binder call hang found; can be simply redefined: xs_sandbox.hang_visual_callback = function() ... end
+-- to remove onscreen text just do next: xs_sandbox.hang_visual_callback = nil
+function hang_visual_callback(info)	
+	local crash_text = "ÂÍÈÌÀÍÈÅ! ÏÐÎÈÇÎØËÎ ÇÀÂÈÑÀÍÈÅ ËÎÃÈÊÈ, ÎÒÎØËÈÒÅ ÏÎËÍÛÉ ËÎÃ ÐÀÇÐÀÁÎÒ×ÈÊÀÌ!!!"
+
+	local hud = get_hud()
+	local cs = hud:GetCustomStatic("gun_jammed")
+	if not cs then
+		hud:AddCustomStatic("gun_jammed", true)
+		cs = hud:GetCustomStatic("gun_jammed"):wnd()
+	end
+	
+	cs:SetText(crash_text)
+	
+	local snd_obj = xr_sound.get_safe_sound_object([[affects\zvon]])
+	snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
+end
+
+local bufferedmessages={}
+function vis_log(msg, show_tip)
+
+	local console = get_console()
+	
+	if console and msg then
+		console:execute("load ~~~ "..string.sub(msg,1,200))
+		console:execute("flush")
+	end
+
+	if not show_tip then
+		return
+	end
+	
+	if bufferedmessages and msg then
+		table.insert(bufferedmessages,msg)
+	end
+	
+	if db and db.actor and #bufferedmessages>0 then
+		for k,msg in ipairs(bufferedmessages) do
+			db.actor:give_game_news(msg, "ui\\ui_iconsTotal", Frect():set(0,658,83,47), 0, 15000)
+		end
+		bufferedmessages={}
+	end
+end
+-- end of helpers --
+
+function init()
+	-- translate "event" class to global scope
+	_G.event = event
+		
+	-- register modules to stacks, calls "init" functions
+	for _,module in ipairs(register_modules) do
+		if type(module)=="table" then
+			can_register = true
+			for _1,dep_module in ipairs(module) do
+				local registerable = _G[dep_module] and _G[dep_module].init
+				can_register = can_register and registerable
+				if not registerable then 
+					vis_log("sandbox error: can't init dependenced module '" .. dep_module .. "', there is no such module OR it has no 'init()' function")			
+				end
+			end
+			if can_register then
+				for _1,dep_module in ipairs(module) do
+					if not registered_modules[dep_module] then
+						_G[dep_module].init()
+						registered_modules[dep_module]=true
+					end
+				end
+			else
+				vis_log("sandbox error: can't init some dependenced modules, look info above")
+			end
+		else
+			if _G[module] and _G[module].init then
+				if not registered_modules[module] then
+					_G[module].init()
+					registered_modules[module]=true
+				end
+			else
+				vis_log("sandbox error: can't init module '" .. module .. "', there is no such module OR it has no 'init()' function")
+			end
+		end
+	end
+	
+	level.add_call(hanged_events_check, function()end) -- ñòîðîæåâîé òàéìåð, thx malandrinus
+	
+	vis_log("sandbox initialized")
+end
+
+-- event class -- 
+
+class "event"
+
+function event:__init(name)
+	self.__evt_name = name
+end
+
+-- debug fingerprint
+function event:setFingerprint(val)
+	self.__dbg_fingerprint = val
+	return self
+end
+
+-- get event name
+function event:name()
+	return self.__evt_name
+end
+
+-- register event callback function
+function event:register(funct)
+	register(self.__evt_name, funct)
+	return self
+end
+
+-- unregister callback
+function event:unregister(funct)
+	unregister(self.__evt_name, funct)	
+	return self
+end
+
+-- triggers event
+function event:trigger(data_table)
+	if type(data_table) == "table"then
+		for k,v in pairs(data_table) do 
+			self[k] = v 
+		end
+	end
+	trigger(self)
+	return self
+end
+
+-- stops callback queue execution
+function event:stop()
+	self.__break = true
+	return self
+end
+
+-- remove current calback after execution
+function event:removeThisCallback()
+	self.__removeThisCallback = true
+	return self
+end

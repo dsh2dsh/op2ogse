@@ -1,0 +1,229 @@
+--[[---------------------------------------------------------------------
+Библиотека универсального хранилища данных произвольного размера
+Основана на использовани нетпакетов объектов (используется новый тип 
+объектов, описанный в конфигах, имеющие произвольную длину пакета).
+Хранилище подстраивается под размер хранимых данных.
+
+Использовать можно только после загрузки игры (присутствует актор)
+Удаление переменной производится так же, как и установка переменной - 
+функцией set, как значение надо передать nil
+Получение переменной производится функцией get, второй параметр - 
+значение по-умолчанию (опциональный параметр). Если переменной не 
+существует и не указано значение по-умолчанию, будет возвращен nil
+
+Сразу после загрузки хранилища "кидается" событие storage_load
+Непосредственно перед сохранением - storage_save
+
+Разрешено хранить переменные следующих типов:
+	булевое (хранится как байт)
+	
+	число (хранится всегда как float, если требуется хранение очень 
+		больших чисел, то рекомендуется использовать хук приведения
+		к строке: ""..1234567890 - передавать на вход set)
+		
+	строка (хранится как последовательность байт + нулевой символ, 
+		конец строки; ограничение на длину строки - 8000 байт)
+		
+	таблицы (ПРОСТЫЕ! То есть: без метатаблиц, без нулевых символов и 
+		прочих бинарных данных, без рекурсий и только с простыми типами 
+		в ключах и значениях. Кроме того, объем таблицы очень сильно
+		ограничен - при сериализации строка должна влазить в пакет, а 
+		значит ограничение примерно в 8000 байт текста.)
+	
+Depends on:
+	xs_sandbox
+	xs_helpers (as sandbox's module)
+	xs_netpk
+--]]---------------------------------------------------------------------
+
+-------------------------------------------------------------------------
+--- xStream, доработка Malandrinus, 05/10/2012                        ---
+--- version 1.3                                                       ---
+-------------------------------------------------------------------------
+
+local storage_guid = "{005E17CE-3054-430E-9D68-08F264828F57}" -- НЕ МЕНЯТЬ!
+local st_marker = "XS_STOR_MARKER_"..storage_guid -- идентификатор маркера последнего хранилища
+local st_count = 1 -- количество объектов-хранилищ
+
+--private members
+
+local loaded = false
+local storage = {}
+local serialized_tables = {}
+local allowed_types = {['nil'] = 1, ['boolean'] = 2, ['number'] = 3, ['string'] = 4, ['table'] = 5} -- таблица вида {typename = type_number}
+local max_packet_len = 8000
+
+function damp_storage()
+	log3("damp storage data: '%s' items", st_count)
+	for k,v in pairs(storage) do
+		if type(v) == 'table' then
+			log3("%s: %s", k, "table:")
+			for k1,v1 in pairs(v) do
+				log3("  %s: %s", k1, tostring(v1))
+			end
+		else
+			log3("%s: %s", k, v)
+		end
+	end
+end
+--==============================================================
+
+local function read_item(pk)
+	local typ = pk:r_u8()
+	local key = pk:r_stringZ()
+						
+	local val
+	if     allowed_types.string  == typ then val = pk:r_stringZ()
+	elseif allowed_types.number  == typ then val = pk:r_float()
+	elseif allowed_types.boolean == typ then val = pk:r_bool()
+	elseif allowed_types.table   == typ then 
+		serialized_tables[key] = pk:r_stringZ()
+		val = table.unserialize(serialized_tables[key])
+	else
+		abort("xs_stor.read_item: unknown type %d", typ)
+	end
+	return key, val
+end
+
+local function load()
+	ASSERT(db.actor, "xs_stor.load: inappropriate call. Actor is not online.")
+	
+	-- если первое хранилище существует, то там всё настроено и оттуда можно читать данные
+	-- в противном случае оно будет прозрачно создано при сохранении
+	if ogse_base_storage.storage_exist("XS_STOR_"..storage_guid.."_1") then
+		local st_count = 0
+		repeat
+			st_count = st_count + 1
+			local st_key = "XS_STOR_"..storage_guid.."_"..st_count -- ключ текущего хранилища
+			-- получаем текущее хранилище (или создаём)
+			local cur_st = ogse_base_storage.get_storage(st_key)
+			local pk = cur_st:r_reset() -- получили нетпакет для чтения
+			while not pk:r_eof() do -- читаем из объекта все данные
+				local k,v = read_item(pk)
+				storage[k] = v
+			end
+			-- хранилище, в котором появился терминальный маркер - последнее
+		until storage[st_marker]
+		storage[st_marker] = nil -- удаляем сам маркер из переменных
+	end
+
+	loaded = true
+	event("storage_load"):trigger()
+end
+
+local function element_size(key, val)
+	local lua_type = type(val)
+	local typ = allowed_types[lua_type]
+	ASSERT(typ, "xs_stor.element_size: unsupported type '%s'", lua_type)
+
+	-- calculate variable len for saving
+	local elm_len = 1 + string.len(key) + 1
+	if     typ == allowed_types.string  then elm_len = elm_len + string.len(val) + 1
+	elseif typ == allowed_types.number  then elm_len = elm_len + 4
+	elseif typ == allowed_types.boolean then elm_len = elm_len + 1
+	elseif typ == allowed_types.table   then elm_len = elm_len + string.len(serialized_tables[key]) + 1
+	else
+		abort("xs_stor.element_size: unknown type %d", typ)
+	end
+
+	return elm_len
+end
+
+local function save_item(pk, key, val)
+	local lua_type = type(val)
+	local typ = allowed_types[lua_type]
+
+	pk:w_u8(typ)
+	pk:w_stringZ(key)
+	if     typ == allowed_types.string  then pk:w_stringZ(val)
+	elseif typ == allowed_types.number  then pk:w_float(val)
+	elseif typ == allowed_types.boolean then pk:w_bool(val)
+	elseif typ == allowed_types.table   then pk:w_stringZ(serialized_tables[key])
+	else
+		abort("xs_stor.save_item: unknown type %d", typ)
+	end
+end
+
+local function save()
+	ASSERT(loaded, "xs_stor.save: trying to save, but was not properly loaded!")
+	
+	event("storage_save"):trigger()
+	
+	-- saving...
+	-- готовим список элементов для сохранения
+	local elms2save = {}
+	-- сперва все обычные данные в произвольной последовательности
+	for key,val in pairs(storage) do table.insert(elms2save, {k=key, v=val}) end
+	-- последним - терминальный маркер. Его появление при чтении обозначит последний объект-хранилище
+	table.insert(elms2save, {k=st_marker, v=true})
+	-- последовательно сохраняем
+	local cur_st_num = 1
+	local cur_elm = 1
+	local pk
+	while cur_elm <= #elms2save do
+		local elm = elms2save[cur_elm]
+		local elm_sz = element_size(elm.k, elm.v)
+		ASSERT(elm_sz <= max_packet_len, "xs_stor.save: can not save variable '%s' because it is too long (%d bytes)", elm.k, elm_sz)
+		
+		local st = ogse_base_storage.get_storage("XS_STOR_"..storage_guid.."_"..cur_st_num)
+		pk = pk or st:w_reset() -- получаем пакет, подготовленный на запись
+		if st.zero_pos + max_packet_len - pk:w_tell() - elm_sz >= 0 then -- если места хватает
+			save_item(pk, elm.k, elm.v) -- записали
+			cur_elm = cur_elm + 1 -- перешли к следующему
+		else -- если не хватает
+			cur_st_num = cur_st_num + 1 -- перешли к следующему хранилищу
+			pk = nil
+		end
+	end
+	st_count = math.max(st_count, cur_st_num) -- если объектов было больше, чем надо, то оставляем количество
+end
+
+--================================================================================
+
+--public members
+function init()
+	event("actor_save"):register(save)
+	event("actor_spawn"):register(load)
+end
+
+-- in: string, any
+-- out: any
+function get(var_name, default)
+	ASSERT(loaded, "xs_stor.get: was not properly loaded!")
+	
+	if type(storage[var_name]) == 'table' then
+		return table.clone(storage[var_name])
+	end
+	
+	return storage[var_name] or default
+end
+
+-- in: string, any
+-- out: boolean(succes)
+function set(var_name, value)
+	local lua_type = type(value)
+	
+	ASSERT(loaded, "xs_stor.set: storage was not properly loaded!")
+	ASSERT(value==nil or allowed_types[lua_type], "xs_stor.set: can not save variable '%s' with unsupported type '%s'", var_name, lua_type)
+	
+	local key = tostring(var_name)
+	if lua_type=='table' then
+		local serialized, err = table.serialize(value)
+		ASSERT(not err, "xs_stor.set: can not serialize table '%s'", var_name)
+		local tbl_sz = string.len(serialized) + 1
+		ASSERT(not err, "xs_stor.set: can not serialize table '%s'", var_name)
+		ASSERT(tbl_sz <= max_packet_len, "xs_stor.set: serialized table '%s' is too long (%d bytes)", var_name, tbl_sz)
+		
+		serialized_tables[key] = serialized
+		storage[key] = table.clone(value)
+		return true
+	elseif lua_type=='string' then
+		local str_sz = string.len(value) + 1
+		ASSERT(str_sz <= max_packet_len, "xs_stor.set: string variable '%s' is too long (%d bytes)", var_name, str_sz)
+	elseif lua_type=='nil' then
+		serialized_tables[key] = nil
+	end
+	
+	storage[key] = value
+	return true
+end
