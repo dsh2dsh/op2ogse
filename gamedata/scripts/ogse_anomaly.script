@@ -1,0 +1,1999 @@
+-----------------------------------------------------------------------
+--- ogse_anomaly.script                                       
+--- Модуль учета и респавна аномалий
+--- унаследован от ogsm_anomaly авторы DEXXX, Offbar
+--- Dusty79, KamikaZze (c) OGS Evolution Team 
+--- Используется некоторый код АМК мода                                 
+--- version 2.0 (08/08/2011)                                             
+-----------------------------------------------------------------------
+
+local list_anom_id = {}
+list_del_anom_id = {}
+local list_mob_id = {}
+local list_stalk_id = {}
+local anom_list = {}
+local lc = {}
+	  lvids_forbidden = {}
+	  position_forbidden = {}
+local cur_level = nil	  
+local anom_to_del_exist = false
+local console = get_console()
+local spawn_anom_prob = system_ini():r_s32("options","spawn_anom_prob") -- Коэффициент кол-ва аномалий
+local spawn_blow_art_probe = system_ini():r_s32("options","spawn_blow_art_probe") -- Коэффициент вероятности попытки рождения артефакта аномалией в Выброс
+
+loc = {
+	l01_escape = 1,
+	l02_garbage = 2,
+	l03_agroprom = 3,
+	l04_darkvalley = 4,
+	l05_bar = 5,
+	l06_rostok = 6,
+	l07_military = 7,
+	l08_yantar = 8,
+	l10_radar = 10,
+	l11_pripyat = 11,
+	l12_stancia = 12,
+	k01_darkscape_ogse = 13,
+	l09_deadcity_ogse = 14,
+	l13_generators_ogse = 15,
+	l22_marsh = 16,
+
+	l23_x9 = 0,
+	l03u_agr_underground = 0,
+	l04u_labx18 = 0,
+	l08u_brainlab = 0,
+	l10u_bunker = 0,
+	l12u_sarcofag = 0,
+	l12u_control_monolith = 0,
+	l12_stancia_2 = 0
+}
+
+
+local level_anoms = {
+	l01_escape     = { 35, 45},   -- 83 + 9
+	l02_garbage    = { 40, 45},   -- 88 + 10
+	l03_agroprom   = { 30, 40},   -- 82
+	l04_darkvalley = { 40, 45},   -- 31
+	l05_bar        = {  3,  8},   --  8
+	l06_rostok     = { 25, 30},   -- 26 + 17 + 15
+	l08_yantar     = { 30, 40},   --  0
+	l07_military   = { 40, 45},   -- 60 + 6
+	l10_radar      = { 50, 55},   -- 68
+	l11_pripyat    = { 35, 40},   -- 38 + 10
+	l12_stancia    = { 35, 40},    -- 34
+	k01_darkscape_ogse = { 50, 60},
+	l09_deadcity_ogse = { 45, 50},
+	l13_generators_ogse = { 45, 50},
+	l22_marsh		= {  15, 20}
+}
+
+
+local level_vertexes = {
+	-- levels           	|    gvids  | lvids
+	l01_escape            = {   0,  259, 592836},
+	l02_garbage           = { 260,  423, 394972},
+	l03_agroprom          = { 424,  712, 438013},
+	l03u_agr_underground  = { 713,  821,      0},
+	l04_darkvalley        = { 822, 1120, 391084},
+	l04u_labx18           = {1121, 1179,      0},
+	l05_bar               = {1180, 1328, 120422},
+	l06_rostok            = {1329, 1461,  68382},
+	l08_yantar	          = {1462, 1561, 155448},
+	l08u_brainlab         = {1562, 1608,      0},
+	l07_military          = {1609, 1928, 421596},
+	l10_radar             = {1929, 2184, 227462},
+	l10u_bunker           = {2789, 2920,      0},
+	l11_pripyat           = {2185, 2347, 262315},
+	l12_stancia           = {2348, 2488, 481752},
+	l12_stancia_2         = {2605, 2788, 609784},
+	l12u_sarcofag         = {2489, 2554,      0},
+	l12u_control_monolith = {2555, 2604,      0},
+	k01_darkscape_ogse	  = {2921, 3243, 1094047},
+	l09_deadcity_ogse	  = {3244, 3884, 783951},
+	l13_generators_ogse	  = {3885, 4177, 427806}, 
+	l22_marsh			  = {4178, 4394,  91518},
+	l23_x9				  = {4395, 4416,      0}
+	
+}
+
+
+--[[
+Список аномалий, если чего, добавлять их сюда.
+Здесь нету: zone_campfire, zone_radioactive. 
+]]--
+local clsid_for_funct = {
+	[clsid.zone_acid_fog] = true,
+	[clsid.zone_bfuzz] = true,
+	[clsid.zone_bfuzz_s] = true,
+	[clsid.zone_dead] = true,
+	[clsid.zone_galant_s] = true,
+	[clsid.zone_galantine] = true,
+	[clsid.zone_mbald_s] = true,
+	[clsid.zone_mincer] = true,
+	[clsid.zone_mincer_s] = true,
+	[clsid.zone_mosquito_bald] = true,
+	[clsid.ameba_zone] = true,
+	[clsid.zone_rusty_hair] = true
+}
+
+local excluded_anoms = {
+
+	["tutorial"] = true,
+	["ameba"] = true,
+	["hvatalka"] = true,
+	["liana"] = true,
+	["zone_clouds_bad"] = true,
+	["zone_fog"] = true,
+	["zone_tornado_mini"] = true,
+	["teleport"] = true,
+	["no_gravity"] = true,
+	["burning_fuzz"] = true,
+	["rusty_hair"] = true,
+	["radioactive"] = true,
+	["secret"] = true,
+	["darkscape_zone_buzz"] = true,
+	["zone_flame_small"] = true,	
+
+	["esc_zone_witches_galantine"] = true,
+	["esc_zone_witches_galantine_0000"] = true,
+	["esc_zone_witches_galantine_0001"] = true,
+	["esc_zone_witches_galantine_0002"] = true,
+	["esc_zone_witches_galantine_0003"] = true,
+	["esc_zone_witches_galantine_0004"] = true,
+	["esc_zone_witches_galantine_0005"] = true,
+	["esc_zone_witches_galantine_0006"] = true,
+	["esc_zone_witches_galantine_0007"] = true,
+	
+	["zone_electroizgorod"] = true,
+	
+	["gar_zone_mosquito_bald_weak_noart_0000"] = true,
+	["gar_zone_mosquito_bald_weak_noart_0001"] = true,
+	["gar_zone_mosquito_bald_weak_noart_0002"] = true,
+	["gar_zone_mosquito_bald_weak_noart_0003"] = true,
+	["gar_zone_mosquito_bald_weak_noart_0004"] = true,
+	["gar_zone_mosquito_bald_weak_noart_0005"] = true,
+	["gar_zone_mosquito_bald_weak_noart_0006"] = true,
+	["gar_zone_mosquito_bald_weak_noart_0007"] = true,
+	["gar_zone_mosquito_bald_weak_noart_0008"] = true,
+	["gar_zone_mosquito_bald_weak_noart_0009"] = true,
+	["gar_zone_mosquito_bald_weak_noart_0010"] = true,
+	
+	["rostok_zone_buzz"] = true,
+	["rostok_zone_witches_galantine_average"] = true,
+	["rostok_zone_zharka_static_average"] = true,
+	
+	["mil_zone_witches_galantine0000_0000"] = true,
+	["mil_zone_witches_galantine0000"] = true,
+	["mil_zone_zharka_static_strong"] = true,
+	["mil_zone_zharka_static_strong_0000"] = true,
+	["mil_zone_zharka_static_strong_0001"] = true,
+	["mil_zone_zharka_static_strong_0002"] = true,
+
+	["anom_ochyag_zharka_1"] = true,
+	["anom_ochyag_zharka_2"] = true,
+	["anom_ochyag_zharka_3"] = true,
+	["anom_ochyag_tramplin_1"] = true,
+	["anom_ochyag_tramplin_2"] = true,
+	["anom_ochyag_tramplin_3"] = true,
+	["anom_ochyag_tramplin_4"] = true,
+	["anom_ochyag_mincer_1"] = true,
+	["anom_ochyag_mincer_2"] = true,
+	["anom_ochyag_mincer_3"] = true,
+	["anom_ochyag_mincer_4"] = true,
+	["anom_ochyag_mincer_5"] = true,
+	["anom_ochyag_mincer_6"] = true,
+	["anom_ochyag_mincer_7"] = true,
+
+	--для квеста "Вопрос бессмертия - часть 1", аномалии под артефакт Светляк
+	["noartf_witches_galantine_green"] = true,
+	["firefly_anom_common"] = true,
+	
+	-- для квеста Странная аномалия
+	["puzir_obman_portal_1"] = true,
+	["puzir_obman_portal_2"] = true,
+	["puzir_obman_portal_3"] = true,
+	["puzir_obman_portal_4"] = true,
+	["puzir_secret_portal_1_plita"] = true,
+	["puzir_secret_portal_2_constructions"] = true,
+	["puzir_secret_portal_3_kust"] = true,
+	["puzir_secret_portal_4_serp"] = true,
+	["garb_fake_port_1"] = true,
+	
+	-- для квеста ЧС
+	["smert_zone_port_1"] = true,
+	["smert_zone_port_2"] = true,
+	["smert_zone_port_3"] = true,
+	["smert_zone_port_4"] = true,
+	["smert_zone_port_5"] = true,
+	["smert_zone_port_6"] = true,
+	
+	["zone_mine_field"] = true,
+}
+
+local radius_anom = {
+	["zone_ameba"] = 4,
+	["zone_hvatalka"] = 4,
+	["zone_liana"] = 3,
+	["zone_burning_fuzz"] = 3,
+	["zone_burning_fuzz1"] = 3,
+	["zone_burning_fuzz_weak"] = 3,
+	["zone_burning_fuzz_average"] = 3,
+	["zone_burning_fuzz_strong"] = 3,
+	["zone_burning_fuzz_bottom_weak"] = 3,
+	["zone_burning_fuzz_bottom_average"] = 3,
+	["zone_burning_fuzz_bottom_strong"] = 3,
+	["zone_buzz"] = 1,
+	["zone_buzz_weak"] = 1,
+	["zone_buzz_average"] = 1,
+	["zone_buzz_strong"] = 2,
+	["zone_gravi_zone"] = 5,
+	["zone_gravi_zone_weak"] = 5,
+	["zone_gravi_zone_weak_noart"] = 5,
+	["zone_gravi_zone_average"] = 5,
+	["zone_gravi_zone_strong"] = 5,
+	["zone_gravi_zone_killing"] = 5,
+	["zone_mincer"] = 5,
+	["zone_mincer_weak"] = 5,
+	["zone_mincer_weak_noart"] = 5,
+	["zone_mincer_average"] = 5,
+	["zone_mincer_strong"] = 5,
+	["zone_mosquito_bald"] = 4,
+	["zone_mosquito_bald_weak"] = 4,
+	["zone_mosquito_bald_weak_noart"] = 4,
+	["zone_mosquito_bald_average"] = 4,
+	["zone_mosquito_bald_strong"] = 4,
+	["zone_mosquito_bald_strong_noart"] = 4,
+	["zone_sarcofag"] = 3,
+	["zone_witches_galantine"] = 5,
+	["zone_witches_galantine_weak"] = 5,
+	["zone_witches_galantine_average"] = 5,
+	["zone_witches_galantine_strong"] = 5,
+	["zone_zharka_static"] = 3,
+	["zone_zharka_static_weak"] = 3,
+	["zone_zharka_static_average"] = 3,
+	["zone_zharka_static_strong"] = 3,
+	["zone_mine_field"] = 1,
+	["zone_death"] = 2,
+	["handmade_zone_buzz"] = 1,
+	["noartf_buzz_weak"] = 1,
+	["noartf_buzz_average"] = 1,
+	["noartf_buzz_strong"] = 1,
+	["noartf_gravi_zone_weak"] = 5,
+	["noartf_gravi_zone_average"] = 5,
+	["noartf_gravi_zone_strong"] = 5,
+	["noartf_mincer_weak"] = 4,
+	["noartf_mincer_average"] = 4,
+	["noartf_mincer_strong"] = 4,
+	["noartf_mosquito_bald_weak"] = 4,
+	["noartf_mosquito_bald_average"] = 4,
+	["noartf_mosquito_bald_strong"] = 4,
+	["noartf_witches_galantine_weak"] = 5,
+	["noartf_witches_galantine_average"] = 5,
+	["noartf_witches_galantine_strong"] = 5,
+	["noartf_zharka_static_weak"] = 3,
+	["noartf_zharka_static_average"] = 3,
+	["noartf_zharka_static_strong"] = 3,
+	["zone_electroizgorod"] = 3
+}
+
+local not_anomal_zones = {
+	["zone_mine_field"] = true,
+	["zone_clouds_bad"] = true,
+	["zone_fog"] = true,
+	["zone_fog_ground"] = true,
+	["zone_fog_move"] = true,
+	["zone_fog_cigarette"] = true,
+	["zone_fog_indoor"] = true,
+	["zone_campfire"] = true,
+	["zone_campfire_mp_nolight"] = true,
+	["zone_campfire_grill"] = true,
+	["zone_flame"] = true,
+	["zone_flame_small"] = true,
+	["zone_tornado_mini"] = true,
+	["zone_radioactive"] = true,
+	["zone_radioactive_weak"] = true,
+	["zone_radioactive_average"] = true,
+	["zone_radioactive_strong"] = true,
+	["zone_radioactive_killing"] = true,
+	["handmade_zone_radioactive"] = true,
+	["zone_monolith"] = true,
+	["zone_no_gravity"] = true,
+	["handmade_zone_no_gravity"] = true,
+	["zone_electroizgorod"] = true,
+
+}
+
+dangerous_acivated_arts = {}
+
+function check_artefact_activation(obj)
+	if not obj then 
+		return 
+	end
+	local id = obj:id()
+	local sobj = alife():object(id)
+	if not sobj then
+		return
+	end
+	local section = sobj:section_name()
+	if system_ini():line_exist(section, "artefact_activation_seq") then
+		dangerous_acivated_arts[sobj.id] = time_global() + 12000
+	end
+end
+  
+function get_radius_for_section(sect)
+	return radius_anom[sect] or 4
+end
+
+function remove_anomaly(id)
+	if anom_list then
+		anom_list[id]=nil
+	end
+end
+
+local gvid_to_lname = {}
+do
+	gvid = 0
+	while game_graph():valid_vertex_id(gvid) do
+		local lid = game_graph():vertex(gvid):level_id()
+		gvid_to_lname[gvid] = alife():level_name(lid)
+		gvid = gvid + 1
+	end
+end
+
+-- Функция предназначена для определения аномалий на пути у непися в онлайне. Определяется аномалия к которой он развернут лицом. 
+-- Для простого определения ближайших аномалий нужно использовать get_nearest_anomaly_by_point ниже
+function get_nearest_anomaly(npc,dirp)
+	if not anom_list then return end
+
+	local loc = gvid_to_lname[npc:game_vertex_id()]
+	
+	local anomid = nil
+	local mindist = 20
+	local dist = 100
+	local dir
+	if dirp then
+		dir = dirp
+	else
+		dir = npc:direction()
+	end
+  
+	local posn = npc:position() -- положение непися
+	local vert_dir = vector():set(0,1,0) -- постоянный единичный вектор вертикального нправления
+	local delta = vector() -- вынесено для повышения производительности
+	for k,v in pairs(anom_list) do
+		if v and loc == v.location then -- если аномалия на текущей локации
+			delta:set(v.pos):sub(posn)          -- радиус-вектор от непися к аномалии
+			local delta_len = delta:magnitude() -- его длина
+			dist = delta_len - v.radius   -- расстояние от непися до радиуса действия аномалии
+			if dist < mindist then -- сначала проверяем расстояние, чтобы не делать лишних вычислений
+				-- сейчас вычисляем cos угла между направлением непися и направлением от него к аномалии
+				-- dir - единичный вектор, надо нормировать только по длине delta_len
+				local scalarmul = delta:dotproduct(dir)/delta_len
+				-- положительное значение scalarmul означает, что непись развёрнут мордой к аномалии
+				-- это не означает, что он перемещается по направлению к ней!!!
+				-- он может к примеру пятиться или стрейфить
+				if scalarmul > -0.4 then
+					mindist = dist
+					anomid = k
+				end
+			end
+		end
+	end
+  
+	if anomid then
+		local anom_desc = anom_list[anomid]
+		return true, anomid, anom_desc.pos, anom_desc.clsid, mindist, anom_desc.radius, anom_desc.section
+	else
+		return false
+	end
+end
+
+-- Функция предназначена для определения ближайшей к точке аномалии независимо от вектора на неё
+function get_nearest_anomaly_by_point(position)
+	if not anom_list then return end
+
+	local loc = gvid_to_lname[db.actor:game_vertex_id()]
+	local anomid = nil
+	local mindist = 20
+	local dist = 0
+	local lastdist = 100
+
+	for k,v in pairs(anom_list) do
+		if v and loc == v.location then -- если аномалия на текущей локации
+			dist = 0
+			dist = v.pos:distance_to(position)
+			dist = dist - v.radius 
+			if dist < mindist then
+				mindist = dist -- минимальное расстояние до аномалии
+				anomid = k
+				lastdist = dist
+			end
+		end
+	end
+	if anomid then
+		local anom_desc = anom_list[anomid]
+		return true, anomid, anom_desc.pos, anom_desc.clsid, lastdist, anom_desc.radius, anom_desc.section
+	else
+		return false
+	end
+end
+
+-- Функция предназначена для определения всех ближайших к точке аномалий независимо от вектора, на выходе таблица
+function get_all_nearest_anomalies_by_point(position)
+	return get_all_nearest_anomalies_by_point_in_radius(position, 20)
+end
+
+function get_all_nearest_anomalies_by_point_in_radius(position, rads)
+	if not anom_list then return {} end
+	
+	-- print_table_inlog_v2(anom_list, "LIST>> ")
+
+	local loc = gvid_to_lname[db.actor:game_vertex_id()]
+	local mindist = rads
+	
+	local anom_out = {}
+
+	for k,v in pairs(anom_list) do
+		if v and loc == v.location then -- если аномалия на текущей локации
+			local dist = v.pos:distance_to(position)
+			local dist = dist - v.radius
+			if dist < mindist then
+				local anomid = k
+				local anom_desc = v
+				anom_out[anomid] = { 
+					pos = anom_desc.pos, 
+					clsid = anom_desc.clsid, 
+					dist = dist, -- минимальное безопасное расстояние до аномалии 
+					radius = anom_desc.radius, 
+					sect = anom_desc.section 
+				}
+			end
+		end
+	end
+	
+	-- print_table_inlog_v2(anom_out, "OUT_LIST>> ")
+	
+	if anom_out ~= {} then
+		return anom_out
+	else
+		return {}
+	end
+end
+
+function chek_exclusion_position(p_vector, lname, psy)
+	return 
+		bad_position(p_vector, lname, psy) or 
+		bad_sector(p_vector, lname, psy) or
+		bad_zone(p_vector, lname, psy) or
+		lc_protect(p_vector, lname, psy) or
+		bad_circle(p_vector, lname, psy)
+end
+
+
+-- Проверяем, попадает ли аномалия рядом с занятой позицией
+function bad_position(p_vector, lname, psy)
+	local amendment = psy and 30 or 0
+
+	local min_dist = 10
+	for k,v in pairs(position_forbidden) do
+		if v then
+			if p_vector:distance_to(v) < (min_dist + amendment) then
+				return true
+			end
+		end
+	end
+	return false
+
+end
+
+bad_sector_table = {
+	-- Кордон --- fixed by KamikaZze
+	["l01_escape"] = {
+		x1 = {  -89, -107, -160, 145,  10, -65, 136,  35, 373, -146,  83, -126, 145 },
+		x2 = { -286, -150, -180,  90,  -5, -70, 125,  20, 346, -164,  29, -176, 117 },
+		y1 = { -182, -400, -360, -50, -76, 115, 305, 670, -49, -341, 134, -360, 290 },
+		y2 = { -100, -350, -344,  12, -55, 200, 325, 690, -15, -235, 182, -320, 335 },
+	},
+	-- Свалка --- fixed by KamikaZze
+	["l02_garbage"] = {
+		x1 = {   38,  -41,  68,   38, -230, 306,  -36,  125,  120,  -182 },
+		x2 = {   25, -146,  15,   32, -306, 291,  -92,   51,   35,  -272 },
+		y1 = { -271,   -9, 199, -323,  -32, 132, -250, -165,  140,  -177 },
+		y2 = { -258,   29, 262, -289,  -13, 154, -195, -111,  185,  -133 },
+	},
+	-- Темная долина --- fixed by KamikaZze
+	["l04_darkvalley"] = {
+		x1 = { -131, -100,  -36,  191, 122,  51,  51, -29, -26, 20,   73,   71 },
+		x2 = { -217, -155,  -53,  96,   82, -12, -33, -73, -32,  8,   35,   40 },
+		y1 = { -211, -532, -547, -301, -20, -91,  25, -23, -22,  5, -249, -225 },
+		y2 = { -175, -455, -536, -200,   8, -16,  50, -18,  25, 17, -208, -179 },
+	},
+	-- Агропром --- fixed by KamikaZze
+	["l03_agroprom"] = {
+		x1 = {   67, -188,  -89, 291, 255, -158 },
+		x2 = { -100, -209, -211, 265, 220, -170 },
+		y1 = {  -36,   78, -241,   0, -16,   90 },
+		y2 = {   58,  102, -117,   5,   7,   98 },
+	},
+	-- Дикая территория --- fixed by KamikaZze
+	["l06_rostok"] = {
+		x1 = {  37,  -58, -226, -235, -218, -113, -215, -242 },
+		x2 = {   9, -103, -235, -285, -242, -213, -297, -266 },
+		y1 = { 117,  113,  135,   78,   29, -123,  119,    2 },
+		y2 = { 156,  151,  165,  112,   64,  -49,  172,   24 },
+	},
+	-- Янтарь
+	["l08_yantar"] = {
+		x1 = {  39, 116 },
+		x2 = {  30,  55 },
+		y1 = { -55, -58 },
+		y2 = { -47, -34 },
+	},
+	-- Армейские склады --- fixed by KamikaZze
+	["l07_military"] = {
+		x1 = { -305, -317, -198, -259, -324, -160,  -83, 104, 113, -203, -117,   75, -14, 77,  -2, -186,  92 },
+		x2 = { -322, -347, -233, -277, -386, -195, -105,  85,  87, -247, -146, -141, -60,  0, -10, -202,  12 },
+		y1 = {   55,   37,  185,  234,  371,  350,  207, 300, 160,   31,    7,  -62, -34, 10,   0,   35, 335 },
+		y2 = {   67,   50,  211,  249,  411,  391,  235, 316, 184,   72,   37,  122, -10, 23, 109,   46, 403 },
+	},
+	-- Радар --- fixed by KamikaZze
+	["l10_radar"] = {
+		x1 = { 149, 390, 664, 404, 314 },
+		x2 = {  75, 377, 609, 355, 297 },
+		y1 = { -35, 141, 167, -11, -30 },
+		y2 = { -20, 162, 200,  40, -15 },
+	},
+	-- Припять  --- fixed by KamikaZze
+	["l11_pripyat"] = {
+		x1 = {   31, 118, 115,  36,  18,   33 },
+		x2 = {   11,  58,  96,  27, -17,  -15 },
+		y1 = { -296,  -2, 110, 280, 191, -307 },
+		y2 = { -266,  33, 159, 301, 210,  -60 },
+	},
+	-- Лощина
+	["k01_darkscape_ogse"] = {
+		x1 = {   70,   96, 468, 421 },
+		x2 = { -150, -214, 328, 392 },
+		y1 = { -560, -427, 279,-311 },
+		y2 = { -482, -183, 294,-281 },
+	},
+	-- МГ
+	["l09_deadcity_ogse"] = {
+		x1 = { -100,  -6 },
+		x2 = { -194, -18 },
+		y1 = { -290, 408 },
+		y2 = { -257, 433 },
+	},
+}
+-- Проверяем, попадает ли аномалия в "bad-сектор"
+-- TODO: Оптимизировать этот ужасть
+function bad_sector(p_vector, l_name, psy)
+	local lname = (l_name ~=nil and l_name or level.name())
+	local amendment = psy and 30 or 0
+
+	local k
+	local bad_list = bad_sector_table[lname] --формируется по принципу x1>x2, y2>y1
+
+	if type(bad_list) == "table" then
+	if bad_list.x1 and bad_list.x2 and bad_list.y1 and bad_list.y2 then
+		for k,v in pairs(bad_list.x1) do
+			if (p_vector.x >= (bad_list.x2[k]-amendment) and (p_vector.x <= bad_list.x1[k]+amendment)) and (p_vector.z >= (bad_list.y1[k]-amendment) and p_vector.z <= (bad_list.y2[k]+amendment)) then
+				return true
+			end
+		end
+	end
+	end
+
+	return false
+
+end
+
+
+-- Проверяем, попадает ли аномалия в "bad-зону"
+function bad_zone(p_vector, l_name, psy)
+	local lname = (l_name ~=nil and l_name or level.name())
+	local amendment = psy and 30 or 0
+
+	local function inside_zone(obj_position, zone)
+		return obj_position ~= nil and zone ~= nil and zone:inside(obj_position)
+	end
+	
+	for k,v in pairs(ogsm_respawn.restrictor_list) do
+		local obj = level.object_by_id(v.id)
+		if obj and inside_zone(p_vector, obj) then
+			return true
+		end
+	end
+	
+	--[[local hideouts = ogse_hideouts.hideouts_registry[lname]
+		
+	if hideouts and table.getn(hideouts) > 0 then
+		for k, v in pairs(hideouts) do
+			if v and v.name then
+				if (p_vector.x >= (v.x1-amendment) and p_vector.x <= (v.x2+amendment)) 
+				and (p_vector.z >= (v.y1-amendment) and p_vector.z <= (v.y2+amendment)) 
+				and (p_vector.y >= (v.z1-amendment)) and (p_vector.y <= (v.z2+amendment)) then
+					return true
+				end
+			end
+		end		
+	end	]]
+
+	return false
+
+end
+
+local vector_o = vector()
+bad_circle_table = {	
+	["l01_escape"] = 	{
+				{{ 313.16,   3.70, 116.90}, 15},	-- лагерь "в поле"
+				{{-156.70, -29.60,-369.30},200},	-- армейский кордон
+				{{  20.72,  15.95, 668.35}, 45},		-- заброшенный кордон
+				{{  137.88,0.03,336.76}, 10},		-- Диггер
+				{{  -28.8600006103516, -18, -174.960006713867}, 10}		-- Тёмная зона 1
+			},
+
+	-- Свалка ---
+	["l02_garbage"] = {
+				{{ -16.76,   0.54, 284.90}, 10},	-- точка перехода
+				{{-282.50,   3.29, -24.80}, 10},	-- точка перехода
+				{{-225.36,  -8.24,-139.30}, 35},	-- лагерь за кладбищем техники
+				{{  15.16,   0.40, -14.70}, 15},	-- автобусная остановка напротив ангара
+				{{  31.69,   0.48,-263.05}, 25},	-- сценка с Юриком
+				{{  36.45,   0.48,-305.70}, 10},	-- точка перехода
+				{{-183.00,   0.00,-160.00}, 20},	-- старт квестовых бандитов за кладбищем техники
+				{{-100.00,   0.00,-204.00}, 10},	-- наблюдатель с биноклем, пасущий бандитов
+				{{ -82.00,   0.00,-208.00}, 40},	-- Бес, поле боя с бандитами
+				{{ 261.20,  -9.10,-153.00}, 20},		-- квестовые наёмники
+				{{ 211.729995727539, -4.40000009536743, -11.8199996948242}, 10}		-- Тёмная зона 2
+			},
+
+	-- Агропром ---
+	["l03_agroprom"] = {
+				{{  76.33,  -0.05,  33.20}, 20}, 	-- место боя нейтралов с солдатнёй
+				{{ 173.50,   0.30,   6.70}, 10}		-- точка возврата после облёта камеры
+			},
+
+	-- Темная долина ---
+	["l04_darkvalley"] = {
+				{{  -9.36,   6.80,  98.10}, 10},	-- точка перехода
+				{{-217.17,   2.00,-183.55}, 10},		-- точка перехода
+				{{156.529998779297, 6.17000007629395, -18.5100002288818}, 10}		-- Тёмная зона 3
+			},
+
+	-- Бар ---
+	["l05_bar"] = {
+				{{ 389.00,  11.23,-419.00}, 10},	-- точка перехода
+				{{ -30.30,  -6.45, 380.60}, 10},	-- точка перехода
+				{{  48.00,  -0.20, 142.00}, 20},	-- точка перехода
+				{{ 160.00,   0.00, 100.00},150},		-- территория
+				{{  70.56,-0.29,251.31}, 20}	,	-- тело Одноглазого
+				{{  34.8699989318848, 0, 188.5}, 20}		-- врачи и больные
+			},
+
+	-- Дикая территория ---
+	["l06_rostok"] = 	{
+				{{-162.27, -11.08,-345.90}, 10},	-- точка перехода
+				{{  34.96,  -0.57, 139.10}, 10},	-- точка перехода
+				{{-280.60,   0.00,  97.70}, 10},	-- точка перехода
+				{{ -27.35,   0.00, 141.50}, 30},	-- пост долговцев на ДТ
+				{{-242.20,   4.00,  50.20}, 30},	-- стройка наёмников
+	--			{vector{}:set{-106.80,   1.40, 135.50}, 20},	-- бульдозер
+				{{-236.37,   0.00,  -9.50}, 10},		-- дозорный одиночка {после X-10}
+				{{-223.630004882813, 0, 60.189998626709}, 10}		-- Тёмная зона 4
+			},
+
+	-- Армейские склады ---
+	["l07_military"] = 	{
+				{{  99.65,  -0.30, 304.30}, 35},	-- лагерь у Барьера
+				{{-199.60, -12.90,  46.30}, 30},		-- хутор
+				{{-292.459991455078, -22.7099990844727, 239.850006103516}, 10}		-- Тёмная зона 6
+			},
+
+	-- Янтарь ---
+	["l08_yantar"] = {
+				{{ 106.30,  -8.80,-213.20}, 10},	-- вход в трубу
+				{{ 109.70,  -8.80,-207.70}, 10},	-- труба
+				{{ 113.50,  -8.80,-201.70}, 10},	-- труба
+				{{ 116.80,  -8.80,-195.70}, 10},	-- труба
+				{{ 125.00,  -8.80,-181.00}, 10},	-- труба
+				{{ 127.00,  -8.80,-168.70}, 10},	-- труба
+				{{ 128.00,  -8.80,-148.50}, 10},	-- труба
+				{{ 129.50,  -8.80,-128.00}, 10},	-- труба
+				{{ 141.50,  -8.80,-122.70}, 10},	-- выход из трубы
+				{{ 255.40,   6.70,-281.00}, 10},	-- точка перехода
+				{{ -66.65,  -0.50,-353.40}, 30},	-- точка перехода
+				{{ 161.65,  -7.70, -96.70}, 50},	-- лагерь у автобуса
+				{{  31.55, -11.70,-272.40}, 70},	-- лагерь экологов
+				{{  -0.70,   0.00,-132.70}, 30},	-- доктор Томпсон
+				{{ -14.00,   0.35, -40.50}, 30},	-- свободовец в закутке
+				{{ -25.70,   0.80, -10.30}, 50},		-- тусовка контролёра, точка перехода
+				{{74.9000015258789, 1.02999997138977, -129.729995727539}, 10},		-- Тёмная зона 5
+				{{63.88,2.96,-157.91}, 40}		-- Лагерь у тёмной зоны
+			},
+				
+	-- Радар ---
+	["l10_radar"] = {
+				{{ 266.80, -40.00,  64.50},  5},	-- точка на подъёме к антенному комплексу
+				{{ 251.20, -35.85,  69.50},  5},	-- точка на подъёме к антенному комплексу
+				{{ 238.30, -28.45,  85.60},  5},	-- точка на подъёме к антенному комплексу
+				{{ 197.80, -13.00,  84.85}, 15},	-- пост на подъёме к антенному комплексу
+				{{ 140.55,  -4.35,  34.40}, 15},	-- пост на подъёме к антенному комплексу
+				{{ 279.00, -42.40,  57.70}, 15},	-- костёр на подъёме к антенному комплексу
+				{{ 187.40, -12.05,  81.50}, 15},	-- костёр на подъёме к антенному комплексу
+				{{ 107.55,   0.35,  28.10}, 20},	-- костёр после подъёма к антенному комплексу
+				{{ 101.10,   0.65, -46.80}, 15},	-- дерево на заборе антенного комплекса
+				{{   8.05,  -0.30, -71.50}, 20}		-- вход на территорию антенного комплекса
+			},
+				
+	-- Припять ---
+	["l11_pripyat"] = 	{
+				{{-106.769996643066, -2.39000010490417, -64.3399963378906}, 10}		-- Тёмная зона 7
+			},
+
+	-- Лощина ---
+	["k01_darkscape_ogse"] = {
+			{{ 199.259994506836, -0.300000011920929, -187.289993286133},  35},	-- лесопилка, сторона бандитов
+			{{ 263.660003662109, -0.519999980926514, -187.699996948242},  35},	-- лесопилка, сторона искателей
+			{{ 34.439998626709, -12.0100002288818, -57.6300010681152},  30},	-- бункер
+			{{ 428.470001220703, -1.6599999666214, -359.100006103516},  30},	-- заправка
+			{{ -117.269996643066, -2.46000003814697, -488.799987792969},  50},	-- сарай наемников
+			{{ 61.2999992370605, -1.69000005722046, -541.070007324219},  30},	-- точка спавна БТР-а
+			{{ 95.72,26.85,-426.60},  20},	-- точка спавна Чёрного сталкера
+			{{ -175.699996948242, 0.340000003576279, 555.789978027344},  30},	-- домик банды Кульгавого
+			{{ -80.0699996948242, 0.189999997615814, -262.029998779297},  30},	-- домик Лесника
+			{{ -190.679992675781,0.730000019073486,-158.070007324219},  30},	-- лагерь бандитов под скалой
+			{{ -218.220001220703, 3.21000003814697, -335.089996337891},  30}	-- Смерть-зона
+		},
+
+	-- Болото ---
+	["l22_marsh"] = {
+				{{ -6.22,3.26,12.50},  30},	-- Дом Доктора
+				{{ 15.33,0.49,-68.70},  20},	-- место спавна уникального кровососа
+				{{ 135.71,0.53,57.99},  20},	-- место спавна тузика
+				{{ 33.15, 3.07,  -231.65},  30}	-- Хуторок
+			},
+	["l13_generators_ogse"] = {
+				{{ 87.977737426758,26.43243598938,-68.925605773926},  30},	-- Место спавна Долга
+				{{ -51.678867340088,32.093864440918,-520.55627441406},  30},	-- Место спавна Свободы
+				{{ 170.88716125488,30.761789321899,-485.00573730469},  50},	-- База О-Сознания
+			},			
+}
+-- TODO: Оптимизировать этот ужасть
+function bad_circle(p_vector, l_name, psy)
+	local lname = (l_name ~=nil and l_name or level.name())
+	local amendment = psy and 30 or 0
+
+	local bad_circle_table = bad_circle_table[lname]
+	
+	if type(bad_circle_table) == "table" then
+	for k, v in pairs(bad_circle_table) do
+		if v then
+		local vector_p = vector_o:set(unpack(v[1]))
+			if p_vector:distance_to(vector_p) <= (v[2]+amendment) then
+				return true
+			end
+		end
+	end end
+	return false
+end
+
+function lc_protect(p_vector, l_name, psy)
+	local lname = (l_name ~=nil and l_name or level.name())
+	local amendment = psy and 30 or 0
+
+	local bad_list = {}
+	if lc[lname] ~= nil then
+		bad_list = lc[lname]
+	end
+
+	for k, v in pairs(bad_list) do
+		if v then
+			if p_vector:distance_to(v) <= (10+amendment) then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+
+-- Ищем точки входа на локации
+function lc_collect(lname)
+	lc = {}
+	for a = 1, 65535 do
+		local sobj = alife():object(a)
+		if sobj then
+			local obj_sect = sobj:section_name()
+			if string.find(obj_sect, "level_changer") then
+-- log1("Обрабатывается переход.")
+				local sobj_id = sobj.id
+				local lc_params = m_net_utils.get_lc_data(sobj)
+				local lc_dest_gvid = lc_params.dest_game_vertex_id
+				local dest_lname = alife():level_name(game_graph():vertex(lc_dest_gvid):level_id())
+-- log1("Локация назначения: " .. dest_lname)
+				if dest_lname == lname then
+					if lc[lname] == nil then
+						lc[lname] = {}
+					end
+					lc[lname][sobj_id] = lc_params.dest_position
+-- log1("На текущей локации найден вход.")
+				end
+			end
+		end
+	end
+end
+
+
+-- Проверяем исключения локаций
+function chek_exclusion_location(lname)
+	if not lname then
+		lname = level.name()
+	end
+
+	if (lname == "l03_agroprom" and not (has_alife_info("agr_meet_krot_band_done"))) or	
+--		(lname == "k01_darkscape_ogse" and not (has_alife_info("dar_dez_btr_spawn_desant"))) or	
+		lname == "l03u_agr_underground" or
+		lname == "l04u_labx18" or
+	--	lname == "l05_bar" or
+		(lname == "l04_darkvalley" and not (has_alife_info("val_escort_captive_dead") or has_alife_info("val_escort_nap1_dead") or has_alife_info("val_escort_scene_end"))) or
+		(lname == "l06_rostok" and not has_alife_info("bar_rescue_research_done") and not has_alife_info("bar_rescue_research_fail")) or
+		(lname == "l08_yantar" and not has_alife_info("yan_find_scientist_done") and not has_alife_info("yan_scientist_die") and not has_alife_info("yan_scientist_return_to_bunker")) or
+		lname == "l08u_brainlab" or
+		lname == "l10u_bunker" or
+		lname == "l12_stancia" or 
+		lname == "l12u_sarcofag" or
+		lname == "l12u_control_monolith" or
+		lname == "l23_x9" or
+		lname == "l12_stancia_2" then
+
+		return true
+	end
+	return false
+end
+
+
+-- Проверяем исключения обрабатываемых аномалий
+function chek_exclusion_anomaly(id)
+	local sobj = alife():object(id)
+	if not sobj then return false end
+	local name_anom = sobj:name()
+	local sect = sobj:section_name()
+	
+	if excluded_anoms[name_anom] then return false end
+	if excluded_anoms[sect] then return false end
+	
+	if string.find(name_anom,"^noartf_") then return true end
+	
+	for k, v in pairs(excluded_anoms) do
+		if string.find(name_anom,k) or string.find(sect,k) then return false end
+	end
+	
+	return true
+end
+
+-- Проверяем рукотворность обрабатываемых аномалий
+function chek_handmade_anomaly(id)
+	local sobj = alife():object(id)
+	if not sobj then return false end
+	local name_anom = sobj:name()
+	
+	if string.find(name_anom,"handmade_") then return true end
+
+	return false
+end
+
+
+function get_lists()
+	local sim = alife()
+
+	list_anom_id = {}
+	list_mob_id = {}
+	list_stalk_id = {}
+
+	for i = 0, 65534 do
+		local sobj = sim:object(i)
+		if sobj then
+			if isAnomaly(sobj) then
+				get_anom(sobj)
+			elseif IsStalker(sobj) then
+				get_stalker(sobj)
+			elseif IsMonster(sobj) then
+				get_mob(sobj)
+			elseif isLc(sobj) then
+				get_lc(sobj)
+			end
+		end
+	end
+end
+
+
+local sysconfig = system_ini()
+
+local wait_for_actor = {}
+
+
+-- Учитываем аномалии на локациях
+function get_anom(sobj, lname)
+
+	if list_anom_id == nil then
+		list_anom_id = {}
+	end
+
+	local sobj_id = sobj.id
+	local sect = sobj:section_name()
+	
+	if not lname then
+		if isRegisteredLevel(sobj.m_game_vertex_id) then
+			lname = alife():level_name(game_graph():vertex(sobj.m_game_vertex_id):level_id())
+		else
+			lname = game_graph():vertex(sobj.m_game_vertex_id):level_id()
+			log1("!!ERROR! Found anomaly with unknown level "..lname.."! OBJ sect:["..sect.."] id:["..sobj_id.."]")
+			list_del_anom_id[sobj.id] = sobj.id
+			soft_restr_reset()
+			alife():release(sobj , true)	
+			emergency_restr_reset()
+			return
+		end
+	end
+
+	if list_anom_id[lname] == nil then
+		-- log1("OGSE_A_3 Создаём пустую таблицу: для локации "..tostring(lname))
+		list_anom_id[lname] = {}
+	end
+
+	list_anom_id[lname][sobj_id] = sobj_id
+	-- log1("OGSE_A_3 Получен элемент списка аномалий с идентификатором: "..tostring(list_anom_id[lname][sobj_id]).." для локации "..tostring(lname))
+
+	local status = get_anomaly_mode(sobj_id)
+	
+	if not anom_list[sobj_id] and not not_anomal_zones[sect] then
+	
+		local rads_mul = 1
+		local rads = 1
+		
+		if sysconfig:section_exist(sect) then
+			rads_mul = sysconfig:r_float(sect, "effective_radius")
+		end
+		
+		local packet = m_net_utils.get_anomaly_data(sobj)
+		
+		rads = tonumber(packet.radius)
+		local rads_2 = get_radius_for_section(sect) 
+		
+		if not rads or rads == 0 then
+			rads = rads_2
+		end
+		
+		--log1("!!DEBUG_ANOM "..sect.." rad "..tostring(rads))
+		
+		if not string.find(sect, "burning_fuzz") then 
+			rads = rads * rads_mul
+		end
+		
+		rads = rads + 1
+		
+		local posit = sobj.position
+		local lvid = sobj.m_level_vertex_id
+		
+		--log1("!!DEBUG_ANOM "..sect.." lvid "..tostring(lvid))
+		
+		local actor_vid = game_graph():vertex(alife():actor().m_game_vertex_id):level_id()
+		local anom_vid 	= game_graph():vertex(sobj.m_game_vertex_id):level_id()	
+
+		if actor_vid == anom_vid and string.find(sect, "burning_fuzz") then
+			-- если на одной локации, заносим координаты реальных вертексов
+			posit = level.vertex_position(lvid)
+		end
+		
+		if status ~= "anom_off" then 
+			anom_list[sobj_id] = {pos = posit, clsid = sobj:clsid(), radius = rads, section = sect, location = lname}
+			-- log1("OGSE_A_3 -->> ANOM "..sobj_id.." TYPE "..sect.." RAD "..tostring(rads))
+		else	
+			-- log1("OGSE_A_3 !!>> ANOM_STATUS "..sobj_id.." TYPE "..sect.." STAT "..tostring(status))
+		end
+	
+	end
+
+	local obj = level.object_by_id(sobj_id)
+	if obj then
+		if status == "anom_off" then
+			-- log1("OGSE_A_3 !!DISABLE "..sobj_id)
+			obj:disable_anomaly()
+		end
+	elseif status == "anom_off" then
+		wait_for_actor[sobj_id] = true
+		-- log1("OGSE_A_3 --CANNOT_DISABLE "..sobj_id)
+	end
+
+end
+
+-- Учитываем мутантов
+function get_mob(sobj)
+
+	if list_mob_id == nil then
+		list_mob_id = {}
+	end
+	local sobj_id = sobj.id
+	list_mob_id[sobj_id] = sobj_id
+	
+	local lname = nil
+	
+	if not lname then
+		if isRegisteredLevel(sobj.m_game_vertex_id) then
+			lname = alife():level_name(game_graph():vertex(sobj.m_game_vertex_id):level_id())
+		else
+			lname = game_graph():vertex(sobj.m_game_vertex_id):level_id()
+			abort("!!ERROR! Found mob with unknown level "..lname.."! OBJ name:["..sobj:name().."] id:["..sobj_id.."]")
+		end
+	end	
+	if lname == level.name() then
+		local obj = level.object_by_id(sobj_id)
+		if obj then
+			local obj_lvid = obj:level_vertex_id()
+			if obj_lvid then
+				lvids_forbidden[obj_lvid] = true
+			end
+		end
+	end
+
+end
+
+
+-- Учитываем сталкеров
+function get_stalker(sobj)
+
+	if list_stalk_id == nil then
+		list_stalk_id = {}
+	end
+	local sobj_id = sobj.id
+	list_stalk_id[sobj_id] = sobj_id
+	
+	local lname = nil
+	
+	if not lname then
+		if isRegisteredLevel(sobj.m_game_vertex_id) then
+			lname = alife():level_name(game_graph():vertex(sobj.m_game_vertex_id):level_id())
+		else
+			lname = game_graph():vertex(sobj.m_game_vertex_id):level_id()
+			abort("!!ERROR! Found stalker with unknown level "..lname.."! OBJ name:["..sobj:name().."] id:["..sobj_id.."]")
+		end
+	end
+	if lname == level.name() then
+		local obj = level.object_by_id(sobj_id)
+		if obj then
+			local obj_lvid = obj:level_vertex_id()
+			if obj_lvid then
+				lvids_forbidden[obj_lvid] = true
+			end
+		end
+	end
+
+end
+
+
+-- Учитываем точки входа на локациях
+function get_lc(sobj)
+
+	if lc == nil then
+		lc = {}
+	end
+
+-- log1("Обрабатывается переход.")
+	local sobj_id = sobj.id
+	local lc_params = m_net_utils.get_lc_data(sobj)
+	local lc_dest_gvid = lc_params.dest_game_vertex_id
+	local dest_lname = nil
+	
+	if not dest_lname then
+		if isRegisteredLevel(lc_dest_gvid) then
+			dest_lname = alife():level_name(game_graph():vertex(lc_dest_gvid):level_id())
+		else
+			abort("!!ERROR! Found levelchanger with unknown exit level "..lc_dest_gvid.."! OBJ name:["..sobj:name().."] id:["..sobj_id.."]")
+			return
+		end
+	end	
+-- log1("Локация назначения: " .. dest_lname)
+	if lc[dest_lname] == nil then
+		lc[dest_lname] = {}
+	end
+	lc[dest_lname][sobj_id] = lc_params.dest_position
+-- log1("На локации " .. dest_lname .. " найден вход.")
+
+	-- а теперь добавляем в исключения еще и саму точку перехода.
+	local curr_lname = nil
+	
+	if not curr_lname then
+		if isRegisteredLevel(sobj.m_game_vertex_id) then
+			curr_lname = alife():level_name(game_graph():vertex(sobj.m_game_vertex_id):level_id())
+		else
+			abort("!!ERROR! Found levelchanger with unknown start level "..sobj.m_game_vertex_id.."! OBJ name:["..sobj:name().."] id:["..sobj_id.."]")
+			return
+		end
+	end	
+	if lc[curr_lname] == nil then
+		lc[curr_lname] = {}
+	end
+	lc[curr_lname][sobj_id] = sobj.position
+end
+
+
+-- Удаляем аномалию из списка аномалий на уровне
+function delete_anom(levelname, obj_id)
+	if list_anom_id and list_anom_id[levelname] then
+-- log1("Удаляется элемент списка аномалий с идентификатором: "..tostring(obj_id))
+		list_anom_id[levelname][obj_id] = nil
+	end
+	
+	if list_del_anom_id == nil then
+		list_del_anom_id = {}
+	end
+-- log1("Добавляется элемент списка удаляемых аномалий с идентификатором: "..tostring(obj_id))
+	list_del_anom_id[obj_id] = obj_id
+	anom_to_del_exist = true
+end
+
+
+-- Отключаем все текущие динамические аномалии на локации и вызываем новую порцию
+function add_anom(levelname, hot_spawn)
+	if not levelname then
+		levelname = level.name()
+	end
+
+	if not hot_spawn then
+		hot_spawn = false
+	end
+
+	local cur_levelname = level.name()
+
+	-- log1("OGSE_A_2 Старт респавна аномалий на локации " .. levelname.."  "..cur_levelname)
+	if chek_exclusion_location(levelname) then
+	-- log1("OGSE_A_2 Опускаем флаг выброса для локации как для исключения.")
+	
+		if list_anom_id then
+			if list_anom_id[levelname] ~= nil then
+				local list_loc_anom_id = list_anom_id[levelname]
+				for k,v in pairs(list_loc_anom_id) do
+					if v then
+						local sobj = alife():object(v)
+						if sobj then
+							if chek_handmade_anomaly(v) then
+								local obj = level.object_by_id(v)
+								if obj then
+									obj:disable_anomaly()
+								end
+								set_anomaly_mode(v, "anom_off")
+								ogse_anomaly.remove_anomaly(v)
+							end
+						end
+					end
+				end
+			else	
+				
+			end
+		end	
+	
+		ogse.del_variable("an"..loc[levelname])
+		return
+	end
+
+	if list_anom_id then
+	-- log1("OGSE_A_2 1 Список аномалий существует.")
+		if list_anom_id[levelname] ~= nil then
+	-- log1("OGSE_A_2 1 Список аномалий для локации " .. levelname .. " существует.")
+			local list_loc_anom_id = list_anom_id[levelname]
+
+	-- log1("OGSE_A_2 Обрабатывем аномалии на локации.")
+			for k,v in pairs(list_loc_anom_id) do
+	-- log1("OGSE_A_2 Объект с индентификатором " .. v)
+				if v then
+					local sobj = alife():object(v)
+					if sobj then
+	-- log1("OGSE_A_2 Существует...")
+						if chek_exclusion_anomaly(v) then
+	-- log1("OGSE_A_2 Не в исключениях...")
+							local obj = level.object_by_id(v)
+							if obj then
+	-- log1("OGSE_A_2 Выключается аномалия: " .. tostring(obj:name()))
+								obj:disable_anomaly()
+							end
+							spawn_blow_art(v)
+	-- log1("OGSE_A_2 ~~Отмечается на удаление аномалия: " .. tostring(sobj:name()))
+							set_anomaly_mode(v, "anom_off")
+							ogse_anomaly.remove_anomaly(v)
+						--level.map_remove_object_spot(list_loc_anom_id[v], "green_location")
+						end
+					end
+				end
+			end
+		else	
+			
+		end
+	end
+
+	if levelname == cur_levelname then
+	-- log1("OGSE_A_2 Генерим новую порцию аномалий...")
+		generate_anoms(levelname, hot_spawn)
+	-- log1("OGSE_A_2 Приспускаем флаг выброса для локации. (1)")
+		ogse.del_variable("an"..loc[levelname])
+		ogse.save_variable("an"..loc[levelname], 1)
+	else
+	-- log1("OGSE_A_2 Приспускаем флаг выброса для локации без генерации новых аномалий. (1.5)")
+		ogse.del_variable("an"..loc[levelname])
+		ogse.save_variable("an"..loc[levelname], 1.5)
+	end
+
+end
+
+
+-- Создаёт набор аномалий на уровне
+function generate_anoms(lname, h_spawn)
+	local cnt, rnd, game_difficulty = 0,0,0
+	local v = level_anoms[lname]
+	if v then
+--		if h_spawn then
+--			lc_collect(lname)
+--		end
+		get_lists()
+		game_difficulty = level.get_game_difficulty() or 0
+		rnd = math.floor(spawn_anom_prob * math.random(v[1],v[2]) * (0.9+(game_difficulty+1)*0.1))
+		while cnt < rnd do
+			local sobj_anomaly = generate_anomaly(lname)
+			if sobj_anomaly then
+				get_anom(sobj_anomaly, lname)
+				cnt = cnt + 1
+			end
+		end
+		lvids_forbidden = {}
+		position_forbidden = {}
+	end
+end
+
+
+function generate_anomaly(lname)
+
+	local pos, new_lv, new_gv = anomaly_position_choice(lname, false)
+	if not pos then
+		return false
+	end
+	local section, shape = anomaly_section_choice(lname)
+
+	return spawn_rand_anom(section, pos, new_lv, new_gv, shape)
+end
+
+
+function spawn_rand_anom(name_new_anom, pos, lvid, gvid, shape)
+
+-- log1("Новая аномалия: "..tostring(name_new_anom))
+	local sobj = alife():create(name_new_anom, pos, lvid, gvid)
+	if sobj then
+-- log1("Обработаем её...")
+		local obj_id = sobj.id
+-- log1("ID = "..tostring(obj_id))
+		local tbl = m_net_utils.get_anomaly_data(sobj)
+		tbl.shapes = shape
+		m_net_utils.set_anomaly_data(tbl, sobj)
+		lvids_forbidden[lvid] = true
+		table.insert(position_forbidden, pos)
+		-- level.map_add_object_spot(sobj.id, "green_location", sobj:name())
+	end
+	return sobj
+end
+
+
+-- Обновляем менеджер аномалий при загрузке
+function anom_update()
+
+	if has_alife_info("blowout") --[[or has_alife_info("horror_time")]] then return end
+
+	local lname = level.name()
+	if chek_blow_flags() then
+		get_lists()
+		for k,v in pairs(loc) do
+	-- log1("Проверим, надо ли обновлять аномалии для локации " .. k)
+			local safety = false
+			local anom_chek = tonumber(ogse.load_variable("an"..loc[k], 0))
+			if anom_chek == 2 then
+	-- log1("Да. Обработаем имеющиеся аномалии.")
+				add_anom(k)
+			end
+
+			anom_chek = tonumber(ogse.load_variable("an"..loc[k], 0))
+			if anom_chek == 1.5 and k == lname then	-- хотя такое вряд ли возможно
+	-- log1("Да. Генерим новую порцию аномалий.")
+				generate_anoms(k)
+	-- log1("Приспускаем флаг выброса для локации. (1)")
+				ogse.del_variable("an"..loc[k])
+				ogse.save_variable("an"..loc[k], 1)
+			elseif anom_chek == 1.5 and k ~= lname then
+	-- log1("Да. Проверим отметки аномалий на удаление.")
+				lvl_anomaly_disable()
+				chek_for_del(k)
+	-- log1("Приспускаем флаг выброса для локации. (0.5)")
+				ogse.del_variable("an"..loc[k])
+				ogse.save_variable("an"..loc[k], 0.5)
+			elseif anom_chek == 0.5 and k == lname then
+	-- log1("Нет. Генерим новую порцию аномалий.")
+				generate_anoms(k)
+	-- log1("Опускаем флаг выброса для локации.")
+				ogse.del_variable("an"..loc[k])
+			elseif anom_chek == 1 and k ~= lname then	-- безопасно релизить аномалии можно только на другой локации
+	-- log1("Нет. Проверим отметки аномалий на удаление.")
+				lvl_anomaly_disable()
+				chek_for_del(k)
+	-- log1("Опускаем флаг выброса для локации.")
+				ogse.del_variable("an"..loc[k])
+			else
+	-- log1("Обновление не требуется или невозможно.")
+			end
+
+		end
+	end
+
+	if anom_to_del_exist then
+	-- log1("Зачистим из рестрикторов и удалим аномалии по списку удаляемых.")
+		remove_anom()
+	end
+
+	-- log1("Очистим рабочие списки.")
+
+	list_mob_id = {}
+	list_stalk_id = {}
+	lc = {}
+
+end
+
+
+function chek_for_del(levelname)
+
+	if list_anom_id then
+	-- log1("Список аномалий существует.")
+		if list_anom_id[levelname] ~= nil then
+	-- log1("Список аномалий для локации " .. levelname .. " существует.")
+			local list_loc_anom_id = list_anom_id[levelname]
+			for k,v in pairs(list_loc_anom_id) do
+				if v then
+	-- log1("Проверяется на наличие маркера удаления аномалия с идентификатором: "..tostring(v))
+					local sobj = alife():object(v)
+					if sobj then
+	-- log1("Она существует.")
+						local status = get_anomaly_mode(v)
+						if status == "anom_off" then
+	-- -- log1("~~Передаётся в список на удаление "..sobj:name())
+							delete_anom(levelname ,k)
+						else	
+	-- -- log1("??НЕ Передаётся в список на удаление "..sobj:name().."  "..tostring(status))	
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
+
+need_disable_anomaly = true
+
+-- Предохранительное отключение аномалий
+function lvl_anomaly_disable()
+	if need_disable_anomaly then
+-- log1("OGSE_A_1 Предохранительное отключение аномалий.")
+		local levelname = level.name()
+		if list_anom_id then
+-- log1("OGSE_A_1 Список аномалий существует. "..levelname)
+-- print_table_inlog_v2(list_anom_id, "LIST>> ")
+			if list_anom_id[levelname] ~= nil then
+-- log1("OGSE_A_1 Список аномалий для локации " .. levelname .. " существует.")
+				local list_loc_anom_id = list_anom_id[levelname]
+-- log1("OGSE_A_1 Обрабатывем зарегистрированные аномалии на локации.")
+				for k,v in pairs(list_loc_anom_id) do
+-- log1("OGSE_A_1 Аномалия с индентификатором " .. v)
+					if v then
+						local obj = level.object_by_id(v)
+						if obj then
+-- log1("OGSE_A_1 Существует.")
+							local status = get_anomaly_mode(v)
+							if status == "anom_off" then
+-- log1("OGSE_A_1 ~~Выключается аномалия: " .. tostring(obj:name()))
+								obj:disable_anomaly()
+							else	
+-- log1("OGSE_A_1 ??НЕ Передаётся в список на удаление "..obj:name().."  "..tostring(status))	
+							end
+						end
+					end
+				end
+			end
+		end
+		need_disable_anomaly = false
+	end
+	if wait_for_actor then
+		for k,v in pairs(wait_for_actor) do
+			local obj = level.object_by_id(k)
+			local obj_srv = alife():object(k)
+			if obj and obj_srv then
+				local sect = obj_srv:section_name()
+				if sect and (string.find(sect, "zone") or string.find(sect, "noartf")) then
+					obj:disable_anomaly()
+					wait_for_actor[k] = nil
+				else	
+					wait_for_actor[k] = nil
+				end
+				-- log1("OGSE_A_1 ~~Выключается аномалия!!!: " .. tostring(k))
+			elseif not obj_srv then	
+				wait_for_actor[k] = nil
+			end
+		end
+	end
+end
+
+
+-- Поднимаем флаги выброса для локаций
+function blow_flags()
+	for k,v in pairs(loc) do
+		ogse.del_variable("an"..loc[k])
+		ogse.save_variable("an"..loc[k], 2)
+-- log1("Подняли флаг выброса для локации: "..tostring(loc[k]))
+	end
+end
+
+
+-- Проверяем флаги выброса для локаций
+function chek_blow_flags()
+-- log1("Проверяем наличие флагов по локациям и возможность обновления аномалий.")
+	local blow_flag = false
+	local cur_lname = level.name()
+	for k,v in pairs(loc) do
+		local loc_flag = tonumber(ogse.load_variable("an"..loc[k], 0))
+		if loc_flag ~= 0 then
+-- log1("Локация " .. k .. " требует обновления аномалий. " .. loc_flag)
+			if chek_exclusion_location(k) then
+				ogse.del_variable("an"..loc[k])
+-- log1("Опускаем флаг выброса для локации как для исключения.")
+			else
+				if loc_flag == 2 or loc_flag == 1.5 or
+					(loc_flag == 0.5 and k == cur_lname) or
+					(loc_flag == 1 and k ~= cur_lname) then
+						blow_flag = true
+-- log1("На локации " .. k .. " возможно обновление аномалий.")
+				else
+-- log1("На локации " .. k .. " обновление аномалий невозможно.")
+				end
+			end
+		end
+	end
+	return blow_flag
+end
+
+
+-- Получаем статус аномалии
+function get_anomaly_mode(anom_id)
+	if not anom_id then return "" end
+	local sobj = alife():object(anom_id)
+	if sobj then
+		local tbl = m_net_utils.get_anomaly_data(sobj)
+		local cd = tbl.custom
+		cd = m_net_utils.parse_custom_data(cd)
+		if cd and cd.m_anom and cd.m_anom.status then
+			return cd.m_anom.status
+		end
+	end
+	return ""
+end
+
+-- Устанавливаем статус аномалии
+function set_anomaly_mode(anom_id, status)
+	local sobj = alife():object(anom_id)
+	if sobj then
+		local tbl = m_net_utils.get_anomaly_data(sobj)
+		tbl.custom = modify_anomaly_custom_data(tbl.custom,status)
+		m_net_utils.set_anomaly_data(tbl, sobj)
+	end
+end
+
+function modify_anomaly_custom_data(cd,status)
+	cd = m_net_utils.parse_custom_data(cd)
+	if not cd then cd = {} end
+	if not cd.m_anom then cd.m_anom = {} end
+	cd.m_anom.status = status
+	return m_net_utils.gen_custom_data(cd)
+end
+
+
+-- Чистим и релизим аномалии по спискам
+function remove_anom()
+	if list_del_anom_id then
+-- log1("Список удаляемых аномалий существует.")
+		restr_reset()
+		release_anom()
+-- log1("Очистим список удаляемых аномалий.")
+		list_del_anom_id = nil
+		anom_to_del_exist = false
+	end
+end
+
+
+
+function soft_restr_reset()
+	local sim = alife()
+	list_mob_id = {}
+	list_stalk_id = {}
+
+	for i = 0, 65534 do
+		local sobj = sim:object(i)
+		if sobj then
+			if IsStalker(sobj) then
+				get_stalker(sobj)
+			elseif IsMonster(sobj) then
+				get_mob(sobj)
+			end
+		end
+	end
+	restr_reset()
+end
+
+function emergency_restr_reset()
+	local sim = alife()
+	list_mob_id = {}
+	list_stalk_id = {}
+
+	for i = 0, 65534 do
+		local sobj = sim:object(i)
+		if sobj then
+			if IsStalker(sobj) then
+				get_stalker(sobj)
+			elseif IsMonster(sobj) then
+				get_mob(sobj)
+			end
+		end
+	end
+
+	mob_restr_reset_emerg()
+	stalker_restr_reset_emerg()
+end
+
+function mob_restr_reset_emerg()
+	for k,v in pairs(list_mob_id) do
+	-- log1("Зачищается моб с идентификатором: "..tostring(v))
+		if v then
+			local sobj = alife():object(v)
+			if sobj then
+	-- log1("Моб существует.")
+				local need_erasing = false
+	
+				local pk = xs_netpk.monster(sobj)
+				if pk:isOk() then
+					local data = pk:get()
+					-- print_table_inlog_v2(data.dynamic_out_restrictions, "!!MON_OUT ["..v.."]")
+					-- print_table_inlog_v2(data.dynamic_in_restrictions, "!!MON_IN ["..v.."]")
+					
+					for k, v in pairs(data.dynamic_out_restrictions) do
+						local check_obj = alife():object(v)
+						if not check_obj then
+							log1("Обнаружен удаленный рестриктор "..tostring(v))
+							need_erasing = true
+							data.dynamic_out_restrictions[k] = nil
+						end
+					end
+					for k, v in pairs(data.dynamic_in_restrictions) do
+						local check_obj = alife():object(v)
+						if not check_obj then
+							log1("Обнаружен удаленный рестриктор "..tostring(v))
+							need_erasing = true
+							data.dynamic_in_restrictions[k] = nil
+						end
+					end	
+
+					-- print_table_inlog_v2(data.dynamic_out_restrictions, "!!MON_OUT ["..v.."]")
+					-- print_table_inlog_v2(data.dynamic_in_restrictions, "!!MON_IN ["..v.."]")					
+					if need_erasing then
+						log1("Зачищены удаленные рестрикторы у моба "..tostring(v))
+						pk:set(data)
+					end
+				end	
+			end
+		end
+	end
+end
+
+function stalker_restr_reset_emerg()
+	for k,v in pairs(list_stalk_id) do
+	-- log1("Зачищается сталкер с идентификатором: "..tostring(v))
+		if v then
+			local sobj = alife():object(v)
+			if sobj then
+	-- log1("Сталкер существует.")
+				local need_erasing = false
+	
+				local pk = xs_netpk.stalker(sobj)
+				if pk:isOk() then
+					local data = pk:get()
+					data.start_dialog = dialog
+					-- print_table_inlog_v2(data.dynamic_out_restrictions, "!!STALK_OUT ["..v.."]")
+					-- print_table_inlog_v2(data.dynamic_in_restrictions, "!!STALK_IN ["..v.."]")
+					
+					for k, v in pairs(data.dynamic_out_restrictions) do
+						local check_obj = alife():object(v)
+						if not check_obj then
+							log1("Обнаружен удаленный рестриктор "..tostring(v))
+							need_erasing = true
+							data.dynamic_out_restrictions[k] = nil
+						end
+					end
+					for k, v in pairs(data.dynamic_in_restrictions) do
+						local check_obj = alife():object(v)
+						if not check_obj then
+							log1("Обнаружен удаленный рестриктор "..tostring(v))
+							need_erasing = true
+							data.dynamic_in_restrictions[k] = nil
+						end
+					end	
+
+					-- print_table_inlog_v2(data.dynamic_out_restrictions, "!!MON_OUT ["..v.."]")
+					-- print_table_inlog_v2(data.dynamic_in_restrictions, "!!MON_IN ["..v.."]")					
+					if need_erasing then
+						log1("Зачищены удаленные рестрикторы у сталкера "..tostring(v))
+						pk:set(data)
+					end
+				end
+			end
+		end
+	end
+end
+
+
+-- Сбрасываем рестрикторы мобов и сталкеров
+function restr_reset()
+	mob_restr_reset()
+	stalker_restr_reset()
+end
+
+function mob_restr_reset()
+	for k,v in pairs(list_mob_id) do
+-- log1("Зачищается моб с идентификатором: "..tostring(v))
+		if v then
+			local sobj = alife():object(v)
+			if sobj then
+-- log1("Моб существует.")
+				local tbl = m_net_utils.get_monster_data(sobj)
+				local current_restriction = tbl.crvu32u16u2
+
+				for r_num,r_id in pairs(current_restriction) do
+-- if r_id then log1("r_id = " .. r_id) end
+					if list_del_anom_id[r_id] ~= nil then
+log1("Зачищается аномалия с идентификатором: "..tostring(r_id))
+						alife():remove_in_restriction(sobj, r_id)
+						list_del_anom_id[r_id] = nil
+					end
+				end
+			end
+		end
+	end
+end
+
+function stalker_restr_reset()
+	for k,v in pairs(list_stalk_id) do
+-- log1("Зачищается сталкер с идентификатором: "..tostring(v))
+		if v then
+			local sobj = alife():object(v)
+			if sobj then
+-- log1("Сталкер существует.")
+				local tbl = m_net_utils.get_stalker_data(sobj)
+				local current_restriction = tbl.crvu32u16u2
+
+				for r_num,r_id in pairs(current_restriction) do
+-- if r_id then log1("r_id = " .. r_id) end
+					if list_del_anom_id[r_id] ~= nil then
+log1("Зачищается аномалия с идентификатором: "..tostring(r_id))
+						alife():remove_in_restriction(sobj, r_id)
+						list_del_anom_id[r_id] = nil
+					end
+				end
+			end
+		end
+	end
+end
+
+
+-- Релизим аномалии по списку удаляемых аномалий на уровне
+function release_anom()
+	for k,v in pairs(list_del_anom_id) do
+		if v then
+			local sobj = alife():object(v)
+			if sobj then
+-- log1("Релизится аномалия с идентификатором: "..tostring(v))
+				alife():release(sobj, true)
+				list_del_anom_id[k] = nil
+			end
+		end
+	end
+end
+
+-- вторая попытка образуметь скрипт, нормально определять аномалии..
+function isAnomaly(obj)
+if obj ~= nil and clsid_for_funct ~= nil then
+	return (clsid_for_funct[get_clsid(obj)] or false)
+end 
+end
+
+
+function isLc(obj)
+	return (obj:clsid() == clsid.level_changer)
+end
+
+
+-- Рожание артефактов в Выброс
+function spawn_blow_art(obj_id)
+
+	if obj_id == nil then return end
+	local an_obj = alife():object(obj_id)
+	if not an_obj then return end
+	local anom_sect = an_obj:section_name()
+	if string.find(anom_sect, "handmade_") then return end
+	local noart_chk = string.find(anom_sect, "noartf_", 1, true)
+	if noart_chk then
+		anom_sect = string.sub(anom_sect,(noart_chk + 7),string.len(anom_sect))
+		anom_sect = "zone_"..anom_sect
+--	log1("ARTF_D Dinamic anomaly found - restored its parent: "..tostring(anom_sect))
+	end		
+	local rand_chk = utils.cfg_get_number(system_ini(), anom_sect, "artefact_spawn_probability", an_obj, false, 0.1)
+--	log1("Проверим, будет ли пробовать рожать артефакт аномалия: "..tostring(anom_sect))
+	if math.random() <= rand_chk * spawn_blow_art_probe then
+--	log1("Вызов парсера секции...")
+		local art_section = ogse_death_artefact.parse_string_arts(anom_sect)
+--	log1("Секция определена...")
+		if art_section then
+--	log1("Выясним позицию аномалии: "..tostring(anom_sect))
+			local pos = an_obj.position
+			pos.y = pos.y + 1
+--	log1("Выясним вертексы аномалии: "..tostring(anom_sect))
+			local lv, gv = an_obj.m_level_vertex_id, an_obj.m_game_vertex_id
+			if isRegisteredLevel(an_obj.m_game_vertex_id) then
+				alife():create(tostring(art_section), pos, lv, gv)
+			end 
+--			ogse.quest_spawn(tostring(art_section), 1, pos, 1, lv, gv)
+--	log1("В Выброс заспавнен артефакт: "..tostring(art_section))
+		end
+	end
+
+end
+
+
+function anomaly_position_choice(lname, psy)
+
+	if not lname then 
+		lname = level.name()
+	end
+
+	if not level_vertexes[lname] or level_vertexes[lname][3] == 0 then return false end
+	local gvn,gvx,lvx = level_vertexes[lname][1], level_vertexes[lname][2], level_vertexes[lname][3]
+
+	local new_lv = math.random(1,lvx)
+	local pos = level.vertex_position(new_lv)
+
+	while check_lvids_forbidden(new_lv) or chek_exclusion_position(pos, lname, psy) do
+		new_lv = math.random(1,lvx)
+		pos = level.vertex_position(new_lv)
+	end
+	
+	local new_gv = 0
+	local min_dist = 100000
+	-- подбираем геймвертекс
+	for a = gvn, gvx do
+		local tmp = game_graph():vertex(a):level_point()
+		if tmp:distance_to(pos) < min_dist and isRegisteredLevel(a) then
+			min_dist = tmp:distance_to(pos)
+			new_gv = a
+		end
+	end
+
+	if new_gv > 0 and game_graph():valid_vertex_id(new_gv) and isRegisteredLevel(new_gv) then
+		log1("VERTEXES: LV "..new_lv.." GV "..new_gv)
+		return pos, new_lv, new_gv
+	else
+		return false
+	end
+
+end
+
+
+function check_lvids_forbidden(lvids)
+	return lvids~= nil and lvids_forbidden[lvids] == true
+end
+
+
+local anom_prefix = "noartf_"
+
+local anom_types = {
+l01_escape =   {mosquito_bald     = 0.3,
+				gravi_zone        = 0.25,
+				mincer            = 0.25,
+				witches_galantine = 0.1,
+				zharka_static     = 0.1
+				},
+l02_garbage =  {mosquito_bald     = 0.2,
+				gravi_zone        = 0.2,
+				mincer            = 0.2,
+				witches_galantine = 0.2,
+				zharka_static     = 0.15,
+				buzz              = 0.05
+				},
+l03_agroprom = {mosquito_bald     = 0.2,
+				gravi_zone        = 0.2,
+				mincer            = 0.2,
+				witches_galantine = 0.25,
+				zharka_static     = 0.1,
+				buzz              = 0.05
+				},
+l04_darkvalley = {mosquito_bald   = 0.2,
+				gravi_zone        = 0.2,
+				mincer            = 0.2,
+				witches_galantine = 0.2,
+				zharka_static     = 0.15,
+				buzz              = 0.05
+				},
+l05_bar =      {mosquito_bald     = 0.2,
+				gravi_zone        = 0.2,
+				mincer            = 0.3,
+				witches_galantine = 0.15,
+				zharka_static     = 0.15
+				},
+l06_rostok =   {mosquito_bald     = 0.1,
+				gravi_zone        = 0.1,
+				mincer            = 0.15,
+				witches_galantine = 0.25,
+				zharka_static     = 0.4
+				},
+l07_military = {mosquito_bald     = 0.1,
+				gravi_zone        = 0.2,
+				mincer            = 0.2,
+				witches_galantine = 0.3,
+				zharka_static     = 0.15,
+				buzz              = 0.05
+				},
+l08_yantar =   {mosquito_bald     = 0.05,
+				gravi_zone        = 0.15,
+				mincer            = 0.15,
+				witches_galantine = 0.25,
+				zharka_static     = 0.15,
+				buzz              = 0.25
+				},
+l10_radar =    {mosquito_bald     = 0.1,
+				gravi_zone        = 0.2,
+				mincer            = 0.2,
+				witches_galantine = 0.2,
+				zharka_static     = 0.2,
+				buzz              = 0.1
+				},
+l11_pripyat =  {mosquito_bald     = 0.1,
+				gravi_zone        = 0.2,
+				mincer            = 0.2,
+				witches_galantine = 0.2,
+				zharka_static     = 0.2,
+				buzz              = 0.1
+				},
+l12_stancia =  {mosquito_bald     = 0.17,
+				gravi_zone        = 0.17,
+				mincer            = 0.17,
+				witches_galantine = 0.17,
+				zharka_static     = 0.17,
+				buzz              = 0.15
+				},
+other =        {mosquito_bald     = 0.2,
+				gravi_zone        = 0.2,
+				mincer            = 0.2,
+				witches_galantine = 0.2,
+				zharka_static     = 0.2
+				}
+}
+
+local anom_power = {
+	l01_escape =     {{postfix = "_weak", val =   1}, {postfix = "_average", val = 0.3}, {postfix = "_strong", val = 0.01}},
+	l02_garbage =    {{postfix = "_weak", val =   1}, {postfix = "_average", val = 0.6}, {postfix = "_strong", val = 0.05}},
+	l03_agroprom =   {{postfix = "_weak", val = 0.8}, {postfix = "_average", val =   1}, {postfix = "_strong", val =  0.2}},
+	l04_darkvalley = {{postfix = "_weak", val = 0.7}, {postfix = "_average", val =   1}, {postfix = "_strong", val =  0.3}},
+	l05_bar =        {{postfix = "_weak", val =   1}, {postfix = "_average", val = 0.6}, {postfix = "_strong", val =  0.1}},
+	l06_rostok =     {{postfix = "_weak", val = 0.6}, {postfix = "_average", val =   1}, {postfix = "_strong", val =  0.3}},
+	l07_military =   {{postfix = "_weak", val = 0.3}, {postfix = "_average", val =   1}, {postfix = "_strong", val =  0.6}},
+	l08_yantar =     {{postfix = "_weak", val = 0.7}, {postfix = "_average", val =   1}, {postfix = "_strong", val =  0.3}},
+	l10_radar =      {{postfix = "_weak", val = 0.2}, {postfix = "_average", val = 0.6}, {postfix = "_strong", val =    1}},
+	l11_pripyat =    {{postfix = "_weak", val = 0.1}, {postfix = "_average", val = 0.5}, {postfix = "_strong", val =    1}},
+	l12_stancia =    {{postfix = "_weak", val = 0.1}, {postfix = "_average", val = 0.4}, {postfix = "_strong", val =    1}},
+	other =          {{postfix = "_weak", val = 0.6}, {postfix = "_average", val =   1}, {postfix = "_strong", val =  0.3}}
+}
+
+local anoms_sections = {
+	buzz              = {"buzz",              {shtype=0, radius=1.5, center={0,0,0}}},
+	gravi_zone        = {"gravi_zone",        {shtype=0, radius=3,   center={0,0,0}}},
+	mincer            = {"mincer",            {shtype=0, radius=4,   center={0,0,0}}},
+	mosquito_bald     = {"mosquito_bald",     {shtype=0, radius=3,   center={0,0,0}}},
+	witches_galantine = {"witches_galantine", {shtype=0, radius=4,   center={0,0,0}}},
+	zharka_static     = {"zharka_static",     {shtype=1, v1={1,0,0}, v2={0,5,0}, v3={0,0,1}, offset={0,0,0}}}
+}
+
+
+function anomaly_section_choice(levelname)
+
+	local anom_to_spawn = nil
+	local name_anom_to_spawn = nil
+	local postfix_anom_to_spawn = nil
+	local anom_table_name = {}
+	local anom_table_postfix = {}
+
+	if anom_types[levelname] then
+		anom_table_name = anom_types[levelname]
+	else
+		anom_table_name = anom_types.other
+	end
+
+	local type_choose = math.random()
+	local b1, b2 = 0.0, 0.0
+	for k,v in pairs(anom_table_name) do
+		b2 = b2 + v
+		if type_choose >= b1 and type_choose <= b2 then
+			name_anom_to_spawn = anoms_sections[k][1]
+			break
+		end
+		b1 = b2
+	end
+
+--	name_anom_to_spawn = anom_table_name[math.random(table.getn(anom_table_name))]
+
+	if anom_power[levelname] then
+		anom_table_postfix = anom_power[levelname]
+	else
+		anom_table_postfix = anom_power.other
+	end
+
+	local spawn_choose = math.random()
+-- log1("spawn_choose = "..tostring(spawn_choose))
+	local low_level = 0.0
+
+	table.sort(anom_table_postfix,function(a,b) return a.val < b.val end)
+
+	for key, value in pairs(anom_table_postfix) do
+-- log1(tostring(value.postfix).." = "..tostring(value.val))
+		if spawn_choose < value.val and spawn_choose >= low_level then
+			postfix_anom_to_spawn = value.postfix
+		end
+		low_level = value.val
+	end
+-- log1("postfix_anom_to_spawn = "..tostring(postfix_anom_to_spawn))
+-- log1("low_level = "..tostring(low_level))
+
+	if name_anom_to_spawn and postfix_anom_to_spawn then
+		anom_to_spawn = anom_prefix .. name_anom_to_spawn .. postfix_anom_to_spawn
+	end
+
+	local coef_effective_radius = 1
+	if 	system_ini():line_exist(anom_to_spawn, "effective_radius") then
+		coef_effective_radius = system_ini():r_string(anom_to_spawn, "effective_radius")
+	end
+-- log1("Коэффициент эффективного радиуса выбран: " .. coef_effective_radius)
+
+	local section = anoms_sections[name_anom_to_spawn]
+	local shape1 = section[2]
+	local shapes = {}
+	shapes[1] = {}
+	shapes[1].shtype = shape1.shtype
+	if shape1.shtype == 0 then
+		shapes[1].radius = shape1.radius * coef_effective_radius
+		shapes[1].center = vector():set(shape1.center[1],shape1.center[2],shape1.center[3])
+	else
+		shapes[1].v1 = vector():set(shape1.v1[1],shape1.v1[2],shape1.v1[3])
+		shapes[1].v2 = vector():set(shape1.v2[1],shape1.v2[2],shape1.v2[3])
+		shapes[1].v3 = vector():set(shape1.v3[1],shape1.v3[2],shape1.v3[3])
+		shapes[1].offset = vector():set(shape1.offset[1],shape1.offset[2],shape1.offset[3])
+	end
+
+	return anom_to_spawn, shapes
+
+end
+
+-----------------------------------------------------------------------
+--- ogse_anomaly.script                                       
+--- Модуль учета и респавна аномалий
+--- унаследован от ogsm_anomaly авторы DEXXX, Offbar
+--- Dusty79, KamikaZze (c) OGS Evolution Team 
+--- Используется некоторый код АМК мода                                 
+--- version 2.0 (08/08/2011)                                             
+-----------------------------------------------------------------------
