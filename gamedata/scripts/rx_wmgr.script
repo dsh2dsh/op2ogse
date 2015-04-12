@@ -1,0 +1,1229 @@
+---- Rulix aka Bak --- 1.7.2009
+
+local table_sort = table.sort
+local math_random = math.random
+local string_find = string.find
+local string_sub = string.sub
+local string_format = string.format
+
+function printf(s,...)
+--	rx_ai.printf("wm:"..s,...)
+end
+
+function printw(s,...)
+	rx_ai.printf("wm:"..s.."!!!",...)
+end
+
+function read_from_ini(iniFileName,sec,val,def,typ)
+	--return rx_utils.read_from_ini(ini,sec,val,def,typ)
+	return rx_utils.read_from_ini_new(iniFileName,sec,val,def,typ)
+end
+
+local boxid
+local weapon_params = {} -- параметры оружия будем хранить здесь
+local update_time = time_global()
+local iniFileName = "misc\\rx_weapon_mgr.ltx"
+local wm_ini = ini_file(iniFileName)
+local wms = {} -- запоминаем id
+local item_parents = {}
+local defsec = "default"
+local clslist = { actor = clsid.actor,
+	stalker = clsid.script_stalker,
+	dog = clsid.dog_s,
+	boar = clsid.boar_s,
+	flesh = clsid.flesh_s,
+	pseudodog = clsid.pseudodog_s,
+	bloodsucker = clsid.bloodsucker_s,
+	snork = clsid.snork_s,
+	tushkano = clsid.tushkano_s,
+	zombie = clsid.zombie_s,
+	giant = clsid.gigant_s,
+	chimera = clsid.chimera_s,
+	burer = clsid.burer_s,
+	controller = clsid.controller_s,
+	poltergeist = clsid.poltergeist_s,
+	fracture = clsid.fracture_s,
+	cat = clsid.cat_s,
+	psy_dog = clsid.psy_dog_s,
+	psy_dog_phantom = clsid.psy_dog_phantom_s}
+
+wm_modes = {sect = {custom = {}, default = {}}, -- данные из конфигов
+		koeffs = {},
+		priors = {},
+		types = {list = {},
+				rsec = {},
+				maxr = {},
+				minr = {},
+				enem = {},
+				line = read_from_ini(iniFileName,"types","line","ef_weapon_type",1)},
+		forbiddens = {},
+		enabled = read_from_ini(iniFileName,"main","enabled",false,0),
+		update_prd = read_from_ini(iniFileName,"main","update_period",2000),
+		combat_prd = read_from_ini(iniFileName,"main","combat_period",400),
+		reload_prd = read_from_ini(iniFileName,"main","reload_period",2500),
+		idle_prd = read_from_ini(iniFileName,"main","idle_period",10000),
+		return_prd = read_from_ini(iniFileName,"main","return_period",200000),
+		min_cond = read_from_ini(iniFileName,"main","min_condition",0.2),
+		wpn_minmax = read_from_ini(iniFileName,"main","weapon_minmaxr",false,0)}
+
+function init()
+	wm_modes.types.list = rx_utils.parse_list_new(iniFileName,"types","list")
+	for z,i in ipairs(wm_modes.types.list) do
+		if wm_ini:line_exist("types","rsec_"..i) then
+			wm_modes.types.rsec[i] = rx_utils.parse_list_new(iniFileName,"types","rsec_"..i)
+			if #wm_modes.types.rsec[i] < 3 then
+				abort("weapon_manager: number of values in rsec_%s '%s' < 3!",i,#wm_modes.types.rsec[i])
+			end
+		end
+		if wm_ini:line_exist("types","minmaxr_"..i) and not wm_modes.wpn_minmax then
+			local tmp = rx_utils.parse_list_new(iniFileName,"types","minmaxr_"..i)
+			if #tmp ~= 2 then
+				abort("weapon_manager: number of values in minmaxr_%s '%s' ~= 2!",i,#tmp)
+			end
+			wm_modes.types.minr[i] = tonumber(tmp[1])
+			wm_modes.types.maxr[i] = tonumber(tmp[2])
+		end
+		if wm_ini:line_exist("types","enemy_"..i) then
+			wm_modes.types.enem[i] = {}
+			local tmp = rx_utils.parse_list_new(iniFileName,"types","enemy_"..i)
+			for k,v in ipairs(tmp) do
+				local p = string_find(v,":",1,true)
+				wm_modes.types.enem[i][string_sub(v,1,p-1)] = string_sub(v,p+1,-1)
+			end
+		end
+	end
+	wm_modes.forbiddens = rx_utils.parse_list_new(iniFileName,"main","forbidden_weapons",true)
+	local cm,rp = rx_utils.collect_sections_new(iniFileName,{defsec})
+	if rp[1] == 0 then
+		abort("weapon_manager: default ini section [%s] not exist or empty!",defsec)
+	end
+	local tps = rx_utils.str_explode(",",cm.types,true)
+	cm.types = {}
+	for k,v in ipairs(wm_modes.types.list) do
+		table.insert(cm.types,{t = v,p = tonumber(tps[k])})
+	end
+	table_sort(cm.types,function(a,b) return a.p > b.p end)
+	wm_modes.sect.default = cm
+	wm_modes.inited = true
+--	printf("init %s",tostring(wm_modes.enabled))
+end
+
+class "weapon_manager"
+function weapon_manager:__init(npc)
+	self.npc = npc
+	self.npc_id = npc:id()
+	self:initialize()
+	self.wpns_prstor = {}
+	self.priors_mem = {}
+--	rx_ai.subscribe_for_events(npc,self)
+end
+
+function weapon_manager:initialize()
+	if rx_ai.IsTrader(self.npc) then
+		self.disabled = true
+--		printf(":initialize[%s]: disabled(trader)", self.npc:character_name())
+		return
+	end
+	self.modes = read_wm_modes(self.npc:character_community(),ranks.get_obj_rank_name(self.npc),self.npc:section())
+	if self.modes.disabled == true then
+		self.disabled = true
+		self.modes = nil
+		return
+	end
+	self.period = 0
+--	printf("initialize[%s] comm[%s], rank[%s]",self.npc:character_name(),self.npc:character_community(),ranks.get_obj_rank_name(self.npc))
+end
+
+function weapon_manager:update()
+	if not wm_modes.inited then
+		init()
+	end
+	local tg = time_global()
+	if self.disabled or (self.disabled_temp and self.disabled_temp > tg) then
+		return
+	end
+	if self.last_return == nil then
+		self.last_return = tg
+	end
+	local enemy,cwpn = self.npc:best_enemy()
+	if self.weapon_id then
+		cwpn = level.object_by_id(self.weapon_id)
+	end
+	if cwpn then
+		local parent = cwpn:parent()
+		if not (parent and parent:id() == self.npc_id) and not (item_parents[self.weapon_id] and (item_parents[self.weapon_id] == self.npc_id or item_parents[self.weapon_id] == tostring(self.npc_id))) then
+--			printw("update[%s]: cwpn parent ~= npc(%s)",self.npc:character_name(),tostring(self.npc_id))
+--			printw("info[%s]:se=[%s],box=[%s],prstor=[%s],parent=[%s]",cwpn:name(),tostring(alife():object(self.weapon_id)~=nil),tostring((parent and parent:id())==boxid),tostring(self.wpns_prstor[id]),tostring(parent and parent:id()))
+			if self.wpns_prstor[id] then
+--				printw("update[%s]:return from prstor (%s)",self.npc:character_name(),tostring(self.weapon_id))
+				self:return_items(self.weapon_id)
+--			elseif (parent and parent:id()) == boxid then
+--				printw("update[%s]:wpn in box (%s)",self.npc:character_name(),tostring(self.weapon_id))
+			end
+			cwpn = nil
+			self.weapon_id = nil
+			self.last_change = nil
+			self.period = tg
+		end
+	end
+	if enemy then
+		if self.period > tg+wm_modes.combat_prd then
+			self.period = tg
+		end
+		self.reloadc = nil
+	else
+		if self.last_return + wm_modes.return_prd <= tg or xr_wounded.is_wounded(self.npc) or (enemy and xr_wounded.is_wounded(enemy)) then
+			self:return_items()
+		end
+		if cwpn and not self.reloadc then
+			if cwpn:get_ammo_in_magazine() < read_wpn_params(cwpn:section()).mag then
+--				printf("update[%s]: set reload", self.npc:character_name())
+				self.reloadc = true
+			end
+		end
+	end
+	if self.reloadc then
+		if self.weapon_id then
+			self:reload()
+		else
+			self.reloadc = nil
+		end
+	end
+	if self.period <= tg or (enemy and ((not (self.weapon_id and cwpn)) or cwpn:get_ammo_in_magazine() == 0)) then
+		if not self.reloadc then
+			self:update_weapon()
+		end
+		if enemy then
+			self.period = tg + wm_modes.combat_prd
+		else
+			self.period = tg + wm_modes.idle_prd
+		end
+	end
+	local bw = self.npc:best_weapon()
+	if self.weapon_id and not self.reloadc then
+		if bw and bw:id() ~= self.weapon_id then
+			if self.modes.process_mode == "2" or self.modes.process_mode == "3" or (self.modes.process_mode == "1" and enemy) then
+				local actwpn = self.npc:active_item()
+				if ((enemy and not xr_wounded.is_wounded(enemy)) or ((not enemy) and (not actwpn or bw:id() ~= actwpn:id()))) and not xr_wounded.is_wounded(self.npc) then
+					self:process_item(bw)
+				end
+			end
+		end
+	end
+end
+
+function weapon_manager:get_weapon()
+	self:update()
+	local wpn = (self.weapon_id and level.object_by_id(self.weapon_id)) or self.npc:best_weapon()
+--	self:output(wpn)
+	return wpn
+end
+
+function weapon_manager:output(wpn)
+	local actor = db.actor
+	if actor and actor:position():distance_to(self.npc:position()) < 4 then
+		if not self.outtime or self.outtime < time_global() then
+			local name = self.npc:character_name()
+			local reload = tostring(self.reloadc)
+			if wpn then
+				local wpn_id = wpn:id()
+				local wpn_section = wpn:section()
+				local params = weapon_params[wpn_section]
+				if not params then
+					actor:give_game_news(name..": "..string_format("wpn: %s[%s], params not readed",wpn_section, wpn_id),"ui\\ui_iconsTotal",Frect():set(0,235,83,47),0,1000)
+					return
+				end
+				local cost = params.cst
+				local eff
+				local kf = wm_modes.koeffs[self.modes.koeffs] or wm_modes.koeffs["koefs_def"]
+				if kf == nil then
+					eff = "NOT READED"
+				else
+					eff = (params.dmg*kf.dmg)+(params.rpm*kf.rpm)+(params.dst*kf.dst)+((100/params.dsp)*kf.dsp)
+				end
+				local prior
+				local pr = wm_modes.priors[self.modes.priors] or wm_modes.priors["priors_def"]
+				if pr == nil then
+					prior = "NOT READED"
+				else
+					prior = pr[wpn_section] or 0
+				end
+				local res = self:get_weapon_prior(wpn)
+				actor:give_game_news(name..": "..string_format("wpn: %s[%s] aminmag %s(%s), reload is %s, cost[%s], eff[%s], prior[%s], res[%s]", wpn_section, wpn_id, wpn:get_ammo_in_magazine(), read_wpn_params(wpn_section).mag, reload, cost, eff, prior,res), "ui\\ui_iconsTotal", Frect():set(0,235,83,47), 0, 1000)
+			else
+				actor:give_game_news(name..": "..string_format("wpn: %s reload is %s", tostring(wpn), reload), "ui\\ui_iconsTotal", Frect():set(0,235,83,47), 0, 1000)
+			end
+			self.outtime = time_global() + 1000
+		end
+	end
+end
+
+function weapon_manager:set_weapon(wpn)
+	if wpn then
+		self.weapon_id = wpn:id()
+		self:return_items(self.weapon_id)
+--		printf("set_weapon[%s]:set %s[%s]",self.npc:character_name(),wpn:id(),wpn:section())
+	else
+--		printw("set_wpn:weapon not exist")
+	end
+	local enemy = self.npc:best_enemy()
+	if self.modes.process_mode == "3" and enemy then
+		for k,v in pairs(self.weapons) do
+			for i,w in ipairs(v) do
+				if w.id ~= self.weapon_id then
+					local item = level.object_by_id(w.id)
+					if item and item:parent() and item:parent():id() == self.npc_id then
+--						printf("set_weapon[%s]:process %s[%s]",self.npc:character_name(),w.id,w.sec)
+						self:process_item(item)
+					end
+				end
+			end
+		end
+	end
+	if enemy then
+--		self.npc:set_item(object.idle,wpn)
+	end
+	self.weapons = nil
+end
+
+function weapon_manager:reload()
+	local curwpn = level.object_by_id(self.weapon_id)
+	if curwpn and curwpn:get_ammo_in_magazine() < read_wpn_params(curwpn:section()).mag then
+		return
+	end
+	local cnt = self:update_weapon_list()
+	if cnt > 1 then
+		local types = {}
+		for k,v in pairs(self.weapons) do
+			if #v > 0 then
+				types[k] = true
+			end
+		end
+		for k,t in ipairs(self.modes.types) do
+			if types[t.t] then
+				for q,w in ipairs(self.weapons[t.t]) do
+					local wpn = level.object_by_id(w.id)
+--					printf("reload[%s]: check[%s]:%s", self.npc:character_name(), wpn:section(),wpn:get_ammo_in_magazine())
+					if wpn:get_ammo_in_magazine() < read_wpn_params(wpn:section()).mag then
+						self:set_weapon(wpn)
+--						printf("reload[%s]: reload [%s] change", self.npc:character_name(), wpn:section())
+						return
+					end
+				end
+			end
+		end
+	end
+--	printf("reload[%s]: disable", self.npc:character_name())
+	self.weapons = nil
+	self.weapon_id = nil
+	self.reloadc = nil
+	self:update_weapon()
+end
+
+function weapon_manager:update_weapon()
+	local cnt = self:update_weapon_list()
+	if cnt == 1 then
+		for k,v in pairs(self.weapons) do
+			if v[1] and v[1].sec then
+				if not level.object_by_id(v[1].id) then
+--					printw("update_weapon(cnt == 1):weapon not exist!,sec[%s]",v[1].sec)
+				end
+				self:set_weapon(level.object_by_id(v[1].id))
+				return
+			end
+		end
+	elseif cnt > 1 then
+		local types = {}
+		for k,v in pairs(self.weapons) do
+			if #v > 0 then
+				types[k] = true
+			end
+		end
+		local be = self.npc:best_enemy()
+		local curwpn = level.object_by_id(self.weapon_id)
+		if not be then
+			if self.modes.mode2_idle == "1" then
+				local weapons = {}
+				for k,v in pairs(self.weapons) do
+					for i,w in ipairs(v) do
+						table.insert(weapons,w)
+					end
+				end
+				table_sort(weapons,function(a,b) return a.prm > b.prm end)
+				self:set_weapon(level.object_by_id(weapons[1].id))
+				return
+			elseif self.modes.mode2_idle == "2" then
+				for k,t in ipairs(self.modes.types) do
+					if types[t.t] then
+						if not level.object_by_id(self.weapons[t.t][1].id) then
+--							printw("update_weapon(cnt > 1,not enemy):weapon not exist!,id[%s]",self.weapons[t.t][1].id)
+						end
+						self:set_weapon(level.object_by_id(self.weapons[t.t][1].id))
+						return
+					end
+				end
+			end
+		else
+			if self.modes.mode2 == "2" then
+				if not curwpn or curwpn:get_ammo_in_magazine() == 0 then
+					for k,t in ipairs(self.modes.types) do
+						if types[t.t] then
+							if self:check_conditions(0) then
+								for q,w in ipairs(self.weapons[t.t]) do
+									local wpn = level.object_by_id(w.id)
+									if wpn:get_ammo_in_magazine() > 0 then
+										self:set_weapon(wpn)
+										return
+									end
+								end
+							end
+						end
+					end
+					for k,t in ipairs(self.modes.types) do
+						if types[t.t] then
+							if self:check_conditions(2) then
+								local wpn = level.object_by_id(self.weapons[t.t][1].id)
+								self:set_weapon(wpn)
+								return
+							end
+						end
+					end
+				end
+			elseif self.modes.mode2 == "1" or self.modes.mode2 == "3" then
+				if self.last_change and curwpn and curwpn:get_ammo_in_magazine() ~= 0 and self.last_change+self.modes.change_rest_time > time_global() then
+					printf("update_wpn[%s]:change_rest_time[%s]",curwpn:section())
+					return
+				end
+				local function becls_to_pr(sect,cls)
+					local enl = weapon_params[sect].enm or wm_modes.types.enem[weapon_params[sect].typ]
+					if enl then
+						for k,v in pairs(enl) do
+							if clslist[k] and clslist[k] == cls then
+--								printf("becls_to_pr[%s]:return[%s](%s)", self.npc:character_name(),v,k)
+								return v
+							end
+						end
+					end
+					return 0
+				end
+				local function bedist_to_pr(sect,dist)
+					local typ = weapon_params[sect].typ
+					local fr = weapon_params[sect].dtn
+					if dist >= fr then
+--						printf("bedist_to_pr[%s]:dist >= fr - return 0", self.npc:character_name())
+						return -80
+					end
+					local mn = wm_modes.types.minr[typ] or weapon_params[sect].mnr
+					local mx = wm_modes.types.maxr[typ] or weapon_params[sect].mxr
+					local ts = weapon_params[sect].rsc or wm_modes.types.rsec[typ]
+					if not ts then
+						return 0
+					end
+					local sn = #ts
+--					printf("bedist_to_pr[%s]:mn=[%s],mx=[%s],dist=[%s]", self.npc:character_name(),mn,mx,dist)
+					local df = (mx-mn)/(sn-2)
+					if dist < mn then
+--						printf("bedist_to_pr[%s]:return[%s]", self.npc:character_name(),ts[1])
+						return ts[1]
+					elseif dist > mx then
+--						printf("bedist_to_pr[%s]:return[%s]", self.npc:character_name(),ts[sn])
+						return ts[sn]
+					end
+					for i=2,sn-1 do
+						if dist < mn+df*i then
+--							printf("bedist_to_pr[%s]:return[%s]", self.npc:character_name(),ts[i])
+							return ts[i]
+						end
+					end
+				end
+				local function blastwpn_condition(sect,dist)
+					local radius = weapon_params[sect].bls^2
+					if dist <= radius then
+						return false
+					end
+					local bepos = be:position()
+					if self.npc:relation(db.actor) ~= game_object.enemy and db.actor:position():distance_to_sqr(bepos) < radius then
+						return false
+					end
+					for k,v in pairs(db.storage) do
+						local npc = level.object_by_id(k)
+						if npc and IAmAStalker[npc:clsid()] and npc:character_community() == self.npc:character_community() and npc:position():distance_to_sqr(bepos) < radius then
+							return false
+						end
+					end
+					return true
+				end
+				local bedist = self.npc:position():distance_to(be:position())
+				local becls = be:clsid()
+				local weapons = {}
+				for k,v in pairs(self.weapons) do
+					for i,w in ipairs(v) do
+						table.insert(weapons,w)
+					end
+				end
+				if self.modes.mode2 == "1" then
+					table_sort(weapons,function(a,b) return a.prm > b.prm end)
+					self:set_weapon(level.object_by_id(weapons[1].id))
+					return
+				end
+				local wpnp = {}
+--				printf("update_weapon_new[%s]:start cnt=[%s]", self.npc:character_name(),#weapons)
+--				printf("update_weapon_new:bedist=[%s],becls=[%s]",bedist,becls)
+				for i,w in pairs(weapons) do
+--					printf("update_weapon:[%s]:prm=%s", w.sec,w.prm)
+					local pr = 0
+					for k,v in ipairs(self.modes.types) do
+						if v.t == weapon_params[w.sec].typ then
+							pr = pr + w.prm*v.p/100
+--							printf("update_weapon_new:proc type: add %s o/o pr=%s",v.p,pr)
+							break
+						end
+					end
+					pr = pr + w.prm*(bedist_to_pr(w.sec,bedist))/100
+--					printf("update_weapon_new:proc dist: pr=%s",pr)
+					pr = pr + w.prm*(becls_to_pr(w.sec,becls))/100
+--					printf("update_weapon_new:proc class: pr=%s",pr)
+					if curwpn and curwpn:id() == w.id then
+						pr = pr + w.prm*self.modes.active_add/100
+					end
+					local wpn = level.object_by_id(w.id)
+					local amm1,amm2 = wpn:get_ammo_in_magazine(),weapon_params[w.sec].mag
+					if amm1 == 0 then
+						local bebe = be:best_enemy()
+						if be:see(self.npc) and ((bebe and bebe:id() == self.npc_id) or (db.actor and db.actor:id() == be:id())) then
+							pr = pr - w.prm*self.modes.mag_lowering_fc/100
+						else
+							pr = pr - w.prm*self.modes.mag_lowering/100
+						end
+					else
+						if amm1 < amm2 then
+							pr = pr - w.prm*self.modes.mag_lowering/100*(amm2-amm1)^0.9/amm2
+						end
+						if curwpn and curwpn:id() == w.id and self.last_change and (wm_modes.types.line ~= "ef_weapon_type" or weapon_params[curwpn:section()].typ ~= "8") then
+							local tg = time_global()
+							local bebe = be:best_enemy()
+							if be:see(self.npc) and ((bebe and bebe:id() == self.npc_id) or (db.actor and db.actor:id() == be:id())) and self.last_change+self.modes.tchange_time_fc > tg then
+								local add = (self.last_change+self.modes.tchange_time_fc-tg)/40
+--								printf("update_weapon_new:proc last_change[%s]!!: pr=%s,add=%s",w.sec,pr,w.prm*add/100)
+								pr = pr + w.prm*add/100
+							elseif self.last_change+self.modes.tchange_time > tg then
+								local add = (self.last_change+self.modes.tchange_time-tg)/50
+--								printf("update_weapon_new:proc last_change[%s]: pr=%s,add=%s",w.sec,pr,w.prm*add/100)
+								pr = pr + w.prm*add/100
+							end
+						end
+					end
+--					printf("update_weapon:proc ammo: pr=%s",pr)
+					if weapon_params[w.sec].bls and not blastwpn_condition(w.sec,bedist) then
+--						printf("update_weapon_new:not blastwpn_condition()[%s]",w.sec)
+						pr = pr - w.prm*0.6
+					end
+--					printf("update_weapon:wpn[%s]=%s",w.sec,tostring(w.prm+pr))
+					table.insert(wpnp,{id = w.id,p = w.prm+pr})
+				end
+				table_sort(wpnp,function(a,b) return a.p > b.p end)
+				local wpn = (wpnp[1] and level.object_by_id(wpnp[1].id))
+				if curwpn and wpnp[1].id ~= curwpn:id() then
+					self.last_change = time_global()
+				end
+				self:set_weapon(wpn)
+				return
+			end
+		end
+	end
+	self.weapon_id = nil
+	self.weapons = nil
+end
+
+function weapon_manager:check_conditions(nam)
+	local tg = time_global()
+	local be = self.npc:best_enemy()
+	local me_see_be
+	if self.last_me_see_be and self.last_me_see_be + 2000 > tg then
+		me_see_be = true
+	else
+		me_see_be = self.npc:see(be)
+		if me_see_be then
+			self.last_me_see_be = tg
+		end
+	end
+	local be_see_me
+	if self.last_be_see_me and self.last_be_see_me + 2000 > tg then
+		be_see_me = true
+	else
+		be_see_me = be:see(self.npc)
+		if be_see_me then
+			self.last_be_see_me = tg
+		end
+	end
+	local not_sees = not me_see_be and not be_see_me
+	if nam == 0 and be_see_me then
+		return true
+	elseif nam == 2 then
+		return true
+	elseif nam == 1 and not_sees then
+		return true
+	elseif nam == 3 and be_see_me then
+		return true
+	end
+	return false
+end
+
+function weapon_manager:update_weapon_list()
+	local function weapon_iterator(id,item)
+		if id and not item then
+			item = level.object_by_id(id)
+		end
+		if not item then
+--			printf("weapon_iterator:pr weapon [%s] not exist", tostring(id))
+			if id and alife():object(id) ~= nil then
+--				printw("weapon_iterator:alife obj with id [%s] exist",tostring(id))
+				switch_online(id)
+			else
+				self.wpns_prstor[id] = nil
+			end
+			return
+		end
+		id = item:id()
+		if rx_utils.item_is_fa(item) then
+			local sec = item:section()
+			local cnd = item:condition()
+			if wm_modes.forbiddens[sec] ~= true and cnd >= wm_modes.min_cond and self:have_ammo(item) then
+				local params = read_wpn_params(sec)
+				local typ = params.typ
+				if not self.weapons[typ] then
+					abort("weapon_manager: not registered weapon type '%s' in [%s]",typ,sec)
+				end
+				local prm = self:get_weapon_prior(item)
+				table.insert(self.weapons[typ],{sec = sec,id = id,prm = prm})
+			end
+		end
+	end
+	self.weapons = {}
+	for z,i in ipairs(self.modes.types) do
+		self.weapons[i.t] = {}
+	end
+	self.npc:iterate_inventory(weapon_iterator)
+	for k,v in pairs(self.wpns_prstor) do
+		if v then
+			weapon_iterator(k)
+		end
+	end
+	for k,v in pairs(self.weapons) do
+		table_sort(v,function(a,b) return a.prm > b.prm end)
+	end
+	local cnt = 0
+	for z,i in ipairs(wm_modes.types.list) do
+		cnt = cnt + #self.weapons[i]
+	end
+--	printf("update_weapon[%s]:cnt:[%s]", self.npc:character_name(), cnt)
+	return cnt
+end
+
+function weapon_manager:get_weapon_prior(wpn,addonf)
+	local id,tg = wpn:id(),time_global()
+	if tg > (self.priors_mem.tg or 0) then
+--		rx_ai.printf("get_weapon_prior[%s]:clear mem on %s",self.npc:character_name(),tg)
+		self.priors_mem = {tg = tg+math_random(6000,8000)}
+	end
+	if self.priors_mem[id] and not addonf then
+		return self.priors_mem[id]
+	else
+		local prm,pr = 0,0
+		local sec = wpn:section()
+		local params = read_wpn_params(sec)
+		if self.modes.mode1 == "1" then
+			prm = params.cst+self.modes.addcost
+		elseif self.modes.mode1 == "2" then
+			local kf = wm_modes.koeffs[self.modes.koeffs]
+			prm = (params.dmg*kf.dmg)+(params.rpm*kf.rpm)+(params.dst*kf.dst)+((100/params.dsp)*kf.dsp)
+		elseif self.modes.mode1 == "3" then
+			prm = wm_modes.priors[self.modes.priors][sec] or 0
+		end
+		if addonf then
+			addonf = addonf-rx_utils.get_addon_flag(wpn)+rx_utils.get_addon_flag(wpn,true)
+		end
+		if rx_utils.addon_attached(wpn,"sc",addonf) then
+			pr = pr + prm*self.modes.scope/100
+		end
+		if rx_utils.addon_attached(wpn,"sl",addonf) then
+			pr = pr + prm*self.modes.silencer/100
+		end
+		if rx_utils.addon_attached(wpn,"gl",addonf) then
+			pr = pr + prm*self.modes.grenadelauncher/100
+		end
+		prm = prm+pr+id/100000+wpn:condition()*prm/50
+		if not addonf then
+			self.priors_mem[id] = prm
+		end
+		return prm
+	end
+end
+
+function weapon_manager:have_ammo(wpn)
+	local parent = wpn:parent()
+	if parent and parent:id() == self.npc:id() then
+		return wpn:get_ammo_total() > 0
+	end
+	local ammos = (weapon_params[wpn:section()] and weapon_params[wpn:section()].ams) or get_ammo_section(wpn:section())
+	for k,v in ipairs(ammos) do
+		if self.npc:object(v) then
+			return true
+		end
+	end
+	return wpn:get_ammo_in_magazine() > 0
+end
+
+function weapon_manager:process_item(obj)
+	local id = obj:id()
+	local box = get_box()
+	if not box then
+--		printw("process_item: not box[%s]!",tostring(boxid))
+		return
+	end
+	if obj:parent():id() ~= boxid and not self.wpns_prstor[id] then
+		self.npc:transfer_item(obj,box)
+--		printf("process_item %s[%s] from [%s]", obj:section(), id, self.npc:character_name())
+		self.wpns_prstor[id] = true
+		item_parents[id] = boxid
+	end
+end
+
+function weapon_manager:return_items(id)
+	if not self.npc then
+--		printw("return_items:not self.npc")
+		return
+	end
+ if has_alife_info("boss_talk_start") then 
+    if self.npc:name()=="bodi_pantera2" or self.npc:name()=="bodi_pantera1" or self.npc:name()=="pantera" then 
+      return 
+    end 
+  end
+	local function transfer_to_npc(id)
+		local box = get_box()
+		if not box then
+--			printw("return_items: not box[%s]",tostring(boxid))
+			return
+		end
+		local obj = level.object_by_id(id)
+		if obj and self.npc_id and alife():object(self.npc_id) and alife():object(self.npc_id).online then
+			if not rx_utils.item_is_fa(obj) then
+--				printw("transfer_to_npc[%s]:%s[%s]:obj not isWeapon", self.npc:character_name(),obj:section(),obj:id())
+				return
+			end
+			local parent = obj:parent()
+			if not parent then
+--				printw("transfer_to_npc[%s]:%s[%s]:not parent", self.npc:character_name(),obj:section(),obj:id())
+				return
+			end
+			if parent:id() == self.npc_id then
+--				printw("transfer_to_npc[%s]:already transfered %s[%s]", self.npc:character_name(), obj:section(), obj:id())
+				return
+			end
+			if parent:id() ~= boxid then
+--				printw("transfer_to_npc[%s]:%s[%s]:parent[%s %s] ~= box[%s]",self.npc:character_name(),obj:section(),obj:id(),tostring(parent:character_name()),parent:id(),tostring(boxid))
+				return
+			end
+--			printf("transfer_to_npc[%s]:return %s[%s]", self.npc:character_name(), obj:section(), obj:id())
+			parent:transfer_item(obj,self.npc)
+			item_parents[id] = self.npc_id
+		else
+			local sobj = alife():object(id)
+			if sobj then
+--				printw("transfer_to_npc[%s]:release [%s]", self.npc:character_name(), tostring(sobj.id))
+				alife():release(sobj,true)
+			else
+--				printw("transfer_to_npc[%s]:item not found [%s]", self.npc:character_name(), tostring(id))
+			end
+		end
+	end
+	if id then
+		if self.wpns_prstor[id] then
+--			printf("return_items[%s]:by id[%s]", self.npc:character_name(),tostring(id))
+			transfer_to_npc(id)
+			self.wpns_prstor[id] = nil
+		end
+		return
+	end
+--	printf("return_items[%s]:~~", self.npc:character_name()) -- не включать!
+	for k,v in pairs(self.wpns_prstor) do
+		if v ~= nil then
+			transfer_to_npc(k)
+		end
+	end
+	self.wpns_prstor = {}
+	self.last_return = time_global()
+end
+
+function weapon_manager:disable(end_time)
+	if end_time then
+		self.disabled_temp = end_time
+	else
+		self.disabled = true
+	end
+end
+
+function weapon_manager:enable()
+--	self.disabled = nil
+	self.disabled_temp = nil
+end
+
+function get_wm(obj)
+	if wm_modes.enabled then
+		local id = obj:id()
+		if db.storage[id].wm == nil then
+			db.storage[id].wm = weapon_manager(obj)
+			wms[id] = true
+		end
+		return db.storage[id].wm
+	else
+		function weapon_manager:__init()
+		end
+		function weapon_manager:initialize()
+		end
+		function weapon_manager:update()
+		end
+		function weapon_manager:get_weapon()
+		end
+		function weapon_manager:output()
+		end
+		function weapon_manager:set_weapon()
+		end
+		function weapon_manager:reload()
+		end
+		function weapon_manager:update_weapon()
+		end
+		function weapon_manager:check_conditions()
+		end
+		function weapon_manager:update_weapon_list()
+		end
+		function weapon_manager:have_ammo()
+		end
+		function weapon_manager:process_item()
+		end
+		function weapon_manager:return_items()
+		end
+		function weapon_manager:disable()
+		end
+		function weapon_manager:enable()
+		end
+		return weapon_manager()
+	end
+end
+
+function clear_wms(id)
+	if id then
+--		printf("clear_wms:[%s]", id)
+		wms[id] = nil
+		if db.storage[id] then
+			db.storage[id].wm = nil
+		end
+	end
+end
+
+function return_all()
+--	printf("return_all:start")
+	for k,v in pairs(wms) do
+		if db.storage[k] and db.storage[k].wm then
+			db.storage[k].wm:return_items()
+		else
+			wms[k] = nil
+		end
+	end
+end
+
+function kill_wm(obj)
+	local st = db.storage[obj:id()]
+	if st and st.wm ~= nil then
+		get_wm(obj):return_items()
+		clear_wms(obj:id())
+	end
+end
+
+function global_update(tg)
+	if not wm_modes.inited then
+		init()
+	end
+	if not wm_modes.enabled then
+		return
+	end
+	if tg > update_time then
+		for k,v in pairs(wms) do
+			if db.storage[k] then
+			else
+				wms[k] = nil
+			end
+		end
+		manage_box()
+		update_time = tg+wm_modes.update_prd
+	end
+	for k,v in pairs(item_parents) do
+		local item = level.object_by_id(k)
+		if item then
+			local p = item:parent()
+			local rp = level.object_by_id(tonumber(v))
+			if ((not p) or (p:id() ~= tonumber(v))) and rp then
+				if type(v) == "string" then
+--					printw("item_parents:transfer %s[%s](p:%s) to %s[%s]",item:section(),item:id(),tostring(p and p:id()),rp:section(),rp:id())
+					if alife():object(rp:id()) and alife():object(rp:id()).online then
+						if p then
+							p:transfer_item(item,rp)
+						else
+							item:transfer_item(item,rp)
+						end
+					else
+						item_parents[k] = nil
+					end
+					item_parents[k] = tonumber(v)
+				else
+					item_parents[k] = tostring(v)
+				end
+			else
+				item_parents[k] = nil
+			end
+		else
+			item_parents[k] = nil
+		end
+	end
+end
+
+function read_wm_modes(comm,rank,sect)
+	if not wm_modes.inited then
+		init()
+	end
+	if sect and wm_modes.sect.custom[sect] then
+		return wm_modes.sect.custom[sect]
+	end
+	local ss,cm,rp
+	if sect and wm_ini:section_exist(sect) then
+		cm,rp = rx_utils.collect_sections_new(iniFileName,{sect,comm.."_"..rank,comm,rank,defsec})
+		ss = true
+	else
+		if not wm_modes.sect[comm] then
+			wm_modes.sect[comm] = {}
+		end
+		if wm_modes.sect[comm][rank] ~= nil then
+			return wm_modes.sect[comm][rank]
+		end
+		cm,rp = rx_utils.collect_sections_new(iniFileName,{comm.."_"..rank,comm,rank,defsec})
+	end
+--	printf("read_wm_modes: cm.mode1=[%s]",cm.mode1)
+	cm.disabled = (cm.disabled == "true" or cm.disabled == "1")
+	if cm.mode1 == "2" and not wm_modes.koeffs[cm.koeffs] then
+		local kf = {}
+		if not wm_ini:section_exist(cm.koeffs) then
+			abort("weapon_mgr: can`t find koeffs section [%s]",cm.koeffs)
+		end
+--		printf("read_wm_modes: read koeffs from [%s]",cm.koeffs)
+		kf.dmg = wm_ini:r_float(cm.koeffs,"damage")
+		kf.rpm = wm_ini:r_float(cm.koeffs,"rpm")
+		kf.dst = wm_ini:r_float(cm.koeffs,"distance")
+		kf.dsp = wm_ini:r_float(cm.koeffs,"dispersion")
+		wm_modes.koeffs[cm.koeffs] = kf
+	elseif cm.mode1 == "3" and not wm_modes.priors[cm.priors] then
+		local pr = {}
+		if not wm_ini:section_exist(cm.priors) then
+			abort("weapon_mgr: can`t find priors section [%s]",cm.priors)
+		end
+--		printf("read_wm_modes: read priors from [%s]",cm.priors)
+		local n = wm_ini:line_count(cm.priors)
+		if n > 0 then
+			for i = 0,n-1 do
+				local r, id, value = wm_ini:r_line(cm.priors,i,"","")
+				if pr[id] == nil then
+					pr[id] = tonumber(value)
+				end
+			end
+		end
+		wm_modes.priors[cm.priors] = pr
+	end
+	local tps = rx_utils.str_explode(",",cm.types,true)
+	cm.types = {}
+	for k,v in ipairs(wm_modes.types.list) do
+		table.insert(cm.types,{t = v, p = tonumber(tps[k])})
+	end
+	table_sort(cm.types,function(a,b) return a.p > b.p end)
+	if ss then
+		if  rp[1] > 0 or rp[2] > 0 or rp[3] > 0 or rp[4] > 0 then
+			wm_modes.sect.custom[sect] = cm
+		else
+			wm_modes.sect.custom[sect] = wm_modes.sect.default
+			printf("read_wm_modes[%s]: set default",sect)
+		end
+		return wm_modes.sect.custom[sect]
+	else
+		if  rp[1] > 0 or rp[2] > 0 or rp[3] > 0 then
+			wm_modes.sect[comm][rank] = cm
+			printf("read_wm_modes[%s][%s]: set default",comm,rank)
+		else
+			wm_modes.sect[comm][rank] = wm_modes.sect.default
+		end
+		return wm_modes.sect[comm][rank]
+	end
+end
+
+function read_wpn_params(sect)
+	if not wm_modes.inited then
+		init()
+	end
+	if weapon_params[sect] == nil then
+		weapon_params[sect] = {}
+		local dmg, blast = get_dmg(sect)
+		local rpm = get_rpm(sect)
+		local disp = get_disp(sect)
+		local dist, distr = get_dist(sect)
+		local cost = get_cost(sect)
+		local typ = get_weapon_type(sect)
+		local magsize = get_mag_size(sect)
+		local minr, maxr = get_radius(sect)
+		local ammos = get_ammo_section(sect)
+		local enemyt = get_enemyt(sect)
+		local rsec = get_rsect(sect)
+		local addons = get_addons_status(sect)
+		weapon_params[sect] = {cst = cost, typ = typ, dmg = dmg, rpm = rpm, dsp = disp, dst = dist, dtn = distr, mag = magsize, mnr = minr, mxr = maxr, bls = blast, ams = ammos, enm = enemyt, rsc = rsec, add = addons}
+	end
+	return weapon_params[sect]
+end
+
+local valuesFloat = {}
+function read_if_exist_float(section,value,default)
+	if not valuesFloat[section] or not valuesFloat[section][value] then
+		if not valuesFloat[section] then
+			valuesFloat[section] = {}
+		end
+		local ltx = system_ini()
+		if wm_ini:section_exist(section) and wm_ini:line_exist(section,value) then
+			valuesFloat[section][value] = wm_ini:r_float(section,value)
+		elseif ltx:section_exist(section) and ltx:line_exist(section,value) then
+			valuesFloat[section][value] = ltx:r_float(section,value)
+		else
+			valuesFloat[section][value] = default
+		end
+	end
+	
+	return valuesFloat[section][value]
+    --[[local ltx = system_ini()
+    if wm_ini:section_exist(section) and wm_ini:line_exist(section,value) then
+		return wm_ini:r_float(section,value)
+    elseif ltx:section_exist(section) and ltx:line_exist(section,value) then
+		return ltx:r_float(section,value)
+	else
+		return default
+	end]]
+end
+
+local valuesString = {}
+function read_if_exist_string(section,value,default)
+	if not valuesString[section] or not valuesString[section][value] then
+		if not valuesString[section] then
+			valuesString[section] = {}
+		end
+		local ltx = system_ini()
+		if wm_ini:section_exist(section) and wm_ini:line_exist(section,value) then
+			valuesString[section][value] = wm_ini:r_string(section,value)
+		elseif ltx:section_exist(section) and ltx:line_exist(section,value) then
+			valuesString[section][value] = ltx:r_string(section,value)
+		else
+			valuesString[section][value] = default
+		end
+	end
+	
+	return valuesString[section][value]
+    --[[local ltx = system_ini()
+    if wm_ini:section_exist(section) and wm_ini:line_exist(section,value) then
+--		printf("read_if_exist_string:wm_ini:get %s {%s} from [%s]",value,wm_ini:r_string(section,value),section)
+		return wm_ini:r_string(section,value)
+    elseif ltx:section_exist(section) and ltx:line_exist(section,value) then
+		return ltx:r_string(section,value)
+	else
+		return default
+	end]]
+end
+
+function get_dmg(section)
+	--local ltx = system_ini()
+	local hit_power = read_if_exist_float(section,"hit_power",0.5)
+	local ammo_list	= read_if_exist_string(section,"ammo_class","")
+	local pos = string_find(ammo_list,",",1)
+	local hit
+	if pos then
+		ammo_list = string_sub(ammo_list,1,pos - 1)
+	end
+	local k_hit = read_if_exist_float(ammo_list,"k_hit",0.8)
+	local buck = read_if_exist_float(ammo_list,"buck_shot",1)
+	if buck > 1 then
+		buck = buck*0.6
+	end
+	local grenade = getIniValueString(ammo_list,"fake_grenade_name",nil,nil)
+	if not grenade then
+		grenade = getIniValueString(section,"rocket_class",nil,nil)
+	end
+	--[[if ltx:line_exist(ammo_list,"fake_grenade_name") then
+		grenade = ltx:r_string(ammo_list,"fake_grenade_name")
+	elseif ltx:line_exist(section,"rocket_class") then
+		grenade =  ltx:r_string(section,"rocket_class")
+	end]]
+	if grenade then
+		local blast = read_if_exist_float(grenade,"blast",2)
+		local blast_r = read_if_exist_float(grenade,"blast_r",3)
+		local frags = read_if_exist_float(grenade,"frags",10)
+		local frag_hit = read_if_exist_float(grenade,"frag_hit",1)
+		hit = (blast*blast_r*1.5)+(frags*frag_hit*2)
+		return hit,blast_r
+	end
+	return (hit_power*k_hit*25+buck)*1.5
+end
+
+function get_rpm(section)
+	local mag_size = read_if_exist_float(section,"ammo_mag_size",2)
+	if mag_size < 4 then
+		return (mag_size^0.7)*10
+	end
+	local rpm = read_if_exist_float(section,"rpm",10)
+	rpm = ((rpm/2)^0.2)*8
+	local f_modes = read_if_exist_string(section,"fire_modes","1")
+	if string_find(f_modes,"-1") or (tonumber(f_modes) and tonumber(f_modes) > 4) then
+		rpm = rpm*1.3
+	end
+	return rpm+(mag_size/3)
+end
+
+function get_disp(section)
+	local disp_base	= read_if_exist_float(section,"fire_dispersion_base",0.2)
+	local ammo_list	= read_if_exist_string(section,"ammo_class","")
+	local pos  = string_find(ammo_list,",",1)
+	local k_disp
+	if pos ~= nil  then
+		local ammo = string_sub(ammo_list,1,pos - 1)
+		k_disp = read_if_exist_float(ammo, "k_disp",1)
+	else
+		k_disp = read_if_exist_float(ammo_list, "k_disp",1)
+	end
+	if disp_base < 0.2 then
+		disp_base = 0.2
+	end
+	return disp_base*k_disp*10
+end
+
+function get_dist(section)
+	local dist = read_if_exist_float(section,"fire_distance",50)
+	return (dist/2)^0.7,tonumber(dist)
+end
+
+function get_radius(section)
+	local maxr = read_if_exist_float(section,"max_radius",100)
+	local minr = read_if_exist_float(section,"min_radius",0)
+	return minr, maxr
+end
+
+function get_weapon_type(section)
+	return read_if_exist_string(section,wm_modes.types.line,"0")
+end
+
+function get_mag_size(section)
+	return read_if_exist_float(section,"ammo_mag_size",1)
+end
+
+function get_cost(section)
+	return read_if_exist_float(section,"cost",333)
+end
+
+function get_ammo_section(section)
+	return rx_utils.parse_list_new(nil,section,"ammo_class")
+end
+
+function get_addons_status(section)
+	local t = {}
+	t.sc = read_if_exist_float(section,"scope_status",0)
+	t.sl = read_if_exist_float(section,"silencer_status",0)
+	t.gl = read_if_exist_float(section,"grenade_launcher_status",0)
+	return t
+end
+
+function get_enemyt(section)
+	local enemyt = read_if_exist_string(section,"enemy",nil)
+	if enemyt then
+		local tmp = rx_utils.str_explode(",",enemyt,true)
+		enemyt = {}
+		for k,v in ipairs(tmp) do
+			local p = string_find(v,":",1,true)
+			enemyt[string_sub(v,1,p-1)] = string_sub(v,p+1,-1)
+		end
+	end
+	return enemyt
+end
+
+function get_rsect(section)
+	local rsect = read_if_exist_string(section,"rsec",nil)
+	if rsect then
+		rsect = rx_utils.str_explode(",",rsect,true)
+		if #rsect < 3 then
+			abort("weapon_manager: number of values in rsec(%s) '%s' < 3!",section,#rsect)
+		end
+	end
+	return rsect
+end
+
+function get_box()
+	return boxid and level.object_by_id(boxid)
+end
+
+function manage_box()
+	local sim = alife()
+	local box = boxid and sim:object(boxid)
+	if not (get_box() and box) then
+		printf("manage_box:find")
+		boxid = nil
+		local ggraph = game_graph()
+		if not ggraph:valid_vertex_id(db.actor:game_vertex_id()) then
+			return
+		end
+		local clid = ggraph:vertex(db.actor:game_vertex_id()):level_id()
+		local obj
+		for id=1,65534 do
+			obj = sim:object(id)
+			if obj and obj:section_name() == "inventory_box" and obj.position.y == -300 and ggraph:vertex(obj.m_game_vertex_id):level_id() == clid then
+				printf("manage_box:%s",id)
+				box = obj
+				boxid = id
+				break
+			end
+		end
+	end
+	if not box then
+		printf("manage_box:create")
+		create_box()
+		return
+	end
+	if not get_box() then
+		box:can_switch_offline(false)
+		switch_online(boxid)
+--		printf("manage_box:box[%s] switch online",tostring(box.id))
+		return
+	end
+end
+
+function create_box()
+	local pos = vector():set(0,-300,0)
+	if db.actor then
+		local obj = alife():create("inventory_box",pos,db.actor:level_vertex_id(),db.actor:game_vertex_id())
+		if obj then
+			boxid = obj.id
+			printf("box[%s] created on level '%s'",tostring(obj.id),tostring(level.name()))
+		end
+	end
+end
+
+function net_spawn()
+--	local boxid = xr_logic.pstor_retrieve(db.actor,"wm_boxid_"..level.name(),nil)
+	if boxid then
+		local sim = alife()
+		local sobj
+		for i=1,65534 do
+			sobj = sim:object(i)
+			if sobj and sobj.parent_id == boxid then
+				sim:release(sobj,true)
+			end
+		end
+	end
+end

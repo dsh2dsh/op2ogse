@@ -1,0 +1,280 @@
+---- Rulix aka Bak --- 25.3.2009
+
+--------------------------------------utils------------------------------------------
+
+function printf(str,...)
+	if not str then
+		str = "((string is nil))"
+	end
+	get_console():execute("load ~#I#:"..string.format(str,...))
+--	get_console():execute("flush")
+end
+
+function count_table(t)
+	if type(t) ~= "table" then
+		return
+	end
+	local cnt = 0
+	for k,v in pairs(t) do
+		cnt = cnt+1
+	end
+	return cnt
+end
+
+function IsTrader(npc)
+	if npc:character_community() == "trader" or npc:clsid() == clsid.script_trader or npc:clsid() == clsid.trader then
+		return true
+	end
+--===== чтобы Ворона, Седого и Петренко не плющило АИ:=====
+    if string.find(npc:profile_name(),"amk_vitek_voron") then
+        return true
+    end
+    if string.find(npc:profile_name(),"agro_mobil_torgash") then
+        return true
+    end
+    if string.find(npc:profile_name(),"bar_dolg_petrenko") then
+        return true
+    end
+----==========
+	if string.find(npc:section(),"trader") then
+		return true
+	end
+	local cini = xr_logic.get_customdata_or_ini_file(npc,"<customdata>")
+	if cini and cini:section_exist("logic") and cini:line_exist("logic","trade") then
+		return true
+	end
+	return false
+end
+
+------------------------------------callbacks--------------------------------------
+function actor_update()
+	local tg = time_global()
+	if db.actor then
+		if rx_wmgr then
+			rx_wmgr.global_update(tg)
+		end
+		if rx_addons then
+			rx_addons.update(tg)
+		end
+--		db.actor.power = 1
+--		db.actor.health = 1
+	end
+	if rx_gl then
+		rx_gl.update(tg)
+	end
+end
+
+function actor_net_spawn()
+	if rx_gl then
+		rx_gl.net_spawn()
+	end
+end
+
+function actor_item_take(item)
+	if rx_gl then
+		rx_gl.fake_pickup(item)
+	end
+end
+
+function actor_save(p)
+	if rx_wmgr then
+		rx_wmgr.return_all()
+	end
+end
+
+function npc_update(npc,st)
+	if npc and npc:alive() then
+		if st.wm then
+			st.wm:update()
+		end
+db.storage[npc:id()].us = 986
+		if rx_gl then
+			rx_gl.npc_update(npc,st)
+		end
+db.storage[npc:id()].us = 987
+		if rx_addons then
+			rx_addons.npc_update(npc,st)
+		end
+db.storage[npc:id()].us = 988
+	--	eat_medkit(npc)
+	end
+end
+
+function npc_switch_offline(npc)
+	if rx_wmgr then
+		rx_wmgr.kill_wm(npc)
+	end
+	unsubscribe_from_events(npc)
+end
+
+function npc_death(npc,who)
+	if npc then
+		if rx_wmgr then
+			rx_wmgr.kill_wm(npc)
+		end
+		if rx_gl then
+			rx_gl.death(npc)
+		end
+--		issue_event(npc,"death_callback",who)
+		unsubscribe_from_events(npc)
+	end
+end
+
+function npc_hit(npc,amount,dir,who,bone_id)
+	if npc and amount ~= 0 then
+		issue_event(npc,"hit_callback",amount,dir,who,bone_id)
+--		printf("hit!,npc %s,bone %s,who %s,amount %s",npc:id(),bone_id,who:name(),amount)
+	end
+end
+
+function issue_event(npc,name,...)
+	local st = db.storage[npc:id()]
+	if not st or not st.rx_callbacks then
+		return
+	end
+--	printf("issue[%s]:%s",npc:name(),name)
+	for k,v in pairs(st.rx_callbacks) do
+		if v and k[name] then
+			k[name](k,...)
+		end
+	end
+end
+
+function subscribe_for_events(npc,obj)
+	local st = db.storage[npc:id()]
+--	printf("subscribe[%s]",npc:name())
+	if not st.rx_callbacks then
+		st.rx_callbacks = {}
+	end
+	st.rx_callbacks[obj] = true
+end
+
+function unsubscribe_from_events(npc,obj)
+--	printf("unsubscribe[%s]",npc:name())
+	local st = npc and db.storage[npc:id()]
+	if st and st.rx_callbacks then
+		if obj then
+			st.rx_callbacks[obj] = nil
+		else
+			st.rx_callbacks = nil
+		end
+	end
+end
+
+function load_schemes()
+	if rx_reload then
+		load_scheme("rx_reload","reload",stype_stalker)
+	end
+	if rx_gl then
+		load_scheme("rx_gl","launch_grenade",stype_stalker)
+	end
+	if rx_facer then
+		load_scheme("rx_facer","facer",stype_stalker)
+	end
+	if rx_knife then
+		load_scheme("rx_knife","knife",stype_stalker)
+	end
+end
+
+function disable_schemes(npc)
+--[[	if rx_reload then
+		rx_reload.disable_scheme(npc,"reload")
+	end
+	if rx_gl then
+		rx_gl.disable_scheme(npc,"launch_grenade")
+	end
+	if rx_facer then
+		rx_facer.disable_scheme(npc,"facer")
+	end
+	if rx_knife then
+		rx_knife.disable_scheme(npc,"knife")
+	end]]
+end
+
+function enable_schemes(ini,npc)
+	if rx_reload then
+		rx_reload.set_scheme(npc,ini,"reload","reload")
+	end
+	if rx_gl then
+		rx_gl.set_scheme(npc,ini,"launch_grenade","launch_grenade")
+	end
+	if rx_facer then
+		rx_facer.set_scheme(npc,ini,"facer","facer")
+	end
+	if rx_knife then
+		rx_knife.set_scheme(npc,ini,"knife","knife")
+	end
+end
+
+function addCommonPrecondition(action)
+	if rx_reload then
+		action:add_precondition(world_property(rx_reload.evid_reload,false))
+	end
+	if rx_gl then
+--		action:add_precondition(world_property(rx_gl.evid_gl_fire,false))
+		action:add_precondition(world_property(rx_gl.evid_gl_reload,false))
+	end
+end
+
+function on_menu_close()
+end
+
+------------------------------------eating----------------------------------------
+
+local rx_ini = ini_file("misc\\rx_ai.ltx")
+local eating = {enabled = rx_ini:section_exist("npc_eating") and rx_ini:r_bool("npc_eating","enabled")}
+
+function eat_init()
+	eating.oic = rx_ini:r_bool("npc_eating","only_in_combat")
+	eating.max_h = rx_ini:r_float("npc_eating","medkit_health")/100
+	eating.min_b = rx_ini:r_float("npc_eating","bandage_bleeding")
+	eating.medkits = rx_utils.parse_list(rx_ini,"npc_eating","medkits")
+	eating.bandages = rx_utils.parse_list(rx_ini,"npc_eating","bandages")
+	eating.delay = rx_utils.parse_list(rx_ini,"npc_eating","delay")
+end
+
+function eat_medkit(npc)
+	if not eating.enabled then
+		return
+	end
+	if not eating.medkits then
+		eat_init()
+	end
+	local id = npc:id()
+	if eating.oic and not npc:best_enemy() then
+		eating[id] = nil
+		return
+	end
+	if eating[id] and eating[id].item and eating[id].time then
+		if eating[id].time < time_global() then
+--			printf("[%s]eat[%s]",npc:character_name(),eating[id].item:section())
+			npc:eat(eating[id].item)
+			eating[id].item = nil
+		end
+		return
+	end
+	if npc.health < eating.max_h and not xr_wounded.is_wounded(npc) then
+		for k,v in ipairs(eating.medkits) do
+			local medkit = npc:object(v)
+			if medkit then
+--				printf("health[%s]=%s:set[%s]",npc:character_name(),npc.health,v)
+				eating[id] = {}
+				eating[id].time = time_global() + math.random(eating.delay[1],eating.delay[2])
+				eating[id].item = medkit
+				return
+			end
+		end
+	end
+	if npc:get_bleeding() > eating.min_b then
+		for k,v in ipairs(eating.bandages) do
+			local bandage = npc:object(v)
+			if bandage then
+--				printf("bleeding[%s]=%s:set[%s]",npc:character_name(),npc:get_bleeding(),v)
+				eating[id] = {}
+				eating[id].time = time_global() + math.random(eating.delay[1],eating.delay[2])
+				eating[id].item = bandage
+				return
+			end
+		end
+	end
+end
