@@ -1,0 +1,237 @@
+---- Rulix aka Bak --- 29.7.2009
+
+function printf(s, ...)
+--	rx_ai.printf("ff:"..s,...)
+--	get_console():execute("flush")
+end
+
+local ff_ini = ini_file("misc\\rx_ff.ltx")
+local ff_sets = {forbiddens = {factions = {},npcs = {}},
+				check_prd = rx_utils.read_from_ini(ff_ini,"main","check_period",200),
+				enabled = rx_utils.read_from_ini(ff_ini,"main","enabled",true,0)}
+
+function init()
+	ff_sets.forbiddens.factions = rx_utils.parse_list(ff_ini,"main","forbidden_factions",true)
+	ff_sets.forbiddens.npcs = rx_utils.parse_list(ff_ini,"main","forbidden_npcs",true)
+	ff_sets.inited = true
+end
+
+class "evaluator_dont_shoot" (property_evaluator)
+function evaluator_dont_shoot:__init(npc,name,storage) super (nil,name)
+	self.st = storage
+end
+function evaluator_dont_shoot:evaluate()
+	local npc = self.object
+	local enemy = npc:best_enemy()
+	local res = false
+	if enemy and npc:see(enemy) and not xr_wounded.is_wounded(enemy) then
+		local f,d = friends_on_fire_line(npc)
+--		printf("eva[%s]:%s",npc:character_name(),tostring(f))
+		res = f
+		self.st.vdist = d
+	end
+--	printf("enemy[%s]: %s",npc:character_name(),tostring(enemy~=nil))
+	if res == true then
+		ogse_debug.add_active_eval( self.object, script_name(), "dont_shoot" )
+	end
+	return res
+end
+
+class "action_dont_shoot" (action_base)
+function action_dont_shoot:__init (npc,action_name,storage) super (nil,action_name)
+	self.st = storage
+end
+function action_dont_shoot:initialize()
+	action_base.initialize(self)
+	local npc = self.object
+	npc:set_mental_state(anim.danger)
+	npc:set_item(object.aim1,npc:active_item())
+	local enemy = npc:best_enemy()
+	if enemy then
+		npc:set_sight(look.fire_point,enemy:position())
+	end
+end
+function action_dont_shoot:execute()
+	action_base.execute(self)
+	local npc = self.object
+	local enemy = npc:best_enemy()
+	if enemy then
+		npc:set_sight(look.fire_point,enemy:position())
+	end
+	npc:set_item(object.aim1,npc:active_item())
+end
+function action_dont_shoot:finalize()
+    action_base.finalize(self)
+end
+
+local function get_state(npc)
+	return "assault"
+end
+
+local function get_vertex(npc,dist)
+	local rnd1,ang = math.random(100)
+	if rnd1 < 43 then
+		ang = math.random(50,60)
+	elseif rnd1 < 58 then
+		ang = math.random(160,200)
+	else
+		ang = math.random(300,310)
+	end
+	local dir = vector_rotate_y(npc:direction(),ang)
+	return npc:vertex_in_direction(npc:level_vertex_id(),dir,dist)
+end
+
+class "action_verso" (action_base)
+function action_verso:__init (npc,action_name,storage) super (nil,action_name)
+	self.st = storage
+end
+function action_verso:initialize()
+	action_base.initialize(self)
+	local npc = self.object
+	npc:set_desired_position()
+	npc:set_desired_direction()
+	npc:set_mental_state(anim.danger)
+	npc:set_item(object.aim1,npc:active_item())
+	local enemy = npc:best_enemy()
+	if enemy then
+		npc:set_sight(look.fire_point,enemy:bone_position("bip01_spine"))
+	end
+	self.vertex = get_vertex(npc,self.st.vdist)
+	self.timer = time_global()+800*self.st.vdist
+	printf("act2[%s]:init vertex = %s, vdist = %s",npc:character_name(),tostring(self.vertex),self.st.vdist)
+	state_mgr.set_state( script_name(), npc,"assault")
+end
+function action_verso:execute()
+	action_base.execute(self)
+	local npc,tg = self.object,time_global()
+	local enemy = npc:best_enemy()
+	if enemy then
+		npc:set_sight(look.fire_point,enemy:bone_position("bip01_spine"))
+	end
+	npc:set_item(object.aim1,npc:active_item())
+	if self.vertex then
+		npc:set_dest_level_vertex_id(self.vertex)
+	end
+	if not self.vertex or npc:level_vertex_id() == self.vertex or self.timer < tg then
+		printf("act2[%s]:vertex re",npc:character_name())
+		self.vertex = get_vertex(npc,self.st.vdist)
+		self.timer = tg+700*self.st.vdist
+	end
+end
+function action_verso:finalize()
+    action_base.finalize(self)
+	printf("act2[%s]:fin",self.object:character_name())
+end
+
+evid_dont_shoot = rx_ai.base_id+25
+actid_dont_shoot = evid_dont_shoot
+
+function add_to_binder(npc,ini,scheme,section,storage)
+	if not ff_sets.inited then
+		init()
+	end
+	local manager = npc:motivation_action_manager()
+	if not (ff_sets.enabled and not ff_sets.forbiddens.factions[npc:character_community()] and not ff_sets.forbiddens.npcs[npc:name()]) then
+		manager:add_evaluator(evid_dont_shoot,property_evaluator_const(false))
+		return
+	else
+		manager:add_evaluator(evid_dont_shoot,evaluator_dont_shoot(npc,"eva_dont_shoot",storage))
+	end
+	local action = action_verso(npc,"act_dont_shoot",storage)
+	action:add_precondition(world_property(stalker_ids.property_alive,true))
+	action:add_precondition(world_property(xr_evaluators_id.sidor_wounded_base,false))
+	if rx_bandage then
+		action:add_precondition(world_property(rx_bandage.evid_bandage,false))
+	end
+	if rx_gl then
+		action:add_precondition(world_property(rx_gl.evid_gl_reload,false))
+	end
+	if rx_facer then
+		action:add_precondition(world_property(rx_facer.evid_facer,false))
+	end
+	action:add_precondition( world_property( xrs_grenade.prop_grenade,          	     false  ) )
+	if blowout_scheme and blowout_scheme.evid_outside then
+		action:add_precondition(world_property(blowout_scheme.evid_outside,false))
+	end
+	action:add_precondition(world_property(evid_dont_shoot,true))
+	action:add_effect(world_property(evid_dont_shoot,false))
+	manager:add_action(actid_dont_shoot,action)
+	action = manager:action(stalker_ids.action_combat_planner)
+	action:add_precondition(world_property(evid_dont_shoot,false))
+--	action = manager:action(xr_actions_id.alife)
+--	action:add_precondition(world_property(evid_dont_shoot,false))
+end
+
+function npc_update(npc)
+end
+
+function set_scheme(npc,ini,scheme,section)
+	local st = xr_logic.assign_storage_and_bind(npc,ini,scheme,section)
+end
+
+function disable_scheme(npc, scheme)
+	local st = db.storage[npc:id()][scheme]
+	if st then
+		st.enabled = false
+	end
+end
+
+function friends_on_fire_line(npc)
+	local sid = npc:id()
+	local st = rx_ai.get_storage(sid,"friends_on_fire_line")
+	local tg = time_global()
+	if (st.wait or 0) >= tg then
+		return st.f,st.d
+	end
+	st.wait = tg+ff_sets.check_prd
+	st.f = false
+	st.d = 4
+	local friends = {}
+	local function check_object(obj)
+		if obj and obj.clsid and obj:alive() and obj:id() ~= sid then
+			if IsStalker(obj) and npc:relation(obj) ~= game_object.enemy then
+				table.insert(friends,obj)
+			end
+		end
+	end
+	for o in npc:memory_visible_objects() do
+		check_object(o:object())
+	end
+	for o in npc:memory_sound_objects() do
+--		check_object(o:object())
+	end
+	if #friends ~= 0 then
+		local npc_pos = npc:bone_position("bip01_l_finger02")
+		local be = npc:best_enemy()
+		local be_pos = be:bone_position("bip01_spine")
+		local be_dist = npc_pos:distance_to(be_pos)
+		if be_dist > 2 then
+			local dir_aim = be_pos:sub(npc_pos)
+			for i,friend in ipairs(friends) do
+--				if friend:relation(be) == game_object.enemy or npc:relation(friend) == game_object.friend then
+					local friend_pos = friend:bone_position("bip01_spine")
+					local friend_dist = npc_pos:distance_to(friend_pos)-0.5
+					if friend_dist < be_dist then
+						local dir_friend = utils.vector_copy_by_val(friend_pos):sub(npc_pos)
+						local vec_e,vec_f = utils.vector_copy_by_val(dir_aim):set_length(friend_dist),dir_friend:set_length(friend_dist)
+--						printf("vec_e=%s,vec_f=%s",rx_utils.vec_to_str(vec_e),rx_utils.vec_to_str(vec_f))
+						local er = 1
+						if friend_dist < 1.6 then
+							er = 0
+						end
+						local myfr = vec_f:similar(vec_e,er)
+						if myfr == 1 then
+							st.f = true
+							st.d = 4*be_dist/(be_dist-friend_dist)
+							if st.d > 25 then
+								st.d = 25
+							end
+							break
+						end
+					end
+--				end
+			end
+		end
+	end
+    return st.f,st.d
+end

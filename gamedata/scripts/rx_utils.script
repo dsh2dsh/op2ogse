@@ -1,0 +1,508 @@
+
+function init()
+end
+
+--------------------------------------ini---------------------------------------
+function read_from_ini(ini,sec,lin,def,typ)
+	if not ini then
+		ini = system_ini()
+	end
+	if sec and lin and ini:section_exist(sec) and ini:line_exist(sec,lin) then
+		if typ == 0 then
+			return ini:r_bool(sec,lin)
+		elseif typ == 1 then
+			return ini:r_string(sec,lin)
+		elseif typ == 2 then
+			return ini:r_string_wq(sec,lin)
+		else
+			return ini:r_float(sec,lin)
+		end
+	else
+		return def
+	end
+end
+
+function collect_sections(ini,sections)
+	local r,p = {},{}
+	for k,v in ipairs(sections) do
+		if ini:section_exist(v) then
+			local n = ini:line_count(v)
+			if n > 0 then
+				for i = 0,n-1 do
+					local res,id,val = ini:r_line(v,i,"","")
+					if r[id] == nil then
+						r[id] = val
+					end
+				end
+			end
+			p[k] = n
+		else
+			p[k] = 0
+		end
+	end
+	return r,p
+end
+
+function parse_list(ini,sec,val,convert)
+	local tmp = str_explode(",",read_from_ini(ini,sec,val,"",1),true)
+	if convert and #tmp ~= 0 then
+		local t = {}
+		for i,v in ipairs(tmp) do
+			t[v] = true
+		end
+		return t
+	end
+	return tmp
+end
+
+--------------------------------------str---------------------------------------
+function str_explode(div,str,clear)
+	local t = {}
+	local cpt = string.find(str,div,1,true)
+	if cpt then
+		repeat
+			if clear then
+				table.insert(t, string.trim(string.sub(str,1,cpt-1)))
+			else
+				table.insert(t,string.sub(str,1,cpt-1))
+			end
+			str = string.sub(str,cpt+string.len(div))
+			cpt = string.find(str,div,1,true)
+		until cpt == nil
+	end
+	if clear then
+		table.insert(t, string.trim(str))
+	else
+		table.insert(t,str)
+	end
+	return t
+end
+
+function vec_to_str(vec)
+	if vec == nil then return "nil" end
+	return string.format("[%d:%d:%d]",vec.x,vec.y,vec.z)
+end
+
+--------------------------------------class---------------------------------------
+local weapon_classes_without_grenades = {
+		[clsid.wpn_ak74] 				= true,
+		[clsid.wpn_ak74_s] 				= true,
+		[clsid.wpn_bm16] 				= true,
+		[clsid.wpn_bm16_s] 				= true,
+		[clsid.wpn_fn2000] 				= true,
+		[clsid.wpn_fort]				= true,
+		[clsid.wpn_groza] 				= true,
+		[clsid.wpn_groza_s] 			= true,
+		[clsid.wpn_hpsa] 				= true,
+		[clsid.wpn_hpsa_s] 				= true,
+		[clsid.wpn_knife] 				= true,
+		[clsid.wpn_knife_s] 			= true,
+		[clsid.wpn_lr300] 				= true,
+		[clsid.wpn_lr300_s] 			= true,
+		[clsid.wpn_pm] 					= true,
+		[clsid.wpn_pm_s] 				= true,
+		[clsid.wpn_rg6] 				= true,
+		[clsid.wpn_rg6_s] 				= true,
+		[clsid.wpn_rpg7] 				= true,
+		[clsid.wpn_rpg7_s] 				= true,
+		[clsid.wpn_shotgun] 			= true,
+		[clsid.wpn_shotgun_s] 			= true,
+		[clsid.wpn_svd] 				= true,
+		[clsid.wpn_svd_s] 				= true,
+		[clsid.wpn_svu] 				= true,
+		[clsid.wpn_svu_s] 				= true,
+		[clsid.wpn_usp45] 				= true,
+		[clsid.wpn_usp45_s] 			= true,
+		[clsid.wpn_val] 				= true,
+		[clsid.wpn_val_s] 				= true,
+		[clsid.wpn_vintorez] 			= true,
+		[clsid.wpn_vintorez_s] 			= true,
+		[clsid.wpn_walther] 			= true,
+		[clsid.wpn_walther_s] 			= true
+}
+
+function item_is_fa(object, class_id)
+	local id = class_id or get_clsid(object)
+	return weapon_classes_without_grenades[id] == true
+end
+
+actor_clsid = clsid.actor
+function is_actor(o,c)
+	if not c then
+		c = o and o:clsid()
+	end
+	return c == actor_clsid
+end
+
+restrictor_clsid = 115
+function is_restrictor(o,c)
+	if not c then
+		c = o and o:clsid()
+	end
+	return c == restrictor_clsid
+end
+--------------------------------------sch---------------------------------------
+function add_anim(npc,anim,move)
+	if anim then
+		npc:add_animation(anim)
+	end
+end
+
+function get_sound(snd)
+	if snd then
+		return xr_sound.get_safe_sound_object(snd)
+	end
+end
+
+--------------------------------------net------------------------------------------
+function get_weapon_data(sobj)
+	if not sobj then
+		return {}
+	end
+	local stpk = net_packet()
+	sobj:STATE_Write(stpk)
+	local size = stpk:w_tell()
+	stpk:r_seek(0)
+	local t = {}
+	parse_object_packet(t,stpk)
+	parse_visual_packet(t,stpk)
+	parse_item_packet(t,stpk)
+	parse_item_weapon_packet(t,stpk)
+	return t
+end
+
+function get_restrictor_data(sobj)
+	local stpk = net_packet()
+	sobj:STATE_Write(stpk)
+	local size = stpk:w_tell()
+	stpk:r_seek(0)
+	local t = {}
+	parse_object_packet(t,stpk)
+	parse_shape_packet(t,stpk)	
+	t.restrictor_type = stpk:r_u8()
+	return t
+end
+
+function parse_object_packet(ret,stpk)
+	ret.gvid = stpk:r_u16()
+	ret.obf32u1 = stpk:r_float()
+	ret.obs32u2 = stpk:r_s32()
+	ret.lvid = stpk:r_s32()
+	ret.oflags = stpk:r_s32()
+	ret.custom = stpk:r_stringZ()
+	ret.sid = stpk:r_s32()
+	ret.obs32u3 = stpk:r_s32()
+	return ret
+end
+
+function parse_visual_packet(ret,stpk)
+	ret.visual = stpk:r_stringZ()
+	ret.vsu8u1 = stpk:r_u8()
+	return ret
+end
+
+function parse_item_packet(ret,stpk)
+	ret.condition = stpk:r_float()
+	return ret
+end
+
+function parse_item_weapon_packet(ret,stpk)
+	ret.ammo_current = stpk:r_u16()
+	ret.ammo_elapsed = stpk:r_u16()
+	ret.weapon_state = stpk:r_u8()
+	ret.addon_flags = stpk:r_u8()
+	ret.ammo_type = stpk:r_u8()
+	return ret
+end
+
+function parse_shape_packet(t,stpk)
+	local shape_count = stpk:r_u8()
+	t.shapes = {}
+	for i=1,shape_count do
+		local shape_type = stpk:r_u8()
+		t.shapes[i] = {}
+		t.shapes[i].shtype = shape_type
+		if shape_type == 0 then
+			t.shapes[i].center = stpk:r_vec3()
+			t.shapes[i].radius = stpk:r_float()
+		else
+			t.shapes[i].v1 = stpk:r_vec3()
+			t.shapes[i].v2 = stpk:r_vec3()
+			t.shapes[i].v3 = stpk:r_vec3()
+			t.shapes[i].offset = stpk:r_vec3()
+		end
+	end
+end
+
+function readvu8uN(packet,n)
+	local v = {}
+	for i=1,n,1 do
+		table.insert(v,packet:r_u8())
+	end
+	return v
+end
+
+function set_weapon_data(t,sobj)
+	if sobj then
+		local stpk = net_packet()
+		fill_object_packet(t,stpk)
+		fill_visual_packet(t,stpk)
+		fill_item_packet(t,stpk)
+		fill_item_weapon_packet(t,stpk)	
+		local size = stpk:w_tell()
+		stpk:r_seek(0)
+		sobj:STATE_Read(stpk,size)
+	end
+end
+
+function set_restrictor_data(t,sobj)
+	local stpk = net_packet()
+	fill_object_packet(t,stpk)
+	fill_shape_packet(t,stpk)
+	stpk:w_u8(t.restrictor_type)
+	local size = stpk:w_tell()
+	stpk:r_seek(0)
+	sobj:STATE_Read(stpk,size)
+end
+
+function fill_object_packet(ret,stpk)
+	stpk:w_u16(ret.gvid)
+	stpk:w_float(ret.obf32u1)
+	stpk:w_s32(ret.obs32u2)
+	stpk:w_s32(ret.lvid)
+	stpk:w_s32(ret.oflags)
+	stpk:w_stringZ(ret.custom)
+	stpk:w_s32(ret.sid)
+	stpk:w_s32(ret.obs32u3)
+end
+
+function fill_visual_packet(ret,stpk)
+	stpk:w_stringZ(ret.visual)
+	stpk:w_u8(ret.vsu8u1)
+end
+
+function fill_item_packet(ret,stpk)
+	stpk:w_float(ret.condition)
+	return ret
+end
+
+function fill_item_weapon_packet(ret,stpk)
+	stpk:w_u16(ret.ammo_current)
+	stpk:w_u16(ret.ammo_elapsed)
+	stpk:w_u8(ret.weapon_state)
+	stpk:w_u8(ret.addon_flags)
+	stpk:w_u8(ret.ammo_type)
+	return ret
+end
+
+function fill_shape_packet(t,stpk)
+	stpk:w_u8(table.getn(t.shapes))
+	for i=1,table.getn(t.shapes) do
+		stpk:w_u8(t.shapes[i].shtype)
+		if t.shapes[i].shtype == 0 then
+			stpk:w_vec3(t.shapes[i].center)
+			stpk:w_float(t.shapes[i].radius)
+		else
+			stpk:w_vec3(t.shapes[i].v1)
+			stpk:w_vec3(t.shapes[i].v2)
+			stpk:w_vec3(t.shapes[i].v3)
+			stpk:w_vec3(t.shapes[i].offset)
+		end
+	end
+end
+
+function writevu8uN(pk,v)
+	local len = table.getn(v)
+	for i=1,len,1 do
+		pk:w_u8(v[i])
+	end
+end
+
+--------------------------------------addons---------------------------------------
+local adt = {}
+
+function get_addon_status(wpn,addon)
+	local sec = wpn:section()
+	if not adt[sec] then
+		adt[sec] = {}
+	end
+	if not adt[sec][addon] then
+		local ast = {sc = "scope_status",sl = "silencer_status",gl = "grenade_launcher_status"}
+		adt[sec][addon] = read_from_ini(nil,sec,ast[addon],0)
+	end
+	return adt[sec][addon]
+end
+
+local rep_mem = {}
+
+function get_addon_flag(wpn,with_int)
+	local id,tg = wpn:id(),time_global()
+	if tg == rep_mem.tg and rep_mem.id == id and rep_mem.wi == with_int then
+		return rep_mem.fl
+	else
+		local flag = get_weapon_data(alife():object(wpn:id())).addon_flags or 0
+		if with_int then
+			if get_addon_status(wpn,"sc") == 1 then
+				flag = flag+1
+			end
+			if get_addon_status(wpn,"sl") == 1 then
+				flag = flag+4
+			end
+			if get_addon_status(wpn,"gl") == 1 then
+				flag = flag+2
+			end
+		end
+		rep_mem = {tg = tg,id = id,wi = with_int,fl = flag}
+		return flag
+	end
+end
+
+function addon_attached(wpn,addon,flag)
+	local ft = {sc = {[1] = true,[3] = true,[5] = true,[7] = true},
+				sl = {[4] = true,[5] = true,[6] = true,[7] = true},
+				gl = {[2] = true,[3] = true,[6] = true,[7] = true}}
+	if ft[addon] then
+		return ft[addon][flag or get_addon_flag(wpn,true)] == true
+	end
+	return false
+end
+
+--------------------------------------ai-----------------------------------------
+function npc_in_cover(npc)
+	local st = rx_ai.get_storage(npc:id(),"in_cover")
+	local tg = time_global()
+	if (st.wait or 0) < tg then
+		st.wait = tg+300
+		if xrs_battle_ai then
+			alt_be = xrs_battle_ai.get_target(npc)
+		end
+		local be = alt_be or npc:best_enemy()
+		if xr_companion.is_companion(npc:id()) then
+			be = xr_combat_companion.get_target(npc)
+		end		
+		local enemies = {}
+		if be and not xr_wounded.is_wounded(be) then
+			enemies[1] = be
+		else
+--			rx_ai.printf("npc_in_cover[%s]:not be",npc:character_name())
+			st.evn = true
+			return st.evn
+		end
+		local tt = {}
+		for o in npc:memory_visible_objects() do
+			local obj = o:object()
+			local id = obj:id()
+			if obj and obj.clsid and obj:alive() and npc:relation(obj) == game_object.enemy and (IsStalker(obj) or IsMonster(obj) or rx_utils.is_actor(obj)) and not xr_wounded.is_wounded(obj) then
+--				rx_ai.printf("npc_in_cover[%s]:add enemy[%s]",npc:character_name(),obj:name())
+				table.insert(enemies,obj)
+				tt[id] = true
+			end
+		end
+		for o in npc:memory_sound_objects() do
+			local obj = o:object()
+			local id = obj:id()
+			if not tt[id] then
+				if obj and obj.clsid and obj:alive() and npc:relation(obj) == game_object.enemy and (IsStalker(obj) or IsMonster(obj) or rx_utils.is_actor(obj)) and not xr_wounded.is_wounded(obj) then
+--					rx_ai.printf("npc_in_cover[%s]:add enemy[%s]",npc:character_name(),obj:name())
+					table.insert(enemies,obj)
+				end
+			end
+		end
+		for i,enemy in ipairs(enemies) do
+			local dist = npc:position():distance_to_sqr(enemy:position())
+			local seez = enemy:see(npc) or npc:see(enemy)
+			local cover = level.cover_in_direction(npc:level_vertex_id(),enemy:position():sub(npc:position()))
+			if dist < 25 
+			or seez 
+			or (dist >= 25 and cover < 0.8)
+			then
+--				rx_ai.printf("npc_in_cover[%s]:enemy![dist = %s,seez = %s,cover = %s]",npc:character_name(),dist,tostring(seez),cover)
+				st.evn = false
+				st.wait = tg+2000
+				return st.evn
+			end
+		end
+		st.evn = true
+	end
+	return st.evn
+end
+
+function eat_medkit(npc,medkit)
+	if npc and medkit then
+		local sect = tostring(medkit:section())
+		if medkit then
+			local id = medkit:id()
+			if id then
+				local medkit_to_eat = level.object_by_id(id)
+				if medkit_to_eat then
+					npc:eat(medkit_to_eat)
+				end
+			end
+		end
+		if sect == "medkit" then 
+			npc.health = 0.25
+		elseif sect == "medkit_army" then
+			npc.health = 0.6
+		elseif sect == "medkit_scientic" then
+			npc.health = 0.9
+		end
+		local bandage = alife():create("bandage",npc:position(),npc:level_vertex_id(),npc:game_vertex_id(),npc:id())
+		local bandage_l = level.object_by_id(bandage.id)
+		if bandage_l then
+			npc:eat(bandage_l)
+		end
+	end
+end
+
+function IsTrader(npc)
+	local st = rx_ai.get_storage(npc:id())
+	if st.is_trader == nil then
+		local trader = false
+		if npc:character_community() == "trader" or npc:clsid() == clsid.script_trader or npc:clsid() == clsid.trader then
+			trader = true
+		end
+		if string.find(npc:section(),"trader") then
+			trader = true
+		end
+		local cini = db.storage[npc:id()].ini
+		local logic = db.storage[npc:id()].section_logic
+		if not logic and not trader then
+			return false
+		end
+		if cini and logic and cini:section_exist(logic) and cini:line_exist(logic,"trade") then
+			trader = true
+		end
+		st.is_trader = trader
+	end
+	return st.is_trader == true
+end
+
+--------------------------------------output---------------------------------------
+function give_game_news(t,d)
+	if db.actor then
+		db.actor:give_game_news(t,"ui\\ui_iconsTotal",Frect():set(0,235,83,47),0,d)
+	end
+end
+
+--------------------------------------weapon---------------------------------------
+function get_weapon(npc)
+	return rx_wmgr and rx_wmgr.get_wm(npc):get_weapon() or npc:best_weapon()
+end
+
+--------------------------------------switch---------------------------------------
+function switch_online(id)
+	if id == -1 then return end
+	local sim = alife()
+	if sim then
+		sim:set_switch_online(id,true)
+		sim:set_switch_offline(id,false)
+	end
+end
+
+function switch_offline(id)
+	local sim = alife()
+	if sim then
+		sim:set_switch_online(id,false)
+		sim:set_switch_offline(id,true)
+	end
+end
