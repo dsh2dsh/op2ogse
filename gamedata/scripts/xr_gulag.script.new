@@ -1,10 +1,5 @@
 --' Диденко Руслан (Stohe), Чугай Александр (Chugai)
 
-local table_sort = table.sort
-local math_min = math.min
---function printf()
---end
-
 --' в работах поле object хранит id объекта
 
 level_gulags = {gulag_general, gulag_escape, gulag_garbage, gulag_agroprom, gulag_agroprom_underground, gulag_dark_valley, gulag_labx18, gulag_bar,
@@ -26,6 +21,14 @@ local job_idle_after_death   = 600 -- в течении такого периода времени после сме
 idle_nil  = nil
 idle_once = -1
 idle_none = -2
+
+local total_debug = false
+
+function write_log(str)
+	if total_debug then
+		log1(str)
+	end
+end
 
 local path_fields = { "path_walk", "path_main", "path_home", "center_point" }
 
@@ -55,6 +58,7 @@ function gulag:__init(smrttrn, type, squad, groups, npc_info, capacity)
 	self.ObjectJob              = {} -- по id. номер работы для каждого персонажа
 	self.JobLoaded              = {} -- для каждой работы загруженные из save данные
 	self.Job_avail_in_state     = nil
+	self.Need_Reinit			= {} -- нпц занявшие неверные работы, сделать им реинит
 
 	self.state      = 0
 	self.stateBegin = nil
@@ -70,7 +74,7 @@ function gulag:load_jobs()
 	gulag_tasks.loadJob( self.Job, self.name, self.type, self.squad, self.groups, self )
 	self:init_ltx( self.name, self.type )
 
-	table_sort( self.Job, function(a,b) return a.prior > b.prior end )
+	table.sort( self.Job, function(a,b) return a.prior > b.prior end )
 
 	self:prepare_jobs_for_new_state()
 
@@ -88,12 +92,12 @@ function gulag:load_jobs()
 		end
 	end
 
-	self.capacity               = math_min( capacity, self.capacity )
+	self.capacity               = math.min( capacity, self.capacity )
 	self.capacity_non_exclusive = self.capacity
 
 --	printf("LOAD JOBS %s", tostring(self.name))
 	-- DEBUG
---	self:validate_jobs()
+	-- self:validate_jobs()
 end
 
 -- проверки правильности набора работ.
@@ -117,30 +121,45 @@ function gulag:validate_jobs()
 	for i, v in ipairs( jobs_avail_in_states ) do
 		if v < self.capacity then
 			print_table( self.Job )
-			abort( "[smart_terrain %s] type=%s state=%d capacity=%d: too few absolutely available jobs", self.name, self.type, i, self.capacity )
+			abort( "!!!ERROR [smart_terrain "..tostring(self.name).."] capacity="..tostring(self.capacity)..": too few absolutely available jobs" )
 		end
 	end
 end
 
 -- подготовка гулага к работе
 function gulag:initialize()
+
+--	ogse_debug.process_gulag(self, "gul_i", 1)
+
 	self.ObjectJobPathName = {} --' по id. имя патрульного пути места работы персонажа
 	self.restrictors       = {} --' по id. назначенные гулагом рестрикторы для каждого персонажа
-
+	
+--	ogse_debug.process_gulag(self, "gul_i", 2)
+	
 	self:prepare_jobs()
+	
+--	ogse_debug.process_gulag(self, "gul_i", 33)
 
 	self.calculateStates = gulag_tasks.loadStates( self.name, self.type )
+	
+--	ogse_debug.process_gulag(self, "gul_i", 4)
 
 	local ini = self.smrttrn:spawn_ini()
 	local sect = "smart_terrain"
 	if not ini:section_exist( sect ) then
 		sect = "gulag1"
 	end
+	
+--	ogse_debug.process_gulag(self, "gul_i", 5)
 
 	self.state_switch_0 = xr_logic.parse_condlist( self.smrttrn, "gulag1", "switch_0", utils.cfg_get_string(ini, sect, "switch_0", self.smrttrn, false, "", "") )
 	self.state_switch_1 = xr_logic.parse_condlist( self.smrttrn, "gulag1", "switch_1", utils.cfg_get_string(ini, sect, "switch_1", self.smrttrn, false, "", "") )
 
+--	ogse_debug.process_gulag(self, "gul_i", 6)
+	
 	self.JobLoaded = nil
+	
+--	ogse_debug.process_gulag(self, "gul_i", 0)
 end
 
 -- подготовить работы.
@@ -150,34 +169,64 @@ function gulag:prepare_jobs()
 	local ptrl, path_name
 	local job_loaded
 	local empty_table = {}
+	
+	write_log("!!DEBUG_GULAG_1")
 
 	for i, job in ipairs( self.Job ) do
+	
+		write_log("!!DEBUG_GULAG_2 "..tostring(job.section))
+	
 		job.num              = i
+		
+		write_log("!!DEBUG_GULAG_3 "..tostring(job.num))
 
 		path_name            = self:get_job_path_name( job )
 		ptrl                 = patrol( path_name )
+		
+		write_log("!!DEBUG_GULAG_4 "..tostring(path_name))
 
 		job.path_name        = path_name
 		job.game_vertex_id   = ptrl:game_vertex_id( 0 )
 		job.level_id		 = game_graph():vertex(job.game_vertex_id):level_id()
 		job.position         = ptrl:point( 0 )
 
+		write_log("!!DEBUG_GULAG_5 "..tostring(job.section))
+		
 		job_loaded           = self.JobLoaded[i] or empty_table
+		
+		write_log("!!DEBUG_GULAG_6 "..tostring(job.section))
 
 		job.begin            = job_loaded.begin
 		job.fill_idle        = job_loaded.fill_idle
 		job.idle_after_death_end = job_loaded.idle_after_death_end
+		
+		write_log("!!DEBUG_GULAG_7 "..tostring(job.section))
 	end
 
 	local job
+	
+	write_log("!!DEBUG_GULAG_8")
 
 	for obj_id, jobN in pairs( self.ObjectJob ) do
-		job = self.Job[jobN]
-          if job ~= nil then
+	
+		write_log("!!DEBUG_GULAG_8A")
+
+		job        = self.Job[jobN]
+		
+		write_log("!!DEBUG_GULAG_9 ["..obj_id.."] ["..job.section.."] path ["..tostring(job.path_name).."]")
+		
 		job.object = obj_id
 		self.ObjectJobPathName[obj_id] = job.path_name
-          end
+		
+		if not self:availState(job.state, self.state) then
+			self.Need_Reinit[obj_id]	= true
+			log1("!!DEBUG_GULAG_UNAVAIL ["..obj_id.."] ["..job.section.."] path ["..tostring(job.path_name).."]")
+		end
+		
+		write_log("!!DEBUG_GULAG_10 "..self.ObjectJobPathName[obj_id])
 	end
+	
+	write_log("!!DEBUG_GULAG_FIN")
 end
 
 -- составить список работ существующих в данном состоянии гулага.
@@ -229,13 +278,21 @@ end
 
 -- получить имя пути места работы
 function gulag:get_job_path_name( job )
+
+	write_log("!!DEBUG_GULAG_PATH_1 "..tostring(job.section))
+
 	local section = job.section
 
 	if not self.ltx:line_exist( section, "active" ) then
 		abort( "gulag: ltx=%s  no 'active' in section %s", self.ltx_name, section )
 	end
+	
+	
 
 	local active_section = self.ltx:r_string( section, "active" )
+	
+	write_log("!!DEBUG_GULAG_PATH_2 "..tostring(active_section))
+	
 	local path_field
 
 	for i, v in ipairs( path_fields ) do
@@ -244,13 +301,22 @@ function gulag:get_job_path_name( job )
 			break
 		end
 	end
+	
+	write_log("!!DEBUG_GULAG_PATH_3 "..tostring(path_field))
 
 	if not path_field then
 		abort( "gulag: ltx=%s, there is no path in section %s", self.ltx_name, active_section )
 	end
+	
+	write_log("!!DEBUG_GULAG_PATH_4 ")
 
 	if path_field == "center_point" then --' TODO убрать затык
-		local path_name = self.name .. "_" .. self.ltx:r_string( active_section, path_field )
+		-- self.type
+		
+		local prefix = self.name
+		write_log("!!DEBUG_GULAG_PATH_5 "..tostring(prefix .. "_" .. self.ltx:r_string( active_section, path_field )))
+	
+		local path_name = prefix .. "_" .. self.ltx:r_string( active_section, path_field )
 
 		if level.patrol_path_exists( path_name .. "_task" ) then
 			return path_name .. "_task"
@@ -258,7 +324,9 @@ function gulag:get_job_path_name( job )
 			return path_name
 		end
 	else
-		return self.name .. "_" .. self.ltx:r_string( active_section, path_field )
+	
+		local prefix = self.name
+		return prefix .. "_" .. self.ltx:r_string( active_section, path_field )
 	end
 end
 
@@ -272,7 +340,7 @@ function gulag:save_common( packet )
 	packet:w_u8(self.population_comed)
 	packet:w_u8(self.population_non_exclusive)
 
-	packet:w_u8( #self.Job )
+	packet:w_u8( table.getn( self.Job ) )
 
 	for i, job in ipairs( self.Job ) do
 		packet:w_u32( job.begin            or 0 )
@@ -351,7 +419,7 @@ end
 -- настроить персонажа на работу в офлайне.
 -- если он в это время в онлайне, то вызвать object_setup_online
 function gulag:object_setup_offline( obj_id, was_online )
-	printf( "[smart_terrain %s] gulag: object_setup_offline: obj=%s", self.name, self.npc_info[obj_id].name )
+	-- printf( "[smart_terrain %s] gulag: object_setup_offline: obj=%s", self.name, self.npc_info[obj_id].name )
 
 	self.Object[obj_id] = true
 
@@ -370,9 +438,16 @@ end
 -- если он уже пришёл на работу, настроить ему логику и рестрикторы (при необходимости).
 -- obj=game_object
 function gulag:object_setup_online( obj_id, obj, need_setup_logic, need_setup_restrictors )
-	printf( "[smart_terrain %s] gulag: object_setup_online: obj=%s need_setup_logic=%s need_setup_restrictors=%s", self.name, obj:name(), tostring(need_setup_logic), tostring(need_setup_restrictors) )
+--	log3( "[smart_terrain %s] gulag: object_setup_online: obj=%s need_setup_logic=%s need_setup_restrictors=%s", self.name, obj:name(), tostring(need_setup_logic), tostring(need_setup_restrictors) )
 
 	self.Object[obj_id] = obj
+	
+	if self.ObjectJob[obj_id] and self.Need_Reinit[obj_id] then
+		self:free_obj_and_reinit( obj_id )
+		self.Need_Reinit[obj_id] = nil
+		log1("!!GULAG_REINIT "..obj_id)
+		need_setup_logic = true
+	end	
 
 	if self.ObjectJob[obj_id] then
 		local job = self.Job[self.ObjectJob[obj_id]]
@@ -392,11 +467,8 @@ end
 -- если объект жив и он в онлайне, то переинициализировать логику.
 function gulag:removeObject( obj_id )
 	self:free_obj_and_reinit( obj_id )
-
 	self.Object[obj_id]      = nil
-
 	self:clear_restrictors_info( obj_id )
-
 	self.population = self.population - 1
 	if not self.npc_info[obj_id].exclusive then
 		self.population_non_exclusive = self.population_non_exclusive - 1
@@ -445,14 +517,12 @@ end
 
 --' Убирание мертвого чувака. Вызывается из смарттеррейна
 function gulag:clear_dead(obj_id)
-	printf( "[smart_terrain %s] gulag: Clear_dead: obj=%s", self.name, self.npc_info[obj_id].name)
-
+	-- printf( "[smart_terrain %s] gulag: Clear_dead: obj=%s", self.name, self.npc_info[obj_id].name)
 	if self.ObjectJob[obj_id] then
 		self:changeCasualities( 1 )
 		local job = self.Job[self.ObjectJob[obj_id]]
-		job.idle_after_death_end = amk.game_milliseconds() + ( job.idle_after_death or job_idle_after_death ) * 1000
+		job.idle_after_death_end = game.time() + ( job.idle_after_death or job_idle_after_death ) * 1000
 	end
-
 	self.smrttrn:unregister_npc( self.npc_info[obj_id].se_obj )
 end
 
@@ -479,20 +549,17 @@ function gulag:can_obj_begin_job( obj_id, obj )
 	local jobN = self.ObjectJob[obj_id]
 
 	if jobN and not self.Object_begin_job[obj_id] then
-		local job = self.Job[jobN]		
+		local job = self.Job[jobN]
+		
 		--' Спешл кейс, проверка только по вертексам графа
-          if job ~= nil then
 		if job.position_threshold == "graph" then
 			local obj_gv, obj_pos = self:get_obj_game_vertex_and_position( obj_id )
-			local job_gv = game_graph():vertex( job.game_vertex_id )
+			local job_gv          = game_graph():vertex( job.game_vertex_id )
 			if obj_gv:level_vertex_id() == job_gv:level_vertex_id() then
 				return true
-                end
-                return false
-            end
-        else
-            return false
-     end
+			end
+			return false
+		end
 	
 		return self:distance_to_job_location(obj_id, job) < (job.position_threshold or job_position_threshold)
 	else
@@ -559,12 +626,12 @@ end
 -- работа доступна, когда время idle истекло (или не задано)
 -- и занята работа, от которой зависит данная работа.
 function gulag:availJob(job)
-	if job.begin == nil or amk.game_milliseconds() - job.begin > job.idle then
-		if job.idle_after_death_end == nil or job.idle_after_death_end < amk.game_milliseconds() then
+	if job.begin == nil or game.time() - job.begin > job.idle then
+		if job.idle_after_death_end == nil or job.idle_after_death_end < game.time() then
 			if job.fill_idle ~= nil then
 				if job.fill_idle == idle_none then
 					return false
-				elseif job.fill_idle ~= idle_once and job.fill_idle < amk.game_milliseconds() - job.begin then
+				elseif job.fill_idle ~= idle_once and job.fill_idle < game.time() - job.begin then
 					return false
 				end
 			end
@@ -578,7 +645,7 @@ end
 -- Текущая работа доступна, если не истекло ее время и занята работа, от которой она зависит
 function gulag:availCurrent(job)
 	if job.timeout == nil or
-	   job.begin == nil or amk.game_milliseconds() - job.begin < job.timeout
+	   job.begin == nil or game.time() - job.begin < job.timeout
 	then
 		return true
 	else
@@ -635,11 +702,13 @@ function gulag:distance_to_job_location( obj_id, job )
 	end
 end
 
--- получить точку графа, на которой находится персонаж и его координаты на уровне
+-- получить точку графа, на которой находится персонаж и его локальные координаты на уровне
 -- в зависимости от того, в офлайне или в онлайне персонаж, берётся по разному
 function gulag:get_obj_game_vertex_and_position( obj_id )
 	local obj = self.Object[obj_id]
 
+	--log1(debug.traceback())
+	
 	if obj == true then
 		obj = self.npc_info[obj_id].se_obj
 
@@ -678,7 +747,7 @@ function gulag:calc_distance_table( jobs, objs, prior_block_start )
 	local t
 	local i              = prior_block_start
 
-	while i <= #jobs and jobs[i].prior == block_priority do
+	while i <= table.getn( jobs ) and jobs[i].prior == block_priority do
 		if jobs[i].object == nil then
 			predicate = jobs[i].predicate
 
@@ -716,7 +785,7 @@ end
 -- найти занятых персонажей, которые могут занять заданную работу.
 -- поиск ведётся начиная с самых низкоприоритетных работ
 function gulag:find_obj_on_jobLow_for_jobHigh( Job_avail, job_high )
-	local n = #Job_avail
+	local n = table.getn( Job_avail )
 	local i = n
 
 	local job_low
@@ -724,10 +793,6 @@ function gulag:find_obj_on_jobLow_for_jobHigh( Job_avail, job_high )
 	local predicate    = job_high.predicate
 	local priority     = nil
 	local obj_suitable = nil
-
-    if not job_high_num or not i then
-        return nil
-    end
 
 	while i > job_high_num and (not priority or priority == Job_avail[i].prior) and (Job_avail[i].prior < job_high.prior) do
 		job_low = Job_avail[i]
@@ -779,10 +844,10 @@ function gulag:updateJob()
 	local prior_block_start = 1
 	local prior_block_end
 
-	while prior_block_start <= #Job_avail do
+	while prior_block_start <= table.getn( Job_avail ) do
 		dists, prior_block_end = self:calc_distance_table( Job_avail, obj_avail, prior_block_start )
 
-		table_sort( dists, function(a,b) return a.dist < b.dist end )
+		table.sort( dists, function(a,b) return a.dist < b.dist end )
 
 		self:assign_jobs_using_distance_table( Job_avail, obj_avail, dists )
 
@@ -849,9 +914,9 @@ end
 
 -- получить тип объекта (сталкер/монстр)
 function gulag:get_stype( obj_id )
-	if IAmAStalker[self.npc_info[obj_id].class_id] then
+	if IsStalker( nil, self.npc_info[obj_id].class_id ) then
 		return modules.stype_stalker
-	elseif IAmAMonster[self.npc_info[obj_id].class_id] then
+	elseif IsMonster( nil, self.npc_info[obj_id].class_id ) then
 		return modules.stype_mobile
 	else
 		abort( "[smart_terrain %s] obj=%s clsid=%d: gulag supports stalkers and monsters only!", self.name, self.npc_info[obj_id].name, self.npc_info[obj_id].class_id )
@@ -881,12 +946,12 @@ function gulag:setup_squad_and_group( obj_id, job )
 
 		local squad = level_groups[level.name()]
 		if not obj:alive() then
-			printf("CHANGE TEAM [%s] to [%s][%s][%s]. Object is DEAD, clearing", obj:name(), npc_info.team, squad or npc_info.o_squad, job.group or npc_info.o_group)
+			-- printf("CHANGE TEAM [%s] to [%s][%s][%s]. Object is DEAD, clearing", obj:name(), npc_info.team, squad or npc_info.o_squad, job.group or npc_info.o_group)
 			self:clear_dead(obj_id) --'Затычка против вылета.
 			return
 		end
 
-		printf("CHANGE TEAM [%s] to [%s][%s][%s]", obj:name(), npc_info.team, squad or npc_info.o_squad, job.group or npc_info.o_group )
+		-- printf("CHANGE TEAM [%s] to [%s][%s][%s]", obj:name(), npc_info.team, squad or npc_info.o_squad, job.group or npc_info.o_group )
 		obj:change_team( npc_info.team, squad or npc_info.o_squad, job.group or npc_info.o_group )
 
 		npc_info.squad = obj:squad()
@@ -904,8 +969,7 @@ end
 
 -- установить npc работу, к ней рестрикторы, настроить логику, поменять squad, group
 function gulag:setJob(obj_id, job)
-  --amk.mylog("set job for "..obj_id.." in "..self.name)
-	printf( "[smart_terrain %s] gulag: setJob: obj=%s job=%d %s", self.name, self.npc_info[obj_id].name, job.num, job.section )
+	-- write_log( "!!DEBUG [smart_terrain "..self.name.."] gulag: setJob: obj="..self.npc_info[obj_id].name.." job="..job.num.." "..job.section)
 
 	job.object = obj_id
 
@@ -925,11 +989,11 @@ end
 -- вызвать спавнер.
 function gulag:beginJob( obj_id )
 	local job = self.Job[self.ObjectJob[obj_id]]
-	printf( "[smart_terrain %s] gulag: beginJob: obj=%s job=%d %s", self.name, self.npc_info[obj_id].name, job.num, job.section )
+	log3( "[smart_terrain %s] gulag: beginJob: obj=%s job=%d %s", self.name, self.npc_info[obj_id].name, job.num, job.section )
 
 	self.Object_begin_job[obj_id] = true
 
-	job.begin = amk.game_milliseconds()
+	job.begin = game.time()
 
 	if job.fill_idle == idle_once then
 		job.fill_idle = idle_none
@@ -970,14 +1034,28 @@ function gulag:setup_job_online( se_obj, job )
 	end
 end
 
+valid_restrictors = {}
+
+function make_restrictors_registry()
+	for id=1,65535 do
+		local npc = alife():object(id)
+		if npc then
+			local sect = npc:section_name()
+			if ogse_anomaly.isAnomaly(npc) or sect == "space_restrictor" or sect == "smart_terrain" then
+				valid_restrictors[npc:name()] = id
+			end			
+		end
+	end
+end
+
 -- установить объекту рестрикторы в онлайне.
 -- obj - game_object
 function gulag:set_restrictions(obj, r_out, r_in, r_info)
---'	printf( "RESTR [%s] HAVE (IN)  : %s", obj:name(), obj:in_restrictions() )
---'	printf( "RESTR [%s] HAVE (OUT) : %s", obj:name(), obj:out_restrictions() )
---'	printf( "RESTR [%s] NEED (IN)  : %s", obj:name(), r_in )
---'	printf( "RESTR [%s] NEED (OUT) : %s", obj:name(), r_out )
-
+	-- log3( "RESTR [%s] HAVE (IN)  : %s", obj:name(), obj:in_restrictions() )
+	-- log3( "RESTR [%s] HAVE (OUT) : %s", obj:name(), obj:out_restrictions() )
+	-- log3( "RESTR [%s] NEED (IN)  : %s", obj:name(), r_in )
+	-- log3( "RESTR [%s] NEED (OUT) : %s", obj:name(), r_out )
+	
 	-- узнать, какие рестрикторы уже были назначены этим гулагом
 	local restr = self.restrictors[obj:id()]
 
@@ -1020,17 +1098,17 @@ function gulag:set_restrictions(obj, r_out, r_in, r_info)
 	end
 
 	if change_r_in ~= "" or change_r_out ~= "" then
---'		printf( "RESTR [%s] SET: %s, %s", obj:name(), change_r_out, change_r_in)
+--		log3( "RESTR [%s] SET: %s, %s", obj:name(), change_r_out, change_r_in)
 		obj:add_restrictions( change_r_out, change_r_in )
 	end
 
---'	printf( "RESTR [%s] AFTER (IN) : %s", obj:name(), obj:in_restrictions()  )
---'	printf( "RESTR [%s] AFTER (OUT): %s", obj:name(), obj:out_restrictions() )
+	-- log3( "RESTR [%s] AFTER (IN) : %s", obj:name(), obj:in_restrictions()  )
+	-- log3( "RESTR [%s] AFTER (OUT): %s", obj:name(), obj:out_restrictions() )
 
 	-- информационный рестриктор
 	db.info_restr[obj:id()] = r_info
 
---'	printf( "INFO [%s] RESTR      : %s", obj:name(), utils.to_str( r_info ) )
+--	log3( "INFO [%s] RESTR      : %s", obj:name(), utils.to_str( r_info ) )
 end
 
 -- убрать записи о том, что смарт устанавливал объекту рестрикторы.
@@ -1054,17 +1132,24 @@ end
 
 -- освободить объект от работы
 function gulag:free_obj( obj_id )
+
 	local jobN = self.ObjectJob[obj_id]
 	if jobN then
+		write_log("!!DEBUG_GULAG_FREE "..obj_id)
+		
 		self.ObjectJob[obj_id] = nil
 		self.Job[jobN].object  = nil
 
 		self.ObjectJobPathName[obj_id] = nil
+		
+		local npc = self.npc_info[obj_id].se_obj
 
-		self:setup_job_online( self.npc_info[obj_id].se_obj, nil )
+		if npc then
+			self:setup_job_online( npc, nil )
+		end
 
-		if self:get_stype( obj_id ) == modules.stype_mobile then
-			self.npc_info[obj_id].se_obj:smart_terrain_task_deactivate()
+		if npc and self:get_stype( obj_id ) == modules.stype_mobile then
+			npc:smart_terrain_task_deactivate()
 		end
 
 		if self.Object[obj_id] ~= true and
@@ -1084,10 +1169,16 @@ end
 -- как будто он только что загрузился
 function gulag:free_obj_and_reinit( obj_id )
 	self:free_obj(obj_id)
-
 	local t = self.Object[obj_id]
 	if t ~= nil and t ~= true and self.Object_begin_job[obj_id] then
-		xr_logic.initialize_obj( t, nil, false, db.actor, self:get_stype( obj_id ) )
+		if ogse.check_game() then
+			local s_obj = alife():object(obj_id)
+			if s_obj and (IsStalker(s_obj) or IsMonster(s_obj)) and s_obj:alive() then
+				xr_logic.initialize_obj( t, nil, false, db.actor, self:get_stype( obj_id ) )
+			end
+		else
+			xr_logic.initialize_obj( t, nil, false, db.actor, self:get_stype( obj_id ) )
+		end
 	end
 end
 
@@ -1114,6 +1205,19 @@ function gulag:changeCasualities(delta)
 end
 
 -- TODO серверные объекты
+function gulag:set_relation1( relation, target_obj )
+	for obj_id, obj in pairs( self.Object ) do
+		if obj ~= true and level.object_by_id( obj_id ) ~= nil then
+			local attitude = obj:general_goodwill(target_obj)
+			log3("%s: %d", obj:name(), attitude)
+			if attitude < 0 then
+				obj:change_goodwill( -attitude, target_obj )
+			end
+			log3("%d", obj:general_goodwill(target_obj))
+		end
+	end
+end
+
 function gulag:set_relation( relation, target_obj )
 	for obj_id, obj in pairs( self.Object ) do
 		if obj ~= true and level.object_by_id( obj_id ) ~= nil then
@@ -1122,6 +1226,31 @@ function gulag:set_relation( relation, target_obj )
 	end
 end
 
+function gulag:set_relation1( relation, target_obj )
+   for obj_id, obj in pairs( self.Object ) do
+      if obj ~= true and level.object_by_id( obj_id ) ~= nil then
+         local attitude = obj:general_goodwill(target_obj)
+         if attitude < 0 then
+            obj:change_goodwill( -attitude, target_obj )
+         end
+      end
+   end
+end
+
+function gulag:set_relation_ex( relation, target_obj )
+	for obj_id, obj in pairs( self.Object ) do
+		if obj ~= true and level.object_by_id( obj_id ) ~= nil then
+			if obj:relation(db.actor) ~= game_object.friend then 
+				obj:set_relation( relation, target_obj ) 
+			end
+		end
+	end
+end
+--[[
+relation_registry.get_goodwill(who_id, to_whom_id)
+relation_registry.set_goodwill(who_id, to_whom_id, goodwill)
+relation_registry.change_goodwill(who_id, to_whom_id, goodwill_change)
+]]
 function gulag:set_goodwill( relation, target_obj )
 	for obj_id, obj in pairs( self.Object ) do
 		if obj ~= true and level.object_by_id( obj_id ) ~= nil then
@@ -1130,12 +1259,158 @@ function gulag:set_goodwill( relation, target_obj )
 	end
 end
 
+function gulag:set_personal_goodwill( goodwill, target_obj )
+	for obj_id, obj in pairs( self.Object ) do
+		if obj ~= true and level.object_by_id( obj_id ) ~= nil then
+			obj:set_goodwill( goodwill, target_obj )
+		end
+	end
+end
+
+function gulag:get_personal_goodwill( target_obj )
+	local rel = 50000
+	for obj_id, obj in pairs( self.Object ) do
+		if obj ~= true and level.object_by_id( obj_id ) ~= nil then
+			local o_rel =  obj:general_goodwill( target_obj )
+			if o_rel < rel then
+				rel = o_rel
+			end
+		end
+	end
+	return rel
+end
+
+function gulag:get_relation( target_obj )
+	local rel = 50000
+	for obj_id, obj in pairs( self.Object ) do
+		if obj ~= true and level.object_by_id( obj_id ) ~= nil then
+			local o_rel =  obj:relation( target_obj )
+			if o_rel < rel then
+				rel = o_rel
+			end
+		end
+	end
+	return rel
+end
+
+-- сколько народу заданного коммунити в гулаге?
+function gulag:community_populaion_inside( community )
+	local counter = 0
+	local id = self.smrttrn.id
+	local pos = self.smrttrn.position	
+	for obj_id, obj in pairs( self.Object ) do
+		if obj_id then
+			local sobj = alife():object( obj_id )
+			if sobj and sobj:alive() and not (IsStalker(sobj) and ogse.is_quest_npc(sobj)) and sobj:community() == tostring(community) then
+				if sobj.position:distance_to(pos) <= 150 then
+					counter = counter + 1
+				end
+			end
+		end
+	end
+	return counter
+end
+
+-- сколько в действительности в гулаге есть живых людей
+function gulag:really_alive_pop()
+	local counter = 0
+	local id = self.smrttrn.id
+	local pos = self.smrttrn.position
+	for obj_id, obj in pairs( self.Object ) do
+		if obj_id then
+			local sobj = alife():object( obj_id )
+			if sobj and sobj:alive() and not (IsStalker(sobj) and ogse.is_quest_npc(sobj)) then
+				if sobj.position:distance_to(pos) <= 150 then
+					-- write_log("POP "..sobj:name())
+					counter = counter + 1
+				end
+			end
+		end
+	end
+	return counter
+end
+
 -- является ли персонаж врагом хотябы кому-то из данного смарта?
 function gulag:npc_is_enemy_to_anybody( target_obj )
 	for obj_id, obj in pairs( self.Object ) do
 		if obj ~= true and
 		   level.object_by_id( obj_id ) ~= nil and
 		   obj:relation( target_obj ) == game_object.enemy
+		then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- является ли персонаж врагом для сталкеров из данного смарта?
+function gulag:npc_is_enemy_of_stalkers( target_obj )
+	for obj_id, obj in pairs( self.Object ) do
+		if obj ~= true 
+		and level.object_by_id( obj_id ) ~= nil 
+		and obj:character_community() == "stalker" 
+		and obj:relation( target_obj ) == game_object.enemy
+		then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- является ли персонаж врагом для долга?
+function gulag:npc_is_enemy_of_dolg( target_obj )
+	for obj_id, obj in pairs( self.Object ) do
+		if obj ~= true 
+		and level.object_by_id( obj_id ) ~= nil 
+		and obj:character_community() == "dolg" 
+		and obj:relation( target_obj ) == game_object.enemy
+		then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- является ли персонаж врагом для свободы?
+function gulag:npc_is_enemy_of_freedom( target_obj )
+	for obj_id, obj in pairs( self.Object ) do
+		if obj ~= true 
+		and level.object_by_id( obj_id ) ~= nil 
+		and obj:character_community() == "freedom" 
+		and obj:relation( target_obj ) == game_object.enemy
+		then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- является ли персонаж врагом для бандитов?
+function gulag:npc_is_enemy_of_bandits( target_obj )
+	for obj_id, obj in pairs( self.Object ) do
+		if obj ~= true 
+		and level.object_by_id( obj_id ) ~= nil 
+		and obj:character_community() == "bandit" 
+		and obj:relation( target_obj ) == game_object.enemy
+		then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- является ли персонаж врагом для вояк?
+function gulag:npc_is_enemy_of_military( target_obj )
+	for obj_id, obj in pairs( self.Object ) do
+		if obj ~= true 
+		and level.object_by_id( obj_id ) ~= nil 
+		and obj:character_community() == "military" 
+		and obj:relation( target_obj ) == game_object.enemy
 		then
 			return true
 		end
@@ -1183,36 +1458,48 @@ function setup_gulag_and_logic_on_spawn( obj, st, sobject, stype, loaded )
 			strn_id = 65535
 		end
 		
-		-- // Правка вылета по attempt to index local 'strn' (a nil value). Основано на скрипте WhatAbout
-		if strn_id ~= 65535 then
-			local strn = alife():object(strn_id)
-			
-			if not strn or strn:clsid() ~= clsid.smart_terrain then
-				local se_obj = alife():object(obj:id())
-				get_console():execute("load ~~~ xr_gulag.script: Обнаружена привязка к несуществующему smart_terrain: "..se_obj:name()..", smart_terrain_id: "..tostring(strn_id)..". Привязка удалена.")
-				se_obj:clear_smart_terrain()
-				-- sim_statistic.remove(se_obj) -- эта статистка не нужна
-				strn_id = 65535
-			end
-		end
-		-- //
-
-		printf( "setup_gulag_and_logic_on_spawn obj=%s, strn_id=%s", obj:name(), tostring(strn_id) )
+		if strn_id == 0 then strn_id = 65535 end
+		
+		local strn                   = sim:object( strn_id )
+		
+		if not strn then
+			log1("!!ERROR: XR_GULAG cannot find SOBJ ["..tostring(strn_id).."] for obj ["..sobject:name().."]")
+			strn_id = 65535
+			-- KD: попробуем перезагрузить логику гулага потеряшкам
+			loaded = false
+		elseif not strn.gulag then	
+			log1("!!ERROR: XR_GULAG cannot find SOBJ GULAG ["..tostring(strn:name()).."] for obj ["..sobject:name().."]")
+			strn_id = 65535
+		end		
 
 		if strn_id ~= 65535 then
-			local strn                   = sim:object( strn_id )
+
 			local need_setup_logic       = strn.gulag.Object_begin_job[obj:id()] and not loaded
 			local need_setup_restrictors = strn.gulag.Object_begin_job[obj:id()]
 
 			strn:initialize_if_needed()
 
 			strn.gulag:object_setup_online( obj:id(), obj, need_setup_logic, need_setup_restrictors )
+			
+--[[
+			if xr_companion.is_companion(obj:id()) then
+				need_setup_logic = false
+			end			
+]]
 
 			if not need_setup_logic then
-				xr_logic.initialize_obj(obj, st, loaded, db.actor, stype)
+				local flag, err = pcall(xr_logic.initialize_obj,obj,st,loaded,db.actor,stype)
+				if not flag then
+					write_log("ERROR: XR_GULAG xr_logic.initialize_obj pcall 1 FAIL "..obj:id().." reason: "..tostring(err))
+					db.actor:give_game_news("ВНИМАНИЕ! Произошёл сбой инициализации логики! В лог поступило диагностическое сообщение - сохранитесь, выйдите из игры и скиньте лог KamikaZze!", "ui\\ui_iconsTotal", Frect():set(498,47,83,47),7000, 20000)
+				end				
 			end
 		else
-			xr_logic.initialize_obj(obj, st, loaded, db.actor, stype)
+			local flag, err = pcall(xr_logic.initialize_obj,obj,st,loaded,db.actor,stype)
+			if not flag then
+				write_log("ERROR: XR_GULAG xr_logic.initialize_obj pcall 2 FAIL "..obj:id().." reason: "..tostring(err))
+				db.actor:give_game_news("ВНИМАНИЕ! Произошёл сбой инициализации логики! В лог поступило диагностическое сообщение - сохранитесь, выйдите из игры и скиньте лог KamikaZze!", "ui\\ui_iconsTotal", Frect():set(498,47,83,47),7000, 20000)
+			end				
 		end
 	else
 		xr_logic.initialize_obj(obj, st, loaded, db.actor, stype)
@@ -1222,15 +1509,21 @@ end
 -- получить гулаг по имени смарта.
 -- работает только для смартов, которые в онлайне.
 function get_gulag_by_name( name )
+
 	local go_strn = db.zone_by_name[name]
 
 	if go_strn then
 		local strn = alife():object( go_strn:id() )
+		
+		if not strn then
+			abort("get_gulag_by_name failed - no zone "..tostring(name))
+		end
 
 		strn:initialize_if_needed()
 
 		return strn.gulag
 	else
+		write_log("!!NO_GULAG "..tostring(name).." IN quest_zones")
 		return nil
 	end
 end
@@ -1264,7 +1557,11 @@ function get_npc_gulag( obj )
 	if obj and obj:smart_terrain_id() ~= 65535 then
 		local strn = sim:object( obj:smart_terrain_id() )
 
-		strn:initialize_if_needed()
+		if strn then
+			strn:initialize_if_needed()
+		else	
+			return nil
+		end
 
 		return strn.gulag
 	else
@@ -1287,6 +1584,20 @@ function getGulagPopulationComed( name_or_sid )
 	return ( gulag and gulag:get_population_comed() ) or 0
 end
 
+-- получить кол-во населения смарта по имени и коммунти
+function getGulagPopulationCommunity( name_or_sid, community )
+	local gulag = get_gulag( name_or_sid )
+	--write_log("!!CHECKING_GULAG "..tostring(name_or_sid))
+	if gulag then
+		 local test_1 = gulag:community_populaion_inside( community )
+		-- write_log("!!CHECKING_GULAG_POP "..tostring(test_1))
+	else 
+		write_log("!!CHECKING_GULAG_POP NO GULAG "..tostring(name_or_sid)) 
+	end
+	return ( gulag and gulag:community_populaion_inside( community ) ) or 0
+end
+
+
 -- установить отношение всех членов смарта к указанному объекту
 function setGulagRelation( name_or_sid, relation, target_obj )
 	local gulag = get_gulag( name_or_sid )
@@ -1296,12 +1607,70 @@ function setGulagRelation( name_or_sid, relation, target_obj )
 	end
 end
 
+function setGulagRelation_ex( name_or_sid, relation, target_obj )
+	local gulag = get_gulag( name_or_sid )
+
+	if gulag then
+		gulag:set_relation_ex( relation, target_obj )
+	end
+end
+
+function getGulagRelation( name_or_sid, target_obj )
+	local gulag = get_gulag( name_or_sid )
+
+	if gulag then
+		return gulag:get_relation( target_obj )
+	else
+		return nil
+	end
+end
+
+-- проверка того, что все члены гулага в онлайне
+
+function gulag:is_online()
+	for obj_id, obj in pairs( self.Object ) do
+		if level.object_by_id( obj_id ) == nil then
+			return nil
+		end
+	end
+	return self:get_population()
+end
+
+function isOnline( name_or_sid )
+	local gulag = get_gulag( name_or_sid )
+
+	if gulag then
+		return gulag:is_online()
+	else
+		return nil
+	end
+end
+
 -- установить расположенине всех членов смарта к указанному объекту
 function setGulagGoodwill( name_or_sid, goodwill, target_obj )
 	local gulag = get_gulag( name_or_sid )
 
 	if gulag then
 		gulag:set_goodwill( goodwill, target_obj )
+	end
+end
+
+-- установить расположенине всех членов смарта к указанному объекту
+function setGulagPersonalGoodwill( name_or_sid, goodwill, target_obj )
+	local gulag = get_gulag( name_or_sid )
+
+	if gulag then
+		gulag:set_personal_goodwill( goodwill, target_obj )
+	end
+end
+
+function getGulagPersonalGoodwill( name_or_sid, target_obj )
+	local gulag = get_gulag( name_or_sid )
+
+	if gulag then
+		return gulag:get_personal_goodwill( target_obj )
+	else
+		return nil
 	end
 end
 
@@ -1325,25 +1694,12 @@ end
 -- освободить персонажа от работы.
 -- obj=game_object
 function resetJob( obj )
-	printf( "gulag resetJob: obj=%s", obj:name() )
+	-- printf( "gulag resetJob: obj=%s", obj:name() )
 
 	local gulag = get_npc_gulag( obj )
 	if gulag then
 		gulag:free_obj_and_reinit( obj:id() )
 		gulag:update()
-	end
-end
-
-function clearJob( obj )
-	local sim = alife()
-
-	obj = sim:object( obj:id() )
-
-	if obj:smart_terrain_id() ~= 65535 then
-		local strn = sim:object( obj:smart_terrain_id() )
-
-		strn:initialize_if_needed()
-    strn:unregister_npc(obj)
 	end
 end
 
@@ -1385,13 +1741,14 @@ function is_info_restricted( obj_id, info_pos )
 end
 
 -----------------------------------------------------------------------------------------------------------------
-
-function checkStalker(npc_community, gulag_type, npc_rank, se_obj)
+-- проверка подходящести сталкера гулагу. Часть функции checkNpc
+local function checkStalker(npc_community, gulag_type, npc_rank, se_obj)
     --printf ("CHECKSTALKER, COMMUNITY = %s, TYPE = %s", npc_community, gulag_type)
 	if gulag_type == "test" or gulag_type == "test1" or gulag_type == "test_restr_changer" or gulag_type == "test_out"  then
 		return true
 	end
-
+	-- для следущих типов включаем всех, кроме военных. Замечание: на практике нет таких гулагов совсем.
+	-- видимо остатки от некой старой идеи с миграцией сталкеров.
 	if gulag_type == "campers" or
 	   gulag_type == "walkers" or
 	   gulag_type == "rest" or
@@ -1399,7 +1756,9 @@ function checkStalker(npc_community, gulag_type, npc_rank, se_obj)
 	then
 		return npc_community ~= "military"
 	end
-
+	-- если специальные типы не сработали, то выполняем проверки из зарегенных на уровне гулагов
+	-- level_gulags - это перечень модулей, каждый содержит свою функцию checkStalker с проверкой пригодности непися гулагу
+	-- как правило просто проверяется соответствие типа гулага и параметров непися: группировки, имени, ранга, профиля и т.п.
 	for i, v in pairs( level_gulags ) do
 		if v.checkStalker(npc_community, gulag_type, npc_rank, se_obj) then
 			return true
@@ -1408,12 +1767,12 @@ function checkStalker(npc_community, gulag_type, npc_rank, se_obj)
 
 	return false
 end
-
-function checkMonster(npc_community, gulag_type, npc_rank, se_obj)
+-- проверка подходящести монстра гулагу. Часть функции checkNpc
+local function checkMonster(npc_community, gulag_type, npc_rank, se_obj)
 	if gulag_type == "test_mob" or gulag_type == "test_mob1" then
 		return true
 	end
-
+	-- проверка выполняется аналогично сталкеру
     for i, v in pairs( level_gulags ) do
 		if v.checkMonster(npc_community, gulag_type, npc_rank, se_obj) then
 		    return true
@@ -1422,7 +1781,7 @@ function checkMonster(npc_community, gulag_type, npc_rank, se_obj)
 
 	return false
 end
-
+-- проверка подходящести непися гулагу
 function checkNpc(npc_community, is_stalker, gulag_type, npc_rank, se_obj)
 --	printf("COMM %s !! %s", npc_community, gulag_type)
 
