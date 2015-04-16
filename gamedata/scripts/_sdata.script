@@ -1,0 +1,530 @@
+-- File:        _sData.SCRIPT
+-- Copyright:   2009 Singapur22
+-- Authors:     Singapur22, Gun12
+-- Last edit:	KamikaZze (11.06.14)
+-- Global Description: Отладочная информация
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+GlobalEnable = false		--Включить скрипт? Подробные настройки смотрите ниже
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------
+-- ПОДРОБНОЕ ОПИСАНИЕ:
+
+-- Показывает позицию актора
+-- Показывает полученные инфопоршни
+-- Показывает информацию о НПС - Имя(указаное в ресурсах игры), смарт (в котором находится НПС), количество НПС в смарте, активную секцию логики, здоровье, противника
+-- Сохраняет в логе позицию НПС, на которых наведен прицел
+-- Показывает зоны, в которых находится актор
+-- Показывает информацию о ГГ - здоровье, сила, радиация, сытость, жажда, сонливость, наличные, пси-здоровье, мораль, ранг, группировка, репутация. Все параметры настраиваются
+-- Показывает счетчиков новых амчивок
+-- Показывает состояние предметов в слотах
+----------------------------------------------------------------------------
+
+
+----------------------------------------------------------------------------
+-- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ! НЕ УДАЛЯТЬ
+local hud = get_hud()
+local actor=db.actor
+local timer=0
+local huds={"cs_debug","cs_debug","prs_debug","gul_debug","zon_debug","act_debug","ach_debug","slots_debug"}
+----------------------------------------------------------------------------
+
+
+----------------------------------------------------------------------------
+-- ОБЩИЕ НАСТРОЙКИ
+-- False - выключить, true - включить
+----------------------------------------------------------------------------
+local bPosition		= true  -- включение схемы показа координат
+local bInfos		= true	-- включение схемы показа состояний инфопоршнэй
+local bInfoAbout	= true	-- включение схемы показа информации о НПС
+local bSavePos      = false  -- Сохранение позици НПС
+local bZones		= true	-- включение схемы показа попадания ГГ в зону
+local bActorData	= false  -- включение всей схемы показа данных ГГ.
+local bAchmData		= false	-- включение схемы показа счетчиков новых амчивок
+local bSlotsData	= false	-- включение всей схемы показа состояния предметов в активных слотах
+
+-- ГУЛАГИ
+----------------------------------------------------------------------------
+-- Проверка численности гулагов, с выводом результата на монитор.
+-- Возможна проверка не ограниченного колличества гулагов, одновременно.
+-- Результат выводится не зависимо от того, находятся нпс в online или offline.
+-- Но только, если локация, на которой гулаг находится, активна.
+-- Отключать схему не обязательно. При пустой таблице, схема не показывается.
+-- Имена гулагов, писать в кавычках, через запятую.
+-- Пример: local GulagsTbl = {"name1","name2","name3"}
+local GulagsTbl = {}
+
+----------------------------------------------------------------------------
+-- НАСТРОЙКИ АКТОР
+----------------------------------------------------------------------------
+local aHealth		= true	-- включение показа здоровья
+local aPower		= true	-- включение показа силы
+local aRadiation 	= true	-- включение показа радиационного облучения
+local aSatiety		= true	-- включение показа сытости
+local aDrinky		= false	-- включение показа жажды
+local aSleepy		= true	-- включение показа сонливости
+local aMoney		= true	-- включение показа суммы наличных (денег)
+local aPsyHealth	= true	-- включение показа пси-здоровья
+local aMorale		= true	-- включение показа морали
+local aRang			= false	-- включение показа ранга
+local aCommunity	= true	-- включение показа группировки
+local aReputation	= true	-- включение показа репутации
+
+----------------------------------------------------------------------------
+-- ПРЕДМТЫ В СЛОТАХ
+----------------------------------------------------------------------------
+local bSlot1		= true  -- включение показа слота 1 (пистолет)
+local bSlot2		= true  -- включение показа слота 2 (автомат)
+local bSlot7 		= true  -- включение показа слота 7 (броня)
+local bSlot12		= true	-- включение показа слота 12 (шлем)
+
+----------------------------------------------------------------------------
+-- ВЫВОД СТАТИСТИКИ НА HUD
+----------------------------------------------------------------------------
+
+function switch_off()
+	
+	local statics = {
+		["gul_debug"] = true,
+		["prs_debug"] = true,
+		["logic_debug"] = true,
+		["cs_debug"] = true,
+		["act_debug"] = true,
+		["ach_debug"] = true,
+		["slots_debug"] = true
+	}
+	
+	for k, v in pairs(statics) do
+		local Static = hud:GetCustomStatic(k)
+		if Static then
+			hud:RemoveCustomStatic(k)
+		end
+	end
+	
+end
+
+local zones_time = 0
+function zones()
+
+    local ZonesText
+	
+	local ZoneCS = hud:GetCustomStatic("gul_debug")
+	if ZoneCS == nil then
+		hud:AddCustomStatic("gul_debug",true)
+		ZoneCS = hud:GetCustomStatic("gul_debug")
+	end
+	
+	ZoneCS:wnd():SetText("Актор в зоне:\\n")
+	
+	for name,zone in pairs (db.zone_by_name) do
+		if utils.npc_in_zone(actor,zone) then
+			if string.find(zone:section(),"space_restrictor") then
+			    ZonesText = string.format(ZoneCS:wnd():GetText())..
+				string.format("%s (%s) (sr)\\n",tostring(name),tostring(db.storage[zone:id()].active_section))
+			elseif string.find(zone:section(),"smart_terrain") then
+			    ZonesText = string.format(ZoneCS:wnd():GetText())..
+				string.format("%s (st)\\n",tostring(name))
+			else
+			    ZonesText = string.format(ZoneCS:wnd():GetText())..
+			    string.format("%s (anom)\\n",tostring(name))
+			end
+		    if ZoneCS ~= nil then ZoneCS:wnd():SetText(ZonesText) end  		
+	    end
+	end
+end
+
+
+local infos_time = 0
+local k=0
+function infos(info_id)
+	
+	if not GlobalEnable then return end
+	log1("infos_"..info_id)
+	
+	if bInfos then
+		local InfoCS = hud:GetCustomStatic("prs_debug")
+		if InfoCS == nil then
+			hud:AddCustomStatic("prs_debug",true)
+			InfoCS = hud:GetCustomStatic("prs_debug")
+		end
+		local OrigInfoText=InfoCS:wnd():GetText()
+		k=k+1
+		if k>12 then
+			OrigInfoText=string.sub(OrigInfoText,(string.find(OrigInfoText, "\\n") or 0)+2,string.len(OrigInfoText))
+			k=k-1
+		end
+		local InfoText = string.format("%s%s\\n",tostring(OrigInfoText),tostring(info_id))
+		if InfoCS ~= nil then InfoCS:wnd():SetText(InfoText) end
+	end
+end
+
+local mental_anims = {
+    [0]="danger",
+    [1]="free",
+    [2]="panic"
+}
+
+function info_about_npc()
+	if not GlobalEnable then return end
+	
+	clear_info_about_npc()
+	
+	local target_obj = level.get_target_obj()
+	if target_obj then 
+		if (IsStalker(target_obj) or IsMonster(target_obj)) then
+	
+			local gulag_val,scheme1,scheme2,anim,mental,pos,lv,gv
+		
+			local PosLogic = hud:GetCustomStatic("logic_debug")
+			if PosLogic == nil then
+				hud:AddCustomStatic("logic_debug",true)
+				PosLogic = hud:GetCustomStatic("logic_debug")
+			end
+			local gulag = xr_gulag.get_npc_gulag(target_obj)
+			if gulag then
+				gulag = gulag.name
+				gulag_val = xr_gulag.getGulagPopulation(gulag)
+			end
+			if db.storage[target_obj:id()] then
+				scheme1 = tostring(db.storage[target_obj:id()].active_section)
+				scheme2 = tostring(db.storage[target_obj:id()].section_logic)
+				if db.storage[target_obj:id()].state_mgr then
+					anim = db.storage[target_obj:id()].state_mgr.animstate:state()
+					mental = state_lib.states[db.storage[target_obj:id()].state_mgr.target_state].mental
+					if mental_anims[mental] then
+						mental = mental_anims[mental]
+					else
+						mental = tostring(mental).." (unknown state!)"
+					end
+				end
+			end
+			local be = target_obj:best_enemy()
+			if be then
+				be = target_obj:best_enemy():name()
+			end
+			local best_danger = target_obj:best_danger()
+			local best_danger_name = "not specified"
+			local best_danger_type = "not specified"
+			if best_danger and best_danger:object() then
+				best_danger_name = best_danger:object():name()
+			end	
+			if best_danger then
+				local bd_type = best_danger:type()
+				if bd_type == danger_object.attack_sound then
+					best_danger_type = "attack sound"
+				elseif bd_type == danger_object.bullet_ricochet then
+					best_danger_type = "bullet ricochet"
+				elseif bd_type == danger_object.grenade then
+					best_danger_type = "grenade"
+				elseif bd_type == danger_object.entity_corpse then
+					best_danger_type = "entity corpse"
+				elseif bd_type == danger_object.entity_attacked then
+					best_danger_type = "entity attacked"
+				elseif bd_type == danger_object.attacked then
+					best_danger_type = "attacked"
+				elseif bd_type == danger_object.enemy_sound then
+					best_danger_type = "enemy sound"
+				elseif bd_type == danger_object.entity_death then
+					best_danger_type = "entity death"
+				end
+			end
+			local community = "monster"
+			if IsStalker(target_obj) then
+				community = target_obj:character_community()
+			end
+			local wound = xr_wounded.is_wounded(target_obj)
+			local storage = db.storage[target_obj:id()]
+			local scheme = storage.active_scheme
+			local state = state_mgr.get_state(target_obj)
+			local active_evaluator = "nil"
+			if ogse_debug.active_evaluators and ogse_debug.active_evaluators[target_obj:id()] then
+				active_evaluator = ogse_debug.active_evaluators[target_obj:id()]			
+			end
+			local active_danger = "nil"
+			if ogse_debug.active_dangers and ogse_debug.active_dangers[target_obj:id()] then
+				active_danger = ogse_debug.active_dangers[target_obj:id()]			
+			end	
+			local active_anim = "nil"
+			if ogse_debug.active_anim and ogse_debug.active_anim[target_obj:id()] then
+				active_anim = ogse_debug.active_anim[target_obj:id()]			
+			end				
+			local range = target_obj:range()
+			local fov = target_obj:fov()	
+			local bleeding = target_obj:get_bleeding()
+			local LogicText = "npc: sect: ["..tostring(target_obj:section()).."] "..
+						"name: ["..tostring(target_obj:name()).."]\\n"..
+						"npc: id: "..tostring(target_obj:id()).." "..
+						"comm: ["..tostring(community).."]\\n"..
+						"npc: behave scheme: "..tostring(scheme).."\\n"..
+						"npc: st_mgr state: ["..tostring(state).."] "..
+						"anim: ["..tostring(anim).."] "..
+						"mental: ["..tostring(mental).."]\\n"..
+						"npc: last active eval: "..tostring(active_evaluator).."\\n"..
+						"npc: last active danger: "..tostring(active_danger).."\\n"..
+						"npc: last active anim_eval: "..tostring(active_anim).."\\n"..						
+						-- "------------------\\n"..
+						-- "npc: range: "..tostring(range).."\\n"..
+						-- "npc: fov: "..tostring(fov).."\\n"..						
+						"------------------\\n"..
+						"best_enemy: "..tostring(be).."\\n"..
+						"best_danger: "..tostring(best_danger_name).."\\n"..
+						"best_danger_type: "..tostring(best_danger_type).."\\n"..
+						"------------------\\n"..
+						"profile name: "..tostring(target_obj:profile_name()).."\\n"..
+						"gulag: "..tostring(gulag).."\\n"..
+						"gulag val: "..tostring(gulag_val).."\\n"..
+						"gulag job: "..scheme1.."\\n"..
+						"global job: "..scheme2.."\\n"..
+						"------------------\\n"..
+						"is wounded: "..tostring(wound).."\\n"..
+						"health: "..tostring(target_obj.health).." bleeding: "..tostring(bleeding).."\\n"..
+						"------------------\\n"..
+						"coords: X "..tostring(target_obj:position().x)..", Y "..tostring(target_obj:position().y)..", Z "..tostring(target_obj:position().z).."\\n"..
+						"level_vertex: "..tostring(target_obj:level_vertex_id()).."\\n"..
+						"game_vertex: "..tostring(target_obj:game_vertex_id())
+						
+			if PosLogic ~= nil then PosLogic:wnd():SetText(LogicText) end
+			if bSavePos then
+				pos = target_obj:position()
+				lv = target_obj:level_vertex_id()
+				gv = target_obj:game_vertex_id()
+				get_console():execute("NPCscheme="..scheme1..
+						"\nPosition="..pos.x..","..pos.y..","..pos.z..
+						"\nLevelVertexID="..lv..
+						"\nGameVertexID="..gv)
+			end
+		else
+			local PosLogic = hud:GetCustomStatic("logic_debug")
+			if PosLogic == nil then
+				hud:AddCustomStatic("logic_debug",true)
+				PosLogic = hud:GetCustomStatic("logic_debug")
+			end
+			local scheme1, scheme2
+			if db.storage[target_obj:id()] then
+				scheme1 = tostring(db.storage[target_obj:id()].active_section)
+				scheme2 = tostring(db.storage[target_obj:id()].section_logic)			
+			end
+			local LogicText = "obj: section: "..tostring(target_obj:section()).."\\n"..
+						"obj: name: "..tostring(target_obj:name()).."\\n"..
+						"obj: id: "..tostring(target_obj:id()).."\\n"..
+						"------------------\\n"..
+						"coords: X "..tostring(target_obj:position().x)..", Y "..tostring(target_obj:position().y)..", Z "..tostring(target_obj:position().z).."\\n"..
+						"dir: X "..tostring(target_obj:direction().x)..", Y "..tostring(target_obj:direction().y)..", Z "..tostring(target_obj:direction().z).."\\n"..
+						"Active logic: "..tostring(scheme2).."\\n"..
+						"Logic Section: "..tostring(scheme1).."\\n"..
+						"level_vertex: "..tostring(target_obj:level_vertex_id()).."\\n"..
+						"game_vertex: "..tostring(target_obj:game_vertex_id())
+						
+			if target_obj:is_ammo() then
+				LogicText = LogicText.."\\n \\nbullets in pack:"..dunin_ammo.get_ammo_size(target_obj)
+			end
+			
+			if PosLogic ~= nil then PosLogic:wnd():SetText(LogicText) end			
+		end
+	end
+end
+
+local show_info_about_time = 0
+function clear_info_about_npc()
+	 if show_info_about_time < time_global() then
+        local PosLogic = hud:GetCustomStatic("logic_debug")
+    	if PosLogic == nil then
+			hud:AddCustomStatic("logic_debug",true)
+		    PosLogic = hud:GetCustomStatic("logic_debug")
+	    end
+        PosLogic:wnd():SetText("")
+		show_info_about_time = time_global() + 2500
+    end
+end
+
+function vis_int(bShow)
+	if not GlobalEnable then return end
+	if bShow == false then
+		for k,cs in ipairs(huds) do
+			if hud:GetCustomStatic(cs) then hud:RemoveCustomStatic(cs) end
+		end
+		return
+	end
+
+	if bInfoAbout then
+		info_about_npc()
+	end
+	
+	if timer > time_global() then
+		return
+	end
+	
+	timer=time_global() + 500
+	
+	-- зоны
+	if bZones then
+	    this.zones()
+	end
+	
+	-- Координаты
+	if bPosition == true then
+		local PosCS = hud:GetCustomStatic("cs_debug")
+		if PosCS == nil then
+			hud:AddCustomStatic("cs_debug",true)
+			PosCS = hud:GetCustomStatic("cs_debug")
+		end
+		local lvid,gvid = actor:level_vertex_id(),actor:game_vertex_id()
+		local pos,dir,campos = actor:position(),device().cam_dir,device().cam_pos
+		local valid = level.vertex_position(lvid):distance_to(pos)<=0.7
+		local fps_check = ogse_benchmark.get_fps()
+		local PosText = string.format("pos: %1.3f,%1.3f,%1.3f\\n",pos.x,pos.y,pos.z)..	-- позиция ГГ (x,y,z)
+						string.format("cam_pos: %1.3f,%1.3f,%1.3f\\n",campos.x,campos.y,campos.z)..	-- позиция камеры (x,y,z)
+						string.format("dir: %1.3f,%1.3f,%1.3f\\n",dir.x,dir.y,dir.z)..	-- поворот ГГ вокруг осей (x,y,z) (гонит)
+		                string.format("lvid: %d\\n",lvid)..								-- левел вертекс
+						string.format("gvid: %d\\n",gvid)..								-- гейм вертекс
+						string.format("valid: %s\\n",tostring(valid))..					-- наличие AI-сетки в данной координате
+						string.format("fps: %d\\n",fps_check)							-- наличие AI-сетки в данной координате
+		if PosCS ~= nil then PosCS:wnd():SetText(PosText) end
+	end
+
+	-- гулаги
+	if bGulags == true then
+		local GlgCS = hud:GetCustomStatic("gul_debug")
+		if GlgCS == nil then
+			hud:AddCustomStatic("gul_debug",true)
+			GlgCS = hud:GetCustomStatic("gul_debug")
+		end
+		local GlgText =" " 
+		local name_g = ""
+		for k,name_g in ipairs(GulagsTbl) do
+		    local val = xr_gulag.getGulagPopulationComed(name_g)
+			--local cas = smart_terrain.getCasualities(name_g)
+		    if val ~= nil  then
+		        GlgText = GlgText.. string.format("%s\\n", tostring(name_g.." = ".. val))
+		    end
+		end
+		if GlgCS ~= nil then GlgCS:wnd():SetText(GlgText) end
+	end
+
+	-- параметры ГГ
+	if bActorData == true then
+		local ActCS = hud:GetCustomStatic("act_debug")
+		if ActCS == nil then
+			hud:AddCustomStatic("act_debug", true)
+			ActCS = hud:GetCustomStatic("act_debug")
+		end
+		local str
+		local ActText = ""
+		local aCommun = actor:character_community()
+		if string.find(aCommun,"actor") then
+			aCommun = GetString("stalker")
+		elseif string.find(aCommun,"dolg") then
+			aCommun = GetString("dolg")
+		elseif string.find(aCommun,"freedom") then
+			aCommun = GetString("freedom")
+		elseif string.find(aCommun,"bandit") then
+			aCommun = GetString("bandit")
+		elseif string.find(aCommun,"killer") then
+			aCommun = GetString("killer")
+		elseif string.find(aCommun,"military") then
+			aCommun = GetString("army")
+		elseif string.find(aCommun,"ecolog") then
+			aCommun = GetString("ecolog")
+		elseif string.find(aCommun,"stranger") then
+			aCommun = GetString("stranger")
+		elseif string.find(aCommun,"monolith") then
+			aCommun = GetString("monolit")
+		elseif string.find(aCommun,"zombied") then
+			aCommun = GetString("zombied")
+		elseif string.find(aCommun,"trader") then
+			aCommun = GetString("trader")
+		end
+		if aHealth == true then
+			str = string.format(" %1.3f",actor.health)
+			ActText = ActText.. GetString("sdata_actor_health").. tostring(str).."("..math.ceil(tonumber(str)*100).."%)\\n"
+		end
+		if aPower == true then
+			str=string.format(" %1.3f",actor.power)
+			ActText = ActText.. GetString("sdata_actor_power").. tostring(str).." ("..math.ceil(tonumber(str)*100).."%)\\n"
+		end
+		if aRadiation == true then
+			str = string.format(" %1.3f",actor.radiation)
+			ActText = ActText.. GetString("sdata_actor_radiation").. tostring(str).." ("..math.ceil(tonumber(str)*100).."%)\\n"
+		end
+		if aSatiety == true then
+			str = string.format(" %1.3f",actor.satiety)
+			ActText = ActText.. GetString("sdata_actor_satiety").. tostring(str).." ("..math.ceil(tonumber(str)*100).."%)\\n"
+		end
+		if aDrinky==true then
+			ActText = ActText.. string.format(GetString("sdata_actor_drinky").." %d",ars_mod.get_actor_drinky()).."%\\n"
+		end
+		if aSleepy==true then
+			ActText = ActText.. string.format(GetString("sdata_actor_sleepy").." %d",ars_mod.get_actor_sleepy()).."%\\n"
+		end
+		if aMoney==true then
+			ActText = ActText.. string.format(GetString("sdata_actor_money").." %d\\n",actor:money())
+		end
+		if aPsyHealth==true then
+			str = string.format(" %1.3f",actor.psy_health)
+			ActText = ActText.. GetString("sdata_actor_psy_health").. tostring(str).." ("..math.ceil(tonumber(str)*100).."%)\\n"
+		end
+		if aMorale == true then
+			ActText = ActText.. string.format(GetString("sdata_actor_morale").." %s\\n",tostring(actor.morale))
+		end
+		if aRang == true then
+			ActText = ActText.. string.format(GetString("sdata_actor_rang").." %d\\n",actor:character_rank())
+		end
+		if aCommunity == true then
+			ActText = ActText.. string.format(GetString("sdata_actor_community").." %s\\n",tostring(aCommun))
+		end
+		if aReputation == true then
+			ActText = ActText.. string.format(GetString("sdata_actor_reputation").." %d\\n",actor:character_reputation())
+		end
+		if ActCS ~= nil then ActCS:wnd():SetText(ActText) end
+	end
+
+	-- новые амчики
+	if bAchmData == true then
+		local AchCS=hud:GetCustomStatic("ach_debug")
+		if AchCS == nil then
+			hud:AddCustomStatic("ach_debug",true)
+			AchCS=hud:GetCustomStatic("ach_debug")
+		end
+		local AchText = ""
+		AchText = AchText.. string.format(GetString("sdata_achievement_headshots").." %d\\n",ars_achievements.ars_statistic.headshot)
+		AchText = AchText.. string.format(GetString("sdata_achievement_medkits").." %d\\n",ars_achievements.ars_statistic.medkit)
+		AchText = AchText.. string.format(GetString("sdata_achievement_mitems").." %d\\n",ars_achievements.ars_statistic.m_item)
+		AchText = AchText.. string.format(GetString("sdata_achievement_mobjects").." %d\\n",ars_achievements.ars_statistic.objects)
+		AchText = AchText.. string.format(GetString("sdata_achievement_crows").." %d\\n",ars.read_variable("ArsCrowCount",0))
+		if AchCS ~= nil then AchCS:wnd():SetText(AchText) end
+	end
+
+	-- активные слоты
+	if bSlotsData == true then
+		if bSlot1 == true or bSlot2 == true or bSlot7 == true or bSlot12 == true then
+			local SlotCS = hud:GetCustomStatic("slots_debug")
+			if SlotCS == nil then
+				hud:AddCustomStatic("slots_debug", true)
+				SlotCS = hud:GetCustomStatic("slots_debug")
+			end
+			local SlotText = ""
+			for i = 1,12 do
+				local slot
+				local name_str = ""
+				local cond_str = ""
+				if i == 2 or i == 3 or i == 7 or i == 12 then
+					slot = actor:item_in_slot(i)
+					if slot then
+						name_str = string.format("%s\\n", GetString(GetItemName(slot:section())))
+						cond_str = string.format("State: %1.2f\\n", slot:condition())
+					else
+						name_str = "empty"
+					end
+					SlotText = SlotText.. GetString("Slot "..i..": ").. name_str.."\\n"..cond_str.."\\n\\n"
+				end
+			end
+			if SlotCS ~= nil then SlotCS:wnd():SetText(SlotText) end
+		end
+	end
+	-- Eof
+end
