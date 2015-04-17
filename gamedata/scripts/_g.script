@@ -667,6 +667,72 @@ function dbglog(fmt,...)
   get_console():execute("dbg:" .. msg_no_ws)
 end
 
+function validate_enemy_object(enemy)
+	if not ( enemy and enemy.clsid ) then return false, nil end
+	if not ( IsStalker( enemy ) or IsMonster( enemy) ) then 
+		return false, nil
+	end
+	if enemy == nil
+	or enemy.clsid == nil 
+	or enemy.health == nil 
+	or (enemy.health and enemy.health <= 0) then 
+		return false, nil
+	end
+	if enemy and enemy.m_story_id ~= nil then -- это грязный хак чтобы выяснить не попался ли нам серверный объект
+		local id = enemy.id
+		local enemy_gameobj = level.object_by_id(id)
+		if not enemy_gameobj then
+			return false, nil
+		else	
+			return true, enemy_gameobj
+		end
+	else	
+		return true, enemy
+	end
+end
+
+function parse_data(str)
+	local string_parts = {}
+	if str == nil then
+		string_parts[1] = nil
+		return string_parts
+	end
+	local str_beg,str_end
+	str_end = str
+	local split_pos = find_split_pos(str_end)
+	while split_pos ~= nil do
+		str_beg, str_end = split_string(str_end,split_pos)
+		table.insert(string_parts,str_beg)
+		split_pos = find_split_pos(str_end)
+	end
+	table.insert(string_parts,str_end)
+	return string_parts
+end
+
+function find_split_pos(str)
+	local split_pos = string.find(str,",")
+	if split_pos == nil then
+		return nil
+	end
+	local br1_pos = string.find(str,"(",1,true)
+	local br2_pos = string.find(str,")",1,true)
+	if br1_pos ~= nil and br2_pos ~= nil and br1_pos < br2_pos and split_pos > br1_pos then
+		local str_end1 = string.sub(str,(br2_pos +1),string.len(str))
+		if string.find(str_end1,",") ~= nil then
+			split_pos = br2_pos + string.find(str_end1,",")
+		else
+			split_pos = nil
+		end
+	end
+	return split_pos
+end
+
+function split_string(str,split_pos)
+	local str_beg = (string.sub(str,1,split_pos-1))
+	local str_end = string.sub(str,(split_pos+1),string.len(str))
+	return str_beg,str_end
+end
+
 ----------------------------------------------------------------------
 if nil == time_global then
   time_global = function () return device():time_global() end
@@ -1360,14 +1426,34 @@ end
 
 -- Їа®ўҐапҐв, Ґбвм «Ё ®ЎкҐЄв ў ®­« ©­Ґ
 function is_object_online(obj_id)
-  return level.object_by_id(obj_id) ~= nil
+	return level.object_by_id(obj_id) ~= nil
 end
 
 function get_clsid(npc)
     if npc == nil then return nil end
-
-  return npc:clsid()
-
+	if npc and npc.id then
+		if type(npc.id) == "function" then
+			local id = npc:id()
+			local sobj = alife():object(id)
+			if sobj then
+				return npc:clsid()
+			else
+				log1(debug.traceback())
+				log1("!!DEBUG_GETCLSID NO_SRVOBJ ["..tostring(id).."]")
+				return nil
+			end
+		elseif type(npc.id) == "number" then
+			return npc:clsid()
+		else
+			log1(debug.traceback())
+			log1("!!DEBUG_GETCLSID GET_SOMETHING_STRANGE")
+			return nil
+		end
+	else
+		log1(debug.traceback())
+		log1("!!DEBUG_GETCLSID DEAD_ON_ARRIVAL")
+		return nil
+	end
 --    if is_object_online(npc:id()) then
 --      return npc:clsid()
 --    else
