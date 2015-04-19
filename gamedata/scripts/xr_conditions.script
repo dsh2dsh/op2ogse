@@ -163,19 +163,30 @@ end
 -- Проверка на принадлежность врага к одной из групп
 -- (можно задавать несколько через двоеточие)
 function enemy_group(actor, npc, p)
-	local g = db.storage[npc:id()].enemy:group()
-	local i, v = 0, 0
-	for i, v in pairs(p) do
-		if v == g then
-			--printf("_bp: [%s]'s enemy is from group [%d]", npc:name(), v)
-			return true
+    local enemy_st = db.storage[npc:id()].enemy
+	local valid, enemy = validate_enemy_object(enemy_st)
+	if valid == false then
+		return false
+	end	
+	if enemy and enemy:alive() then
+		local g = enemy:group()
+		local i, v = 0, 0
+		for i, v in pairs(p) do
+			if v == g then
+				--printf("_bp: [%s]'s enemy is from group [%d]", npc:name(), v)
+				return true
+			end
 		end
 	end
 	return false
 end
 
 function enemy_gulag(actor, npc, p)
-	local enemy = db.storage[npc:id()].enemy
+    local enemy_st = db.storage[npc:id()].enemy
+	local valid, enemy = validate_enemy_object(enemy_st)
+	if valid == false then
+		return false
+	end	
 
 	if enemy and enemy:alive() and enemy:id() ~= actor:id() then
         local g = xr_gulag.get_npc_gulag(enemy)
@@ -412,7 +423,6 @@ function check_fighting(actor, npc, p)
 	    sid = enemy:story_id()
 	    for i, v in pairs(p) do
 		    if type(v) == 'number' and sid == v then
-			    log2("TRUE")
 			    return true		   
 		    end
 	    end
@@ -586,14 +596,24 @@ function counter_greater(actor, npc, p)
 end
 
 -- определяет нечётность интервала игрового времени. интервал нужно передать в p[1]
+-- определяет нечётность интервала игрового времени. интервал нужно передать в p[1]
 function odd_time_interval(actor, npc, p)
-	return odd( amk.game_milliseconds() / p[1] )
+	return odd( game.time() / p[1] )
 end
 
 -- текущий враг на расстоянии больше или равном заданному расстоянию
 -- для combat_ignore
 function fighting_dist_ge(actor, npc, p)
-	return db.storage[npc:id()].enemy:position():distance_to( npc:position() ) >= p[1]
+    local enemy_st = db.storage[npc:id()].enemy
+	local valid, enemy = validate_enemy_object(enemy_st)
+	if valid == false then
+		return false
+	end	
+	if enemy then
+		return enemy:position():distance_to( npc:position() ) >= p[1]
+	else
+		return false
+	end
 end
 
 -------------------------------------------------------------------------------------------------------
@@ -846,7 +866,10 @@ end
 
 function actor_has_weapon (actor, npc)
     local obj = actor:active_item ()
-    if obj == nil or IAmAWeapon[obj:clsid()] == false then return false end
+	local be = npc:best_enemy()
+	local see = npc:see(actor)
+	local dist = actor:position():distance_to(npc:position())
+    if obj == nil or isWeapon (obj) == false or (be and be:id() ~= db.actor:id()) or not see or dist > 6 then return false end
     return true
 end
 
@@ -921,7 +944,12 @@ end
 
 -- текущий враг актёр?
 function fighting_actor(actor, npc)
-    local enemy = db.storage[npc:id()].enemy
+    local enemy_st = db.storage[npc:id()].enemy
+	local valid, enemy = validate_enemy_object(enemy_st)
+	if valid == false then
+		return false
+	end	
+	--ogse.send_tip(if_then_else(enemy and enemy:id() == actor:id(), "true", "false"))
     return enemy and enemy:id() == actor:id()
 end
 
@@ -937,13 +965,26 @@ function fighting_actor_v2(actor, npc)
 end
 
 function dont_fighting_actor(actor, npc)
-    local enemy = db.storage[npc:id()].enemy
+    local enemy_st = db.storage[npc:id()].enemy
+	local valid, enemy = validate_enemy_object(enemy_st)
+	if valid == false then
+		return false
+	end	
     return enemy and enemy:id() ~= actor:id()
 end
 
 -- текущий враг на расстоянии больше или равном 20м
 function fighting_dist_ge_20(actor, npc)
-	return db.storage[npc:id()].enemy:position():distance_to_sqr( npc:position() ) >= 400 -- 20^2
+    local enemy_st = db.storage[npc:id()].enemy
+	local valid, enemy = validate_enemy_object(enemy_st)
+	if valid == false then
+		return false
+	end	
+	if enemy then
+		return enemy:position():distance_to_sqr( npc:position() ) >= 400 -- 20^2
+	else
+		return false
+	end
 end
 
 -- расстояние до текущего реального врага больше или равно заданного значения
@@ -1022,7 +1063,11 @@ function val_bandits_ci(actor, npc)
                 val_sacrifice_finish = 401,
                 val_prisoner_free = 402}
 
-	local enemy = db.storage[npc:id()].enemy
+    local enemy_st = db.storage[npc:id()].enemy
+	local valid, enemy = validate_enemy_object(enemy_st)
+	if valid == false then
+		return false
+	end	
 	local sid
 	if enemy and enemy:alive() then
 	    sid = enemy:story_id()
@@ -1044,7 +1089,11 @@ function val_bandits_ci_actor(actor, npc, p)
                 val_sacrifice_finish = 401,
                 val_prisoner_free = 402}
 
-	local enemy = db.storage[npc:id()].enemy
+    local enemy_st = db.storage[npc:id()].enemy
+	local valid, enemy = validate_enemy_object(enemy_st)
+	if valid == false then
+		return false
+	end	
 	local sid
 	if enemy and enemy:alive() then
 	    if enemy:id() == actor:id() then
@@ -1112,10 +1161,16 @@ function val_escort_captive_dist_to_guards_le(actor, npc, p)
 end
 
 function val_fighting_captive(actor, npc)
-	-- FIXME: use SID!!!
-	-- db.storage[npc:id()].enemy:story_id() == 400
-	-- return db.storage[npc:id()].enemy:name() == "val_escort_captive"
-	return db.storage[npc:id()].enemy:story_id() == 400
+    local enemy_st = db.storage[npc:id()].enemy
+	local valid, enemy = validate_enemy_object(enemy_st)
+	if valid == false then
+		return false
+	end	
+	if enemy and IsStalker(enemy) and enemy:alive() then
+		return enemy:story_id() == 400
+	else
+		return false
+	end
 end
 
 function val_escort_combat_end(actor, npc)
@@ -1145,17 +1200,42 @@ function val_hit_by_guard(actor, npc)
 end
 
 function val_fighting_sacrifice_victim(actor, npc)
-	-- FIXME: use SID!!!
-	return db.storage[npc:id()].enemy:name() == "val_sacrifice_victim"
+    local enemy_st = db.storage[npc:id()].enemy
+	local valid, enemy = validate_enemy_object(enemy_st)
+	if valid == false then
+		return false
+	end	
+	if enemy and IsStalker(enemy) and enemy:alive() then
+		return enemy:story_id() == 401
+	else
+		return false
+	end		
 end    
 
 function val_fighting_prisoner(actor, npc)
-	-- FIXME: use SID!!!
-	return db.storage[npc:id()].enemy:name() == "val_prisoner_captive"
+    local enemy_st = db.storage[npc:id()].enemy
+	local valid, enemy = validate_enemy_object(enemy_st)
+	if valid == false then
+		return false
+	end	
+	if enemy and IsStalker(enemy) and enemy:alive() then
+		return enemy:story_id() == 402
+	else
+		return false
+	end	
 end    
 
 function val_fighting_sacrifice_bloodsucker(actor, npc)
-	return db.storage[npc:id()].enemy:story_id() == 403
+    local enemy_st = db.storage[npc:id()].enemy
+	local valid, enemy = validate_enemy_object(enemy_st)
+	if valid == false then
+		return false
+	end	
+	if enemy and IsMonster(enemy) and enemy:alive() then
+		return enemy:story_id() == 403
+	else	
+		return false
+	end	
 end    
 
 function val_actor_in_cage(actor, npc)
@@ -1204,8 +1284,11 @@ function pri_followers_can_hear(actor, npc)
 end
 
 function pri_monolith_combat_ignore(actor, npc)
-	local enemy = db.storage[npc:id()].enemy
-
+    local enemy_st = db.storage[npc:id()].enemy
+	local valid, enemy = validate_enemy_object(enemy_st)
+	if valid == false then
+		return false
+	end	
 	if enemy and enemy.clsid == clsid.snork_s and enemy:alive() then
         local g = xr_gulag.get_npc_gulag(enemy)
         return g ~= nil and (g.name == "pri_snork_nest1" or g.name == "pri_snork_nest2")
@@ -1316,15 +1399,11 @@ function bar_dolg_alarm(actor,npc)
 	return false
 end
 function bar_hostile_npc(actor,npc)
-dbglog("bar_hostile_npc(actor='%s', npc='%s')",actor:name(),npc:name())
-
 	-- на бармена забьём, всё равно его не убить.
 	local c = npc:character_community()
 	if c == "stalker" or c == "dolg" or c == "ecolog" then
-dbglog("> bar_hostile_npc(false)")
 		return false
 	end
-dbglog("> bar_hostile_npc(true)")
 	return true
 end
 
@@ -1388,7 +1467,11 @@ end
 -- Special functions for Deadcity
 ------------------------------------------------------------------------------------
 function cit_combat_ignore(actor, npc, p)
-    local enemy = db.storage[npc:id()].enemy
+    local enemy_st = db.storage[npc:id()].enemy
+	local valid, enemy = validate_enemy_object(enemy_st)
+	if valid == false then
+		return false
+	end	
     if enemy and enemy:alive() then
         if enemy:id() == actor:id() then
             return p[1] ~= nil and not has_alife_info(p[1])
@@ -1465,9 +1548,10 @@ function agr_factory_hold_inactive (actor, npc)
 	local val = 0
 	
 	for k,v in pairs(gulag.Object) do
-		if (v == true or ( v:alive() and
-		   not(xr_wounded.is_heavy_wounded_by_id(k) or
-		       xr_wounded.is_psy_wounded_by_id(k)))) and
+		if (v == true or (v:alive() and 
+			not xr_wounded.is_heavy_wounded_by_id(k) and 
+			not xr_wounded.is_psy_wounded_by_id(k) and
+			v:character_community()~="stalker")) and 
 			gulag.Object_begin_job[k] == true
 		then
 			val = val + 1
