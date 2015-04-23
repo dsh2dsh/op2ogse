@@ -1,4 +1,6 @@
-http://stalker-worlds.ru/forum/topic/3355-kovyriaemsia-v-ogse/?p=174181
+Репозиторий проекта: https://github.com/dsh2dsh/op2ogse
+
+Форум проекта: http://stalker-worlds.ru/forum/topic/3355-kovyriaemsia-v-ogse/?p=174181
 
 - В настройках игры необходимо назначить заново клавиши для ПНВ,
   напоминаний, ускорителя и быстрого сохранения.
