@@ -1,0 +1,164 @@
+_G.press_any_key_on_start = true -- мод true - включен / false -выключен
+
+local calls = {
+	"trader1a",
+	"trader1b",
+	"trader3b",
+	"trader_tutorial_pda_on_1",
+	"trader_tutorial_pda_on_2",
+	"trader_tutorial_pda_on_3",
+	"trader_tutorial_pda_on_4",
+	"trader_tutorial_rejection_1",
+	"trader_tutorial_rejection_2",
+	"trader_tutorial_rejection_3",
+	"trader_tutorial_rejection_4",
+}
+
+local function inj_mm_init(func_name)
+	local name = "ap_mm_init"
+	_G[name] = _G.ui_main_menu.main_menu.__init
+	_G.ui_main_menu.main_menu.__init =
+		function(...)
+			_G[name](...)
+			local arg={...}
+			loadstring('return _G["'..string.gsub(func_name,"%.",'"]["')..'"]')()(arg[1])
+		end
+end
+
+local function inj_mm_upd(func_name)
+	local name = "ap_mm_upd"
+	if not _G.ui_main_menu.main_menu.Update then
+		_G.ui_main_menu.main_menu.Update = function()end
+	end
+	_G[name] = _G.ui_main_menu.main_menu.Update
+	_G.ui_main_menu.main_menu.Update =
+		function(...)
+			_G[name](...)
+			local arg={...}
+			loadstring('return _G["'..string.gsub(func_name,"%.",'"]["')..'"]')()(arg[1])
+		end
+end
+
+local function inj_mm_on_kbd(func_name)
+	local name = "ap_mm_on_kbd"
+	_G[name] = _G.ui_main_menu.main_menu.OnKeyboard
+	_G.ui_main_menu.main_menu.OnKeyboard =
+		function(...)
+			local arg={...}
+			if not loadstring('return _G["'..string.gsub(func_name,"%.",'"]["')..'"]')()(arg[1],arg[2],arg[3]) then
+				return _G[name](...)
+			end
+			return true
+		end
+end
+
+function main()
+	if _G.press_any_key_on_start then
+		inj_mm_init("autopause.on_mm_init",true)
+		inj_mm_upd("autopause.mm_update",true)
+		inj_mm_on_kbd("autopause.mm_on_kbd",true)
+		inj.inj_update("autopause.on_upd",true)
+	end
+end
+-----------------------------
+function on_mm_init(mm)
+	if level.present() and _G.press_any_key_on_start then
+		_G.press_any_key_on_start = false
+		db.actor:give_info_portion("paused_on_load")
+		level.hide_indicators()
+		mm.start_btn = CUIStatic()
+		mm.start_btn:SetWndRect(Frect():set(0,0,1024,768))
+		mm.start_btn:InitTexture("ui\\ui_load")
+		mm.start_btn:SetText("Зона ждет тебя, "..user_name().." ...")
+		mm.start_btn:SetTextAlign(CGameFont.alCenter)
+		mm.start_btn:SetTextY(695)
+		mm.start_btn:SetFont(GetFontGraffiti19Russian())
+		mm.alpha = 255
+		mm:AttachChild(mm.start_btn)
+		mm:Show(false)
+		mm.sv = level.get_snd_volume()
+		local con = get_console()
+		mm.sound_volume_eff = con:get_float("snd_volume_eff")
+--		con:execute("snd_volume_eff 0")
+		mm.sound_volume_music = con:get_float("snd_volume_music")
+		con:execute("snd_volume_music 0")
+		mm.time_to_call = 0
+		mm.call = 0
+		mm.prev_call = 0
+		mm.stop_call = 15*1000*1000 -- зовем игрока 15 секунд
+		mm.tmr = profile_timer() -- создаем таймер
+		mm.tmr:start() -- запускаем его
+		mm.last_time = 0 -- инициализируем время последнего апдейта
+		_G.ui_main_menu.main_menu.__init = _G.ap_mm_init
+		
+		-- картинка загружаемой территории
+		mm.level_intro = CUIStatic()
+		if device().aspect_ratio >= 0.75 then
+--			mm.level_intro:SetStretchTexture(true)
+			mm.level_intro:SetWndRect(Frect():set(257,369,257+512,369+256))
+			mm.level_intro:InitTexture("intro\\intro_"..level.name())
+		else
+			mm.level_intro:SetStretchTexture(true)
+			mm.level_intro:SetWndRect(Frect():set(257,370,257+512,370+256))
+			mm.level_intro:InitTexture("intro\\intro_"..level.name())
+		end
+		mm:AttachChild(mm.level_intro)
+	end
+end
+function mm_update(mm)
+	if mm.tmr then
+		mm.tmr:stop()
+		
+		if mm.tmr:time() - mm.last_time > 12000 then --  чем больше значение, тем медленнее моргание надписи 
+			mm.last_time = mm.tmr:time()
+			mm.start_btn:SetTextColor(mm.alpha,159,142,126)
+			if mm.alpha > 250 then mm.step = -2 elseif mm.alpha < 60 then mm.step = 2 end
+			mm.alpha = mm.alpha + mm.step
+		end
+		
+		-- зовем игрока
+		if not mm.call_sound or (not mm.call_sound:playing() and mm.time_to_call < mm.tmr:time() and mm.time_to_call < mm.stop_call) then
+			repeat
+				mm.call = calls[math.random(#calls)]
+			until mm.call ~= mm.prev_call
+			mm.call_sound = xr_sound.get_safe_sound_object("characters_voice\\scenario\\trader\\"..mm.call)
+			mm.call_interval = math.random(4,6)
+			mm.call_sound:play(db.actor, mm.call_interval, sound_object.s2d)
+			mm.time_to_call = mm.tmr:time()+(mm.call_sound:length()+mm.call_interval*1000)*1000
+			mm.prev_call = mm.call
+		end
+		
+		mm.tmr:start()
+		get_console():hide()
+	end
+end
+function mm_on_kbd(mm,dik, keyboard_action)
+	if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
+		if mm.start_btn then
+			mm.call_sound:stop()
+			level.show_indicators()
+			level.set_snd_volume(mm.sv)
+			local console = get_console()
+			console:execute("snd_volume_eff " .. mm.sound_volume_eff) 
+			console:execute("snd_volume_music " .. mm.sound_volume_music)
+			_G.ui_main_menu.main_menu.OnKeyboard = _G.ap_mm_on_kbd
+			_G.ui_main_menu.main_menu.Update = _G.ap_mm_upd
+			get_console():execute("main_menu off")
+			db.actor:disable_info_portion("paused_on_load")
+		end
+	end
+	return mm.start_btn~=nil
+end
+
+function on_upd()
+	if device().precache_frame<3 then
+		inj.inj_update("autopause.on_upd",false)
+		if _G.g_start_avi then
+			_G.ui_main_menu.main_menu.__init = _G.ap_mm_init
+			_G.ui_main_menu.main_menu.OnKeyboard = _G.ap_mm_on_kbd
+			_G.ui_main_menu.main_menu.Update = _G.ap_mm_upd
+		else
+			get_console():execute("main_menu 1")
+		end
+	end
+end
