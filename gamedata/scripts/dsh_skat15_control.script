@@ -1,0 +1,107 @@
+--[[
+Этот скрипт отвечает за расходование артефакта Черная энергия при ношении
+экзоскелета СКАТ-15, с подключенным третим блоком апгрейда. Расход Черной
+энергии начинается при наличии в инвентаре доп. веса.
+]]
+
+local exo_sect = "exo_mil_exoskeleton_addrs"
+local use_time = 2 -- как долго расходуется одна Черная энергия в часах
+-- за сколько кг. от максимального, начинает расходоваться энергия.
+local addl_weight = 20
+
+
+function attach( sm )
+  sm:subscribe({ signal = "on_spawn",   fun = this.on_spawn })
+  sm:subscribe({ signal = "on_update",  fun = this.on_update, queued = true })
+end
+
+
+local pt, max_weight
+function on_spawn()
+  pt = { game.get_game_time():get() }
+  max_weight = sys_ini:r_float(
+    exo_sect, "additional_inventory_weight"
+  ) - addl_weight
+end
+
+
+local warn_use
+function on_update()
+  if db.actor and db.actor:alive() then
+    local previous_check_time = game.CTime()
+    previous_check_time:set( unpack( pt ) )
+    local current_time = game.get_game_time()
+    local dt = current_time:diffSec( previous_check_time )
+    if dt < 60 then return end
+    pt = { current_time:get() }
+    local outfit_item = db.actor:item_in_slot( 6 )
+    if outfit_item
+       and
+       outfit_item:section() == exo_sect
+       and
+       inventory.on_belt( "art_acumm" )
+       and
+       db.actor:get_inventory_weight() > (
+         db.actor:get_actor_max_walk_weight() + max_weight
+       )
+    then
+      if not warn_use then
+        news_manager.send_tip(
+          db.actor,
+          "Активирован режим потребления энергии.",
+          nil, "nano", 10000
+        )
+        warn_use = true
+      end
+      use_art_acumm( dt )
+    else
+      warn_low = false
+      warn_use = false
+    end
+  end
+end
+
+
+local warn_low
+function use_art_acumm( dt )
+  local used = dt / ( use_time * 3600 )
+  local belt_count = db.actor:belt_count()
+  for i = 1, belt_count do
+    local item = db.actor:item_on_belt( i - 1 )
+    local it_section = item:section()
+    if it_section == "art_acumm" then
+      local cond = item:condition()
+      if cond > used then
+        cond = cond - used
+        item:set_condition( cond )
+        local sobj = alife():object( item:id() )
+        if sobj then
+          local tbl = amk.get_item_params( sobj )
+          tbl.condition = cond
+          amk.set_item_params( tbl, sobj )
+        end
+        if cond < 0.1 then
+          if not warn_low then
+            news_manager.send_tip(
+              db.actor,
+              "Внимание, низкий уровень энергии!",
+              nil, "nano", 10000
+            )
+            warn_low = true
+          end
+        else
+          warn_low = false
+        end
+      else
+        news_manager.send_tip(
+          db.actor,
+          "Внимание, критический уровень энергии!",
+          nil, "nano", 10000
+        )
+        ogse.remove_item_from_inventory( item )
+        warn_low = false
+      end
+      break
+    end
+  end
+end
