@@ -1,0 +1,1837 @@
+--[[-----------------------------------------------------------
+------------------ Новый универcальный ремонт -----------------
+---------------------------------------------------------------
+Реализовано:
+Ремонт без ремъящика - ремкомплекты в инвентаре для не сильно убитых вещей
+Единый диалог и механизм всем ремонтникам
+Механизм ремонта ремкомплектами:
+Ремонтируется текущий активный ствол (который в руках) или одетая броня.
+Механизм ремонта ремонтником: 
+Ремонтируется ствол в выбранном слоте/одетая броня. Для ремонта ствола нужен ствол того же калибра (проверка по используемым патронам),
+выбирается первый попавшийся в рюкзаке+предметы+деньги. Для ремонта брони предметы+деньги. 
+Для сильно убитых вещей требуется двойной комплект предметов.
+]]
+
+-- износ (состояние) задается в диапазоне: 0=полностью убитый, 1=полностью исправный
+local rep_cond_wpn = 0.7			-- минимальное состояние ствола, которое чинится ремкомплектом
+local rep_cond_armor = 0.75			-- минимальное состояние брони, которое чинится ремкомплектом
+local min_cond_item = 0.2			-- минимальное состояние предмета, который может починить ремонтник (ниже не ремонтируется)
+local min_cond_parts = 0.1			-- минимальное состояние ствола на запчасти (ниже не принимается)
+local cond_ok = 0.99				-- минимальное состояние исправного предмета
+local cond_double = 0.4				-- минимальное состояние предмета, ниже которого требуется двойной комплект предметов, стволов и денег
+local rep_percent = 0.1				-- на сколько чинится предмет одним ремкомплектом
+local money_koef = 0.5				-- множитель денег на ремонт
+local ammo, item, cond, count, have, slot, parts, pay = "", 0, 0, 0, 0, 0, {}, 0
+
+-- предметы, нужные для ремонта ствола и брони
+local parts_wpn = {"art_acumm"}
+local parts_armor = {"art_acumm"}
+
+--- Можем ли ремонтировать ремкомплектом
+function repair_can_be_done(obj)
+	local section = obj:section()
+	if has_alife_info("biznes_remove_special_item") or string.sub(section,1,11) ~= "repair_item" then return true end -- не наш "клиент"
+
+	-- данжер
+	if not danger.actor_not_in_danger() then
+		amk.spawn_item_in_inv(section)
+		return false
+	end
+	
+	if section == "repair_item_weapon" then
+		item = db.actor:active_item()
+		if not item then
+			repair_error("Возьми в руки ствол, который хочешь отремонтировать.", section)
+			return false
+		end
+		if db.actor:active_slot() ~= 1 and db.actor:active_slot() ~= 2 then
+			repair_error("Можно отремонтировать только огнестрельное оружие.", section)
+			return false
+		end
+	elseif section == "repair_item_outfit" then
+		item = db.actor:item_in_slot(6)
+		if not item then
+			repair_error("Надень броню, которую хочешь отремонтировать.", section)
+			return false
+		end
+	end
+
+	cond = item:condition()
+	if section == "repair_item_weapon" then
+		if cond > cond_ok then
+			repair_error("Оружие не нуждается в ремонте.", section)
+			return false
+		end
+		if cond < rep_cond_wpn then
+			repair_error("Оружие слишком сильно повреждено. Ремкомплектом не починить.", section)
+			return false
+		end
+	elseif section == "repair_item_outfit" then
+		if cond > cond_ok then
+			repair_error("Броня не нуждается в ремонте.", section)
+			return false
+		end
+		if cond < rep_cond_armor then
+			repair_error("Броня слишком сильно повреждена. Ремкомплектом не починить.", section)
+			return false
+		end
+	end
+
+	return true
+end
+	
+function repair_error(text, section)
+	news_manager.send_tip(db.actor, text, nil, nil, 10000)
+	amk.spawn_item_in_inv(section)
+end
+
+-- ремонтируем
+function actor_repair(obj)
+	local section = obj:section()
+	if has_alife_info("biznes_remove_special_item") or string.sub(section,1,11) ~= "repair_item" then return end -- не наш "клиент"
+
+	if section == "repair_item_weapon" then
+		item:set_condition(cond+rep_percent)
+--		news_manager.send_tip(db.actor, "Оружие отремонтировано.", level.get_game_difficulty()*3, nil, 10000)
+	elseif section == "repair_item_outfit" then
+		amk_mod.repair_armor(cond+rep_percent)
+--		news_manager.send_tip(db.actor, "Броня отремонтирована.", level.get_game_difficulty()*3, nil, 10000)
+	end
+end
+
+------------- Функции для диалога ---------------
+
+-- главный прекондишн: может ли непись ремонтировать? 
+function can_repair(first_speaker, second_speaker)
+	-- Общие поршни
+	if not has_alife_info("tutorial_end") then
+		return false
+	end
+	
+	-- Поршни по неписям. 
+	-- Сяк на Радаре
+	if second_speaker:profile_name() == "Sak" and not has_alife_info("sak_repair_box_done") then 
+		return false
+	end
+	-- Долговязый
+	if second_speaker:profile_name() == "dolgovazyi" and not has_alife_info("dolgovazyi_toolkit_done") then 
+		return false
+	end
+
+	return true
+end
+
+-- есть ли предмет в слоте?
+function is_item1()	return is_item(1) end
+function is_item2()	return is_item(2) end
+function is_item6()	return is_item(6) end
+function is_item(slt)
+	return db.actor:item_in_slot(slt)
+end
+
+-- слишком убитый предмет?
+function too_bad_item1() return too_bad_item(1) end
+function too_bad_item2() return too_bad_item(2) end
+function too_bad_item6() return too_bad_item(6) end
+function too_bad_item(slt)
+	return db.actor:item_in_slot(slt):condition() < min_cond_item
+end
+
+-- полностью исправный предмет?
+function ok1() return ok(1) end
+function ok2() return ok(2) end
+function ok6() return ok(6) end
+function ok(slt)
+	return db.actor:item_in_slot(slt):condition() > cond_ok
+end
+
+-- нужен ли ремонт?
+function need1() return need(1) end
+function need2() return need(2) end
+function need6() return need(6) end
+function need(slt)
+	return not too_bad_item(slt) and not ok(slt)
+end
+
+-- что нужно для ремонта?
+function talk_parts1() return talk_parts(1) end
+function talk_parts2() return talk_parts(2) end
+function talk_parts6() return talk_parts(6) end
+function talk_parts(slt)
+	slot = slt
+	item = db.actor:item_in_slot(slot)
+	cond = item:condition()
+	count = 1
+	local text = ""
+
+	if slot == 6 then
+		if cond > cond_double then
+			text = "Для ремонта брони мне нужно "..parts_list().." и "..tostring(parts_money()).." рублей. Будем ремонтироваться?"
+		else
+			count = 2
+			text = "Броня сильно потрепана, поэтому для ремонта мне нужно два артефакта "..parts_list().." и "..tostring(parts_money()).." рублей. Будем ремонтироваться?"
+		end
+	else
+		if cond > cond_double then
+			text = "Для ремонта мне нужен любой ствол такого же калибра на запчасти, "..parts_list().." и "..tostring(parts_money()).." рублей. Будем ремонтироваться?"
+		else
+			count = 2
+			text = "Этот ствол изрядно потрепан. Поэтому мне нужно два любых ствола такого же калибра на запчасти, два артефакта "..parts_list().." и "..tostring(parts_money()).." рублей. Будем ремонтироваться?"
+		end
+	end
+
+	local task_texture, task_rect = get_texture_info("ui_iconsTotal_lost_money")
+	db.actor:give_talk_message(text, task_texture, task_rect, "simple_answer_item")
+end
+
+-- список предметов для ремонта
+function parts_list()
+	local text = ""
+	
+	if slot == 6 then
+		parts = parts_armor
+	else
+		parts = parts_wpn
+	end
+	
+	for i=1,#parts do
+		text = text..game.translate_string(rx_utils.read_from_ini(nil, parts[i], "inv_name", "", 1))
+		
+		if i < #parts then
+			text = text..", "
+		end
+	end
+	
+	return text
+end
+
+-- деньги на ремонт
+function parts_money()
+	pay = math.floor(item:cost()*(1-item:condition())*money_koef*count)
+	return pay
+end
+
+-- все ли есть для ремонта?
+function not_have_all() return not have_all() end
+function have_all()
+	-- деньги
+	if db.actor:money() < pay then
+		return false
+	end
+	
+	-- предметы
+	for i=1,#parts do
+		if not new_dialog.item_much(parts[i], count) then
+			return false
+		end
+	end
+
+	-- стволы по калибру, проверка по патронам
+	if slot ~= 6 then
+		ammo = rx_utils.parse_list_new(nil, item:section(), "ammo_class")[1]
+		have = 0
+		db.actor:iterate_inventory(kalibr_count,db.actor)
+		
+		if have < count then
+			return false
+		end
+	end
+
+	return true
+end
+function kalibr_count(actor, itm)
+	if  (not db.actor:item_in_slot(1) or itm:id() ~= db.actor:item_in_slot(1):id()) and 
+		(not db.actor:item_in_slot(2) or itm:id() ~= db.actor:item_in_slot(2):id()) and
+		itm:condition() and itm:condition() > min_cond_parts and
+		kalibr_ok(itm)
+	then
+		have = have+1
+	end
+end
+
+-- Ремонт предмета ремонтником. Все данные к этому моменту уже проверены и заполнены
+function npc_repair(first_speaker, second_speaker)
+	-- отбираем все, что нужно
+	dialogs.relocate_money(second_speaker, pay, "out")
+	for i=1,#parts do
+		sak.out_item_namber(parts[i], count)
+	end
+
+	-- отбираем стволы и ремонтируем
+	if slot ~= 6 then
+		have = 0
+		db.actor:iterate_inventory(kalibr_remove,db.actor)
+		item:set_condition(1)
+	else
+		amk_mod.repair_armor(1)
+	end
+end
+function kalibr_remove(actor, itm)
+	if have < count and
+		(not db.actor:item_in_slot(1) or itm:id() ~= db.actor:item_in_slot(1):id()) and 
+		(not db.actor:item_in_slot(2) or itm:id() ~= db.actor:item_in_slot(2):id()) and
+		itm:condition() and itm:condition() > min_cond_parts and
+		kalibr_ok(itm)
+	then
+		news_manager.relocate_item(db.actor, "out", itm:section())
+        amk.remove_item_from_inventory(itm, actor)
+		have = have+1
+	end
+end
+
+-- проверка калибра
+function kalibr_ok(itm)
+	local ammos = rx_utils.parse_list_new(nil, itm:section(), "ammo_class")
+	
+	for i=1,#ammos do
+		if ammos[i] == ammo then
+			return true
+		end
+	end
+	
+	return false
+end
+
+-- В ОП-2 старый ремонт не используется, только апгрейд стволов
+
+-- Advanced Trader Weapon Repair v.1.1
+
+-- Basic functions by AMK Team, advanced functions by Black 777 Team (Wlad777 and BlackyBPG)
+--------------------------------------------------------------------------------------------------------
+
+-- переписано и добавлено до хрена by RAY
+
+local weapon_profit_margin = 4
+local armor_profit_margin = 4
+local rem_name
+local rem_ubit_stvol_1 = 0
+local rem_ubit_stvol_2 = 0
+local is_perv = 0
+local is_vtor = 0
+
+local is_upgr_kalibr = false          -- оружие доступно для смены калибра
+local is_upgr_otdaca = false   -- оружие доступно для апгрейда отдачи
+local is_upgr_ves = false   -- оружие доступно для снижения веса
+local nomer_massiva = 0
+
+
+-- массив "сравнимых" стволов, правим под себя, сделан от балды для тестов
+
+local wpnA = { "wpn_val", "wpn_val_m1", "wpn_val_m2", "wpn_val_voron", "wpn_vintorez", "wpn_vintorez_m1", "wpn_sr3t", "wpn_vsk94", "wpn_ak9", "wpn_20w_vintorez" }
+local wpnB = { "wpn_spas", "wpn_wincheaster1300", "wpn_winchester_m1", "wpn_winch1887", "wpn_m4super90", "wpn_mossberg590", "wpn_rem870_magnum", "wpn_rem870short", "wpn_protecta", "wpn_protecta_col", "wpn_usas12", "wpn_browningauto5", "wpn_ba5short", "wpn_benelli_m3_short", "wpn_benelli_m3", "wpn_benelli_m3_tactik" }
+local wpnC = { "wpn_bm16", "wpn_toz34", "wpn_toz34_short", "hunters_toz" }
+local wpnD = { "wpn_raging_bull", "wpn_gp100", "wpn_sw", "wpn_colt_piton" }
+local wpnE = { "wpn_samopal" }
+local wpnF = { "wpn_kriss_super", "wpn_ump45" }
+local wpnG = { "wpn_ak47", "wpn_aks47", "wpn_ak47_sk1", "wpn_akm_sk2", "wpn_akms", "wpn_akms_m1", "wpn_ak47_md", "wpn_peceneg", "wpn_ak103", "wpn_ak104", "wpn_ak104t", "wpn_pkm", "wpn_akm_m1", "wpn_ak47_sh", "wpn_rpk47_bub", "wpn_rpk47_m1", "wpn_rpk47_sk1", "wpn_sks_s", "wpn_sks_cust", "wpn_kord", "wpn_kord_m1", "wpn_rpkm40", "wpn_rpkcstmcol", "wpn_rpkcustom" }
+local wpnH = { "wpn_ak74u", "wpn_ak74u_m1", "wpn_ak74", "wpn_aks74", "wpn_aks74_m1", "wpn_aks74_m2", "wpn_ak74_m2", "wpn_aks74m", "wpn_ak74_m3", "wpn_groza", "wpn_groza_sn", "wpn_ak105", "wpn_ak108", "wpn_bizon", "wpn_bizon1", "wpn_ak74u_svd" }
+local wpnI = { "wpn_abakan","wpn_abakan_m1", "wpn_abakan_m2", "wpn_rpk74_sk1", "wpn_stg44", "wpn_mkb_42" }
+local wpnJ = { "wpn_famas", "wpn_tavor", "wpn_scar_cry" }
+local wpnK = { "wpn_p90", "wpn_fn57" }
+local wpnL = { "wpn_g36", "wpn_g36_m1", "wpn_g36c", "wpn_xm8_para_sk2" }
+local wpnM = { "wpn_mg42", "wpn_m_134", "wpn_m134" }
+local wpnN = { "wpn_l85", "wpn_l85_m1", "wpn_l85_m2", "wpn_fn_fal_c1", "wpn_g3", "wpn_g3sg1", "wpn_g41" }
+local wpnO = { "wpn_lr300", "wpn_m16a2_sk1", "wpn_m16a2", "wpn_m4", "wpn_sbr", "wpn_hk417_sk1", "wpn_sr25_mk11_mod0_sk1", "wpn_m4_a3", "wpn_vint14", "wpn_m4a1", "wpn_acr", "wpn_hk416" }
+local wpnP = { "wpn_sig550", "wpn_sig_m1", "wpn_sig_m2", "wpn_sg552_sk1", "wpn_sig552camo", "wpn_sg550_sr" }
+local wpnQ = { "wpn_saiga12c", "wpn_sayga12_sk1", "wpn_sayga12k", "wpn_vepr12", "wpn_vepr", "wpn_vepr12_col", "wpn_vepr12_20", "wpn_vepr12_m1", "wpn_aa12" }
+local wpnR = { "wpn_ppsh41_sk2", "wpn_pps43", "wpn_ak203", "wpn_akm203_pso" }
+local wpnS = { "wpn_mp5", "wpn_mp5_m1", "wpn_mp5_m2", "wpn_mp5_m3", "wpn_mp5_m4", "wpn_mp5_m5", "wpn_mp7", "wpn_mp5k", "wpn_hk53_a3", "wpn_uzi", "wpn_scorpion", "wpn_mp40", "wpn_mp5sd", "wpn_mp5k_pdw", "wpn_mp5pdw" } -- Proper71 bisnes добавлена гадюка Борова
+local wpnT = { "wpn_svd", "wpn_svd_m1", "wpn_svd_m2", "wpn_svd_m3", "wpn_svu", "wpn_awm", "wpn_b94", "wpn_m1891_30_scope", "wpn_k98", "wpn_walther_wa2000", "wpn_obrez_m1891", "wpn_vihlop", "wpn_awp", "wpn_awp_m1", "wpn_cz550", "wpn_sv98", "wpn_svt40", "wpn_zastava_m76", "wpn_zastava_m77" }
+local wpnU = { "wpn_flame", "wpn_ognemet" }
+local wpnV = { "wpn_gungauss", "wpn_gauss", "wpn_dark_gauss", "wpn_gauss2b", "wpn_gauss_krayzis" }
+local wpnW = { "wpn_crossbow", "wpn_crossbow_m1" }
+local wpnX = { "wpn_fn2000", "wpn_fn2000_old", "wpn_fn2000_sniper", "wpn_hostel", "wpn_aug_a1", "wpn_fn2000_paratrooper", "wpn_oicw" }
+local wpnY = { "wpn_rg6", "wpn_rg-6", "wpn_m79" }
+local wpnZ = { "wpn_rpg7" }
+
+local wpn1 = { "wpn_beretta", "wpn_hpsa", "wpn_tt33", "wpn_tt33_m1", "wpn_mauser", "wpn_gsh18", "wpn_walther", "wpn_m93r", "wpn_p38", "wpn_p18", "wpn_luger", "wpn_luger_kurtz" }                                                             
+local wpn2 = { "wpn_colt", "wpn_colt_kc",  "wpn_desert_eagle", "wpn_eagle", "wpn_sig220", "wpn_usp", "wpn_g35", "wpn_mp445", "wpn_glock18" }                 
+local wpn3 = { "wpn_aps_sk1", "wpn_apb", "wpn_fort", "wpn_pb", "wpn_pm", "wpn_pmm", "wpn_oc33_sk1", "wpn_mp444", "wpn_oc27", "wpn_kedr" }
+local wpn_temp
+
+
+
+-- Первоначальные (исходные стволы). Доступны для смены калибра
+local wpn_to_upgrade_kalibr_5_45 = {"wpn_ak74", "wpn_aks74m", "wpn_ak74u", "wpn_abakan"}
+local wpn_to_upgrade_kalibr_9_18 = {"wpn_bizon", "wpn_scorpion"}
+local wpn_to_upgrade_kalibr_9_19 = {"wpn_mp5", "wpn_mp7a3", "wpn_uzi"}
+local wpn_to_upgrade_kalibr_5_56 = {"wpn_fn2000", "wpn_g36", "wpn_lr300", "wpn_sig550", "wpn_sg552_sk1", "wpn_l85", "wpn_famas_p3_sk1", "wpn_m16a2_sk1", "wpn_tavor", "wpn_m4", "wpn_mp5k"}
+
+-- Стволы с измененным калибром
+local wpn_with_upgrade_kalibr_5_45 = {"wpn_ak74_kalibr", "wpn_aks74m_kalibr", "wpn_ak74u_kalibr", "wpn_abakan_kalibr"}
+local wpn_with_upgrade_kalibr_9_18 = {"wpn_bizon_kalibr", "wpn_scorpion_kalibr"}
+local wpn_with_upgrade_kalibr_9_19 = {"wpn_mp5_kalibr", "wpn_mp7a3_kalibr", "wpn_uzi_kalibr", "wpn_mp5k_kalibr"}
+local wpn_with_upgrade_kalibr_5_56 = {"wpn_fn2000_kalibr", "wpn_g36_kalibr", "wpn_lr300_kalibr", "wpn_sig550_kalibr", "wpn_sg552_sk1_kalibr", "wpn_l85_kalibr", "wpn_famas_p3_sk1_kalibr", "wpn_m16a2_sk1_kalibr", "wpn_tavor_kalibr", "wpn_m4_kalibr"}
+
+-- Первоначальные (исходные стволы). Доступны для снижения отдачи.
+local wpn_to_upgrade_otdaca = {"wpn_ak74", "wpn_aks74m", "wpn_ak74u", "wpn_abakan", "wpn_bizon", "wpn_mp5", "wpn_mp7a3", "wpn_uzi", "wpn_fn2000", "wpn_g36", "wpn_lr300", "wpn_sig550", "wpn_sg552_sk1", "wpn_l85", "wpn_famas_p3_sk1", "wpn_m16a2_sk1", "wpn_tavor", "wpn_ak47", "wpn_hk417_sk1", "wpn_sr25_mk11_mod0_sk1", "wpn_m4", "wpn_mp5k", "wpn_scorpion" }
+
+-- Стволы со сниженной отдачей (законченный апгрейд)
+local wpn_with_upgrade_otdaca = {"wpn_ak74_otdaca", "wpn_aks74m_otdaca", "wpn_ak74u_otdaca", "wpn_abakan_otdaca", "wpn_bizon_otdaca", "wpn_mp5_otdaca", "wpn_mp7a3_otdaca", "wpn_uzi_otdaca", "wpn_fn2000_otdaca", "wpn_g36_otdaca", "wpn_lr300_otdaca", "wpn_sig550_otdaca", "wpn_sg552_sk1_otdaca", "wpn_l85_otdaca", "wpn_famas_p3_sk1_otdaca", "wpn_m16a2_sk1_otdaca", "wpn_tavor_otdaca", "wpn_ak47_otdaca", "wpn_hk417_sk1_otdaca", "wpn_sr25_mk11_mod0_sk1_otdaca", "wpn_m4_otdaca", "wpn_mp5k_otdaca", "wpn_scorpion_otdaca"}
+
+-- Первоначальные (исходные стволы). Доступны для снижения веса 
+local wpn_to_upgrade_ves = {"wpn_ak74_kalibr", "wpn_aks74m_kalibr", "wpn_ak74u_kalibr", "wpn_abakan_kalibr", "wpn_bizon_kalibr", "wpn_mp5_kalibr", "wpn_mp7a3_kalibr", "wpn_uzi_kalibr", "wpn_fn2000_kalibr", "wpn_g36_kalibr", "wpn_lr300_kalibr", "wpn_sig550_kalibr", "wpn_sg552_sk1_kalibr", "wpn_l85_kalibr", "wpn_famas_p3_sk1_kalibr", "wpn_m16a2_sk1_kalibr", "wpn_tavor_kalibr", "wpn_ak74_otdaca", "wpn_aks74m_otdaca", "wpn_ak74u_otdaca", "wpn_abakan_otdaca", "wpn_bizon_otdaca", "wpn_mp5_otdaca", "wpn_mp7a3_otdaca", "wpn_uzi_otdaca", "wpn_fn2000_otdaca", "wpn_g36_otdaca", "wpn_lr300_otdaca", "wpn_sig550_otdaca", "wpn_sg552_sk1_otdaca", "wpn_l85_otdaca", "wpn_famas_p3_sk1_otdaca", "wpn_m16a2_sk1_otdaca", "wpn_tavor_otdaca", "wpn_ak47_otdaca", "wpn_hk417_sk1_otdaca", "wpn_sr25_mk11_mod0_sk1_otdaca", "wpn_ak74", "wpn_ak74u", "wpn_abakan", "wpn_bizon", "wpn_mp5", "wpn_mp7a3", "wpn_uzi", "wpn_fn2000", "wpn_g36", "wpn_lr300", "wpn_sig550", "wpn_sg552_sk1", "wpn_l85", "wpn_famas_p3_sk1", "wpn_m16a2_sk1", "wpn_tavor", "wpn_ak47", "wpn_hk417_sk1", "wpn_sr25_mk11_mod0_sk1", "wpn_groza", "wpn_val", "wpn_svd", "wpn_svu", "wpn_m1891_30_scope", "wpn_vintorez", "wpn_b94", "wpn_awm", "wpn_saiga12c", "wpn_spas12", "wpn_wincheaster1300", "wpn_bm16", "wpn_toz34", "wpn_ppsh41_sk2", "wpn_kriss_super_v", "wpn_p90", "wpn_pkm", "wpn_m4", "wpn_m4_kalibr", "wpn_m4_otdaca", "wpn_m4super90", "wpn_m79", "wpn_mp5k", "wpn_mp5k_kalibr", "wpn_mp5k_otdaca", "wpn_protecta", "wpn_scorpion", "wpn_scorpion_kalibr", "wpn_scorpion_otdaca", "wpn_aks74m"}
+
+-- Стволы со сниженной отдачей (законченный апгрейд)
+local wpn_with_upgrade_ves = {"wpn_ak74_kalibr_ves", "wpn_aks74m_kalibr_ves", "wpn_ak74u_kalibr_ves", "wpn_abakan_kalibr_ves", "wpn_bizon_kalibr_ves", "wpn_mp5_kalibr_ves", "wpn_mp7a3_kalibr_ves", "wpn_uzi_kalibr_ves", "wpn_fn2000_kalibr_ves", "wpn_g36_kalibr_ves", "wpn_lr300_kalibr_ves", "wpn_sig550_kalibr_ves", "wpn_sg552_sk1_kalibr_ves", "wpn_l85_kalibr_ves", "wpn_famas_p3_sk1_kalibr_ves", "wpn_m16a2_sk1_kalibr_ves", "wpn_tavor_kalibr_ves", "wpn_ak74_otdaca_ves", "wpn_aks74m_otdaca_ves", "wpn_ak74u_otdaca_ves", "wpn_abakan_otdaca_ves", "wpn_bizon_otdaca_ves", "wpn_mp5_otdaca_ves", "wpn_mp7a3_otdaca_ves", "wpn_uzi_otdaca_ves", "wpn_fn2000_otdaca_ves", "wpn_g36_otdaca_ves", "wpn_lr300_otdaca_ves", "wpn_sig550_otdaca_ves", "wpn_sg552_sk1_otdaca_ves", "wpn_l85_otdaca_ves", "wpn_famas_p3_sk1_otdaca_ves", "wpn_m16a2_sk1_otdaca_ves", "wpn_tavor_otdaca_ves", "wpn_ak47_otdaca_ves", "wpn_hk417_sk1_otdaca_ves", "wpn_sr25_mk11_mod0_sk1_otdaca_ves", "wpn_ak74_ves", "wpn_ak74u_ves", "wpn_abakan_ves", "wpn_bizon_ves", "wpn_mp5_ves", "wpn_mp7a3_ves", "wpn_uzi_ves", "wpn_fn2000_ves", "wpn_g36_ves", "wpn_lr300_ves", "wpn_sig550_ves", "wpn_sg552_sk1_ves", "wpn_l85_ves", "wpn_famas_p3_sk1_ves", "wpn_m16a2_sk1_ves", "wpn_tavor_ves", "wpn_ak47_ves", "wpn_hk417_sk1_ves", "wpn_sr25_mk11_mod0_sk1_ves", "wpn_groza_ves", "wpn_val_ves", "wpn_svd_ves", "wpn_svu_ves", "wpn_m1891_30_scope_ves", "wpn_vintorez_ves", "wpn_b94_ves", "wpn_awm_ves", "wpn_saiga12c_ves", "wpn_spas12_ves", "wpn_wincheaster1300_ves", "wpn_bm16_ves", "wpn_toz34_ves", "wpn_ppsh41_sk2_ves", "wpn_kriss_super_v_ves", "wpn_p90_ves", "wpn_pkm_ves", "wpn_m4_ves", "wpn_m4_kalibr_ves", "wpn_m4_otdaca_ves", "wpn_m4super90_ves", "wpn_m79_ves", "wpn_mp5k_ves", "wpn_mp5k_kalibr_ves", "wpn_mp5k_otdaca_ves", "wpn_protecta_ves", "wpn_scorpion_ves", "wpn_scorpion_kalibr_ves", "wpn_scorpion_otdaca_ves", "wpn_aks74m_ves"}
+
+
+ 
+
+-- имя ремонтника в смс
+
+repairmaster = {
+		hnd_weap_01  = { "Сидорович" },
+		hnd_weap_02  = { "Дэн" },
+		hnd_weap_03  = { "Сяк" },
+		hnd_weap_04  = { "Долговязый" },
+		hnd_weap_05  = { "Бармэн" },
+		hnd_weap_06  = { "Василий" },
+		hnd_weap_07  = { "Сахаров" }
+}
+
+local wpnsec=nil
+local stcode=0
+local check_sec = 0
+local tmpcode = 0
+local recheck
+local tt = 0.5
+
+
+-- ремонтники и коофициенты "навара" 1=Variablenname; 2=weapon_profit_margin; 3=armor_profit_margin
+
+local repairmasterlist = {
+	escape_trader			= {"hnd_weap_01",2.2,3.0},
+	escape_trader_zombie	= {"hnd_weap_01",1.7,1.5},
+	marsh_dan				= {"hnd_weap_02",4,4},
+	Sak					= {"hnd_weap_03",2.0,3.5},
+	dolgovazyi			= {"hnd_weap_04",1.8,3.0},
+	bar_barman			= {"hnd_weap_05",1.6,1.5},
+	bar_barman_zombi		= {"hnd_weap_05",1.6,1.5},
+	marsh_remont	          = {"hnd_weap_06",2.1,1.9},
+--	mil_Svoboda_trader       = {"hnd_weap_06",2.1,1.9},
+	yan_general_ecolog		= {"hnd_weap_07",1.8,1.7},
+	yan_general_ecolog_zombi= {"hnd_weap_07",1.8,1.7}
+}
+
+
+
+-- а возможен ли апгрейд?
+
+function trader_upgrade_precond(actor, trader)
+	nomer_massiva = 0
+	wpnsec=nil
+	stcode=0
+	local var = repairmasterlist[trader:name()][1]
+	get_vars(var)
+	if stcode>=1 and wpnsec~=nil then 
+		return false 
+	end
+
+	local item_in_slot_1 = db.actor:item_in_slot(1)
+	local item_in_slot_2 = db.actor:item_in_slot(2)
+	if (item_in_slot_1 ~= nil) then 
+		return true
+	elseif (item_in_slot_2 ~= nil) then 
+		return true
+	else 
+		return false
+	end	 
+
+
+
+--	if (item_in_slot_1 ~= nil) and (0.96 < item_in_slot_1:condition() + 0.01) then 
+--		return true
+--	elseif (item_in_slot_2 ~= nil) and (0.96 < item_in_slot_2:condition() + 0.01) then 
+--		return true
+--	else 
+--		return false
+--	end	 
+end
+
+-- можно ли оружию сменить калибр
+
+function is_upgrade_kalibr(wpn)
+	nomer_massiva = 0
+	 j=table.getn(wpn_to_upgrade_kalibr_5_45) 
+	for i=1,j do
+		 if wpn == wpn_to_upgrade_kalibr_5_45[i] then
+			nomer_massiva = 1
+			return wpn_with_upgrade_kalibr_5_45[i]
+		 end
+	 end
+	 j=table.getn(wpn_to_upgrade_kalibr_9_18) 
+	for i=1,j do
+		 if wpn == wpn_to_upgrade_kalibr_9_18[i] then
+			nomer_massiva = 2
+			return wpn_with_upgrade_kalibr_9_18[i]
+		 end
+	 end
+	 j=table.getn(wpn_to_upgrade_kalibr_9_19) 
+	for i=1,j do
+		 if wpn == wpn_to_upgrade_kalibr_9_19[i] then
+			nomer_massiva = 3
+			return wpn_with_upgrade_kalibr_9_19[i]
+		 end
+	 end
+	 j=table.getn(wpn_to_upgrade_kalibr_5_56) 
+	for i=1,j do
+		 if wpn == wpn_to_upgrade_kalibr_5_56[i] then
+			nomer_massiva = 4
+			return wpn_with_upgrade_kalibr_5_56[i]
+		 end
+	 end
+	return nil
+end
+
+-- можно ли оружию увеличить кучность
+
+function is_upgrade_otdaca(wpn)
+	 j=table.getn(wpn_to_upgrade_otdaca) 
+	for i=1,j do
+		 if wpn == wpn_to_upgrade_otdaca[i] then
+			return wpn_with_upgrade_otdaca[i]
+		 end
+	 end
+	return nil
+end
+
+-- можно ли оружию снизить вес
+
+function is_upgrade_ves(wpn)
+	 j=table.getn(wpn_to_upgrade_ves) 
+	for i=1,j do
+		 if wpn == wpn_to_upgrade_ves[i] then
+			return wpn_with_upgrade_ves[i]
+		 end
+	 end
+	return nil
+end
+
+function is_upgrade_1st_stvol_kalibr(actor, trader)
+	local item_in_slot_1 = db.actor:item_in_slot(1)
+	local wep_flag = nil
+	if item_in_slot_1 ~= nil then
+		wep_flag =  is_upgrade_kalibr(item_in_slot_1:section())
+			
+		if wep_flag == nil  then
+			return false
+		end
+		return true
+	end
+	return false
+end
+
+function is_upgrade_1st_stvol_otdaca(actor, trader)
+	local item_in_slot_1 = db.actor:item_in_slot(1)
+	local wep_flag = nil
+	if item_in_slot_1 ~= nil then
+		wep_flag =  is_upgrade_otdaca(item_in_slot_1:section())
+			
+		if wep_flag == nil  then
+			return false
+		end
+		return true
+	end
+	return false
+end
+
+function is_upgrade_1st_stvol_ves(actor, trader)
+	local item_in_slot_1 = db.actor:item_in_slot(1)
+	local wep_flag = nil
+	if item_in_slot_1 ~= nil then
+		wep_1 =  is_upgrade_ves(item_in_slot_1:section())
+			
+		if wep_1 == nil  then
+			return false
+		end
+		return true
+	end
+	return false
+end
+
+function is_upgrade_1st_stvol_all_precond(actor, trader)
+	local a1 =  is_upgrade_1st_stvol_kalibr(actor, trader)
+	local a2 =  is_upgrade_1st_stvol_otdaca(actor, trader)
+	local a3 =  is_upgrade_1st_stvol_ves(actor, trader)
+	if a1 or a2 or a3 then
+		return true
+	end
+	return false
+end
+
+
+function is_upgrade_2st_stvol_kalibr(actor, trader)
+	local item_in_slot_2 = db.actor:item_in_slot(2)
+	local wep_flag = nil
+	if item_in_slot_2 ~= nil then
+		wep_1 =  is_upgrade_kalibr(item_in_slot_2:section())
+			
+		if wep_1 == nil  then
+			return false
+		end
+		return true
+	end
+	return false
+end
+
+function is_upgrade_2st_stvol_otdaca(actor, trader)
+	local item_in_slot_2 = db.actor:item_in_slot(2)
+	local wep_flag = nil
+	if item_in_slot_2 ~= nil then
+		wep_1 =  is_upgrade_otdaca(item_in_slot_2:section())
+			
+		if wep_1 == nil  then
+			return false
+		end
+		return true
+	end
+	return false
+end
+function is_upgrade_2st_stvol_ves(actor, trader)
+	local item_in_slot_2 = db.actor:item_in_slot(2)
+	local wep_flag = nil
+	if item_in_slot_2 ~= nil then
+		wep_1 =  is_upgrade_ves(item_in_slot_2:section())
+			
+		if wep_1 == nil  then
+			return false
+		end
+		return true
+	end
+	return false
+end
+
+function is_upgrade_2st_stvol_all_precond(actor, trader)
+	local a1 =  is_upgrade_2st_stvol_kalibr(actor, trader)
+	local a2 =  is_upgrade_2st_stvol_otdaca(actor, trader)
+	local a3 =  is_upgrade_2st_stvol_ves(actor, trader)
+	if a1 or a2 or a3 then
+		return true
+	end
+	return false
+end
+
+-- показываем ГГ варианты и стоимость апгрейда
+
+function upgrade_costs(trader, actor, first_speaker, second_speaker)
+	local task_texture, task_rect = get_texture_info("ui_iconsTotal_lost_money")
+
+	local str_text_1 = nil
+	local str_text_2 = nil
+
+	if db.actor ~= nil then 
+		local item_in_slot_1 = db.actor:item_in_slot(1)
+		local item_in_slot_2 = db.actor:item_in_slot(2)
+
+		if item_in_slot_1 ~= nil then
+			local wep_1 =  is_upgrade_kalibr(item_in_slot_1:section())
+			local wep_2 =  is_upgrade_otdaca(item_in_slot_1:section())
+			local wep_3 =  is_upgrade_ves(item_in_slot_1:section())
+			local item_upgr_cost1 = math.floor( item_in_slot_1:cost() )
+			local name1 = read_string_if_exist(system_ini(),item_in_slot_1:section(),"inv_name",nil)
+			
+			if wep_1 == nil and wep_2 == nil and wep_3 == nil then
+				db.actor:give_talk_message("Так, первый ствол у нас это "..game.translate_string(name1)..". Для него ничего не могу предложить."   , task_texture, task_rect, "simple_answer_item")
+			elseif (0.96 >= item_in_slot_1:condition() + 0.01) then
+				db.actor:give_talk_message("Так, первый ствол у нас это "..game.translate_string(name1)..". Он у тебя довольно изношен - за апгрейд я не возьмусь. Почини его сначала, а потом я смогу его модернизировать." , task_texture, task_rect, "simple_answer_item")
+			else
+				str_text_1 = "Так, первый ствол у нас это "..game.translate_string(name1)..". Для него могу предложить следующие варианты:"
+				if wep_1 ~= nil then
+					if (nomer_massiva == 1) and (db.actor:money() >= item_upgr_cost1) then
+						str_text_1 = str_text_1.."\\n   - изменение калибра с 5.45х39 на 5.56x45. Это будет стоить \\n%c[255,238,155,23]"..item_upgr_cost1.." рублей%c[default]."
+					elseif (nomer_massiva == 1) and (db.actor:money() < item_upgr_cost1) then
+						str_text_1 = str_text_1.."\\n   - изменение калибра с 5.45х39 на 5.56x45. Это обошлось бы тебе в \\n%c[255,255,32,23]"..item_upgr_cost1.." рублей%c[default], но у тебя столько денег нету."
+					elseif (nomer_massiva == 2) and (db.actor:money() >= item_upgr_cost1) then
+						str_text_1 = str_text_1.."\\n   - изменение калибра с 9х18 на 9х19. Это будет стоить \\n%c[255,238,155,23]"..item_upgr_cost1.." рублей%c[default]."
+					elseif (nomer_massiva == 2) and (db.actor:money() < item_upgr_cost1) then
+						str_text_1 = str_text_1.."\\n   - изменение калибра с 9х18 на 9х19. Это обошлось бы тебе в \\n%c[255,255,32,23]"..item_upgr_cost1.." рублей%c[default], но у тебя столько денег нету."
+					elseif (nomer_massiva == 3) and (db.actor:money() >= item_upgr_cost1) then
+						str_text_1 = str_text_1.."\\n   - изменение калибра с 9х19 на 9х18. Это будет стоить \\n%c[255,238,155,23]"..item_upgr_cost1.." рублей%c[default]."
+					elseif (nomer_massiva == 3) and (db.actor:money() < item_upgr_cost1) then
+						str_text_1 = str_text_1.."\\n   - изменение калибра с 9х19 на 9х18. Это обошлось бы тебе в \\n%c[255,255,32,23]"..item_upgr_cost1.." рублей%c[default], но у тебя столько денег нету."
+					elseif (nomer_massiva == 4) and (db.actor:money() >= item_upgr_cost1) then
+						str_text_1 = str_text_1.."\\n   - изменение калибра с 5.56x45 на 5.45х39. Это будет стоить \\n%c[255,238,155,23]"..item_upgr_cost1.." рублей%c[default]."
+					elseif (nomer_massiva == 4) and (db.actor:money() < item_upgr_cost1) then
+						str_text_1 = str_text_1.."\\n   - изменение калибра с 5.56x45 на 5.45х39. Это обошлось бы тебе в \\n%c[255,255,32,23]"..item_upgr_cost1.." рублей%c[default], но у тебя столько денег нету."
+					end
+				end
+				if (wep_2 ~= nil) and (db.actor:money() >= item_upgr_cost1) then
+					str_text_1 = str_text_1.."\\n   - увеличение кучности. Это будет стоить %c[255,238,155,23]"..item_upgr_cost1.." рублей%c[default]."
+				elseif (wep_2 ~= nil) and (db.actor:money() < item_upgr_cost1) then
+					str_text_1 = str_text_1.."\\n   - увеличение кучности. Это обошлось бы тебе в \\n%c[255,255,32,23]"..item_upgr_cost1.." рублей%c[default], но у тебя столько денег нету."
+				end
+				if (wep_3 ~= nil) and (db.actor:money() >= item_upgr_cost1) then
+					str_text_1 = str_text_1.."\\n   - cнижение веса. Это будет стоить %c[255,238,155,23]"..item_upgr_cost1.." рублей%c[default]."
+				elseif (wep_3 ~= nil) and (db.actor:money() < item_upgr_cost1) then
+					str_text_1 = str_text_1.."\\n   - cнижение веса. Это обошлось бы тебе в \\n%c[255,255,32,23]"..item_upgr_cost1.." рублей%c[default], но у тебя столько денег нету."
+				end
+			end
+
+			if str_text_1 ~= nil then
+				db.actor:give_talk_message(str_text_1 , task_texture, task_rect, "simple_answer_item")
+			end
+		end
+		if item_in_slot_2 ~= nil then
+			local wep_1 =  is_upgrade_kalibr(item_in_slot_2:section())
+			local wep_2 =  is_upgrade_otdaca(item_in_slot_2:section())
+			local wep_3 =  is_upgrade_ves(item_in_slot_2:section())
+			local item_upgr_cost2 = math.floor( item_in_slot_2:cost() )
+			local name2 = read_string_if_exist(system_ini(),item_in_slot_2:section(),"inv_name",nil)
+			
+			if wep_1 == nil and wep_2 == nil and wep_3 == nil then
+--				get_console():execute("1") -- закомментено в ОП-2
+
+				db.actor:give_talk_message("Ага, второй ствол у нас это "..game.translate_string(name2)..". Для него ничего не могу предложить."   , task_texture, task_rect, "simple_answer_item")
+			elseif (0.96 >= item_in_slot_2:condition() + 0.01) then
+				db.actor:give_talk_message("Ага, второй ствол у нас это "..game.translate_string(name2)..". Он у тебя довольно изношен - за апгрейд я не возьмусь. Почини его сначала, а потом я смогу его модернизировать." , task_texture, task_rect, "simple_answer_item")
+			else
+				str_text_2 = "Ага, второй ствол у нас это "..game.translate_string(name2)..". Для него могу предложить следующие варианты:"
+				if wep_1 ~= nil then
+					if (nomer_massiva == 1) and (db.actor:money() >= item_upgr_cost2) then
+						str_text_2 = str_text_2.."\\n   - изменение калибра с 5.45х39 на 5.56x45. Это будет стоить \\n%c[255,238,155,23]"..item_upgr_cost2.." рублей%c[default]."
+					elseif (nomer_massiva == 1) and (db.actor:money() < item_upgr_cost2) then
+						str_text_2 = str_text_2.."\\n   - изменение калибра с 5.45х39 на 5.56x45. Это обошлось бы тебе в \\n%c[255,255,32,23]"..item_upgr_cost2.." рублей%c[default], но у тебя столько денег нету."
+					elseif (nomer_massiva == 2) and (db.actor:money() >= item_upgr_cost2) then
+						str_text_2 = str_text_2.."\\n   - изменение калибра с 9х18 на 9х19. Это будет стоить \\n%c[255,238,155,23]"..item_upgr_cost2.." рублей%c[default]."
+					elseif (nomer_massiva == 2) and (db.actor:money() < item_upgr_cost2) then
+						str_text_2 = str_text_2.."\\n   - изменение калибра с 9х18 на 9х19. Это обошлось бы тебе в \\n%c[255,255,32,23]"..item_upgr_cost2.." рублей%c[default], но у тебя столько денег нету."
+					elseif (nomer_massiva == 3) and (db.actor:money() >= item_upgr_cost2) then
+						str_text_2 = str_text_2.."\\n   - изменение калибра с 9х19 на 9х18. Это будет стоить \\n%c[255,238,155,23]"..item_upgr_cost2.." рублей%c[default]."
+					elseif (nomer_massiva == 3) and (db.actor:money() < item_upgr_cost2) then
+						str_text_2 = str_text_2.."\\n   - изменение калибра с 9х19 на 9х18. Это обошлось бы тебе в \\n%c[255,255,32,23]"..item_upgr_cost2.." рублей%c[default], но у тебя столько денег нету."
+					elseif (nomer_massiva == 4) and (db.actor:money() >= item_upgr_cost2) then
+						str_text_2 = str_text_2.."\\n   - изменение калибра с 5.56x45 на 5.45х39. Это будет стоить \\n%c[255,238,155,23]"..item_upgr_cost2.." рублей%c[default]."
+					elseif (nomer_massiva == 4) and (db.actor:money() < item_upgr_cost2) then
+						dstr_text_2 = str_text_2.."\\n   - изменение калибра с 5.56x45 на 5.45х39. Это обошлось бы тебе в \\n%c[255,255,32,23]"..item_upgr_cost2.." рублей%c[default], но у тебя столько денег нету."
+					end
+				end
+				if (wep_2 ~= nil) and (db.actor:money() >= item_upgr_cost2) then
+					str_text_2 = str_text_2.."\\n   - увеличение кучности. Это будет стоить %c[255,238,155,23]"..item_upgr_cost2.." рублей%c[default]."
+				elseif (wep_2 ~= nil) and (db.actor:money() < item_upgr_cost2) then
+					str_text_2 = str_text_2.."\\n   - увеличение кучности. Это обошлось бы тебе в \\n%c[255,255,32,23]"..item_upgr_cost2.." рублей%c[default], но у тебя столько денег нету."
+				end
+				if (wep_3 ~= nil) and (db.actor:money() >= item_upgr_cost2) then
+					str_text_2 = str_text_2.."\\n   - cнижение веса. Это будет стоить %c[255,238,155,23]"..item_upgr_cost2.." рублей%c[default]."
+				elseif (wep_3 ~= nil) and (db.actor:money() < item_upgr_cost2) then
+					str_text_2 = str_text_2.."\\n   - cнижение веса. Это обошлось бы тебе в \\n%c[255,255,32,23]"..item_upgr_cost2.." рублей%c[default], но у тебя столько денег нету."
+				end
+			end
+
+			if str_text_2 ~= nil then
+				db.actor:give_talk_message(str_text_2 , task_texture, task_rect, "simple_answer_item")
+			end
+		end
+	end
+end
+
+
+
+-- а есть ли бабло на апгрейд
+
+function trader_check_money_upgr_s1(actor, trader)
+	local item_in_slot = db.actor:item_in_slot(1)
+
+	if (item_in_slot ~= nil) then 
+		local item_upgr_cost1 = math.floor(item_in_slot:cost())
+		if (item_upgr_cost1 > 0) and (db.actor:money() >= item_upgr_cost1) and (0.96 < item_in_slot:condition() + 0.01) then
+			return true
+		else 
+			return false
+		end 
+	end
+end
+
+function trader_check_money_upgr_s2(actor, trader)
+	local item_in_slot = db.actor:item_in_slot(2)
+
+	if (item_in_slot ~= nil) then 
+		local item_upgr_cost2 = math.floor(item_in_slot:cost())
+		if (item_upgr_cost2 > 0) and (db.actor:money() >= item_upgr_cost2) and (0.96 < item_in_slot:condition() + 0.01) then
+			return true
+		else 
+			return false
+		end 
+	end
+end
+
+
+-- забираем бабло, стартуем таймер апгрейда
+
+function trader_upgrade_weapon_s1_kalibr(actor, trader)
+	local item_in_slot = db.actor:item_in_slot(1)
+	if item_in_slot ~= nil then
+		local var = repairmasterlist[trader:name()][1]
+		local wpn = item_in_slot:section()
+		local item_repair_cost = math.floor(item_in_slot:cost())
+		tt = 3
+		local wep_1 =  is_upgrade_kalibr(item_in_slot:section())
+		local new_wpn = nil
+
+		if wep_1 ~= nil then
+			dialogs.relocate_money(trader, item_repair_cost, "out")
+			remove_repairitem_to_upgrade(1)
+			amk.save_variable(var,("1"..wep_1))
+			amk.g_start_timer(var,0,tt,0)
+		end
+	end
+end
+
+function trader_upgrade_weapon_s1_otdaca(actor, trader)
+	local item_in_slot = db.actor:item_in_slot(1)
+	if item_in_slot ~= nil then
+		local var = repairmasterlist[trader:name()][1]
+		local wpn = item_in_slot:section()
+		local item_repair_cost = math.floor(item_in_slot:cost())
+		tt = 3
+		local wep_2 =  is_upgrade_otdaca(item_in_slot:section())
+		local new_wpn = nil
+
+		if wep_2 ~= nil then
+			dialogs.relocate_money(trader, item_repair_cost, "out")
+			remove_repairitem_to_upgrade(1)
+			amk.save_variable(var,("1"..wep_2))
+			amk.g_start_timer(var,0,tt,0)
+		end
+	end
+end
+
+function trader_upgrade_weapon_s1_ves(actor, trader)
+	local item_in_slot = db.actor:item_in_slot(1)
+	if item_in_slot ~= nil then
+		local var = repairmasterlist[trader:name()][1]
+		local wpn = item_in_slot:section()
+		local item_repair_cost = math.floor(item_in_slot:cost())
+		tt = 3
+		local wep_3 =  is_upgrade_ves(item_in_slot:section())
+		local new_wpn = nil
+
+		if wep_3 ~= nil then
+			dialogs.relocate_money(trader, item_repair_cost, "out")
+			remove_repairitem_to_upgrade(1)
+			amk.save_variable(var,("1"..wep_3))
+			amk.g_start_timer(var,0,tt,0)
+		end
+	end
+end
+
+
+
+function trader_upgrade_weapon_s2_kalibr(actor, trader)
+	local item_in_slot = db.actor:item_in_slot(2)
+	if item_in_slot ~= nil then
+		local var = repairmasterlist[trader:name()][1]
+		local wpn = item_in_slot:section()
+		local item_repair_cost = math.floor(item_in_slot:cost())
+		tt = 3
+		local wep_1 =  is_upgrade_kalibr(item_in_slot:section())
+		local new_wpn = nil
+
+		if wep_1 ~= nil then
+			dialogs.relocate_money(trader, item_repair_cost, "out")
+			remove_repairitem_to_upgrade(2)
+			amk.save_variable(var,("1"..wep_1))
+			amk.g_start_timer(var,0,tt,0)
+		end
+	end
+end
+
+function trader_upgrade_weapon_s2_otdaca(actor, trader)
+	local item_in_slot = db.actor:item_in_slot(2)
+	if item_in_slot ~= nil then
+		local var = repairmasterlist[trader:name()][1]
+		local wpn = item_in_slot:section()
+		local item_repair_cost = math.floor(item_in_slot:cost())
+		tt = 3
+		local wep_2 =  is_upgrade_otdaca(item_in_slot:section())
+		local new_wpn = nil
+
+		if wep_2 ~= nil then
+			dialogs.relocate_money(trader, item_repair_cost, "out")
+			remove_repairitem_to_upgrade(2)
+			amk.save_variable(var,("1"..wep_2))
+			amk.g_start_timer(var,0,tt,0)
+		end
+	end
+end
+
+function trader_upgrade_weapon_s2_ves(actor, trader)
+	local item_in_slot = db.actor:item_in_slot(2)
+	if item_in_slot ~= nil then
+		local var = repairmasterlist[trader:name()][1]
+		local wpn = item_in_slot:section()
+		local item_repair_cost = math.floor(item_in_slot:cost())
+		tt = 3
+		local wep_3 =  is_upgrade_ves(item_in_slot:section())
+		local new_wpn = nil
+
+		if wep_3 ~= nil then
+			dialogs.relocate_money(trader, item_repair_cost, "out")
+			remove_repairitem_to_upgrade(2)
+			amk.save_variable(var,("1"..wep_3))
+			amk.g_start_timer(var,0,tt,0)
+		end
+	end
+end
+
+
+-- забираем ствол на апгрейд
+
+function remove_repairitem_to_upgrade(slt)
+	if slt ~= nil then
+		local iis = db.actor:item_in_slot(slt)
+		local wpn = iis:section()
+		recheck = iis:id()
+		release_addons(alife():object(iis:id()),wpn,iis) 
+		alife():release(alife():object(iis:id()), true)
+		news_manager.relocate_item(db.actor, "out", wpn)
+		recheck=nil
+	end
+end
+
+
+
+-- а нужен ли ремонт?
+
+function trader_repair_precond(actor, trader)
+	rem_ubit_stvol_1 = 0
+	rem_ubit_stvol_2 = 0
+	is_perv = 0
+	is_vtor = 0
+	wpnsec=nil
+	stcode=0
+	local var = repairmasterlist[trader:name()][1]
+	rem_name = repairmasterlist[trader:name()][1]
+	weapon_profit_margin = repairmasterlist[trader:name()][2]
+	armor_profit_margin = repairmasterlist[trader:name()][3]
+--	get_console():execute(rem_name)
+	get_vars(var)
+	if stcode>=1 and wpnsec~=nil then return false end
+	local item_in_slot_1 = db.actor:item_in_slot(1)
+	local item_in_slot_2 = db.actor:item_in_slot(2)
+	local item_in_slot_6 = db.actor:item_in_slot(6)
+	if item_in_slot_1 ~= nil and 0.96 > item_in_slot_1:condition() + 0.01 then return true
+	elseif item_in_slot_2 ~= nil and 0.96 > item_in_slot_2:condition() + 0.01 then return true
+	elseif item_in_slot_6 ~= nil and 0.96 > item_in_slot_6:condition() + 0.01 then return true
+	else return false
+	end	 
+end
+
+-- а есть ли бабло на ремонт?
+
+function trader_check_money_s1(actor, trader)
+	rem_ubit_stvol_1  = 0
+	local item_in_slot = db.actor:item_in_slot(1)
+
+	local is_upgr = 0
+	if (item_in_slot ~= nil) then 
+		if (string.find(item_in_slot:section(),"kalibr")~=nil) or (string.find(item_in_slot:section(),"otdaca")~=nil) or (string.find(item_in_slot:section(),"ves")~=nil) then
+			is_upgr = 1
+		end 
+	end
+
+	if (rem_name ~= "hnd_weap_04") and (item_in_slot ~= nil) and (0.11 < item_in_slot:condition() + 0.01) and (is_upgr ~= 1) then 
+		weapon_profit_margin = repairmasterlist[trader:name()][2]
+		local item_repair_cost = math.floor( (1-item_in_slot:condition()) * item_in_slot:cost() * weapon_profit_margin )
+		if item_repair_cost > 0 and db.actor:money() >= item_repair_cost and 0.95 > item_in_slot:condition() then
+			tmpcode = 0
+			return check_secondary(item_in_slot:section())
+		end 
+	elseif (rem_name == "hnd_weap_04") and (item_in_slot ~= nil) then 
+		weapon_profit_margin = repairmasterlist[trader:name()][2]
+		local item_repair_cost = math.floor( (1-item_in_slot:condition()) * item_in_slot:cost() * weapon_profit_margin )
+		if (is_upgr == 1) then
+			item_repair_cost = item_repair_cost * 2
+		end
+		if item_repair_cost > 0 and db.actor:money() >= item_repair_cost and 0.95 > item_in_slot:condition() then
+			tmpcode = 0
+
+			if ((item_in_slot:condition()+0.01)<=0.11) then
+				rem_ubit_stvol_1  = 1
+			end
+			is_perv = 1
+			return check_secondary(item_in_slot:section())
+		end 
+	end
+	return false
+end
+
+function trader_check_money_s2(actor, trader)
+	rem_ubit_stvol_2  = 0
+	
+	local item_in_slot = db.actor:item_in_slot(2)
+
+	local is_upgr = 0
+	if (item_in_slot ~= nil) then 
+		if (string.find(item_in_slot:section(),"kalibr")~=nil) or (string.find(item_in_slot:section(),"otdaca")~=nil) or (string.find(item_in_slot:section(),"ves")~=nil) then
+			is_upgr = 1
+		end 
+	end
+
+	if (rem_name ~= "hnd_weap_04") and  (item_in_slot ~= nil) and (0.11 < item_in_slot:condition() + 0.01) and (is_upgr ~= 1) then 
+		weapon_profit_margin = repairmasterlist[trader:name()][2]
+		local item_repair_cost = math.floor( (1-item_in_slot:condition()) * item_in_slot:cost() * weapon_profit_margin )
+		if item_repair_cost > 0 and db.actor:money() >= item_repair_cost and 0.95 > item_in_slot:condition() then
+			tmpcode = 0
+			return check_secondary(item_in_slot:section())
+		end 
+	elseif (rem_name == "hnd_weap_04") and  (item_in_slot ~= nil)  then 
+		weapon_profit_margin = repairmasterlist[trader:name()][2]
+		local item_repair_cost = math.floor( (1-item_in_slot:condition()) * item_in_slot:cost() * weapon_profit_margin )
+		if (is_upgr == 1) then
+			item_repair_cost = item_repair_cost * 2
+		end
+		if item_repair_cost > 0 and db.actor:money() >= item_repair_cost and 0.95 > item_in_slot:condition() then
+			tmpcode = 0
+
+			if ((item_in_slot:condition()+0.01)<=0.11) then
+				rem_ubit_stvol_2  = 1
+			end
+			is_vtor = 1
+			return check_secondary(item_in_slot:section())
+		end 
+	end
+	return false
+end
+
+function trader_check_money_s6(actor, trader)
+	local item_in_slot = db.actor:item_in_slot(6)
+	if item_in_slot ~= nil then 
+		armor_profit_margin = repairmasterlist[trader:name()][3]
+		local item_repair_cost = math.floor( (1-item_in_slot:condition()) * item_in_slot:cost() * armor_profit_margin )
+		if item_repair_cost > 0 and db.actor:money() >= item_repair_cost and 0.95 > item_in_slot:condition() then
+			return true
+		end 
+	end
+	return false
+end
+
+-- забираем бабло, стартуем таймер ремонта. время ремонтов правим под себя
+
+function trader_repiar_weapon_s1(actor, trader)
+	local item_in_slot = db.actor:item_in_slot(1)
+	if item_in_slot ~= nil then
+		local wpn = item_in_slot:section()
+		local var = repairmasterlist[trader:name()][1]
+		weapon_profit_margin = repairmasterlist[trader:name()][2]
+		local item_repair_cost = math.floor( (1-item_in_slot:condition()) * item_in_slot:cost() * weapon_profit_margin )
+		local is_upgr = 0
+		if (string.find(wpn,"kalibr")~=nil) or (string.find(wpn,"otdaca")~=nil) or (string.find(wpn,"ves")~=nil) then
+			is_upgr = 1
+		end
+		if (is_upgr == 1) then
+			item_repair_cost = item_repair_cost * 2
+		end
+
+		dialogs.relocate_money(trader, item_repair_cost, "out")
+		tt = 0.5
+		
+		if (is_upgr ~=1) then
+		if item_repair_cost <= 3000 then tt = 0.5
+		elseif item_repair_cost <= 6000 then tt = 1.0
+		elseif item_repair_cost <= 9000 then tt = 1.5
+		elseif item_repair_cost <= 12000 then tt = 3.0
+		elseif item_repair_cost > 12000 then tt = 6.0
+		end
+		elseif (is_upgr == 1) then
+			if  item_repair_cost <= 3000 then tt = 4.5
+			elseif item_repair_cost <= 6000 then tt = 5.0
+			elseif item_repair_cost <= 9000 then tt = 5.5
+			elseif item_repair_cost <= 12000 then tt = 7.0
+			elseif item_repair_cost > 12000 then tt = 10.0
+			end
+		end
+		-- get_console():execute("load ~~~ tt_"..tostring(tt))
+
+		if ((item_in_slot:condition()+0.01)<=0.11) then
+			rem_ubit_stvol_1  = 1
+		end
+		is_perv = 1
+		remove_repairitem(1)
+		amk.save_variable(var,("1"..wpn))
+		-- amk.g_start_timer(var,0,0,3)    -- DEBUG-функция для тестов, ремонт длится 3 сек.
+		amk.g_start_timer(var,0,tt,0)
+	end
+end
+
+function trader_repiar_weapon_s2(actor, trader)
+	local item_in_slot = db.actor:item_in_slot(2)
+	if item_in_slot ~= nil then
+		local wpn = item_in_slot:section()
+		local var = repairmasterlist[trader:name()][1]
+		weapon_profit_margin = repairmasterlist[trader:name()][2]
+		local item_repair_cost = math.floor( (1-item_in_slot:condition()) * item_in_slot:cost() * weapon_profit_margin )
+		local is_upgr = 0
+		if (string.find(wpn,"kalibr")~=nil) or (string.find(wpn,"otdaca")~=nil) or (string.find(wpn,"ves")~=nil) then
+			is_upgr = 1
+		end
+		if (is_upgr == 1) then
+			item_repair_cost = item_repair_cost * 2
+		end
+		dialogs.relocate_money(trader, item_repair_cost, "out")
+		tt = 0.5
+
+
+		if (is_upgr ~=1) then
+		if item_repair_cost <= 3000 then tt = 0.5
+		elseif item_repair_cost <= 6000 then tt = 1.0
+		elseif item_repair_cost <= 9000 then tt = 1.5
+		elseif item_repair_cost <= 12000 then tt = 3.0
+		elseif item_repair_cost > 12000 then tt = 6.0
+		end
+		elseif (is_upgr == 1) then
+			if  item_repair_cost <= 3000 then tt = 4.5
+			elseif item_repair_cost <= 6000 then tt = 5.0
+			elseif item_repair_cost <= 9000 then tt = 5.5
+			elseif item_repair_cost <= 12000 then tt = 7.0
+			elseif item_repair_cost > 12000 then tt = 10.0
+			end
+		end
+		
+		-- get_console():execute("load ~~~ tt_"..tostring(tt))
+		if ((item_in_slot:condition()+0.01)<=0.11) then
+			rem_ubit_stvol_2  = 1
+		end
+		is_vtor = 1
+		remove_repairitem(2)
+		amk.save_variable(var,("1"..wpn))
+		-- amk.g_start_timer(var,0,0,3)    -- DEBUG-функция для тестов, ремонт длится 3 сек.
+		amk.g_start_timer(var,0,tt,0)
+	end
+end
+
+function trader_repiar_armor_s6(actor, trader)
+	local item_in_slot = db.actor:item_in_slot(6)
+	if item_in_slot ~= nil then
+		local arm = item_in_slot:section()
+		local var = repairmasterlist[trader:name()][1]
+		armor_profit_margin = repairmasterlist[trader:name()][3]
+
+		local item_repair_cost = math.floor( (1-item_in_slot:condition()) * item_in_slot:cost() * armor_profit_margin )
+
+		if item_repair_cost <= 10000 then tt = 2.0
+		elseif item_repair_cost <= 20000 then tt = 4.0
+		elseif item_repair_cost <=  40000 then tt = 8.0
+		elseif item_repair_cost <=  60000 then tt = 12.0
+		elseif item_repair_cost <=  80000 then tt = 18.0
+		elseif item_repair_cost >  80000 then tt = 24.0
+		end
+
+		remove_repair_bronik_item(6)
+
+		amk.save_variable(var,("1"..arm))
+		amk.g_start_timer(var,0,tt,0)
+
+--		amk_mod.repair_armor(1)
+		dialogs.relocate_money(trader, item_repair_cost, "out")
+	end	
+end
+
+-- забираем ствол на апгрейд
+
+function remove_repair_bronik_item(slt)
+	if slt ~= nil then
+		local iis = db.actor:item_in_slot(slt)
+		local wpn = iis:section()
+		recheck = iis:id()
+		alife():release(alife():object(iis:id()), true)
+		news_manager.relocate_item(db.actor, "out", wpn)
+		recheck=nil
+	end
+end
+
+
+-- проверям наличие подходящего ствола, который пойдёт на запчасти. правим под себя, в соответствии с массивом "сравнимых" стволов
+
+function check_secondary(wpn)
+if wpn ~= nil then
+	check_sec = 0
+	local j = table.getn(wpnA)
+	for i=1,j do
+		if string.find(wpn, wpnA[i]) ~= nil then
+			check_sec = 1
+			wpn_temp = wpnA
+		end
+	end
+		if check_sec == 0 then
+ j=table.getn(wpnB) for i=1,j do
+ if string.find(wpn,wpnB[i])~=nil then
+ check_sec=2
+wpn_temp = wpnB
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnC) for i=1,j do
+	if string.find(wpn,wpnC[i])~=nil then
+ check_sec=3
+wpn_temp = wpnC
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnD) for i=1,j do
+	if string.find(wpn,wpnD[i])~=nil then
+ check_sec=4
+wpn_temp = wpnD
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnE) for i=1,j do
+	if string.find(wpn,wpnE[i])~=nil then
+ check_sec=5
+wpn_temp = wpnE
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnF) for i=1,j do
+	if string.find(wpn,wpnF[i])~=nil then
+ check_sec=6
+wpn_temp = wpnF
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnG) for i=1,j do
+	if string.find(wpn,wpnG[i])~=nil then
+ check_sec=7
+wpn_temp = wpnG
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnH) for i=1,j do
+	if string.find(wpn,wpnH[i])~=nil then
+ check_sec=8
+wpn_temp = wpnH
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnI) for i=1,j do
+	if string.find(wpn,wpnI[i])~=nil then
+ check_sec=9
+wpn_temp = wpnI
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnJ) for i=1,j do
+	if string.find(wpn,wpnJ[i])~=nil then
+ check_sec=10
+wpn_temp = wpnJ
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnK) for i=1,j do
+	if string.find(wpn,wpnK[i])~=nil then
+ check_sec=11
+wpn_temp = wpnK
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnL) for i=1,j do
+	if string.find(wpn,wpnL[i])~=nil then
+ check_sec=12
+wpn_temp = wpnL
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnM) for i=1,j do
+	if string.find(wpn,wpnM[i])~=nil then
+ check_sec=13
+wpn_temp = wpnM
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnN) for i=1,j do
+	if string.find(wpn,wpnN[i])~=nil then
+ check_sec=14
+wpn_temp = wpnN
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnO) for i=1,j do
+	if string.find(wpn,wpnO[i])~=nil then
+ check_sec=15
+wpn_temp = wpnO
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnP) for i=1,j do
+	if string.find(wpn,wpnP[i])~=nil then
+ check_sec=16
+wpn_temp = wpnP
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnQ) for i=1,j do
+	if string.find(wpn,wpnQ[i])~=nil then
+ check_sec=17
+wpn_temp = wpnQ
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnR) for i=1,j do
+	if string.find(wpn,wpnR[i])~=nil then
+ check_sec=18
+wpn_temp = wpnR
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnS) for i=1,j do
+	if string.find(wpn,wpnS[i])~=nil then
+ check_sec=19
+wpn_temp = wpnS
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnT) for i=1,j do
+	if string.find(wpn,wpnT[i])~=nil then
+ check_sec=20
+wpn_temp = wpnT
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnU) for i=1,j do
+	if string.find(wpn,wpnU[i])~=nil then
+ check_sec=21
+wpn_temp = wpnU
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnV) for i=1,j do
+	if string.find(wpn,wpnV[i])~=nil then
+ check_sec=22
+wpn_temp = wpnV
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnW) for i=1,j do
+	if string.find(wpn,wpnW[i])~=nil then
+ check_sec=23
+wpn_temp = wpnW
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnX) for i=1,j do
+	if string.find(wpn,wpnX[i])~=nil then
+ check_sec=24
+wpn_temp = wpnX
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnY) for i=1,j do
+	if string.find(wpn,wpnY[i])~=nil then
+ check_sec=25
+wpn_temp = wpnY
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpnZ) for i=1,j do
+	if string.find(wpn,wpnZ[i])~=nil then
+ check_sec=26
+wpn_temp = wpnZ
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpn1) for i=1,j do
+	if string.find(wpn,wpn1[i])~=nil then
+ check_sec=27
+wpn_temp = wpn1
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpn2) for i=1,j do
+	if string.find(wpn,wpn2[i])~=nil then
+ check_sec=28
+wpn_temp = wpn2
+ end
+ end
+ end
+		if check_sec == 0 then
+ j=table.getn(wpn3) for i=1,j do
+	if string.find(wpn,wpn3[i])~=nil then
+ check_sec=29
+wpn_temp = wpn3
+ end
+ end
+ end
+		if check_sec ~= 0 then
+			db.actor:iterate_inventory(
+			function(dummy, item) 
+				j = table.getn(wpn_temp) 
+				for i=1,j do 
+					if string.find(item:section(), wpn_temp[i])~=nil then 
+						if ((item:condition()+0.01)>0.11) then --and ((item:condition()+0.01)<0.96)  then 
+							tmpcode=tmpcode+1 
+					
+--						if ((item:condition()+0.01)>0.11) and ((item:condition()+0.01)<0.96) and (rem_name ~= "hnd_weap_04") then 
+--							tmpcode=tmpcode+1 
+--		 get_console():execute("1___")
+--		 get_console():execute(tmpcode)
+--						elseif (rem_name == "hnd_weap_04") and (item:condition()+0.01)<0.96 then 
+--							tmpcode=tmpcode+1 
+--		 get_console():execute("2___")
+--		 get_console():execute(tmpcode)
+						end 
+					end 
+				end 
+			end, 0) 
+		end
+
+
+		if (rem_ubit_stvol_1 == 1) and (is_perv == 1) then
+			tmpcode = tmpcode + 1
+		end
+		if (rem_ubit_stvol_2 == 1) and (is_vtor == 1) then
+			tmpcode = tmpcode + 1
+		end
+
+		is_perv = 0
+		is_vtor = 0
+
+
+		if tmpcode > 1 then
+			tmpcode = 0
+			return true
+		end
+	end
+	return false
+end
+
+-- забираем ствол на ремонт 
+
+function remove_repairitem(slt)
+	if slt ~= nil then
+		local iis = db.actor:item_in_slot(slt)
+		local wpn = iis:section()
+		recheck = iis:id()
+		check_sec=0
+		check_secondary(wpn)
+		release_addons(alife():object(iis:id()),wpn,iis) 
+		alife():release(alife():object(iis:id()), true)
+		news_manager.relocate_item(db.actor, "out", wpn)
+		tmpcode = 0
+		db.actor:iterate_inventory(function(dummy, item) remove_secondary(item,check_sec) end, nil)
+		recheck=nil
+		check_sec = 0
+	end
+end
+
+-- забираем ствол, который пойдёт на запчасти, в соответствии с массивом "сравнимых" стволов
+
+function remove_secondary(item,checker)
+	local j = 0
+	if checker ~= 0 then j = table.getn(wpn_temp)
+	end
+	local sec = item:section()
+	local finder
+	local cond = item:condition() + 0.01
+	for i=1,j do
+		if checker ~= 0 then finder = string.find(sec, wpn_temp[i])
+		end
+
+		if (finder~=nil) and (cond > 0.11) and (tmpcode == 0) then --and (cond < 0.96) then
+			if item:id()~=recheck then
+				tmpcode=1
+				news_manager.relocate_item(db.actor, "out", item:section())
+				release_addons(alife():object(item:id()),sec,item)
+				alife():release(alife():object(item:id()), true)
+			end
+		end
+	end
+end
+
+-- ремонт закончен, шлём смс
+
+function do_release_action(par)
+	if par ~= nil then
+		wpnsec=nil
+		stcode=0
+		get_vars(par)
+		amk.save_variable(par,("2"..wpnsec))
+		local name = read_string_if_exist(system_ini(),wpnsec,"inv_name",nil)
+		local repmas = repairmaster[par][1]
+		local sms = "Привет, воин. Это "..tostring(repmas)..".\\n Про хлам не забыл, который мне отдавал? Забирай, готово..."
+		if name ~= nil then
+			sms = sms..game.translate_string(name)
+		else
+			sms = sms.."твоего ствола"
+		end
+		sms = sms.." готова. Можешь забирать. Советую крупными скачками семенить в мою сторону. Ге-ге-ге..."
+		news_manager.send_tip(db.actor, sms, nil, "weaprep", 35000)
+	end
+end
+
+function can_give_weapon(actor, trader)
+	wpnsec=nil
+	stcode=0
+	local var = repairmasterlist[trader:name()][1]
+	get_vars(var)
+	if stcode >= 2 and wpnsec ~= nil then return true end
+	return false
+end
+
+-- снимаем аддоны перед ремонтом, разряжаем стволы
+
+function release_addons(sobj,wpn,obj)
+	if sobj ~= nil then
+		local t = amk.get_weapon_data(sobj)
+		local h_scope = read_if_exist(system_ini(),wpn,"scope_status",nil)
+		local h_sil = read_if_exist(system_ini(),wpn,"silencer_status",nil)
+		local h_gren = read_if_exist(system_ini(),wpn,"grenade_launcher_status",nil)
+		if h_scope == 2 then
+			h_scope = read_string_if_exist(system_ini(),wpn,"scope_name",nil)
+			if h_scope ~= nil and (t.addon_flags == 1 or t.addon_flags == 3 or t.addon_flags == 5 or t.addon_flags == 7) then
+				h_scope = alife():create(h_scope, db.actor:position(), db.actor:level_vertex_id(), db.actor:game_vertex_id(),db.actor:id())
+			end
+		end
+		if h_sil == 2 then
+			h_sil = read_string_if_exist(system_ini(),wpn,"silencer_name",nil)
+			if h_sil ~= nil and t.addon_flags >= 4 then
+				h_sil = alife():create(h_sil, db.actor:position(), db.actor:level_vertex_id(), db.actor:game_vertex_id(),db.actor:id())
+			end
+		end
+		if h_gren == 2 then
+			h_gren = read_string_if_exist(system_ini(),wpn,"grenade_launcher_name",nil)
+			if h_gren ~= nil and (t.addon_flags == 2 or t.addon_flags == 3 or t.addon_flags == 6 or t.addon_flags == 7) then
+				h_gren = alife():create(h_gren, db.actor:position(), db.actor:level_vertex_id(), db.actor:game_vertex_id(),db.actor:id())
+			end
+		end
+		local ammo = obj:get_ammo_in_magazine()
+		local name = obj:name()
+		local ammoT = t.ammo_type
+		local section_ammo = restriction_stock.weapons_ammo_sections(name,ammoT)
+		if section_ammo ~= nil and ammo >= 1 then
+			amk.spawn_ammo_in_inv(section_ammo, ammo, db.actor)
+		end
+	end
+end
+
+--отдаём починеный ствол ГГ, без патронов
+
+function give_weapon_to_player(trader, actor)
+	rem_ubit_stvol_1 = 0
+	rem_ubit_stvol_2 = 0
+
+	wpnsec=nil
+	stcode=0
+	local var = repairmasterlist[trader:name()][1]
+	get_vars(var)
+	if wpnsec ~= nil then
+		amk.del_variable(var)
+		local wpn_c = alife():create(wpnsec, db.actor:position(), db.actor:level_vertex_id(), db.actor:game_vertex_id(), db.actor:id())
+		amk.start_timer("unload_rep_weapon",1,wpn_c.id)
+		news_manager.relocate_item(db.actor, "in", wpnsec)
+	end
+end
+
+function weapon_unload(objid)
+	if objid ~= nil then
+		local wpn = level.object_by_id(objid)
+		wpn:unload_magazine()
+	end
+end
+
+-- таймеры
+
+function show_timer1(actor,trader)
+	if tt == 0.5 then return true end
+	return false
+end
+function show_timer2(actor,trader)
+	if tt == 1.0 then return true end
+	return false
+end
+function show_timer3(actor,trader)
+	if tt == 1.5 then return true end
+	return false
+end
+function show_timer4(actor,trader)
+	if tt == 3.0 then return true end
+	return false
+end
+function show_timer5(actor,trader)
+	if tt == 4.0 then return true end
+	return false
+end
+function show_timer6(actor,trader)
+	if tt == 6.0 then return true end
+	return false
+end
+
+
+
+function show_timer_u1(actor,trader)
+	if tt == 4.5 then return true end
+	return false
+end
+function show_timer_u2(actor,trader)
+	if tt == 5.0 then return true end
+	return false
+end
+function show_timer_u3(actor,trader)
+	if tt == 5.5 then return true end
+	return false
+end
+function show_timer_u4(actor,trader)
+	if tt == 7.0 then return true end
+	return false
+end
+function show_timer_u5(actor,trader)
+	if tt == 8.0 then return true end
+	return false
+end
+function show_timer_u6(actor,trader)
+	if tt == 10.0 then return true end
+	return false
+end
+
+
+function show_timer_b1(actor,trader)
+	if tt == 2.0 then return true end
+	return false
+end
+function show_timer_b4(actor,trader)
+	if tt == 12.0 then return true end
+	return false
+end
+function show_timer_b5(actor,trader)
+	if tt == 18.0 then return true end
+	return false
+end
+function show_timer_b6(actor,trader)
+	if tt == 24.0 then return true end
+	return false
+end
+
+
+-- показываем ГГ условия и стоимость ремонта
+
+function repair_costs(trader, actor, first_speaker, second_speaker)
+	local task_texture, task_rect = get_texture_info("ui_iconsTotal_lost_money")
+	
+	local item_name_and_price1
+	local item_name_and_price2
+	if db.actor ~= nil then 
+		local item_in_slot_1 = db.actor:item_in_slot(1)
+		local item_in_slot_2 = db.actor:item_in_slot(2)
+		local item_in_slot_6 = db.actor:item_in_slot(6)
+		local iznos
+		local is_upgr = 0
+
+		if item_in_slot_1 ~= nil then 
+			if ((item_in_slot_1:condition()+0.01)<=0.11) then
+				rem_ubit_stvol_1  = 1
+			end
+			is_perv = 1
+			local item_repair_cost1 = math.floor( (1-item_in_slot_1:condition()) * item_in_slot_1:cost() * weapon_profit_margin )
+			iznos = math.floor(100*(1-item_in_slot_1:condition()) )
+			tmpcode = 0
+			local checksec1 = check_secondary(item_in_slot_1:section())
+			local name1 = read_string_if_exist(system_ini(),item_in_slot_1:section(),"inv_name",nil)
+
+			is_upgr = 0
+
+			if (string.find(item_in_slot_1:section(),"kalibr")~=nil) or (string.find(item_in_slot_1:section(),"otdaca")~=nil) or (string.find(item_in_slot_1:section(),"ves")~=nil) then
+				is_upgr = 1
+				item_repair_cost1 = item_repair_cost1 * 2
+			end 
+
+			if (item_repair_cost1 > 0)  and (0.96 > item_in_slot_1:condition() + 0.01) then
+				if (rem_name ~= "hnd_weap_04") and (is_upgr == 1) then
+					is_upgr = 0
+					item_name_and_price1 = "Что это у тебя за ствол странный такой? Это тебе этот ботан Долговязый сделал?\n Я за ремонт такого оружия даже браться боюсь. Хочешь отремонтировать - чеши к этому спецу в Бар и ремонтируй.\n Хм, он бы еще педали к оружию приделал."
+				elseif (db.actor:money() >= item_repair_cost1) and (checksec1==true) and (0.11 < item_in_slot_1:condition() + 0.01) then
+					item_name_and_price1 = "За ремонт "..game.translate_string(name1).." плати мне %c[255,238,155,23]"..item_repair_cost1.." рублей%c[default] вперёд и\n давай похожий ствол на запчасти. Да смотри не отдай для этих целей более крутую пушку - а то пожалеешь потом.\n Кстати, ствол убит где-то процентов на "..iznos.."."
+				elseif (db.actor:money() < item_repair_cost1) and (checksec1==true) and (0.11 < item_in_slot_1:condition() + 0.01) then
+					item_name_and_price1 = "За ремонт "..game.translate_string(name1).." я бы взял %c[255,255,32,23]"..item_repair_cost1.." рублей%c[default] и\n сравнимый ствол на запчасти, но у тебя столько денег нету.\n Кстати, ствол убит где-то процентов на "..iznos.."."
+				elseif (db.actor:money() >= item_repair_cost1) and (checksec1==false) and (0.11 < item_in_slot_1:condition() + 0.01) then
+					item_name_and_price1 = "За ремонт "..game.translate_string(name1).." я бы взял %c[255,255,32,23]"..item_repair_cost1.." рублей%c[default], но у\n тебя нету похожего ствола на запчасти.\n Кстати, ствол убит где-то процентов на "..iznos.."."
+				elseif (db.actor:money() < item_repair_cost1) and (checksec1==false) and (0.1 < item_in_slot_1:condition() + 0.01) then
+					item_name_and_price1 = "За ремонт "..game.translate_string(name1).." я бы взял %c[255,255,32,23]"..item_repair_cost1.." рублей%c[default], но у\n тебя ни денег столько нету, ни ствола на запчасти.\n Кстати, ствол убит где-то процентов на "..iznos.."."
+
+				elseif (rem_name ~= "hnd_weap_04") and (0.11 >= item_in_slot_1:condition() + 0.01) then
+					item_name_and_price1 = "Отремонтировать "..game.translate_string(name1).." я уже не смогу. Слишком ты этот ствол ушатал.\n Если хочешь, я тебе дам за эту железку скажем... 5 процентов от стоимости ("..math.floor(item_in_slot_1:cost()*0.05).."рублей) и\n избавлю тебя от неё."
+				
+				elseif (rem_name == "hnd_weap_04") and (0.1 >= item_in_slot_1:condition() + 0.01)  and (checksec1==true) and (db.actor:money() >= item_repair_cost1) then
+					item_name_and_price1 = "Да, убил ты "..game.translate_string(name1).." просто в хлам.\n Ладно, посмотрим что можно сделать.\n Давай мне %c[255,238,155,23]"..item_repair_cost1.." рублей%c[default] вперёд\n и давай похожий ствол на запчасти."
+				elseif (rem_name == "hnd_weap_04") and (0.11 >= item_in_slot_1:condition() + 0.01)  and (checksec1==false) and (db.actor:money() >= item_repair_cost1) then
+					item_name_and_price1 = "Да, убил ты "..game.translate_string(name1).." просто в хлам.\n Но сделать кое-что можно. Я бы взял за ремонт %c[255,255,32,23]"..item_repair_cost1.." рублей%c[default], но\n у тебя нету похожего ствола на запчасти."
+				elseif (rem_name == "hnd_weap_04") and (db.actor:money() < item_repair_cost1) and (checksec1==true) and (0.11 >= item_in_slot_1:condition() + 0.01) then
+					item_name_and_price1 = "Да, убил ты "..game.translate_string(name1).." просто в хлам.\n Но сделать кое-что можно. За ремонт я бы взял %c[255,255,32,23]"..item_repair_cost1.." рублей%c[default] и\n сравнимый ствол на запчасти, но у тебя столько денег нету."
+				elseif (rem_name == "hnd_weap_04") and (db.actor:money() < item_repair_cost1) and (checksec1==false) and (0.11 >= item_in_slot_1:condition() + 0.01) then
+					item_name_and_price1 = "Да, убил ты "..game.translate_string(name1).." просто в хлам.\n Но сделать кое-что можно. За ремонт я бы взял %c[255,255,32,23]"..item_repair_cost1.." рублей%c[default], но\n у тебя ни денег столько нету, ни ствола на запчасти."
+				end
+				if item_name_and_price1 ~= nil then
+					db.actor:give_talk_message(item_name_and_price1, task_texture, task_rect, "simple_answer_item")
+				end
+			end
+		end
+		if item_in_slot_2 ~= nil then
+			if ((item_in_slot_2:condition()+0.01)<=0.11) then
+				rem_ubit_stvol_2  = 1
+			end
+			is_vtor = 1
+			local item_repair_cost2 = math.floor( (1-item_in_slot_2:condition()) * item_in_slot_2:cost() * weapon_profit_margin )
+			iznos = math.floor(100*(1-item_in_slot_2:condition()) )
+			tmpcode = 0
+			local checksec2 = check_secondary(item_in_slot_2:section())
+			local name2 = read_string_if_exist(system_ini(),item_in_slot_2:section(),"inv_name",nil)
+
+			is_upgr = 0
+			if (string.find(item_in_slot_2:section(),"kalibr")~=nil) or (string.find(item_in_slot_2:section(),"otdaca")~=nil) or (string.find(item_in_slot_2:section(),"ves")~=nil) then
+				is_upgr = 1
+				item_repair_cost2 = item_repair_cost2 * 2
+			end 
+
+
+			if (item_repair_cost2 > 0)  and (0.96 > item_in_slot_2:condition() + 0.01) then
+				if (rem_name ~= "hnd_weap_04") and (is_upgr == 1) then
+					is_upgr = 0
+					item_name_and_price2 = "Что это у тебя за ствол странный такой? Это тебе этот ботан Долговязый сделал?\n Я за ремонт такого оружия даже браться боюсь. Хочешь отремонтировать - чеши к этому спецу в Бар и ремонтируй.\n Хм, он бы еще педали к оружию приделал."
+				elseif (db.actor:money() >= item_repair_cost2) and (checksec2==true) and (0.11 < item_in_slot_2:condition() + 0.01) then
+					item_name_and_price2 = "За ремонт "..game.translate_string(name2).." плати мне %c[255,238,155,23]"..item_repair_cost2.." рублей%c[default] вперёд\n и давай похожий ствол на запчасти. Да смотри не отдай для этих целей более крутую пушку - а то пожалеешь потом.\n Кстати, ствол убит где-то процентов на "..iznos.."."
+				elseif (db.actor:money() < item_repair_cost2) and (checksec2==true) and (0.11 < item_in_slot_2:condition() + 0.01) then
+					item_name_and_price2 = "За ремонт "..game.translate_string(name2).." я бы взял %c[255,255,32,23]"..item_repair_cost2.." рублей%c[default] и\n сравнимый ствол на запчасти, но у тебя столько денег нету.\n Кстати, ствол убит где-то процентов на "..iznos.."."
+				elseif (db.actor:money() >= item_repair_cost2) and (checksec2==false) and (0.11 < item_in_slot_2:condition() + 0.01) then
+					item_name_and_price2 = "За ремонт "..game.translate_string(name2).." я бы взял %c[255,255,32,23]"..item_repair_cost2.." рублей%c[default], но\n у тебя нету сравнимого ствола на запчасти.\n Кстати, ствол убит где-то процентов на "..iznos.."."
+				elseif (db.actor:money() < item_repair_cost2) and (checksec2==false) and (0.11 < item_in_slot_2:condition() + 0.01) then
+					item_name_and_price2 = "За ремонт "..game.translate_string(name2).." я бы взял %c[255,255,32,23]"..item_repair_cost2.." рублей%c[default], но\n у тебя ни денег столько нету, ни ствола на запчасти.\n Кстати, ствол убит где-то процентов на "..iznos.."."
+
+				elseif (rem_name ~= "hnd_weap_04") and (0.11 >= item_in_slot_2:condition() + 0.01) then
+					item_name_and_price2 = "Отремонтировать "..game.translate_string(name2).." я уже не смогу. Слишком ты этот ствол ушатал.\n Если хочешь, я тебе дам за эту железку скажем... 5 процентов от стоимости ("..math.floor(item_in_slot_2:cost()*0.05).." рублей) и избавлю тебя от неё."
+
+				elseif  (rem_name == "hnd_weap_04") and (0.11 >= item_in_slot_2:condition() + 0.01) and (checksec2==true) and (db.actor:money() >= item_repair_cost2) then
+					item_name_and_price2 = "Да, убил ты "..game.translate_string(name2).." просто в хлам.\n Ладно, посмотрим что можно сделать.\n Давай мне %c[255,238,155,23]"..item_repair_cost2.." рублей%c[default] вперёд и\n похожий ствол на запчасти."
+				elseif  (rem_name == "hnd_weap_04") and (0.11 >= item_in_slot_2:condition() + 0.01) and (checksec2==false) and (db.actor:money() >= item_repair_cost2) then
+					item_name_and_price2 = "Да, убил ты "..game.translate_string(name2).." просто в хлам,\n но сделать кое-что можно.\n Я бы взял за ремонт  %c[255,255,32,23]"..item_repair_cost2.." рублей%c[default], но\n у тебя нету похожего ствола на запчасти."
+				elseif (rem_name == "hnd_weap_04") and (db.actor:money() < item_repair_cost2) and (checksec2==true) and (0.11 >= item_in_slot_2:condition() + 0.01) then
+					item_name_and_price2 = "Да, убил ты "..game.translate_string(name2).." просто в хлам,\n но сделать кое-что можно.\n За ремонт я бы взял %c[255,255,32,23]"..item_repair_cost2.." рублей%c[default] и сравнимый ствол на запчасти,\n но у тебя столько денег нету."
+				elseif (rem_name == "hnd_weap_04") and (db.actor:money() < item_repair_cost2) and (checksec2==false) and (0.11 >= item_in_slot_2:condition() + 0.01) then
+					item_name_and_price2 = "Да, убил ты "..game.translate_string(name2).." просто в хлам,\n но сделать кое-что можно.\n За ремонт  я бы взял %c[255,255,32,23]"..item_repair_cost2.." рублей%c[default], но\n у тебя ни денег столько нету, ни ствола на запчасти."
+				end
+				if item_name_and_price2 ~= nil then
+					db.actor:give_talk_message(item_name_and_price2, task_texture, task_rect, "simple_answer_item")
+				end
+			end
+		end
+
+
+		armor_profit_margin = repairmasterlist[trader:name()][3]
+
+	--	local var = repairmasterlist[trader:name()][1]
+		if rem_name ~= "hnd_weap_01" then
+
+		if item_in_slot_6 ~= nil then
+			local item_repair_cost = math.floor( (1-item_in_slot_6:condition()) * item_in_slot_6:cost() * armor_profit_margin )
+			iznos = math.floor(100*(1-item_in_slot_6:condition()))
+
+			if (item_repair_cost > 0) and (db.actor:money() >= item_repair_cost) and (item_in_slot_6:condition()) < 0.95 then
+						-- list_trader_repair_2 это Стоимость починки брони:
+				local item_name_and_price = "Износ брони: "..iznos.."%. "..game.translate_string("list_trader_repair_2").." %c[255,238,155,23]"..item_repair_cost.." рублей%c[default]. Согласен?"
+				db.actor:give_talk_message(item_name_and_price, task_texture, task_rect, "simple_answer_item")
+
+			elseif (item_repair_cost > 0) and (db.actor:money() < item_repair_cost) then
+						-- list_trader_repair_2 это Стоимость починки брони:
+				local item_name_and_price = "Износ брони: "..iznos.."%. "..game.translate_string("list_trader_repair_2").." %c[255,255,32,23]"..item_repair_cost.." рублей%c[default]. Зайди попозже - сейчас у тебя денег столько нету."
+				db.actor:give_talk_message(item_name_and_price, task_texture, task_rect, "simple_answer_item")
+
+
+			end
+		end
+	  end
+	end
+end
+
+-- проверяем, не забиты ли стволы в хлам
+
+function check_damaged1(actor, trader)
+	local item_in_slot = db.actor:item_in_slot(1)
+	if item_in_slot ~= nil then
+		if (rem_name ~= "hnd_weap_04") and (0.11 > item_in_slot:condition() + 0.01) then return true end
+	end
+	return false
+end
+
+function check_damaged2(actor, trader)
+	local item_in_slot = db.actor:item_in_slot(2)
+	if item_in_slot ~= nil then
+		if (rem_name ~= "hnd_weap_04") and (0.11 > item_in_slot:condition() + 0.01) then return true end
+	end
+	return false
+end
+
+-- чинить хлам безполезно, дам тебе за него пирожок и иди с ТНБ
+
+function pay_damaged1(actor, trader)
+	local item_in_slot = db.actor:item_in_slot(1)
+	if item_in_slot ~= nil then
+		dialogs.relocate_money(db.actor, math.floor(item_in_slot:cost()*0.05), "in")
+		news_manager.relocate_item(db.actor, "out", item_in_slot:section())
+		alife():release(alife():object(item_in_slot:id()), true)
+	end
+	return false
+end
+
+function pay_damaged2(actor, trader)
+	local item_in_slot = db.actor:item_in_slot(2)
+	if item_in_slot ~= nil then
+		dialogs.relocate_money(db.actor, math.floor(item_in_slot:cost()*0.05), "in")
+		news_manager.relocate_item(db.actor, "out", item_in_slot:section())
+		alife():release(alife():object(item_in_slot:id()), true)
+	end
+	return false
+end
+
+------------------------------------------------------------------
+------------------------ UTILITY FUNCTIONS ------------------------
+------------------------------------------------------------------
+function get_vars(amkvar)
+	local strg = amk.load_variable(amkvar,nil)
+	if strg ~= nil then
+		wpnsec = string.sub(strg,2,string.len(strg))
+		stcode = tonumber(string.sub(strg,1,1))
+	else
+		wpnsec = nil
+		stcode = 0
+	end
+end
+
+function read_if_exist(ltx, section, value, default)
+	if ltx:line_exist(section,value) then
+		return ltx:r_float(section,value)
+	else
+		return default
+	end
+end
+
+function read_string_if_exist(ltx, section, value, default)
+	if ltx:line_exist(section,value) then
+		return ltx:r_string(section,value)
+	else
+		return default
+	end
+end
+
