@@ -1,0 +1,151 @@
+--[[ -*- mode: lua; coding: windows-1251-dos -*-
+
+
+Этот скрипт эмулирует поглощение энергии хита артефактами, размещенными на поясе.
+Каждый артефакт, находящийся под контролем скрипта, способен поглотить
+определенное кол-во энергии, после чего, он преобразуется в булыжник.
+
+]]
+
+local our_hits = {              -- какие типы хита будут обрабатываться
+  [ hit.explosion ] = {
+    [ "max"  ] = 10,           -- порог поглощения
+    [ "sect" ] = "explosion_immunity",
+  },
+  [ hit.fire_wound ] = {
+    [ "max"  ] = 10,
+    [ "sect" ] = "fire_wound_immunity",
+  },
+  [ hit.strike ] = {
+    [ "max"  ] = 10,
+    [ "sect" ] = "strike_immunity",
+  },
+  [ hit.wound ] = {
+    [ "max"  ] = 10,
+    [ "sect" ] = "wound_immunity",
+  },
+  [ hit.burn ] = {
+    [ "max"  ] = 10,
+    [ "sect" ] = "burn_immunity",
+  },
+  [ hit.chemical_burn ] = {
+    [ "max"  ] = 10,
+    [ "sect" ] = "chemical_burn_immunity",
+  },
+  [ hit.shock ] = {
+    [ "max"  ] = 10,
+    [ "sect" ] = "shock_immunity",
+  },
+--[[
+  [ hit.radiation ] = {
+    [ "max"  ] = 100,           -- порог поглощения
+    [ "sect" ] = "radiation_immunity",
+  },
+]]
+  [ hit.telepatic ] = {
+    [ "max"  ] = 10,
+    [ "sect" ] = "telepatic_immunity",
+  },
+}
+
+
+local sm_attached
+function attach( sm )
+  if not ui_mm_opt_main.GetOption( "art_degradation" ) then return end
+  sm_attached = {
+    { signal = "on_actor_before_hit",  fun = this.before_hit },
+    { signal = "on_update",            fun = this.on_update, queued = true  },
+  }
+  for _, v in ipairs( sm_attached ) do
+    sm:subscribe( v )
+  end
+  log2( "dsh: attached" )
+end
+function detach( sm )
+  for _, v in ipairs( sm_attached ) do
+    sm:unsubscribe( v )
+  end
+  got_hits = {}
+  has_hit  = false
+  log2( "dsh: detached" )
+end
+
+
+local got_hits = {}
+local has_hit  = false
+function before_hit( hit_data, p_s_hit, p_ignore_flags )
+  local hit_type = hit_data.hit_type
+  local our_hit  = our_hits[ hit_type ]
+  if our_hit and hit_data.power > 0 then
+    if got_hits[ hit_type ] then
+      got_hits[ hit_type ] = got_hits[ hit_type ] + hit_data.power
+    else
+      got_hits[ hit_type ] = hit_data.power
+    end
+    has_hit = true
+  end
+end
+
+
+local absorbations = {}
+function get_absorbations( af )
+  local af_sect = af:section()
+  local absorb_sect = get_string( af_sect, "hit_absorbation_sect" )
+  if absorb_sect then
+    if not absorbations[ af_sect ] then
+      absorbations[ af_sect ] = {}
+      for _, k in ipairs( get_section_keys( absorb_sect ) ) do
+        local absorb_val = get_float( absorb_sect, k, 0 )
+        if absorb_val > 0 and absorb_val < 1 then
+          absorbations[ af_sect ][ k ] = 1 - absorb_val
+        end
+      end
+    end
+  end
+  return absorbations[ af_sect ]
+end
+
+
+local last_t = 0
+function on_update()
+  if has_hit and time_global() - last_t >= 1000 then
+    local empty = {}
+    local master_coef = 4 - level.get_game_difficulty()
+    for i = 0, db.actor:belt_count() - 1 do
+      local af = db.actor:item_on_belt( i )
+      if af:is_artefact() then
+        local af_sect = af:section()
+        local absorbs = get_absorbations( af )
+        if absorbs then
+          local cond_diff = 0
+          for hit_type, hit_power in pairs( got_hits ) do
+            local our_hit = our_hits[ hit_type ]
+            if absorbs[ our_hit.sect ] then
+              local absorb_val = absorbs[ our_hit.sect ] * hit_power
+              cond_diff = cond_diff + (
+                absorb_val / ( our_hit.max * master_coef )
+              )
+            end
+          end
+          if cond_diff > 0 then
+            if af:condition() > cond_diff then
+              dsh.set_condition( af, af:condition() - cond_diff )
+            else
+              table.insert( empty, af )
+            end
+          end
+        end
+      end
+    end
+    for _, af in ipairs( empty ) do
+      ogse.remove_item_from_inventory( af )
+      inventory.forced_inventory_update( false )
+      ogse.spawn_item_in_inv( "af_buliz" )
+    end
+    for hit_type, hit_power in pairs( got_hits ) do
+      got_hits[ hit_type ] = 0
+    end
+    has_hit = false
+    last_t  = time_global()
+  end
+end
