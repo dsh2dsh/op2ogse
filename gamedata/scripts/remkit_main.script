@@ -1,0 +1,562 @@
+--/ remkit_main.script /--
+--/ Repair kit module /--
+--/ OGS Evolution Team 2009 /--
+--/ version 0.9 /--
+
+--/ Модуль походного ремонтного комплекта, основной скрипт /--
+
+transp = 0
+
+
+function use_repair_kit(repaired_slot, destr_item)
+local result = "without_changes"
+if db.actor:item_in_slot(repaired_slot) ~= nil then
+	local repair_item = db.actor:item_in_slot(db.repaired_slot)
+	local repair_item_section = repair_item:section()
+	local repair_item_condition = repair_item:condition()
+	local destr_item_section = destr_item:section()
+	local destr_item_condition = destr_item:condition()
+	
+	local actor_rank = db.actor:character_rank()
+	if actor_rank > 1000 then actor_rank = 1000 end
+-- ogse.send_tip("Ранг: " .. actor_rank)
+
+	local tech_complication = technical_complication(repair_item)
+-- ogse.send_tip("Сложность: " .. tech_complication)
+	local amendment = (math.random((actor_rank - tech_complication), (actor_rank - tech_complication + 300)))/1000
+	if amendment > 0 then amendment = 0 end
+	if repair_item_section == destr_item_section then amendment = amendment*0.7 end
+-- ogse.send_tip("Поправка: " .. amendment)
+
+	local size_of_repair = (destr_item_condition - 0.15) * (1 - ((1 - db.cond_rk) / 3))
+	local repared_condition = repair_item_condition + size_of_repair
+	local dif_repared_condition = repared_condition + amendment
+
+	if repared_condition > 0.98 then
+		repared_condition = 0.98
+		size_of_repair = repared_condition - repair_item_condition
+	end
+
+	if dif_repared_condition > 0.98 then
+		dif_repared_condition = 0.98
+	elseif (dif_repared_condition > 0) and (dif_repared_condition < 0.98) then
+		if dif_repared_condition < repair_item_condition then
+-- ogse.send_tip("Похоже, мы испортили вещь...")
+			dif_repared_condition = repair_item_condition - ((repair_item_condition - dif_repared_condition)*((1000 - actor_rank)/1000))
+			if dif_repared_condition < 0 then dif_repared_condition = 0 end
+		end
+	elseif dif_repared_condition <= 0 then
+		if dif_repared_condition < repair_item_condition then
+-- ogse.send_tip("Ты сломал это!!!")
+			dif_repared_condition = repair_item_condition - ((repair_item_condition + dif_repared_condition)*((1000 - actor_rank)/1000))
+			if dif_repared_condition < 0 then dif_repared_condition = 0 end
+		end
+	end
+
+	if dif_repared_condition > repair_item_condition then
+--		ogse.send_tip("Вам удалось улучшить состояние предмета.")
+		result = "success"
+	elseif dif_repared_condition == repair_item_condition then
+--		ogse.send_tip("Вам не удалось улучшить состояние предмета.")
+		result = "without_changes"
+	else
+--		ogse.send_tip("По неопытности Вы ухудшили состояние предмета.")
+		result = "failure"
+	end
+
+	repair_item:set_condition(dif_repared_condition)
+
+	if system_ini():r_string(destr_item_section, "slot") == "1" or system_ini():r_string(destr_item_section, "slot") == "2" then
+
+	if system_ini():line_exist(destr_item_section, "ammo_class") then
+-- Разрядим оружие и снимем с него аддоны
+-- -- log1("Разрядим разбираемое оружие")
+
+		local destr_item_state = get_weapon_data(alife():object(destr_item:id()))
+
+		local w_ammo_num = destr_item:get_ammo_in_magazine()
+-- -- log1("Оружие снаряжено " .. w_ammo_num .. " патронами")
+		local w_ammo_type = destr_item_state.ammo_type
+		local ammo_list = system_ini():r_string(destr_item_section, "ammo_class")
+		local num = nil
+		local ammo_tbl = {}
+		for num in string.gfind(ammo_list,"([%w_%-.\\]+)%p*" ) do
+			table.insert(ammo_tbl, num)
+		end
+		local w_ammo_name = ammo_tbl[w_ammo_type+1]
+		ogse.spawn_ammo_in_inv(w_ammo_name, w_ammo_num)
+
+-- Разберёмся с аддонами
+		local scope = 0
+		local launcher = 0
+		local silence = 0
+
+		if 	system_ini():line_exist(destr_item_section, "scope_status") then
+			scope = system_ini():r_u32(destr_item_section, "scope_status")
+		end
+		if 	system_ini():line_exist(destr_item_section, "grenade_launcher_status") then
+			launcher = system_ini():r_u32(destr_item_section, "grenade_launcher_status")
+		end
+		if 	system_ini():line_exist(destr_item_section, "silencer_status") then
+			silence = system_ini():r_u32(destr_item_section, "silencer_status")
+		end
+
+		if scope == 2 and bit_and(destr_item_state.addon_flags, 1) == 1 then
+			local inst_scope = system_ini():r_string(destr_item_section,"scope_name")
+			ogse.spawn_item_in_inv(inst_scope)
+		end
+		if launcher == 2 and bit_and(destr_item_state.addon_flags, 2) == 2 then
+			local inst_launcher = system_ini():r_string(destr_item_section,"grenade_launcher_name")
+			ogse.spawn_item_in_inv(inst_launcher)
+		end
+		if silence == 2 and bit_and(destr_item_state.addon_flags, 4) == 4 then 	
+			local inst_silence = system_ini():r_string(destr_item_section,"silencer_name")
+			ogse.spawn_item_in_inv(inst_silence)
+		end
+	end
+	end
+	ogse.remove_item_from_inventory(destr_item)
+	db.cond_rk_dif = size_of_repair * repair_item_condition
+	play_repair_sound()
+end
+	return result
+end
+
+
+function check_use_repair_kit(p_obj) 
+	if p_obj == nil or alife():object(p_obj:id()) == nil then return end
+	if p_obj and p_obj:section() == "repair_kit" and transp == 0 then
+		db.cond_rk_dif = 0
+		db.cond_rk = p_obj:condition()
+		call_menu_repair_kit()
+	else	
+		transp = 0		
+	end
+end
+
+
+function create_repair_kit()
+-- -- log1("Спавним в инвентарь новый ремкит")
+	local new_rep_kit = ogse.spawn_item_in_inv("repair_kit")
+-- -- log1("Запускаем таймер для ожидания появления предмета")
+	ogse.start_timer("rkc", 0.05)
+
+end
+
+
+function call_menu_repair_kit()
+
+	local is_enemy_around = false
+	for id in pairs(db.creature) do
+	if id ~= nil then
+		local obj=level.object_by_id(id)
+		if obj and obj:is_custom_monster() and obj:alive() then
+			local is_stalker = IsStalker(obj)
+			local dist = obj:position():distance_to(db.actor:position())
+			local is_enemy_to_actor = ogse.get_npc_relation(obj,db.actor) == "enemy"
+			if ((is_stalker and is_enemy_to_actor) or IsMonster(obj)) and (dist < 5 or obj:see(db.actor)) then
+				is_enemy_around = true
+				break
+			end
+		end
+	end end	
+	
+	if is_enemy_around == true then
+		ogse.autohiding_msg("remkit_main_msg_1_text", 1500)
+		-- ogse.send_tip("Вы не можете заниматься ремонтом, когда рядом враги.","Сообщение",nil,5)
+-- log1("Рядом враги - ремонт невозможен")
+		create_repair_kit()
+	elseif db.cond_rk < 0.15 then
+		ogse.autohiding_msg("remkit_main_msg_2_text", 1500)
+		-- ogse.send_tip("Инструмент пришёл в негодность.","Сообщение",nil,5)
+		create_repair_kit()
+	else
+		local spwn=ui_remkit.remkit(get_hud())
+		level.start_stop_menu(spwn,true)
+	end
+end
+
+
+function search_repair_kit()
+	db.use_rk = 0
+	db.actor:inventory_for_each(set_condition_repair_kit)
+	if db.use_rk == 0 then
+-- -- log1("Предмет ещё не появился, ждём дальше")
+		ogse.start_timer("rkc", 0.05)
+	end
+end
+
+
+function set_condition_repair_kit(item)
+	if item and item.id and item.section then
+		local item_sobj = alife():object(item:id())
+		if item_sobj and item_sobj:section_name() == "repair_kit" and db.use_rk == 0 then
+			local id = item:id()
+			if item:condition() == 1 then
+
+				db.use_rk = 1
+					
+				local new_repair_kit = item
+				local s_obj = alife():object(new_repair_kit:id())
+
+				if s_obj then
+				-- -- log1("Прочитаем текущие параметры ремкита в нет-пакет")
+					local rep_kit_params = read_cse_item_params(alife():object(new_repair_kit:id()))
+				-- -- log1("Сбросим таблицу нет-пакета в лог: " .. rep_kit_params.gvid .. " / " .. rep_kit_params.obf32u1 .. " / " .. rep_kit_params.obs32u2 .. " / " .. rep_kit_params.lvid .. " / " .. rep_kit_params.oflags .. " / " .. rep_kit_params.custom .. " / " .. rep_kit_params.sid .. " / " .. rep_kit_params.obs32u3 .. " / " .. rep_kit_params.visual .. " / " .. rep_kit_params.vsu8u1 .. " / " .. rep_kit_params.condition .. " / " .. rep_kit_params.updnum_items--[[ .. " / " .. rep_kit_params.updcse_alife_item__unk1_q8v4 .. " / " .. rep_kit_params.updcse_alife_item__unk2_q8v3 .. " / " .. rep_kit_params.updcse_alife_item__unk3_q8v3]])
+
+					
+
+					local new_rep_kit_cond = db.cond_rk - db.cond_rk_dif
+				-- -- log1("Запомненная кондиция ремкита " .. db.cond_rk .. " Разница после ремонта составила " .. db.cond_rk_dif)
+				-- -- log1("Кондиция обновлённого ремкита будет " .. new_rep_kit_cond)
+					if new_rep_kit_cond < 0 then new_rep_kit_cond = 0 end
+				-- -- log1("Назначаем новую кондицию новому ремкиту")
+					new_repair_kit:set_condition(new_rep_kit_cond)
+					if new_repair_kit:condition() < 0.15 and db.cond_rk_dif ~= 0 then
+						ogse.autohiding_msg("remkit_main_msg_3_text", 1500)
+						-- ogse.send_tip("Инструмент пришёл в негодность.")
+					end
+
+				-- -- log1("Изменим параметры ремкита в таблице нет-пакета")
+					rep_kit_params.custom = new_rep_kit_cond
+				-- -- log1("Запишем нет-пакет в объект")
+					write_cse_item_params(rep_kit_params,alife():object(new_repair_kit:id()))
+
+				-- -- log1("И обновим инвентарь...")
+					inventory.forced_inventory_update(false)
+				else
+					log1("!!ERROR! Remkit not found to set condition")			
+				end
+			end
+		end
+	end
+end
+
+
+function reset_condition_repair_kit(item)
+	if alife():object(item:id()) ~= nil then
+		if item:section() == "repair_kit" then
+			local new_repair_kit = item
+			local new_repair_kit_condition = new_repair_kit:condition()
+		-- -- log1("Прочитаем текущие параметры ремкита в нет-пакет")
+			local rep_kit_params = read_cse_item_params(alife():object(new_repair_kit:id()))
+		-- -- log1("Сбросим таблицу нет-пакета в лог: " .. rep_kit_params.gvid .. " / " .. rep_kit_params.obf32u1 .. " / " .. rep_kit_params.obs32u2 .. " / " .. rep_kit_params.lvid .. " / " .. rep_kit_params.oflags .. " / " .. rep_kit_params.custom .. " / " .. rep_kit_params.sid .. " / " .. rep_kit_params.obs32u3 .. " / " .. rep_kit_params.visual .. " / " .. rep_kit_params.vsu8u1 .. " / " .. rep_kit_params.condition .. " / " .. rep_kit_params.updnum_items--[[ .. " / " .. rep_kit_params.updcse_alife_item__unk1_q8v4 .. " / " .. rep_kit_params.updcse_alife_item__unk2_q8v3 .. " / " .. rep_kit_params.updcse_alife_item__unk3_q8v3]])
+
+			if rep_kit_params.custom ~= nil then
+				if rep_kit_params.custom ~= "" then
+		-- -- log1("В кастом_дате у него что-то есть. Вот это 'что-то' и выставляем как его кондицию")
+					new_repair_kit:set_condition(rep_kit_params.custom)
+				elseif new_repair_kit_condition ~= 1 then
+		-- -- log1("Ремкит поюзан, но не обработан. Исправляем это безобразие.")
+					rep_kit_params.custom = new_repair_kit_condition
+					write_cse_item_params(rep_kit_params,alife():object(new_repair_kit:id()))
+				end
+			end
+		end
+	end
+end
+
+skip_updates = 0 
+
+-- Перепаковка патронов и обновление ремкита не должны никогда попадать на один и тот же апдейт. 
+-- Иначе перепакованная пачка не успеет удалиться и вызовет вылет, попав в функцию ниже.
+-- Поэтому в перепаковке патронов мы поставим таймаут обновления ремкита в пару циклов.
+
+function update_repair_kit()
+	-- if skip_updates > 0 then 
+		-- skip_updates = skip_updates - 1
+		-- return
+	-- end --- вроде бы это более не нужно
+	check_inventory_for_remkits(db.actor)
+end
+
+function check_inventory_for_remkits(npc)
+    npc:iterate_inventory(check_kit, npc)
+end
+function check_kit(npc, item)
+ 	local sobj = nil
+	if item and item.id and item.section then
+		sobj = alife():object(item:id())
+	end	
+	if sobj then
+		if sobj:section_name() == "repair_kit" then
+			log1("REMKIT_CHECK")
+			reset_condition_repair_kit(item)
+		end	
+	end
+end
+
+
+
+function technical_complication(item)
+
+	local complication = 400
+	if item == nil or alife():object(item:id()) == nil then return complication end
+	local item_name = item:section()
+	
+-- Прямая вычитка параметра с наследованием
+	if system_ini():line_exist(item_name, "tech_complication") then
+		complication = system_ini():r_s32(item_name, "tech_complication")
+		return complication
+	end
+	
+-- Прямая вычитка параметра с наследованием
+
+	if system_ini():line_exist((item_name .. "_repair"), "tech_complication") then
+-- log1("Параметр 'Сложность' найден.")
+		complication = system_ini():r_s32((item_name .. "_repair"), "tech_complication")
+-- log1("Прочитали и присвоили значение.")
+	elseif system_ini():line_exist(item_name, "repair") then
+-- log1("Параметр 'Сложность' не найден. Ищем по родителю.")
+		local repair_section = system_ini():r_string(item_name, "repair")
+		if system_ini():line_exist(repair_section, "tech_complication") then
+			complication = system_ini():r_s32(repair_section, "tech_complication")
+		end
+	end
+	return complication
+
+end
+
+
+function compatibility_item(item, repaired_item)
+
+	if item == nil or repaired_item == nil then return false end
+	if alife():object(item:id()) == nil or alife():object(repaired_item:id()) == nil then return false end
+-- log1("Сравнение...")
+	local itm_name = item:section()
+	local rprd_itm_name = repaired_item:section()
+	local itm_compat = ""
+	local rep_itm_compat = ""
+	local compatibility = false
+	
+	if system_ini():line_exist(itm_name, "repair_compatibility") then
+-- Прямая вычитка параметра с наследованием
+		itm_compat = system_ini():r_string(itm_name, "repair_compatibility")
+-- Прямая вычитка параметра с наследованием
+	elseif system_ini():line_exist(itm_name.."_repair", "repair_compatibility") then
+-- log1("Параметр 'Совместимость' найден.")
+		itm_compat = system_ini():r_string(itm_name.."_repair", "repair_compatibility")
+-- log1("Прочитали и присвоили значение.")
+	elseif system_ini():line_exist(itm_name, "repair") then
+		local repair_section = system_ini():r_string(itm_name, "repair")
+		if system_ini():line_exist(repair_section, "repair_compatibility") then
+			itm_compat = system_ini():r_string(repair_section, "repair_compatibility")
+		end
+	end
+	if system_ini():line_exist(rprd_itm_name, "repair_compatibility") then
+-- Прямая вычитка параметра с наследованием
+		rep_itm_compat = system_ini():r_string(rprd_itm_name, "repair_compatibility")
+-- Прямая вычитка параметра с наследованием
+	elseif system_ini():line_exist(rprd_itm_name.."_repair", "repair_compatibility") then
+-- log1("Параметр 'Совместимость' найден.")
+		rep_itm_compat = system_ini():r_string(rprd_itm_name.."_repair", "repair_compatibility")
+-- log1("Прочитали и присвоили значение.")
+	elseif system_ini():line_exist(rprd_itm_name, "repair") then
+		local rprd_repair_section = system_ini():r_string(rprd_itm_name, "repair")
+		if system_ini():line_exist(rprd_repair_section, "repair_compatibility") then
+			rep_itm_compat = system_ini():r_string(rprd_repair_section, "repair_compatibility")
+		end
+	end
+	if itm_compat == rep_itm_compat and rep_itm_compat ~= "" then compatibility = true end
+	return compatibility			
+
+end
+
+
+function play_repair_sound()
+local rnd = math.random(1, 7)
+if rnd == 1 then 
+	soundtrack.s_play([[scripts\remkit\ui_repairweapon_01]])
+elseif rnd == 2 then 
+	soundtrack.s_play([[scripts\remkit\ui_repairweapon_02]])
+elseif rnd == 3 then 
+	soundtrack.s_play([[scripts\remkit\ui_repairweapon_03]])
+elseif rnd == 4 then 
+	soundtrack.s_play([[scripts\remkit\ui_repairweapon_04]])
+elseif rnd == 5 then 
+	soundtrack.s_play([[scripts\remkit\ui_repairweapon_05]])
+elseif rnd == 6 then 
+	soundtrack.s_play([[scripts\remkit\ui_repairweapon_06]])
+elseif rnd == 7 then 
+	soundtrack.s_play([[scripts\remkit\ui_repairweapon_07]])
+end
+end
+
+
+function get_x(item)
+	if item == nil or alife():object(item:id()) == nil then return 0 end
+	local ini = system_ini()
+	sect_inv=item:section()
+	tx = ini:r_u32(sect_inv, "inv_grid_x")
+	return tx
+end
+
+function get_y(item)
+	if item == nil or alife():object(item:id()) == nil then return 0 end
+	local ini = system_ini()
+	sect_inv=item:section()
+    ty = ini:r_u32(sect_inv, "inv_grid_y")
+	return ty
+end
+
+function get_w(item)
+	if item == nil or alife():object(item:id()) == nil then return 0 end
+	local ini = system_ini()
+	sect_inv=item:section()
+	tw = ini:r_u32(sect_inv, "inv_grid_width")
+	return tw
+end
+
+function get_h(item)
+	if item == nil or alife():object(item:id()) == nil then return 0 end
+	local ini = system_ini()
+	sect_inv=item:section()
+    th = ini:r_u32(sect_inv, "inv_grid_height")
+	return th
+end
+
+
+function read_cse_item_params(sobj)
+  if sobj == nil then return end
+  local stpk=net_packet()
+  local uppk=net_packet()
+  sobj:STATE_Write(stpk)
+  sobj:UPDATE_Write(uppk)
+  local size=stpk:w_tell()
+  local size1=uppk:w_tell()
+-- -- log1("rsp "..size.." "..size1)
+  stpk:r_seek(0)
+  uppk:r_seek(0)
+  local tbl=parse_cse_object_packet({},stpk,uppk)
+-- -- log1("rsp "..size.." "..size1.." "..stpk:r_tell())
+  return tbl
+end
+
+function parse_cse_object_packet(ret,stpk,updpk)
+  ret.gvid=stpk:r_u16()
+  ret.obf32u1=stpk:r_float()
+  ret.obs32u2=stpk:r_s32()
+  ret.lvid=stpk:r_s32()
+  ret.oflags=stpk:r_s32()
+  ret.custom=stpk:r_stringZ()
+  ret.sid=stpk:r_s32()
+  ret.obs32u3=stpk:r_s32()
+  ret.visual=stpk:r_stringZ()
+  ret.vsu8u1=stpk:r_u8()
+  ret.condition=stpk:r_float()
+  ret.updnum_items=updpk:r_u8()
+  ret.updpos={}
+  ret.updpos.x=updpk:r_float()
+  ret.updpos.y=updpk:r_float()
+  ret.updpos.z=updpk:r_float()
+  return ret
+end
+
+function write_cse_item_params(tbl,sobj)
+  if sobj == nil then return end
+  local stpk=net_packet()
+  local uppk=net_packet()
+  fill_cse_object_packet(tbl,stpk,uppk)
+  local size=stpk:w_tell()
+  local size1=uppk:w_tell()
+-- -- log1("wsp "..size.." "..size1)
+  stpk:r_seek(0)
+  uppk:r_seek(0)
+  sobj:STATE_Read(stpk,size)
+  sobj:UPDATE_Read(uppk)
+end
+
+function fill_cse_object_packet(ret,stpk,updpk)
+  stpk:w_u16(ret.gvid)
+  stpk:w_float(ret.obf32u1)
+  stpk:w_s32(ret.obs32u2)
+  stpk:w_s32(ret.lvid)
+  stpk:w_s32(ret.oflags)
+  stpk:w_stringZ(ret.custom)
+  stpk:w_s32(ret.sid)
+  stpk:w_s32(ret.obs32u3)
+  stpk:w_stringZ(ret.visual)
+  stpk:w_u8(ret.vsu8u1)
+  stpk:w_float(ret.condition)
+  updpk:w_u8(ret.updnum_items)
+  updpk:w_float(ret.updpos.x)
+  updpk:w_float(ret.updpos.y)
+  updpk:w_float(ret.updpos.z)
+end
+
+
+function get_weapon_data(sobj)
+  if sobj == nil then return end
+  local stpk=net_packet()
+  local uppk=net_packet()
+  sobj:STATE_Write(stpk)
+  sobj:UPDATE_Write(uppk)
+  local size=stpk:w_tell()
+  local size1=uppk:w_tell()
+-- -- log1("rsp "..size.." "..size1)
+  stpk:r_seek(0)
+  uppk:r_seek(0)
+  local ret={}
+  parse_object_packet(ret,stpk,uppk,size)
+  parse_visual_packet(ret,stpk,uppk,size)
+  parse_item_packet(ret,stpk,uppk,size)
+  parse_item_weapon_packet(ret,stpk,uppk,size)
+-- -- log1("rsp "..size.." "..size1.." "..stpk:r_tell())
+  return ret
+end
+
+function parse_object_packet(ret,stpk,updpk)
+  ret.gvid=stpk:r_u16()
+  ret.obf32u1=stpk:r_float()
+  ret.obs32u2=stpk:r_s32()
+  ret.lvid=stpk:r_s32()
+  ret.oflags=stpk:r_s32()
+  ret.custom=stpk:r_stringZ()
+  ret.sid=stpk:r_s32()
+  ret.obs32u3=stpk:r_s32()
+  return ret
+end
+
+function parse_visual_packet(ret,stpk,updpk)
+  ret.visual=stpk:r_stringZ()
+  ret.vsu8u1=stpk:r_u8()
+  return ret
+end
+
+function parse_item_packet(ret,stpk,updpk)
+	ret.condition=stpk:r_float()
+	ret.updnum_items=updpk:r_u8()
+	ret.updpos={} -- или поставить вектор? ладно потом
+	ret.updpos.x=updpk:r_float()
+	ret.updpos.y=updpk:r_float()
+	ret.updpos.z=updpk:r_float()
+	ret.updcse_alife_item__unk1_q8v4=readvu8uN(updpk,4)
+	ret.updcse_alife_item__unk2_q8v3=readvu8uN(updpk,3)
+	ret.updcse_alife_item__unk3_q8v3=readvu8uN(updpk,3)
+  return ret
+end
+
+function parse_item_weapon_packet(ret,stpk,updpk)
+	ret.ammo_current = stpk:r_u16()
+	ret.ammo_elapsed = stpk:r_u16()
+	ret.weapon_state = stpk:r_u8()
+	ret.addon_flags = stpk:r_u8()
+	ret.ammo_type = stpk:r_u8()
+	ret.updcondition = updpk:r_u8()
+	ret.updweapon_flags = updpk:r_u8()
+	ret.updammo_elapsed = updpk:r_u16()
+	ret.updaddon_flags = updpk:r_u8()
+	ret.updammo_type = updpk:r_u8()
+	ret.updweapon_state = updpk:r_u8()
+	ret.updweapon_zoom = updpk:r_u8()
+	ret.updcurrent_fire_mode = updpk:r_u8()
+  return ret
+end
+
+function readvu8uN(packet,n)
+  local v={}
+  for i=1,n,1 do
+    table.insert(v,packet:r_u8())
+  end
+  return v
+end
