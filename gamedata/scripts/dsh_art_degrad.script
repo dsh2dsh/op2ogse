@@ -5,6 +5,8 @@
  аждый артефакт, наход€щийс€ под контролем скрипта, способен поглотить
 определенное кол-во энергии, после чего, он преобразуетс€ в булыжник.
 
+ƒополнительно, эмулируетс€ пулезащита брони.
+
 ]]
 
 local our_hits = {              -- какие типы хита будут обрабатыватьс€
@@ -15,6 +17,7 @@ local our_hits = {              -- какие типы хита будут обрабатыватьс€
   [ hit.fire_wound ] = {
     [ "max"  ] = 10,
     [ "sect" ] = "fire_wound_immunity",
+    [ "ignored_outfit_protection" ] = true,
   },
   [ hit.strike ] = {
     [ "max"  ] = 10,
@@ -85,13 +88,49 @@ function before_hit( hit_data, p_s_hit, p_ignore_flags )
   local hit_type = hit_data.hit_type
   local our_hit  = our_hits[ hit_type ]
   if our_hit and hit_data.power > 0 then
-    if got_hits[ hit_type ] then
-      got_hits[ hit_type ] = got_hits[ hit_type ] + hit_data.power
-    else
-      got_hits[ hit_type ] = hit_data.power
+    local real_power = calc_real_hit_power( our_hit, hit_data )
+    if real_power > 0 then
+      if got_hits[ hit_type ] then
+        got_hits[ hit_type ] = got_hits[ hit_type ] + real_power
+      else
+        got_hits[ hit_type ] = real_power
+      end
+      has_hit = true
     end
-    has_hit = true
+    if our_hit.ignored_outfit_protection then
+      apply_outfit_protection( hit_data, p_s_hit )
+    end
   end
+end
+
+
+function apply_outfit_protection( hit_data, p_s_hit )
+  if db.actor and db.actor:alive() then
+    local outfit_item = db.actor:item_in_slot( 6 )
+    if outfit_item then
+      local imm_val = db.actor:get_current_outfit_protection(
+        hit_data.hit_type
+      ) * 0.1
+      if imm_val > 0 then
+        write_memory_float(
+          hit_data.power * ( 1 - imm_val ),
+          p_s_hit,
+          hit_offset.power
+        )
+      end
+    end
+  end
+end
+
+
+function calc_real_hit_power( our_hit, hit_data )
+  local hit_power = hit_data.power
+  -- вычислить хит до его поглощени€ артефактами
+  local hit_immunity = inventory.on_belt_hit_immunity( our_hit.sect )
+  if hit_immunity > 0 then
+    hit_power = hit_power / ( 1 - hit_immunity )
+  end
+  return hit_power
 end
 
 
@@ -109,9 +148,9 @@ function get_absorbations( af )
       if not absorbations[ af_sect ] then
         absorbations[ af_sect ] = {}
         for _, k in ipairs( get_section_keys( absorb_sect ) ) do
-          local absorb_val = get_float( absorb_sect, k, 0 )
-          if absorb_val > 0 and absorb_val < 1 then
-            absorbations[ af_sect ][ k ] = 1 - absorb_val
+          local absorb_val = 1 - get_float( absorb_sect, k, 1 )
+          if absorb_val > 0 then
+            absorbations[ af_sect ][ k ] = absorb_val
           end
         end
       end
