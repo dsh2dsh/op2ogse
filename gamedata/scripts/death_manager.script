@@ -1,7 +1,16 @@
+local total_debug = false
+
+function write_log(str)
+	if total_debug then
+		log1(str)
+	end
+end
+
 local math_random = math.random
 local math_ceil = math.ceil
 local string_find = string.find
 
+local ammo_deferred_release = {}
 --' Ключем является группировка персонажа. Значением является таблица, содержашая имена секций предметов.
 local item_by_community = {}
 
@@ -599,6 +608,16 @@ function drop_manager:set_weapon_condition(cond, cond_add)
 	end
 end
 
+
+function shedule_release(item)
+	if item then
+		if not ammo_deferred_release[item:id()] then
+			ammo_deferred_release[item:id()] = time_global()
+		end
+	end
+end
+
+
 --' Функция вызывается для каждого предмета, если вернет false то предмет удалится.
 -- Разве ? Удаление происходит прямо внутри функции, а внешнему итератору наплевать на результат (sapsan)
 function keep_item(npc, item)
@@ -612,6 +631,74 @@ function keep_item(npc, item)
         return false
     end
 end
+
+
+function release_deferred_ammo()
+	local ini = system_ini()
+	for k, v in pairs(ammo_deferred_release) do
+		local game_object = level.object_by_id(k)
+		local s_obj = alife():object(k)
+		if not s_obj and not game_object then
+			-- если нет ни геймобъекта ни серверного - удалилось как надо
+			ammo_deferred_release[k] = nil
+		elseif s_obj and game_object then
+			-- если есть и то и другое - все ок, удаляем
+			local parent = game_object:parent()
+			if v < time_global() then
+				local size = get_ammo_size(game_object)
+				local box_size = ini:r_u32(s_obj:section_name(), "box_size")
+				if size ~= box_size and size > 0 then
+					-- оставим эту пачку в покое
+					if not parent then
+						write_log("!!AMMO_DEBUG DEBUG_DELETING_AMMO_NORMAL "..tostring(s_obj.id))
+						alife():release(s_obj, true)
+						ammo_deferred_release[k] = nil
+					else	
+						write_log("!!AMMO_DEBUG DEBUG_TELEPORT_AMMO "..tostring(s_obj.id))
+						parent:drop_item(game_object)
+					end
+				elseif size == box_size then
+					-- эту пачку можно сразу удалить
+					if not parent then
+						write_log("!!AMMO_DEBUG DEBUG_DELETING_AMMO_NORMAL "..tostring(s_obj.id))
+						alife():release(s_obj, true)
+						ammo_deferred_release[k] = nil
+					else	
+						write_log("!!AMMO_DEBUG DEBUG_TELEPORT_AMMO "..tostring(s_obj.id))
+						parent:drop_item(game_object)						
+					end
+				elseif size == 0 then
+					if not parent then
+						write_log("!!AMMO_DEBUG DEBUG_DELETING_AMMO_ZERO "..tostring(s_obj.id))
+						alife():release(s_obj, true)
+						ammo_deferred_release[k] = nil
+					else	
+						write_log("!!AMMO_DEBUG DEBUG_TELEPORT_AMMO_ZERO "..tostring(s_obj.id))
+						parent:drop_item(game_object)						
+					end				
+				end
+			end
+		elseif s_obj then	
+			-- если только серверный - срочно убиваем
+			write_log("!!AMMO_DEBUG DEBUG_AMMO_SRV "..tostring(s_obj.id))
+			alife():release(s_obj, true)
+			ammo_deferred_release[k] = nil
+		elseif game_object then
+			-- если только геймобъект - он ещё не успел сдохнуть, сцуко, не трогаем его
+			write_log("!!AMMO_DEBUG DEBUG_DELETING_ONLY_GAMEOBJ")
+			-- ammo_deferred_release[k] = nil
+		end		
+	end
+end
+
+function get_ammo_size(obj)
+	local se_obj = alife():object(obj:id())
+	local packet = net_packet()
+	cse_alife_item_ammo.STATE_Write(se_obj, packet)
+	packet:r_seek(packet:w_tell() - 2)
+	return packet:r_u16()
+end
+
 
 --' Функция спавнит необходимое число предметов
 function create_items(npc, section, number, rnd)
