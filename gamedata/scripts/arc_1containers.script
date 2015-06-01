@@ -1,0 +1,263 @@
+local cfg_containers = {}
+local inv_containers = {}
+
+local menu_showed = false
+
+function get_cfg_containers_number()
+  return table.getn(cfg_containers)
+end
+
+function get_inv_containers_number()
+  return table.getn(inv_containers)
+end
+
+function get_cfg_index(cont_section)
+  for i = 1, get_cfg_containers_number() do
+    if arc.compare_part(cont_section,cfg_containers[i].section) then
+      return i
+    end
+  end
+  return 0
+end
+
+function get_inv_index(cont_id)
+  for i = 1, get_inv_containers_number() do
+    if inv_containers[i].id == cont_id then
+      return i
+    end
+  end
+  return 0
+end
+
+function get_inv_container_arts(cont_index)
+  return inv_containers[cont_index].arts
+end
+
+function register_container(cont_id, cont_section, cont_arts)
+  if get_inv_index(cont_id)>0 then -- Уже зарегистрирован
+    return true
+  end
+  
+  local f = get_cfg_index(cont_section)
+  
+  if f==0 then
+    local ini = system_ini()
+    
+    if ini:section_exist(cont_section) then
+      local tmp = {}
+      
+      tmp.section = cont_section
+      if ini:line_exist(cont_section, "container_slots") then
+        tmp.slots = ini:r_u32(cont_section, "container_slots")
+      else
+        return false
+      end
+      
+      -- TODO: добавить настройки меню
+      
+      tmp.tx = ini:r_u32(cont_section, "inv_grid_x")
+      tmp.ty = ini:r_u32(cont_section, "inv_grid_y")
+      tmp.weight = ini:r_float(cont_section, "inv_weight")
+      
+      table.insert(cfg_containers, tmp)
+      f = table.getn(cfg_containers)
+      
+      arc.info(list_cfg_containers(),1)
+    else
+      return false
+    end
+  end
+  
+  local cnt = {}
+  
+  cnt.id = cont_id
+  cnt.type = f
+  cnt.arts = {}
+  
+  local arts = cont_arts
+  if not arts then
+    arts = get_container_arts(cont_id)
+  end
+  local s = cfg_containers[f].slots
+  
+  for i = 1, s do
+    if (not arts) or (not arts[i]) or (arts[i]=="_") then
+      cnt.arts[i] = 0
+    else
+      local a = arc_arts.register_artefact(arts[i],1,true)
+      if a==0 then
+        arc.warning("Неизвестный артефакт "..tostring(arts[i]).." находится в слоте #"..i.." контейнера #"..cont_id..". При открытии контейнера артефакт будет удалён.")
+      end
+      cnt.arts[i] = a
+    end
+  end
+  
+  table.insert(inv_containers, cnt)
+  arc.info(list_inv_containers(),1)
+  
+  if arts and (table.getn(arts)>s) then
+    arc.warning("Количество артефактов превышает количество слотов в контейнере #"..cont_id..". При открытии контейнера лишние артефакты будут удалены.")
+  end
+  
+  return true --f
+end
+--]]
+
+function respawn_container(cont_index)
+  local ic = inv_containers[cont_index]
+  if not ic then
+--    return false
+  end
+  local a = {}
+  
+  for i=1, cfg_containers[ic.type].slots do
+    if ic.arts[i]>0 then
+      a[i] = arc_arts.get_art_section(ic.arts[i])
+    else
+      a[i] = "_"
+    end
+  end
+  
+  local sobj = arc.give_item(cfg_containers[ic.type].section)
+  if not sobj then
+    return false
+  else
+    inv_containers[cont_index].id = sobj.id
+    set_container_arts(sobj.id, a)
+  end
+end
+
+function remove_container(cont_index)
+  arc.remove_obj(inv_containers[cont_index].id)
+end
+
+--[[
+function on_get_container(cont)
+  register_container(cont:id(),cont:section())
+end
+--]]
+function on_lose_container(cont_id)
+	if menu_showed then return end
+    
+	local n = get_inv_index(cont_id)
+
+    if alife():object(cont_id)==nil and not has_alife_info("biznes_remove_special_item") then
+      -- Контейнер использован. Показать меню
+      arc_ui_1container_menu.show_menu(get_inv_index(cont_id))
+    else
+      -- Контейнер выброшен. Удалить контейнер и арты в нём из списка
+      local arts = inv_containers[n].arts
+      
+      for i = 1, table.getn(arts) do
+        if arts[i]>0 then
+          arc_arts.register_artefact(arc_arts.get_art_section(arts[i]), -1, true)
+        end
+      end
+      
+      table.remove(inv_containers, n)
+    end
+end
+
+function set_menu_showed(f)
+  menu_showed = f
+end
+
+function get_container_arts(cont_id)
+  local sobj = alife():object(cont_id)
+  if sobj==nil then
+    return nil
+  end
+  local tbl = get_art_container_data(sobj)
+  local cd_string = tbl.custom
+  
+  arc.info("CD = ["..tostring(cd_string).."]",1)
+  
+  if not cd_string or cd_string=="" then
+    return nil
+  end
+  
+  local arts = {}
+  
+  for a in string.gmatch(cd_string, "[_%w]+") do
+    table.insert(arts, a)
+  end
+  
+  return arts
+end
+
+function set_container_arts(cont_id, arts)
+  local sobj = alife():object(cont_id)
+  if sobj==nil then
+    return false
+  end
+  local tbl = get_art_container_data(sobj)
+  tbl.custom = table.concat(arts, ',')
+  set_art_container_data(tbl, sobj)
+  return true
+end
+
+function get_art_container_data(sobj)
+  local stpk=net_packet()
+  local uppk=net_packet()
+  sobj:STATE_Write(stpk)
+  sobj:UPDATE_Write(uppk)
+  local size=stpk:w_tell()
+  local size1=uppk:w_tell()
+  stpk:r_seek(0)
+  uppk:r_seek(0)
+  local t={}
+  amk.parse_object_packet(t,stpk,uppk,size)
+  amk.parse_visual_packet(t,stpk,uppk,size)
+  parse_item_packet(t,stpk,uppk,size)
+  return t
+end
+
+function set_art_container_data(t, sobj)
+  local stpk=net_packet()
+  local uppk=net_packet()
+  amk.fill_object_packet(t,stpk,uppk)
+  amk.fill_visual_packet(t,stpk,uppk)
+  fill_item_packet(t,stpk,uppk)
+  local size=stpk:w_tell()
+  local size1=uppk:w_tell()
+  stpk:r_seek(0)
+  uppk:r_seek(0)
+  sobj:STATE_Read(stpk,size)
+  sobj:UPDATE_Read(uppk)
+end
+
+function parse_item_packet(ret,stpk,updpk)
+  ret.condition=stpk:r_float()
+  ret.updnum_items=updpk:r_u8()
+  return ret
+end
+
+function fill_item_packet(ret,stpk,updpk)
+  stpk:w_float(ret.condition)
+  updpk:w_u8(ret.updnum_items)
+  return ret
+end
+
+function list_cfg_containers()
+  local s = "cfg_containers = "
+  
+  for i=1, get_cfg_containers_number() do
+    local c = cfg_containers[i]
+--    s = s.."\n s=["..c.section.."], b_r="..c.belt_rad..", i_r="..c.inv_rad.."; tx=["..c.tx..","..c.ty.."], w="..c.weight
+    s = s.."["..c.section.."] "
+  end
+  
+  return s
+end
+
+function list_inv_containers()
+  local s = "inv_containers = "
+  
+  for i=1, get_inv_containers_number() do
+    local c = inv_containers[i]
+--    s = s.."\n s=["..c.section.."], b_r="..c.belt_rad..", i_r="..c.inv_rad.."; tx=["..c.tx..","..c.ty.."], w="..c.weight
+    s = s.."["..c.id.."] arts={"..table.concat(c.arts, ",").."}"
+  end
+  
+  return s
+end

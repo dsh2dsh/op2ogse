@@ -1,0 +1,394 @@
+class "arc_container_menu" (CUIScriptWnd)
+
+local max_arts_in_container = 3 -- FIXME
+
+local menu_cfg =
+{
+  take =
+  {
+    row_size = 3,
+    x_start = 80,
+    y_start = 130,
+    space = 66
+  },
+  
+  put =
+  {
+    row_size = 5,
+    x_start = 30,
+    y_start = 280,
+    space = 60
+  }
+}
+
+local container_arts
+local arts_cont
+
+local inventory_arts
+local arts_inv
+
+local arts_weight
+
+local _menu
+
+local btn_pos
+
+local cur_cont_index
+
+function show_menu(cont_index)
+  cur_cont_index = cont_index
+  arc_containers.set_menu_showed(true)
+  local spwn=arc_container_menu(get_hud())
+  level.start_stop_menu(spwn,true)
+end
+
+function arc_container_menu:DrawArtButton(art_index, button_number, multi)
+  local b, btns, bp, s, x, y, m, n, t, tx, ty
+  if multi then
+    btns = self.put_buttons
+    s = "put"
+    n = art_index
+    bp = btn_pos
+  else
+    btns = self.take_buttons
+    s = "take"
+    n = button_number
+    bp = n
+  end
+  
+  m = menu_cfg[s]
+  x = m.x_start+(m.space*math.mod(bp-1,m.row_size))
+  y = m.y_start+(m.space*math.floor((bp-1)/m.row_size))
+  
+  b = btns[button_number]
+  if ((not b) or (not multi)) and (art_index>0) then
+    t = "+"..arc.round(10000*arc_arts.get_art_inv_rad(art_index))
+    tx, ty = arc_arts.get_art_texture(art_index)
+    tx, ty = 50*tx, 50*ty
+  end
+  
+  if not b then -- if first time
+    btns[button_number] = CUIButton()
+    b = btns[button_number]
+    b:SetWindowName("btn_"..s.."_"..button_number)
+    
+    b:SetAutoDelete(true)
+    b:InitTexture("ui\\ui_icon_equipment")
+    b:SetOriginalRect(tx,ty,50,50)
+    
+    b:SetText(t)
+    b:SetTextColor(255,238,153,26)
+    b:SetFont(GetFontGraffiti22Russian())
+    b:Init(x,y,50,50)
+    
+    self:AttachChild(b)
+    self:AddCallback(
+      b:WindowName(), ui_events.BUTTON_CLICKED,
+      loadstring("arc_ui_container_menu.btn_"..s.."_art("..n..")"), self)
+    
+    if multi then
+      b.multi = CUIStatic()
+      m = b.multi
+      m:SetAutoDelete(true)
+      m:SetText("x"..tostring(multi))
+      m:Init(35,35,0,0)
+      b:AttachChild(m)
+      m:Show(multi>1)
+      b:Show(multi>0)
+    else
+      b:Show(art_index>0)
+    end
+  elseif multi~=nil then -- if updating put_buttons
+    b:SetWndPos(x,y)
+    b:Show(multi>0)
+    m = b.multi
+    m:SetText("x"..tostring(multi))
+    m:Show(multi>1)
+  elseif not multi then -- if updating take_buttons
+    if art_index>0 then
+      b:SetOriginalRect(tx,ty,50,50)
+      b:SetText(t)
+    end
+    b:Show(art_index>0)
+  end
+end
+
+function arc_container_menu:__init() super()
+  _menu = self
+  
+  get_container_arts()
+  get_inventory_arts()
+  
+  self.take_buttons = {}
+  self.put_buttons = {}
+  
+  self:UpdateMenu()
+end
+
+function arc_container_menu:UpdateMenu()
+  self:DrawBackground()
+  self:DrawButtons()
+  self:DrawWeight()
+end
+
+function arc_container_menu:DrawBackground()
+  local xs, ys
+  xs = 350
+  ys = 470
+  
+  local b = self.bkg
+  if not b then
+    self:Init(10,10,xs,ys)
+    self.bkg = CUIStatic()
+    b = self.bkg
+    b:SetWindowName("background")
+    
+    b:SetAutoDelete(true)
+    b:InitTexture("ui\\ui_dg_inventory_exchange_trade")
+	b:SetStretchTexture(true)
+    b:SetOriginalRect(0,0,305,460)
+    
+    b:Init(0,0,xs,ys)
+    
+    self:AttachChild(b)
+  end
+  
+  local a = self.art_box
+  if not a then
+    self.art_box = CUIStatic()
+    a = self.art_box
+    a:SetWindowName("art_box")
+    
+    a:SetAutoDelete(true)
+    a:InitTexture("ui\\ui_arc_art_box_basic")
+--    a:SetOriginalRect(0,0,250,170)
+    a:SetStretchTexture(true)
+    
+    a:Init(30,40,300,200)
+    
+    self:AttachChild(a)
+  end
+end
+
+function arc_container_menu:DrawWeight()
+  local w = self.arts_weight
+  if not w then
+    self.arts_weight = CUIStatic()
+    w = self.arts_weight
+    w:SetWindowName("arts_weight")
+    w:SetAutoDelete(true)
+    w:SetTextColor(255,238,153,26)
+    w:SetFont(GetFontLetterica18Russian())
+	w:Init(100,90,320,20)
+    self:AttachChild(w)
+  end
+  
+  w:SetText(string.format("Вес артефактов: %.2f kg", arts_weight))
+end
+
+function arc_container_menu:DrawButtons()
+  btn_pos = 0
+  arts_weight = 0
+  for i = 1, max_arts_in_container do
+      self:DrawArtButton(container_arts[i],i)
+    if container_arts[i]>0 then
+      arts_weight = arts_weight + arc_arts.get_art_weight(container_arts[i])
+    end
+  end
+  
+  btn_pos = 0
+  for i = 1, arc_arts.get_cfg_arts_number() do
+    if arc_arts.get_art_inv_rad(i)>0 then
+      if inventory_arts[i]>0 then
+        btn_pos = btn_pos + 1
+      end
+      self:DrawArtButton(i,i,inventory_arts[i])
+    end
+  end
+  
+  local q = self.btn_quit
+  if not q then
+    self.btn_quit = CUIButton()
+    q = self.btn_quit
+    q:SetWindowName("btn_quit")
+    
+    q:SetAutoDelete(true)
+    
+    q:SetText("Закрыть")
+    q:SetTextColor(255,238,153,26)
+    q:SetFont(GetFontGraffiti19Russian())
+    q:Init(130,50,100,30)
+    
+    self:AttachChild(q)
+    self:AddCallback("btn_quit", ui_events.BUTTON_CLICKED, self.on_quit, self)
+  end
+  
+  local p = self.btn_prev
+  if not p then
+    self.btn_prev = CUIButton()
+    p = self.btn_prev
+    p:SetWindowName("btn_prev")
+    
+    p:SetAutoDelete(true)
+    
+    p:SetText("<<")
+    p:SetTextColor(255,238,153,26)
+    p:SetFont(GetFontGraffiti19Russian())
+    p:Init(50,50,50,30)
+    
+    self:AttachChild(p)
+    self:AddCallback("btn_prev", ui_events.BUTTON_CLICKED, self.prev_container, self)
+  end
+  
+  local n = self.btn_next
+  if not n then
+    self.btn_next = CUIButton()
+    n = self.btn_next
+    n:SetWindowName("btn_next")
+    
+    n:SetAutoDelete(true)
+    
+    n:SetText(">>")
+    n:SetTextColor(255,238,153,26)
+    n:SetFont(GetFontGraffiti19Russian())
+    n:Init(250,50,50,30)
+    
+    self:AttachChild(n)
+    self:AddCallback("btn_next", ui_events.BUTTON_CLICKED, self.next_container, self)
+  end
+  
+  local f = (arc_containers.get_inv_containers_number()>1)
+  p:Show(f)
+  n:Show(f)
+end
+
+function arc_container_menu:on_quit()
+  arc_containers.respawn_container(cur_cont_index)
+  self:GetHolder():start_stop_menu(self,true)
+  arc_containers.set_menu_showed(false)
+end
+
+function arc_container_menu:OnKeyboard(dik, keyboard_action)
+  CUIScriptWnd.OnKeyboard(self,dik,keyboard_action)
+  if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
+    if dik == DIK_keys.DIK_ESCAPE then
+      self:on_quit()
+    end
+  end
+  return true
+end
+
+function arc_container_menu:__finalize() end
+
+function btn_put_art(art_index)
+  if (arts_cont < max_arts_in_container) and (inventory_arts[art_index]>0) then
+    for i=1,max_arts_in_container do
+      if container_arts[i]==0 then
+        container_arts[i]=art_index
+        arts_cont = arts_cont + 1
+        
+        -- удаление арта
+        arc.remove_item(arc_arts.get_art_section(art_index))
+        
+        arc_arts.register_artefact(arc_arts.get_art_section(art_index),1,true)
+        
+		--Skunk start
+		local ini = system_ini()
+        local art_section = arc_arts.get_art_section(art_index)
+        local belt_rad = ini:r_float(art_section, "radiation_restore_speed")
+		local inv_rad
+        if ini:line_exist(art_section, "inventory_radiation") then
+          inv_rad = ini:r_float(art_section, "inventory_radiation")
+        else
+          inv_rad = math.max(belt_rad,0)
+        end
+		if inv_rad >= 0.0007 then
+		    arc_radiation.change_inv_arts_radiation(inv_rad-0.0007)
+			amk.send_tip(game.translate_string("Этот контейнер предназначен для менее радиоактивных артефактов. Вы не сможете с его помощью полностью компенсировать воздействие радиации. Переложите артефакт в другой контейнер."),nil,nil,5,"nano")
+		end
+		-- Skunk finish
+
+		inventory_arts[art_index]=inventory_arts[art_index]-1
+        if inventory_arts[art_index]==0 then
+          arts_inv = arts_inv - 1
+        end
+        _menu:UpdateMenu()
+        return
+      end
+    end
+  end
+end
+
+function btn_take_art(slot)
+  local a = container_arts[slot]
+  if (a>0) then
+    if inventory_arts[a]==0 then
+      arts_inv = arts_inv + 1
+    end
+    inventory_arts[a]=inventory_arts[a]+1
+    
+    container_arts[slot]=0
+    arts_cont = arts_cont - 1
+    
+    _menu:UpdateMenu()
+    
+    -- спавн арта
+    arc.give_item(arc_arts.get_art_section(a))
+    
+    arc_arts.register_artefact(arc_arts.get_art_section(a),-1,true)
+	
+		--Skunk start
+		local ini = system_ini()
+        local art_section = arc_arts.get_art_section(a)
+        local belt_rad = ini:r_float(art_section, "radiation_restore_speed")
+		local inv_rad
+        if ini:line_exist(art_section, "inventory_radiation") then
+          inv_rad = ini:r_float(art_section, "inventory_radiation")
+        else
+          inv_rad = math.max(belt_rad,0)
+        end
+		if inv_rad >= 0.0007 then
+		    arc_radiation.change_inv_arts_radiation(-(inv_rad-0.0007))
+		end
+		-- Skunk finish
+  end
+end
+
+function get_container_arts()
+  container_arts = arc_containers.get_inv_container_arts(cur_cont_index)
+  
+  arts_cont = 0
+  table.foreachi(container_arts, function(i,v) if v>0 then arts_cont = arts_cont+1 end end)
+end
+
+function get_inventory_arts()
+  inventory_arts = {}
+  arts_inv = 0
+  
+  local t
+  for i=1, arc_arts.get_cfg_arts_number() do
+    t = arc_arts.get_inv_arts_number(i)
+    
+    table.insert(inventory_arts, t)
+    
+    if t>0 then
+      arts_inv = arts_inv + 1
+    end
+  end
+end
+
+function arc_container_menu:next_container()
+  arc_containers.respawn_container(cur_cont_index)
+  cur_cont_index = arc.to_interval(cur_cont_index+1,1,arc_containers.get_inv_containers_number())
+  get_container_arts()
+  arc_containers.remove_container(cur_cont_index)
+  self:UpdateMenu()
+end
+
+function arc_container_menu:prev_container()
+  arc_containers.respawn_container(cur_cont_index)
+  cur_cont_index = arc.to_interval(cur_cont_index-1,1,arc_containers.get_inv_containers_number())
+  get_container_arts()
+  arc_containers.remove_container(cur_cont_index)
+  self:UpdateMenu()
+end
