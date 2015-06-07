@@ -1,7 +1,81 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
+-- время саморазряда аккумулятора в днях
+local self_discharge = 7
+
 function attach( sm )
-  sm:subscribe({ signal = "on_use", fun = this.on_use })
+  sm:subscribe({ signal = "on_spawn",  fun = this.on_spawn })
+  sm:subscribe({ signal = "on_update", fun = this.on_update })
+  sm:subscribe({ signal = "on_use",    fun = this.on_use })
+end
+
+
+local pt, self_discharge_cond
+function on_spawn()
+  pt = { game.get_game_time():get() }
+  self_discharge_cond = 1 / ( self_discharge * 24 * 60 )
+end
+
+
+local pnv_timer
+function on_update()
+  if db.actor and db.actor:alive() then
+    local previous_check_time = game.CTime()
+    previous_check_time:set( unpack( pt ) )
+    local current_time = game.get_game_time()
+    local dt = current_time:diffSec( previous_check_time )
+    if dt < 60 then return end
+    pt = { current_time:get() }
+    local acs = inventory.on_belt_obj( "acumm" )
+    if acs then
+      local pnv_discharge = calc_pnv_discharge();
+      local left_cond     = self_discharge_cond + pnv_discharge
+      for _, k in ipairs( acs ) do
+        if k:condition() > 0 then
+          if k:condition() > left_cond then
+            dsh.set_condition( k, k:condition() - left_cond )
+            if k:condition() < 0.1 and pnv_discharge > 0 and not pnv_timer then
+              pnv_timer = dsh.timeout(
+                ( math.random( 30, 300 ) * 1000 ),
+                function()
+                  pnv_timer = nil
+                  if has_power() < 0.1 then
+                    stop_active_pnv()
+                  end
+                end
+              )
+            end
+          else
+            dsh.set_condition( k, 0 )
+            stop_active_pnv()
+            return
+          end
+        end
+      end
+    end
+  end
+end
+
+
+function stop_active_pnv()
+  if pnv_timer then
+    pnv_timer:stop()
+    pnv_timer = nil
+  end
+  local active_pnv = ogse_night_vision.get_active_nv_device()
+  if active_pnv then
+    ogse_night_vision.nv_fx( false )
+  end
+end
+
+
+function calc_pnv_discharge()
+  local active_pnv = ogse_night_vision.get_active_nv_device()
+  if active_pnv then
+    local hours = sys_ini:r_u32( active_pnv:section(), "pnv_discharge_hours" )
+    return 1 / ( hours * 60 )
+  end
+  return 0
 end
 
 
@@ -25,9 +99,22 @@ end
 function get_usefull_power( obj )
   local cond = obj:condition()
   if obj:section() == "art_acumm" then
-    return cond * 0.5
+    return cond * 0.65
   end
   return cond * 0.9
+end
+
+
+function has_power()
+  local acs = inventory.on_belt_obj( "acumm" )
+  if acs then
+    for _, k in ipairs( acs ) do
+      if k:condition() > 0 then
+        return k:condition()
+      end
+    end
+  end
+  return 0
 end
 
 

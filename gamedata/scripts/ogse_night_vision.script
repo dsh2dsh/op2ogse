@@ -1,3 +1,4 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
 --/ ogse_night_vision.script /--
 --/ Nightvision module /--
 --/ OGS Evolution Team 2010 /--
@@ -14,6 +15,7 @@ function attach(sm)
   sm:subscribe({ signal = "on_key_down", fun = this.call_pnv })
 --  sm:subscribe({ signal = "on_spawn", fun = this.add_nv_fx_faile_hud })
 --  sm:subscribe({ signal = "on_update", fun = this.on_update })
+  sm:subscribe({ signal = "on_hit", fun = this.on_hit })
 end
 
 function on_update()
@@ -344,6 +346,7 @@ function chek_drop_pnv(obj)
 		if night_vision_fx_on == true then
 			turn_off_nv_fx(obj_sec)
 			ogse.delete_var("pnv")
+			active_nv_device = nil
 		end
 	end
 end
@@ -392,6 +395,7 @@ function chek_outfit_double_pnv(obj)
 		if night_vision_fx_on == true then
 		    turn_off_nv_fx(nv_slot:section())
 			ogse.delete_var("pnv")
+			active_nv_device = nil
 		end
 		
 	elseif is_nv_obj then
@@ -426,9 +430,11 @@ end
 
 -- Функции работы ПНВ
 -- Старт/остановка работы ПНВ
+local active_nv_device
 function nv_fx( mode )
 	if mode == true and night_vision_fx_on == false and night_vision_fx_not_inventory == true and night_vision_fx_not_sniper == true and night_vision_fx_not_trunk == true and night_vision_fx_not_btr == true then
 		local nightvision_section = nil
+		local nv_item = nil
 		local nv_item_section = nil
 --[[	for k, v in pairs (inventory.belt) do
 			if sys_ini:line_exist(k, "nightvision_sect") then
@@ -442,6 +448,7 @@ function nv_fx( mode )
 			local  nv_sect = nv_in_outfit:section()
 			if sys_ini:line_exist(nv_sect, "nightvision_sect") then
 				nightvision_section = sys_ini:r_string(nv_sect,"nightvision_sect")
+				nv_item = nv_in_outfit
 			end
 		end
 		
@@ -451,6 +458,7 @@ function nv_fx( mode )
 				local nv_sect = nv_in_slot:section()
 				if sys_ini:line_exist(nv_sect, "nightvision_sect") then
 					nightvision_section = sys_ini:r_string(nv_sect,"nightvision_sect")
+					nv_item = nv_in_slot
 				end
 			end
 		end
@@ -458,20 +466,17 @@ function nv_fx( mode )
 		if
 		  nightvision_section
 		  and
-		  is_nv_allowed( nightvision_section )
+		  is_nv_allowed( nightvision_section, nv_item )
 		then
 			turn_on_nv_fx(nightvision_section)
 			ogse.save_var( "pnv", true )
+			active_nv_device = nv_item
 		end
 	elseif mode == false and night_vision_fx_on == true then
 		turn_off_nv_fx()
 		ogse.delete_var("pnv")
+		active_nv_device = nil
 	end
-end
-
-
-function is_nv_allowed( sect )
-  return ( not has_alife_info( "no_pnv" ) )
 end
 
 -- Старт ПНВ (не использовать напрямую)
@@ -510,6 +515,7 @@ function nv_to_ruck(section)
     if night_vision_fx_on == true then
 	    turn_off_nv_fx(section)
 		ogse.delete_var("pnv")
+	    active_nv_device = nil
 	end
 end
 
@@ -700,4 +706,37 @@ function waiting_timer:condition()
 end
 function waiting_timer:action()
 	reset_pnv()
+end
+
+
+function is_nv_allowed( sect, obj )
+  if has_alife_info( "no_pnv" ) then return false end
+  if dsh_acumm.has_power() > 0 then
+    return true
+  end
+  return false
+end
+
+
+function get_active_nv_device()
+  if night_vision_fx_on then
+    return active_nv_device
+  end
+  return nil
+end
+
+
+function on_hit( obj, amount, local_direction, who, bone_index )
+  if amount > 0.2 and bone_index and bone_index > 0 and db.actor:alive() then
+    if bone_index >= 11 and bone_index < 18 then -- попадание в голову
+      local active_nv = get_active_nv_device()
+      if active_nv then
+        local r = math.random() * 100
+        local need_drop = ( r < 75 )
+        if need_drop then
+          db.actor:move_to_ruck( active_nv )
+        end
+      end
+    end
+  end
 end
