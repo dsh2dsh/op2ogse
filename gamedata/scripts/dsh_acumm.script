@@ -1,0 +1,82 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+function attach( sm )
+  sm:subscribe({ signal = "on_use", fun = this.on_use })
+end
+
+
+function on_use( obj, sobj )
+  if not sobj then return end
+  local sect = obj:section()
+  if sect == "acumm" then
+    if dsh.is_enemy_around() then
+      ogse.autohiding_msg( "Не время заряжать аккумулятор, враг рядом", 1500 )
+    elseif obj:condition() > 0.99 then
+      ogse.autohiding_msg( "Аккумулятор не нуждается в подзарядке", 1500 )
+    else
+      local spwn = ui_recharge( get_hud(), obj )
+      level.start_stop_menu( spwn, true )
+    end
+    return true
+  end
+end
+
+
+function get_usefull_power( obj )
+  local cond = obj:condition()
+  if obj:section() == "art_acumm" then
+    return cond * 0.5
+  end
+  return cond * 0.9
+end
+
+
+class "ui_recharge" ( dsh_ui_simple_craft.ui_simple_craft )
+function ui_recharge:__init( owner, item )
+  super( owner, "ui_dsh_recharge_acumm.xml", item )
+end
+
+
+function ui_recharge:can_include_into_list( item )
+  if item:section() == "art_acumm" and item:condition() > 0 then
+    return true
+  end
+  return false
+end
+
+
+function ui_recharge:calc_shans_bar_height( item, destr_item )
+  local new_cond = item:condition() + get_usefull_power( destr_item )
+  if new_cond > 1 then new_cond = 1 end
+  return new_cond * 100
+end
+
+
+function ui_recharge:do_craft( item )
+  local cond       = self.item:condition()
+  local have_power = get_usefull_power( item )
+  local need       = 1 - cond
+  if have_power > need then
+    dsh.set_condition( self.item, 1.0 )
+    dsh.set_condition( item, have_power - need )
+  else
+    dsh.set_condition( self.item, cond + have_power )
+    ogse.remove_item_from_inventory( item )
+    inventory.forced_inventory_update( false )
+  end
+  self:message_box_success()
+end
+
+
+function ui_recharge:message_box_success()
+  self.msgbox_id  = 1
+  self.need_close = true
+  self.message_box:Init( "message_box_repair_success" )
+  self.message_box:SetText(
+    string.format(
+      "Аккумулятор заряжен на %.0f%%",
+      self.item:condition() * 100
+    )
+  )
+  self:GetHolder():start_stop_menu( self.message_box, true )
+end
