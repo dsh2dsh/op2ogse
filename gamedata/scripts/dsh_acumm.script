@@ -11,6 +11,7 @@ local af_recharge_coef = {
 
 
 function attach( sm )
+  sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
   sm:subscribe({ signal = "on_spawn",  fun = this.on_spawn })
   sm:subscribe({ signal = "on_update", fun = this.on_update })
   sm:subscribe({ signal = "on_use",    fun = this.on_use })
@@ -24,7 +25,17 @@ function on_spawn()
 end
 
 
-local pnv_timer
+function on_first_update()
+  if has_power() > 0 then
+    biodetector.switch_onoff( true )
+  else
+    stop_active_pnv()
+    stop_biodetector()
+  end
+end
+
+
+local bio_timer, pnv_timer
 function on_update()
   if db.actor and db.actor:alive() then
     local previous_check_time = game.CTime()
@@ -35,31 +46,58 @@ function on_update()
     pt = { current_time:get() }
     local acs = inventory.on_belt_obj( "acumm" )
     if acs then
+      local bio_discharge = calc_bio_discharge();
       local pnv_discharge = calc_pnv_discharge();
-      local left_cond     = self_discharge_cond + pnv_discharge
+      local left_cond     = self_discharge_cond + pnv_discharge + bio_discharge
       for _, k in ipairs( acs ) do
         if k:condition() > 0 then
           if k:condition() > left_cond then
+            biodetector.switch_onoff( true )
             dsh.set_condition( k, k:condition() - left_cond )
-            if k:condition() < 0.1 and pnv_discharge > 0 and not pnv_timer then
-              pnv_timer = dsh.timeout(
-                ( math.random( 30, 300 ) * 1000 ),
-                function()
-                  pnv_timer = nil
-                  if has_power() < 0.1 then
-                    stop_active_pnv()
+            if k:condition() < 0.1 then
+              if bio_discharge > 0 and not bio_timer then
+                bio_timer = dsh.timeout(
+                  ( math.random( 30, 300 ) * 1000 ),
+                  function()
+                    bio_timer = nil
+                    if has_power() < 0.1 then
+                      stop_biodetector()
+                      bio_timer = dsh.timeout(
+                        1000,
+                        function()
+                          bio_timer = nil
+                          if has_power() > 0 then
+                            biodetector.switch_onoff( true )
+                          end
+                        end
+                      )
+                    end
                   end
-                end
-              )
+                )
+              end
+              if pnv_discharge > 0 and not pnv_timer then
+                pnv_timer = dsh.timeout(
+                  ( math.random( 30, 300 ) * 1000 ),
+                  function()
+                    pnv_timer = nil
+                    if has_power() < 0.1 then
+                      stop_active_pnv()
+                    end
+                  end
+                )
+              end
             end
           else
             dsh.set_condition( k, 0 )
             stop_active_pnv()
-            return
+            stop_biodetector()
           end
+          return
         end
       end
     end
+    stop_active_pnv()
+    stop_biodetector()
   end
 end
 
@@ -73,6 +111,25 @@ function stop_active_pnv()
   if active_pnv then
     ogse_night_vision.nv_fx( false )
   end
+end
+
+
+function stop_biodetector()
+  if bio_timer then
+    bio_timer:stop()
+    bio_timer = nil
+  end
+  biodetector.switch_onoff( false )
+end
+
+
+function calc_bio_discharge()
+  local bio = db.actor:item_in_slot( 12 )
+  if bio then
+    local hours = sys_ini:r_u32( bio:section(), "bio_discharge_hours" )
+    return 1 / ( hours * 60 )
+  end
+  return 0
 end
 
 
