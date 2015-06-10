@@ -5,10 +5,12 @@
 local monsters_like_npc = {
   [ "skelet_ded" ] = true,      -- Лесник из Забытого леса
 }
+-- как часто выполнять проверку на занятость рук (в мс)
+local freq = 100
 
 
 function attach( sm )
-  sm:subscribe({ signal = "on_monster_death", fun = this.on_monster_death })
+  sm:subscribe({ signal = "on_monster_death", fun = this.on_npc_death })
   sm:subscribe({ signal = "on_monster_update", fun = this.on_monster_update })
   sm:subscribe({ signal = "on_npc_death", fun = this.on_npc_death })
   sm:subscribe({ signal = "on_npc_update", fun = this.on_npc_update })
@@ -25,14 +27,9 @@ function on_spawn()
 end
 
 
-local nonusable_monsters = {}
-function on_monster_death( victim, who )
-  if monsters_like_npc[ victim:section() ] then
-    return on_npc_death( victim, who )
-  end
+function on_npc_death( victim, who )
   victim:set_tip_text_default()
   victim:set_nonscript_usable( true )
-  nonusable_monsters[ victim:id() ] = nil
 end
 
 
@@ -41,24 +38,28 @@ function on_monster_update( obj )
     return on_npc_update( obj )
   end
   if db.actor and db.actor:alive() and not obj:alive() then
+    local binder = obj:binded_object()
+    if binder.dsh_busy_hands_t and binder.dsh_busy_hands_t < time_global() then
+      return
+    end
     local dist = obj:position():distance_to( db.actor:position() )
     local info_radius = db.actor:get_actor_take_dist()
     if dist < info_radius + 1 then
-      local id = obj:id()
       if actor_has_knife() or GetShift() then
-        if nonusable_monsters[ id ] then
+        if binder.dsh_busy_hands_nonusable then
           obj:set_tip_text_default()
           obj:set_nonscript_usable( true )
-          nonusable_monsters[ id ] = nil
+          binder.dsh_busy_hands_nonusable = nil
         end
       else
-        if not nonusable_monsters[ id ] then
+        if not binder.dsh_busy_hands_nonusable then
           obj:set_tip_text( "dsh_cant_without_knife" )
           obj:set_nonscript_usable( false )
-          nonusable_monsters[ id ] = true
+          binder.dsh_busy_hands_nonusable = true
         end
       end
     end
+    binder.dsh_busy_hands_t = time_global() + freq
   end
 end
 
@@ -69,14 +70,6 @@ function actor_has_knife()
 end
 
 
-local nonusable_npcs = {}
-function on_npc_death( victim, who )
-  victim:set_tip_text_default()
-  victim:set_nonscript_usable( true )
-  nonusable_npcs[ victim:id() ] = nil
-end
-
-
 function on_npc_update( obj )
   process_npc( obj )
 end
@@ -84,28 +77,32 @@ end
 
 function process_npc( obj, tip_text_def )
   if db.actor and db.actor:alive() and not obj:alive() then
+    local binder = obj:binded_object()
+    if binder.dsh_busy_hands_t and binder.dsh_busy_hands_t < time_global() then
+      return
+    end
     local dist = obj:position():distance_to( db.actor:position() )
     local info_radius = db.actor:get_actor_take_dist()
     if dist < info_radius + 1 then
-      local id = obj:id()
       if actor_has_free_hands() then
-        if nonusable_npcs[ id ] then
+        if binder.dsh_busy_hands_nonusable then
           if tip_text_def then
             obj:set_tip_text( tip_text_def )
           else
             obj:set_tip_text_default()
           end
           obj:set_nonscript_usable( true )
-          nonusable_npcs[ id ] = nil
+          binder.dsh_busy_hands_nonusable = nil
         end
       else
-        if not nonusable_npcs[ id ] then
+        if not binder.dsh_busy_hands_nonusable then
           obj:set_tip_text( "dsh_busy_hands" )
           obj:set_nonscript_usable( false )
-          nonusable_npcs[ id ] = true
+          binder.dsh_busy_hands_nonusable = true
         end
       end
     end
+    binder.dsh_busy_hands_t = time_global() + freq
   end
 end
 
