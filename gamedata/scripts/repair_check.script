@@ -21,6 +21,7 @@ local cond_ok = 0.99				-- минимальное состояние исправного предмета
 local cond_double = 0.4				-- минимальное состояние предмета, ниже которого требуется двойной комплект предметов, стволов и денег
 local rep_percent = 0.1				-- на сколько чинится предмет одним ремкомплектом
 local money_koef = 0.5				-- множитель денег на ремонт
+local repair_wo_wpn_koef = 100 -- коэффициент стоимости ремонта без зап. частей
 local ammo, item, cond, count, have, slot, parts, pay = "", 0, 0, 0, 0, 0, {}, 0
 
 -- предметы, нужные для ремонта ствола и брони
@@ -175,10 +176,12 @@ function talk_parts(slt)
 		end
 	else
 		if cond > cond_double then
-			text = "Для ремонта мне нужен любой ствол такого же калибра на запчасти, "..parts_list().." и "..tostring(parts_money()).." рублей. Будем ремонтироваться?"
+			local parts_money = parts_money()
+			text = "Для ремонта мне нужен любой ствол такого же калибра на запчасти, "..parts_list().." и "..tostring(parts_money).." рублей. Или " .. parts_list() .. " и " .. tostring( parts_money * repair_wo_wpn_koef ) .. " рублей, а остальное я достану сам. Будем ремонтироваться?"
 		else
 			count = 2
-			text = "Этот ствол изрядно потрепан. Поэтому мне нужно два любых ствола такого же калибра на запчасти, два артефакта "..parts_list().." и "..tostring(parts_money()).." рублей. Будем ремонтироваться?"
+			local parts_money = parts_money()
+			text = "Этот ствол изрядно потрепан. Поэтому мне нужно два любых ствола такого же калибра на запчасти, два артефакта "..parts_list().." и "..tostring(parts_money).." рублей. Или два артефакта " .. parts_list() .. " и "  .. tostring( parts_money * repair_wo_wpn_koef ) .. " рублей, а остальное я достану сам. Будем ремонтироваться?"
 		end
 	end
 
@@ -234,7 +237,7 @@ function have_all()
 		have = 0
 		db.actor:iterate_inventory(kalibr_count,db.actor)
 		
-		if have < count then
+		if have < count and db.actor:money() < ( pay * repair_wo_wpn_koef ) then
 			return false
 		end
 	end
@@ -254,19 +257,24 @@ end
 -- Ремонт предмета ремонтником. Все данные к этому моменту уже проверены и заполнены
 function npc_repair(first_speaker, second_speaker)
 	-- отбираем все, что нужно
-	dialogs.relocate_money(second_speaker, pay, "out")
 	for i=1,#parts do
 		sak.out_item_namber(parts[i], count)
 	end
 
 	-- отбираем стволы и ремонтируем
+	local money = pay
 	if slot ~= 6 then
-		have = 0
-		db.actor:iterate_inventory(kalibr_remove,db.actor)
-		item:set_condition(1)
+	  if have < count then
+	    money = pay * repair_wo_wpn_koef
+	  else
+	    have = 0
+	    db.actor:iterate_inventory( kalibr_remove, db.actor )
+	  end
+	  item:set_condition( 1 )
 	else
-		amk_mod.repair_armor(1)
+	  amk_mod.repair_armor( 1 )
 	end
+	dialogs.relocate_money(second_speaker, money, "out")
 end
 function kalibr_remove(actor, itm)
 	if have < count and
