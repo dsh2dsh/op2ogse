@@ -254,14 +254,19 @@ function add_fresh_meat(obj)
 			end
 			
 		if obj.parent_id and obj.m_story_id == 4294967296 and not IAmAMonster[obj:clsid()] and not IAmAStalker[obj:clsid()] then
-				local zz = alife():object(obj.parent_id)
-				if zz then
-				  if not protected.ids[ obj.parent_id ] then
-						if not items[obj.parent_id] then items[obj.parent_id] = {} end
-						table.insert(items[obj.parent_id], {id = obj.id, name=obj:name()})
-				  end
-gps_habar.insert_item(obj.parent_id, obj) -- Idler++-- корректируем хабар в помеченных тайниках
-			end
+                  local zz = alife():object(obj.parent_id)
+                  if zz then
+                    if not protected.ids[ obj.parent_id ] then
+                      if not items[obj.parent_id] then items[obj.parent_id] = {} end
+                      table.insert(
+                        items[ obj.parent_id ], {
+                          id    = obj.id,
+                          lname = map,
+                          name  = obj:name()
+                      })
+                    end
+                    gps_habar.insert_item(obj.parent_id, obj) -- Idler++-- корректируем хабар в помеченных тайниках
+                  end
 		end
 	end
 end
@@ -376,25 +381,60 @@ function update_trade()
 	end
 end
 
-function update_tables(level)
-	off_npcs[level]={monsters={},stalkers={},weapons={},artefacts={}, inv_boxes={}}
-	local obj, p_obj
-	local ggraph = game_graph()
-	local sim = alife()
-	for a=1,65534 do
-		obj = sim:object(a)
-		if obj then
-			if ggraph:valid_vertex_id(obj.m_game_vertex_id) and sim:level_name(ggraph:vertex(obj.m_game_vertex_id):level_id()) == level then
-			add_fresh_meat(obj)
-			elseif obj.parent_id then
-				p_obj = sim:object(obj.parent_id)
-				if p_obj and ggraph:valid_vertex_id(p_obj.m_game_vertex_id)	and sim:level_name(ggraph:vertex(p_obj.m_game_vertex_id):level_id()) == level then
-					add_fresh_meat(obj)
-				end
-			end
-		end
-	end	
+
+function update_tables( level )
+  cleanup_this_level_items( level )
+  local ggraph = game_graph()
+  local sim    = alife()
+  for a = 1, 65534 do
+    local obj = sim:object( a )
+    if obj then
+      if
+        ggraph:valid_vertex_id( obj.m_game_vertex_id )
+        and
+        sim:level_name(
+          ggraph:vertex( obj.m_game_vertex_id ):level_id()
+        ) == level
+      then
+        add_fresh_meat( obj )
+      elseif obj.parent_id then
+        local p_obj = sim:object( obj.parent_id )
+        if
+          p_obj
+          and
+          ggraph:valid_vertex_id( p_obj.m_game_vertex_id )
+          and
+          sim:level_name(
+            ggraph:vertex( p_obj.m_game_vertex_id ):level_id()
+          ) == level
+        then
+          add_fresh_meat( obj )
+        end
+      end
+    end
+  end
 end
+
+
+function cleanup_this_level_items( lname )
+  off_npcs[ lname ] = {
+    monsters = {}, stalkers = {}, weapons = {}, artefacts = {}, inv_boxes = {}
+  }
+  local remove = {}
+  for k, v in pairs( items ) do
+    if table.getn( v ) > 0 then
+      if v[ 1 ].lname == lname then
+        remove[ k ] = true
+      end
+    else
+      remove[ k ] = true
+    end
+  end
+  for k, v in pairs( remove ) do
+    items[ k ] = nil
+  end
+end
+
 
 function trim (s)
 	return (string.gsub(s, "^%s*(.-)%s*$", "%1"))
@@ -1600,9 +1640,9 @@ function process_trade(npc)
 				if IAmAWeapon[v:clsid()] and not (sect == "grenade_f1" or sect =="grenade_gd-05" or sect == "grenade_rgd5" or sect == "grenade_flash" or sect == "wpn_knife") then
 					local bOk = false
 					if m_comm == "military" then
-						if sect == "wpn_ak74" or sect =="wpn_ak74u" or sect =="wpn_abakan" or sect =="wpn_pm" or sect =="wpn_usp" or sect =="wpn_val" or sect =="wpn_walther" or sect =="wpn_svu" or sect =="wpn_sig550" or sect =="wpn_fn2000" or sect =="wpn_vintorez" or sect =="wpn_groza" then
+--						if sect == "wpn_ak74" or sect =="wpn_ak74u" or sect =="wpn_abakan" or sect =="wpn_pm" or sect =="wpn_usp" or sect =="wpn_val" or sect =="wpn_walther" or sect =="wpn_svu" or sect =="wpn_sig550" or sect =="wpn_fn2000" or sect =="wpn_vintorez" or sect =="wpn_groza" then
 							bOk = true
-						end
+--						end
 					else
 						bOk = true
 					end
@@ -1621,13 +1661,9 @@ function process_trade(npc)
 					end
 				elseif string_find(sect, "^ammo_") then
 					if ammo[sect] then 
-						ammo[sect] = ammo[sect] + 1
-						if ammo[sect] > 2 then -- ОП-2: для стрельбы неписю хватает одной пачки
---						if ammo[sect] > 1 then
-							table.insert(sell_list, v)
-						end
+						table.insert( ammo[ sect ], v )
 					else
-						ammo[sect] = 1
+						ammo[sect] = { v }
 					end
 				elseif string_find(sect, "^af_") then
 					-- 3 самых хороших арта оставили себе (+здоровье), остальные на продажу (фильтруем булыжник)				
@@ -1723,6 +1759,7 @@ function process_trade(npc)
 					--news_main.trace("Process trade - unknown - "..sect.." "..v:name())
 				end			
 			end
+			process_ammo_trade( sell_list, ammo )
 
 			local modes = rx_wmgr.read_wm_modes(npc:community(),ranks.get_obj_rank_name(npc),npc:section_name())
 			local weapons_types = {}
@@ -1753,10 +1790,11 @@ function process_trade(npc)
 					weapons_types[params.typ] = { {obj = w.obj,ammo = w.ammo,prm = prm} }
 				end
 			end
---			table_sort(weapons, function(a,b) return get_weapon_firepower(a.obj) > get_weapon_firepower(b.obj) end)
-			-- Так, теперь у нас отсортированны все пушки НПС. Найдем ту, для которой есть патроны...
 			for k,v in pairs(weapons_types) do
-				table_sort(v,function(a,b) return get_weapon_firepower(a.obj) > get_weapon_firepower(b.obj) end)
+				table_sort( v, function( a, b )
+				  return get_weapon_firepower( a.obj ) > get_weapon_firepower( b.obj )
+				end)
+-- Так, теперь у нас отсортированны все пушки НПС. Найдем ту, для которой есть патроны...
 				local cnt = 0
 				local b_self = false
 				local b_best = false
@@ -1765,13 +1803,14 @@ function process_trade(npc)
 					cnt = cnt + 1
 					local b_ammo = false
 					local vac = w.ammo
-					if vac and #vac>0 then
-						for kk, vv in pairs(vac) do
-							if ammo[vv] and ammo[vv] > 0 then -- Так, патроны есть.
-								b_ammo = true
-								break
-							end
-						end
+					if vac and table.getn( vac ) > 0 then
+					  for kk, vv in ipairs( vac ) do
+					    if ammo[ vv ] and table.getn( ammo[ vv ] ) > 0 then
+-- Так, патроны есть.
+					      b_ammo = true
+					      break
+					    end
+					  end
 					end
 					if b_self == false and b_ammo == true then
 						b_self = true
@@ -2073,4 +2112,27 @@ function str_explode(div,str,clear)
 		table.insert(t, str)
 	end
 	return t
+end
+
+
+function process_ammo_trade( sell_list, ammo )
+  for sect, ammo_objs in pairs( ammo ) do
+    if table.getn( ammo_objs ) > 2 then
+      table.sort(
+        ammo_objs,
+        function( a, b )
+          return get_ammo_size( a ) > get_ammo_size( b )
+        end
+      )
+      while table.getn( ammo_objs ) > 2 do
+        table.insert( sell_list, table.remove( ammo_objs ) )
+      end
+    end
+  end
+end
+
+
+function get_ammo_size ( sobj )
+  local data = m_net_utils.get_ammo_data( sobj )
+  return data.ammo_left
 end
