@@ -1,0 +1,223 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+opt_health = {
+  -- health level for heavy injuring sounds
+  level1 = 0.08,
+  -- health level for light injuring sounds
+  level2 = 0.18,
+  injury_snd = {
+    _1_0 = 2825,
+    _1_1 = 2612,
+    _1_2 = 2783,
+    _1_3 = 2821,
+    _1_4 = 3048,
+    _2_1 = 3331,
+    _2_2 = 3785,
+    _2_3 = 2989,
+    _2_4 = 4066,
+  },
+}
+
+local opt_speed = {
+  -- speed time increase per update (when running)
+  inc = 0.11,
+  -- speed time decrease per update (when not running)
+  dec = 0.28,
+  -- minimal speed time for playing breath sounds (when no gasmask)
+  time_mini = 6,
+  -- play breath sounds (when no gasmask) when stamina is below this level
+  stamina = 0.4,
+  -- on actor hit, actor_speed_time += delta_health*k_health
+  k_health = 0.28,
+  -- actor_speed_time += bleeding*k_bleed
+  k_bleed = 1.33,
+}
+
+local hud_pp = {
+  [ "hud_exo"  ] = "helm_exo.ppe",
+  [ "hud_gaz"  ] = "helm_respirator.ppe",
+  [ "hud_merc" ] = "helm_battle.ppe",
+  [ "hud_mil"  ] = "helm_hardhat.ppe",
+  [ "hud_nano" ] = "helm_scientific.ppe",
+  [ "hud_sci"  ] = "helm_scientific.ppe",
+}
+
+
+local sm_attached
+function attach( sm )
+  if not ui_mm_opt_main.GetOption( "hud_plus_enabled" ) then return end
+  sm_attached = {
+    { signal = "on_actor_helmet_off", fun = this.on_helmet_off },
+    { signal = "on_actor_helmet_on",  fun = this.on_helmet_on  },
+    { signal = "on_update", fun = this.on_update },
+  }
+  for _, v in ipairs( sm_attached ) do
+    sm:subscribe( v )
+  end
+end
+function detach( sm )
+  for _, v in ipairs( sm_attached ) do
+    sm:unsubscribe( v )
+  end
+end
+
+
+local upd_time = 0
+function on_update()
+  if not ( db.actor and db.actor:alive() ) then return end
+  local tg = time_global()
+  if tg > upd_time then
+    upd_time = tg + 180
+    hud_condition()
+  end
+end
+
+
+local actor_speed_time = 0
+function hud_condition()
+  if db.actor:is_actor_sprinting() then
+    actor_speed_time = actor_speed_time + opt_speed.inc
+  elseif actor_speed_time > opt_speed.dec then
+    actor_speed_time = actor_speed_time - opt_speed.dec
+  end
+  actor_speed_time = math.min(
+    32, actor_speed_time + db.actor:get_bleeding() * opt_speed.k_bleed
+  )
+  local cur_helmet = ogse_dynamic_hud.get_current_helmet()
+  if cur_helmet then
+    breath_inside_mask()
+  else
+    breath_no_mask()
+  end
+end
+
+
+local health_play = 0
+local run_play    = 0
+local snd_tg      = 0
+
+function breath_no_mask()
+  local tg     = time_global()
+  local health = db.actor.health
+  if tg < snd_tg or health < 0 then return end
+
+  if health > opt_health.level2 then
+    if
+      actor_speed_time > opt_speed.time_mini
+      or
+      db.actor.power < opt_speed.stamina
+      or
+      run_play == 1
+    then
+      run_play = run_play + 1
+      if run_play > 2 then run_play = 1 end
+      local run_koef  = math.ceil( 3 * actor_speed_time / 44 )
+      local snd_fname = "actor\\run_" .. run_koef .. "_" .. run_play
+      local snd = sound_object( snd_fname )
+      snd:play( db.actor, 0, sound_object.s2d )
+      snd_tg = tg + snd:length() * 1.15
+    else
+      run_play = 2
+    end
+    return
+  end
+
+  if health <= opt_health.level1 then
+    health = 1
+    if math.random() < 0.1 then
+      health_play = 0
+    else
+      health_play = health_play + 1
+      if health_play > 4 then health_play = 1 end
+    end
+  else
+    health = 2
+    health_play = health_play + 1
+    if health_play > 4 then health_play = 1 end
+  end
+  local snd = sound_object( "actor\\health_" .. health .. health_play )
+  snd:play( db.actor, 0, sound_object.s2d )
+  snd_tg = tg + opt_health.injury_snd[ "_" .. health .. "_" .. health_play ]
+end
+
+
+local gas_play = 0
+function breath_inside_mask()
+  local tg = time_global()
+  if tg < snd_tg then return end
+  gas_play = gas_play + 1
+  if gas_play > 8 then gas_play = 1 end
+  local run_koef
+  if db.actor.health > 0.2 then
+    run_koef = math.ceil(
+      ( 1.01 - db.actor.power ) * 3 + actor_speed_time / 8
+    )
+  else
+    run_koef = 8
+  end
+  local snd_fname = "actor\\gas_breath_" .. run_koef .. "_" .. gas_play
+  local snd = sound_object( snd_fname )
+  snd_tg = tg + snd:length() * 1.25
+  snd:play( db.actor, 0, sound_object.s2d )
+end
+
+
+local startup = true
+function on_helmet_off()
+--  add_helmet_effector( false )
+  if startup then
+    startup = false
+  else
+    local tg = time_global()
+    local snd
+    if tg < ( snd_tg - 400 ) then
+      snd = sound_object( "actor\\gasmask_nobreath" )
+    else
+      snd = sound_object( "actor\\gasmask_off" )
+    end
+    snd:play( db.actor, 0, sound_object.s2d )
+    snd_tg = tg + snd:length() + 120
+    gas_play = 0
+  end
+end
+
+
+function on_helmet_on()
+--  add_helmet_effector( true )
+  if startup then
+    startup = false
+  else
+    local tg = time_global()
+    local snd
+    if tg < snd_tg then
+      snd = sound_object( "actor\\gasmask_nobreath" )
+    else
+      snd = sound_object( "actor\\gasmask_on" )
+    end
+    snd:play( db.actor, 0, sound_object.s2d )
+    snd_tg = tg + snd:length() + 120
+  end
+end
+
+
+function add_helmet_effector( mode )
+  level.remove_pp_effector( 3000 )
+  if mode then
+    local pp = get_cur_helmet_pp()
+    if pp then
+      level.add_pp_effector( pp, 3000, true )
+    end
+  end
+end
+
+
+function get_cur_helmet_pp()
+  local cur_helmet = ogse_dynamic_hud.get_current_helmet()
+  if cur_helmet and cur_helmet ~= "" then
+    for k, pp_name in pairs( hud_pp ) do
+      if string.find( cur_helmet, k ) then
+        return pp_name
+      end
+    end
+  end
+  return nil
+end
