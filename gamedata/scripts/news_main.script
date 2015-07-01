@@ -1,0 +1,3015 @@
+-- local ti = table.insert
+
+local math_atan2 = math.atan2
+local table_remove = table.remove
+local table_sort = table.sort
+local string_find = string.find
+local string_gsub = string.gsub
+
+local _debug = false
+local prob = 0.35
+local bInit = false
+
+local timer_check_freq 			= 3 	-- Как часто проверять новости и выдавать сгруппированные, в игровых минутах
+
+local timer_stalker_death 		= 3  	-- Сообщение о смерти сталкера
+local timer_corpse 				= 60 -- 40 	-- Сообщение о найденом трупе
+local timer_hear 				= 30  --15	-- Сообщение о услышанном
+local timer_spawn 				= 45  --20 	-- Сообщение о увиденном
+local timer_general 			= 30  --20	-- Прочее
+local distance_close 			= 100	-- При каком расстоянии между обьектами считать их в одной группе
+local timer_weather 			= 60	-- При изменнии погоды
+local timer_heli 				= 10	-- При замеченном вертолетике
+
+local timer_last_showed 		= 0 	-- Последняя показанная новость
+local timer_show_freq 			= 6		-- Сколько ждать между новостями минимально (игровые минуты)
+local time_factor 				= 1
+local timer_next_blow 			= 0			-- Тамер до след. выброса
+local timer_blow_showed			= 0			-- Последняя показанная новость о Выбросе
+local timer_blow_freq 			= 10 * 60  	-- Как часто новости о Выбросе показывать (игровые минуты)
+local timer_eternal_stalker 	= 0 		-- Последняя показанная новость о Семецком
+local timer_eternal_stalker_freq = 12 * 60 	-- Как часто новости о Семецком показывать (игровые минуты)
+local timer_random_spawn		= 0			-- Последняя новость со спавном
+local timer_random_spawn_freq 	= 5 * 60 	-- Как часто генерить новости со спавном (игровые минуты)
+local timer_def_spawn			= 0			-- Последняя новость с "красивым" спавном
+local timer_def_spawn_freq 		= 15 * 60 	-- Как часто генерить новости с "красивым" спавном (игровые минуты)
+local timer_heli_showed			= 0			-- Последняя новость про вертолетик
+local timer_heli_freq			= 10 		-- Как часто показывать новости про вертолетик (игровые минуты)
+local timer_alife_showed		= 0			-- Последнее событие в оффлайн
+local timer_alife_freq 			= 4 		-- Как часто генерить события в оффлайн (игровые минуты)
+local timer_weather_showed 		= 0 		-- Последняя новость о погоде
+local timer_weather_freq 		= 5 * 60 	-- Как часто новости о погоде показывать (игровые минуты)
+local timer_daytime_showed 		= 0 		-- Последняя новость о времени суток
+local timer_daytime_freq 		= 5 * 60	-- Как часто новости о времени суток показывать (игровые минуты)
+
+if (_debug == true) then 
+	timer_blow_freq 			= 30	-- Как часто новости о Выбросе показывать (игровые минуты)
+	timer_eternal_stalker_freq 	= 30	-- Как часто новости о Семецком показывать (игровые минуты)
+	timer_random_spawn_freq 	= 60 	-- Как часто генерить новости со спавном (игровые минуты)
+	timer_def_spawn_freq 		= 60 	-- Как часто генерить новости с "красивым" спавном (игровые минуты)
+	timer_alife_freq 			= 5 	-- Как часто генерить события в оффлайн
+	timer_weather_freq 			= 30	-- Как часто новости о погоде показывать (игровые минуты)
+	timer_daytime_freq 			= 30	-- Как часто новости о времени суток показывать (игровые минуты)
+	timer_show_freq 			= 1		-- Сколько ждать между новостями минимально (игровые минуты)
+	prob = 1.5
+end
+
+
+local bSmarts = false
+local dist_close = 100
+local dist_seen = 200
+local dist_far = 200
+local dist_heli_seen = 400
+local dist_hear_min = 50
+local dist_hear_max = 400
+
+local rel_enemy = -1000
+local rel_friend = 1000
+
+news_stack = {}
+table_spawned = {}
+table_killed_by_actor = {}
+spammers = {}
+
+function init()
+	local rnd = math.random
+	if (bInit == false) then
+		news_data.Init()
+		time_factor = system_ini():r_float("alife","time_factor")	    
+		math.randomseed (device ():time_global ())
+
+		local iniFileName = "scripts\\amk\\news\\news.ltx"
+		local sini = ini_file(iniFileName)
+		if sini and sini:section_exist("params") then		
+			--local t = amk.parse_ini_section_to_array(sini, "params")
+			local t = amk.parse_ini_section_to_array_new(iniFileName, "params")
+			if tonumber(t.timer_check_freq) then timer_check_freq = tonumber(t.timer_check_freq) end
+			if tonumber(t.timer_show_freq) then timer_show_freq = tonumber(t.timer_show_freq) end
+			if tonumber(t.timer_eternal_stalker_freq) then timer_eternal_stalker_freq = tonumber(t.timer_eternal_stalker_freq) end
+			if tonumber(t.timer_random_spawn_freq) then timer_random_spawn_freq = tonumber(t.timer_random_spawn_freq) end
+			if tonumber(t.timer_def_spawn_freq) then timer_def_spawn_freq = tonumber(t.timer_def_spawn_freq) end
+			if tonumber(t.timer_alife_freq) then timer_alife_freq = tonumber(t.timer_alife_freq) end
+			if tonumber(t.timer_weather_freq) then timer_weather_freq = tonumber(t.timer_weather_freq) end
+			if tonumber(t.timer_daytime_freq) then timer_daytime_freq = tonumber(t.timer_daytime_freq) end
+		end
+		-- Реально в игре проходит timer_check_freq * 1000 * 60 * time_factor секунд
+		-- Реально проходит х секунд
+		local gtime = amk.game_minutes()
+		timer_last_showed = amk.game_minutes()
+		timer_random_spawn = amk.game_minutes() - rnd(timer_random_spawn_freq)
+		timer_def_spawn = amk.game_minutes() - rnd(timer_def_spawn_freq)
+		timer_eternal_stalker = amk.game_minutes() - rnd(timer_eternal_stalker_freq)
+		timer_blow_showed = amk.game_minutes() - rnd(timer_blow_freq)
+		timer_heli_showed = amk.game_minutes() - rnd(timer_heli_freq)
+		timer_alife_showed = amk.game_minutes() - rnd(timer_alife_freq)
+		timer_weather_showed = amk.game_minutes() - rnd(timer_weather_freq)
+		timer_daytime_showed = amk.game_minutes() - rnd(timer_daytime_freq)
+		
+		--timer_show_freq = timer_show_freq * time_factor
+	
+		-- rel_enemy,rel_friend = utils.cfg_get_number(system_ini(), "game_relations", "goodwill_enemy", nil, false, -1000), utils.cfg_get_number(system_ini(), "game_relations", "goodwill_friend", nil, false, 1000)
+		rel_enemy,rel_friend = getIniValueFloat("game_relations", "goodwill_enemy", -1000, nil), getIniValueFloat("game_relations", "goodwill_friend", 1000, nil)
+
+	    if not amk.has_g_timer("news_check") then
+			amk.g_start_timer("news_check", 0, 0, timer_check_freq)
+	    end
+    
+		bInit = true
+	end
+end
+
+function dbglog(fmt)
+	if _debug == true then
+	    local msg = fmt
+		local msg_no_ws = string_gsub(msg, "%s", "_")
+		get_console():execute("dbglog:" ..msg_no_ws..".")
+		--get_console():execute("flush")		
+	end
+end
+
+function mylog(text)
+	dbglog("==> "..text)
+end
+
+function trace(fmt)
+	    local msg = fmt
+		local msg_no_ws = string_gsub(msg, "%s", "_")
+		get_console():execute("load ~~~ "..msg_no_ws)
+		--get_console():execute("flush")		
+end
+
+function flushlog()
+	get_console():execute("flush")		
+end
+
+function do_debug(title, text)
+	if _debug == true then
+		local m_title = ""
+		local m_text = ""
+		if title then m_title = title end
+		if text then m_text = text end
+		do_news(m_text, m_title, nil, 15, "gen_info")
+	end
+	mylog(title..": "..text)
+end
+
+function on_spawn_group(community, level, position, count, o_type)
+	local rnd = math.random
+	if (community and level and position and count and o_type and o_type > 0) then
+		local name, sname = amk_names_lists.get_strings()
+		local s_author = name.." "..sname
+		local m_str = ""
+		local author = get_nearest_stalker(level, position, dist_seen, 0)
+		if (author) then
+			s_author = get_npc_name(author)
+		else
+			return
+		end
+		-- o_type = 1 - НПС
+		-- o_type = 2 - монстры
+		if(o_type == 2) then
+			local coeff = 0.0
+			local mon = community
+			if (mon == "") then return end
+			if (mon == "tushkano" or mon == "flesh" or mon == "dog" or mon == "psy_dog" or mon == "pseudodog" or mon == "cat" or mon == "boar") then
+				coeff = -0.65
+			elseif (mon == "bloodsucker" or mon == "controller") then
+				coeff = 0.35				
+			end
+			if (rnd() < (prob + coeff)) then
+				if (count == 1) then
+					m_str = format_template_spawn(level, position, get_monster_name_by_string(mon, 4))
+				else
+					m_str = format_template_spawn_group(level, position, get_monster_name_by_string(mon, 6), count)
+				end
+				do_news(m_str, s_author, rnd(timer_spawn, timer_spawn*5), 15, "gen_info", author.id)
+			end
+		elseif (o_type == 1) then
+			if (rnd() < prob) then
+				local zz = community
+				local m_who = ""
+				if (zz and news_data.community_name[zz]) then
+					if (zz == "actor" or zz == "stalker" or zz == "dolg" or zz == "freedom" or zz== "trader" or zz== "nebo" or zz== "green") then -- это сталкер
+						return
+					end
+					if (count == 1) then
+						m_who = news_data.community_name[zz][3]
+					else
+						m_who = news_data.community_name[zz][4]
+					end
+				else
+					trace("on_spawn_group - empty community_name for "..zz)
+				end
+				if (m_who == "") then return end
+				if (count == 1) then
+					m_str = format_template_spawn(level, position, m_who)
+				else
+					m_str = format_template_spawn_group(level, position, m_who, count)					
+				end
+				do_news(m_str, s_author, rnd(timer_spawn, timer_spawn*5), 15, "gen_info", author.id)
+			end
+		end
+	end
+end
+
+function on_spawn(obj)
+-- Кто-то где-то появился.
+-- Если монстрики - то кто-то мог видеть.
+-- Или вояки\бандиты...
+	if (obj) then
+		add_spawned_object(obj)
+	end
+end
+
+-- Дали по роже
+function on_abuse(obj)
+	local rnd = math.random
+	if (obj == nil) then 
+		return
+	end
+	if (obj.alive and obj:alive() == false) then
+		return
+	end
+	local str = news_data.abuse_templates[rnd(#news_data.abuse_templates)]	
+	local act
+	if isGameObject(obj) == false then
+		act = get_obj(obj.id)
+	else
+		act = obj
+	end
+	local m_name = get_npc_name(act)
+	if (m_name == "" or m_name == nil) then
+		local name, sname = amk_names_lists.get_strings()
+		m_name = name.." "..sname
+	end
+	do_news(str, m_name, rnd(timer_spawn, timer_spawn*5), 15, "stalker", act:id())	
+end
+
+function on_death(victim, killer)
+	if (victim ~= nil) then
+		if (IAmAStalker[victim:clsid()]) then
+			local m_obj
+			if (isGameObject(victim)) then
+				m_obj = victim
+			else
+				m_obj = get_obj(victim.id)			
+			end
+			if (m_obj) then
+				if (IsNpcStalker(m_obj)) then
+					on_stalker_death(victim, killer)
+				else
+					on_npc_death(victim, killer)
+				end
+			end
+		end	
+	end
+end
+
+
+-- Погиб сталкер.
+-- Собираем инфу о погибшем
+-- Собираем инфу о виновнике смерти
+-- Готовим сообщение
+function on_stalker_death(victim_, killer_)
+	local rnd = math.random
+	if (victim_ == nil) then
+		return
+	end
+	local m_killer = ""
+	local m_killer_s = ""
+	local m_victim = ""
+	local victim
+	if (isGameObject(victim_)) then
+		victim = victim_
+	else
+		victim = get_obj(victim_.id)
+	end
+	local killer
+	local m_name  = get_npc_name(victim)
+	m_victim = format_death_stalker_corpse(victim)
+	local m_level = get_level_name(get_object_levelname(victim))
+	if (killer_) then
+		if (isGameObject(killer_)) then
+			killer = killer_
+		else
+			killer = get_obj(killer_.id)
+		end
+		if (IAmAMonster[killer:clsid()]) then
+			m_killer = format_death_by_monster(killer)
+			m_killer_str = get_monster_name(killer, 2)
+		elseif (IsAnomaly(killer)) then
+			m_killer = format_death_by_anomaly(killer)
+			m_killer_str = get_anomaly_name(killer, 1)
+		elseif (IsNpcStalker(killer)) then
+			local m_o_weapon = get_npc_weapon(killer)
+			local m_s_weapon = ""
+			if (m_o_weapon) then
+				m_s_weapon = get_weapon_type(m_o_weapon)
+				if (m_s_weapon < 5) then m_killer_str = "пулевое ранение" end
+				if (m_s_weapon == 6) then m_killer_str = "нож" end
+				if (m_s_weapon == 8) then m_killer_str = "ожоги" end
+				if (m_s_weapon == 7 or m_s_weapon == 5) then m_killer_str = "граната" end
+			end
+			if (IsNpcActor(killer)) then
+				add_killed_by_actor(victim) -- Отметим, что это ГГ постарался.
+			end						
+			m_killer = format_death_by_stalker(killer)
+		elseif (IsNpcOther(killer)) then
+			local m_o_weapon2 = get_npc_weapon(killer)
+			local m_s_weapon2 = ""
+			if (m_o_weapon2) then
+				m_s_weapon2 = get_weapon_type(m_o_weapon2)
+				if (m_s_weapon2 < 5) then m_killer_str = "пулевое ранение" end
+				if (m_s_weapon2 == 6) then m_killer_str = "нож" end
+				if (m_s_weapon == 8) then m_killer_str = "ожоги" end
+				if (m_s_weapon2 == 7 or m_s_weapon2 == 5) then m_killer_str = "граната" end
+			end
+			m_killer = format_death_by_stalker(killer)
+		else
+			m_killer_str = "причина смерти - неизвестна"
+			m_killer = ""
+			if _debug == true then mylog("On stalker death - unknown killer. "..killer:name().." clsid="..get_clsid(killer)) end
+		end
+	end
+	if (m_killer_str==nil or m_killer_str=="") then m_killer_str = "причина смерти - неизвестна" end
+	local m_string = m_name..". "..m_level..", "..m_killer_str.."."
+	if (rnd() < 0.5) then   -- слишком часто приходят смс о смерти
+		do_news(m_string, "Погиб сталкер:", rnd(timer_stalker_death, timer_stalker_death * 3), 10, "death", nil, 1) 
+	end
+
+	if (rnd() < prob) then
+		local name, sname = amk_names_lists.get_strings()
+		local s_author = name.." "..sname
+		local m_str = ""
+		local author = nil
+		if (rnd() < 0.5) then
+			if (rnd() < 0.5) then
+				m_str = m_victim.." "..m_killer..""
+			else
+				m_str = m_victim..""
+			end
+			author = get_nearest_stalker(get_object_levelname(victim_), get_object_position(victim_), dist_seen, 0)
+			if (author) then
+				s_author = get_npc_name(author)
+			else
+				return
+			end
+		else
+			author = get_nearest_stalker(get_object_levelname(victim_), get_object_position(victim_), dist_hear_max, dist_hear_min)
+			if (author) then
+				s_author = get_npc_name(author)
+			else
+				return
+			end
+			m_str = format_death_hear_sounds(victim, killer)
+		end
+		if (m_str ~= "") then
+			do_news(m_str, s_author, rnd(timer_corpse*2, timer_corpse *5), 15, "gen_info", author.id)
+		end
+	end
+end
+
+-- Погиб кто-то, но не сталкер (военный, бандит, наемник...)
+-- Посмотреть, попадают ли сюда Долг\Свобода
+-- Собираем инфу о погибшем
+-- Собираем инфу о виновнике смерти
+-- Готовим сообщение
+function on_npc_death(victim_, killer_)
+	local rnd = math.random
+	if (victim_ == nil) then
+		return
+	end
+	local m_victim = ""
+	local m_killer = ""
+	local killer
+	local victim
+	if (isGameObject(victim_)) then
+		victim = victim_
+	else
+		victim = get_obj(victim_.id)
+	end
+	m_victim = format_death_npc_corpse(victim)
+	if (killer_) then
+		if (isGameObject(killer_)) then
+			killer = killer_
+		else
+			killer = get_obj(killer_.id)
+		end
+		if (killer) then
+			if IAmAMonster[killer:clsid()] then
+				m_killer = format_death_by_monster(killer)
+			elseif (IsNpcStalker(killer)) then -- Хм, и кто ж его так? Или свои, или ГГ
+				if (IsNpcActor(killer)) then
+					add_killed_by_actor(victim) -- Отметим, что это ГГ постарался.
+				end			
+				m_killer = format_death_by_stalker(killer)
+			elseif (IsNpcOther(killer)) then -- Ага. Или бандиты, или вояки, или киллеры... Вобщем, люди.
+				m_killer = format_death_by_stalker(killer)
+			elseif (IsAnomaly(killer)) then
+				m_killer = format_death_by_anomaly(killer)
+			else
+				m_killer = ""
+				if _debug == true then mylog("On npc death - unknown killer. "..killer:name().." clsid="..get_clsid(killer)) end
+			end
+		else
+			if _debug == true then mylog("Хм. no killer. "..victim:name()) end
+		end
+	end
+	if (rnd() < prob) then
+		local name, sname = amk_names_lists.get_strings()
+		local s_from = "" -- name.." "..sname
+		local m_str = ""
+		local author = nil
+		local aid = nil
+		if (rnd() < 0.5) then
+			if (rnd() < 0.5) then
+				m_str = m_victim.." "..m_killer..""
+			else
+				m_str = m_victim..""
+			end
+			author = get_nearest_stalker(get_object_levelname(victim_), get_object_position(victim_), dist_seen, 0)
+			if (author) then
+				s_from = get_npc_name(author)
+				aid = author.id
+			end
+		else
+			if (rnd() < 0.5 and db.actor and db.actor:id() ~= killer:id()) and (IsNpcStalker(killer)) then
+				m_str = format_template_killer_act(victim)
+				s_from = get_npc_name(killer)
+			else
+				author = get_nearest_stalker(get_object_levelname(victim_), get_object_position(victim_), dist_hear_max, dist_hear_min)
+				if (author) then
+					s_from = get_npc_name(author)
+					aid = author.id
+				else
+					return
+				end
+				m_str = format_death_hear_sounds(victim, killer)
+			end
+		end
+		if (m_str ~= "" and s_from ~= "") then
+			if (_debug == true and author) then amk.add_spot_on_map(author.id, "red_location", s_from..": "..m_str) end
+			do_news(m_str, s_from, rnd(timer_corpse*2, timer_corpse * 5), 15, "gen_info", aid)
+		end
+	end
+end
+
+function get_obj(id)
+	local m_obj = nil
+	if (id) then
+		m_obj = level.object_by_id(id)
+	end
+	return m_obj
+end
+
+function get_level_name(level_, index)
+	if index == nil then index = 1 end
+	local m_s_level 
+	if level_ == nil then
+		m_s_level = level.name()
+	else
+		m_s_level = level_
+	end
+	local m_tmp_str = ""
+	if news_data.level_name[m_s_level] ~= nil then
+		if (news_data.level_name[m_s_level][index] ~= nil) then
+			m_tmp_str = news_data.level_name[m_s_level][index]..""
+		end
+	end
+	return m_tmp_str
+end
+
+function get_level_subname()
+	return level.name()
+end
+
+function get_current_time()
+	local m_time = "00:00"
+	if (level) then
+		local m_h = level:get_time_hours()
+		local m_m = level:get_time_minutes()
+		m_time = m_h..":"..m_m
+	end
+	return m_time
+end
+
+function get_npc_name(obj)
+	local m_s_name = ""
+	if (obj) then
+		if (isGameObject(obj)) then
+			if (obj.character_name) then
+				m_s_name = obj:character_name()
+			end
+		else
+			local ob = get_obj(obj.id)
+			if (ob and ob.character_name) then
+				m_s_name = ob:character_name()
+			else
+				if (amk and amk.read_stalker_params and IsNpcStalker(obj)) then
+					local tbl = amk.read_stalker_params(obj)
+					if(tbl and tbl.charname) then
+						m_s_name = tbl.charname
+					end
+				end
+			end
+		end
+	end
+	if (m_s_name == nil) then
+		m_s_name = ""
+	end
+	if (m_s_name == "") then
+		--m_s_name = get_npc_community(obj)
+	end
+	return m_s_name
+end
+
+function get_npc_community(obj)
+	local m_s_c = ""
+	if (obj) then
+		if IAmAMonster[obj:clsid()] then
+			m_s_c = get_monster_name(obj, 1)
+		else
+			if (obj.character_community) then				
+				m_s_c = obj:character_community()
+			elseif (obj.community) then
+				m_s_c = obj:community()
+			end
+		end
+	end
+	if (m_s_c == nil) then
+		m_s_c = ""
+	end
+	if (obj and obj.name and m_s_c == "") then
+		trace("get_npc_community returns '' for "..obj:name())
+	end
+	return m_s_c
+end
+
+function get_object_position(obj)
+	local pos = nil
+	if (obj) then
+		if (isGameObject(obj) and obj.position) then
+			pos = obj:position()
+		else
+			pos = obj.position
+		end
+	end
+	return pos
+end
+
+function get_object_name(obj)
+	local s_name = ""
+	local value	= ""
+	if (isGameObject(obj) and obj.section) then
+		local sect = obj:section()
+		--value	= utils.cfg_get_string(system_ini(), obj:section(), "inv_name", obj, false, "", "")
+		value	= getIniValueString(sect, "inv_name", "", nil)
+		-- s_name = value
+		s_name = game.translate_string(value)
+		if string_find(sect, "^af_") then
+			s_name = "артефакт "..s_name
+		end
+	elseif (obj.section_name) then
+		local sect = obj:section_name()
+		--value	= utils.cfg_get_string(system_ini(), obj:section_name(), "inv_name", obj, false, "", "")
+		value	= getIniValueString(sect, "inv_name", "", nil)
+		-- s_name = value
+		s_name = game.translate_string(value)
+		if string_find(sect, "^af_") then
+			s_name = "артефакт "..s_name
+		end
+	end
+	if (s_name == nil) then s_name = "" end
+	return s_name
+end
+
+local weapon_types = {
+	-- "type1" =  --"Пистолет "..m_act:section()
+	["wpn_pm"] = 1, ["wpn_pmm"] = 1, ["wpn_pb"] = 1, ["wpn_fort"] = 1, ["wpn_fort_m1"] = 1, ["wpn_kedr"] = 1, ["wpn_glock21"] = 1, ["wpn_m93r"] = 1, ["wpn_tt33"] = 1, ["wpn_tt33_m1"] = 1, ["wpn_tt33_m2"] = 1, ["wpn_br1935"] = 1, ["wpn_fnp45tcl"] = 1, ["wpn_sw"] = 1, ["wpn_p38"] = 1, ["wpn_colt_piton"] = 1, ["wpn_mauser"] = 1, ["wpn_mauser10"] = 1, ["wpn_mauser_red9"] = 1, ["wpn_mauser_china"] = 1, ["wpn_oc33_sk1"] = 1, ["wpn_oc27_m1"] = 1, ["wpn_oc27"] = 1, ["wpn_apb"] = 1, ["wpn_apb762"] = 1, ["wpn_gsh18"] = 1, ["wpn_mp445"] = 1, ["wpn_mp444"] = 1, ["wpn_colt_kc"] = 1, ["wpn_fnp45"] = 1, ["wpn_g35"] = 1, ["wpn_glock18"] = 1, ["wpn_p18"] = 1, ["wpn_fn57"] = 1, ["wpn_walther"] = 1, ["wpn_walther_m1"] = 1, ["wpn_luger"] = 1, ["wpn_luger_kurtz"] = 1, ["wpn_hpsa"] = 1, ["wpn_usp"] = 1, ["wpn_mp5pdw"] = 1, ["wpn_mp5k_pdw"] = 1, ["wpn_mp5"] = 1, ["wpn_mp5_m1"] = 1, ["wpn_mp5_m3"] = 1, ["wpn_mp5_m4"] = 1, ["wpn_mp5_m5"] = 1, ["wpn_mp5_kalibr"] = 1, ["wpn_mp5_otdaca"] = 1, ["wpn_mp5_kalibr_ves"] = 1, ["wpn_mp5_otdaca_ves"] = 1, ["wpn_mp5_ves"] = 1, ["wpn_mp5_m2"] = 1, ["wpn_mp5sd"] = 1, ["wpn_mp5k"] = 1, ["wpn_hk53_a3"] = 1, ["wpn_mp5k_kalibr"] = 1, ["wpn_mp5k_kalibr_ves"] = 1, ["wpn_mp5k_otdaca"] = 1, ["wpn_mp5k_otdaca_ves"] = 1, ["wpn_mp5k_ves"] = 1, ["wpn_mp7a3"] = 1, ["wpn_mp7a3_kalibr"] = 1, ["wpn_mp7a3_otdaca"] = 1, ["wpn_mp7a3_kalibr_ves"] = 1, ["wpn_mp7a3_otdaca_ves"] = 1, ["wpn_mp7a3_ves"] = 1, ["wpn_scorpion"] = 1, ["wpn_scorpion_kalibr"] = 1, ["wpn_scorpion_kalibr_ves"] = 1, ["wpn_scorpion_otdaca"] = 1, ["wpn_scorpion_otdaca_ves"] = 1, ["wpn_scorpion_ves"] = 1, ["wpn_sig220"] = 2, ["wpn_beretta"] = 1, ["wpn_beretta_m1"] = 1, ["wpn_bizon"] = 1, ["wpn_bizon1"] = 1, ["wpn_bizon_kalibr"] = 1, ["wpn_bizon_otdaca"] = 1, ["wpn_bizon_kalibr_ves"] = 1, ["wpn_bizon_otdaca_ves"] = 1, ["wpn_bizon_ves"] = 1, ["wpn_bizon_kol"] = 1, ["wpn_gungauss"] = 1, ["wpn_gungauss_gp"] = 1, ["wpn_kriss_super_v"] = 1, ["wpn_kriss_super_v_ves"] = 1, ["wpn_ppsh41_sk2"] = 1, ["wpn_ppsh41_sk2_ves"] = 1, ["wpn_thompson"] = 1, ["wpn_ump45"] = 1, ["wpn_p90"] = 1, ["wpn_p90_ves"] = 1, ["wpn_mp40"] = 1, ["wpn_pps43"] = 1, ["wpn_uzi"] = 1, ["wpn_uzi_kalibr"] = 1, ["wpn_uzi_otdaca"] = 1, ["wpn_uzi_kalibr_ves"] = 1, ["wpn_uzi_otdaca_ves"] = 1, ["wpn_uzi_ves"] = 1, ["wpn_eagle_m1"] = 1, ["wpn_desert_eagle"] = 1, ["wpn_eagle_m2"] = 1, ["wpn_eagle_m3"] = 1, ["wpn_deagle_long"] = 1, ["wpn_colt1911"] = 1, ["wpn_colt_arm"] = 1, ["wpn_raging_bull"] = 1, ["wpn_aps_sk1"] = 1, ["wpn_samopal"] = 1, ["wpn_colt_m1"] = 1,
+	-- "type2" =  --"Винтовка "..m_act:section()
+	["wpn_vintorez"] = 2, ["wpn_vintorez_m1"] = 2, ["wpn_20w_vintorez"] = 2, ["wpn_9a91"] = 2, ["wpn_vihlop"] = 2, ["wpn_vihlop_m1"] = 2, ["wpn_v94"] = 2,  ["wpn_ksvk"] = 2, ["wpn_vint14"] = 2, ["wpn_svt40"] = 2, ["wpn_sv98"] = 2, ["wpn_cz550"] = 2, ["wpn_zastava_m76"] = 2, ["wpn_zastava_m77"] = 2, ["wpn_val_m2"] = 2, ["wpn_vintorez_ves"] = 2, ["wpn_svd"] = 2, ["wpn_svd_ves"] = 2, ["wpn_svd_m1"] = 2, ["wpn_svd_m2"] = 2, ["wpn_svd_m3"] = 2, ["wpn_svd_foto"] = 2, ["wpn_b94"] = 2, ["wpn_awp"] = 2, ["wpn_awp_m1"] = 2, ["wpn_b94_ves"] = 2, ["wpn_sks_s"] = 2, ["wpn_svu"] = 2, ["wpn_svu_m1"] = 2, ["wpn_svu_ves"] = 2, ["wpn_lr300"] = 2, ["wpn_lr300_m1"] = 2, ["wpn_lr300_kalibr"] = 2, ["wpn_lr300_otdaca"] = 2, ["wpn_lr300_kalibr_ves"] = 2, ["wpn_lr300_otdaca_ves"] = 2, ["wpn_lr300_ves"] = 2, ["wpn_famas_p3_sk1"] = 2, ["wpn_famas_p3_sk1_kalibr"] = 2, ["wpn_famas_p3_sk1_otdaca"] = 2, ["wpn_famas_p3_sk1_kalibr_ves"] = 2, ["wpn_famas_p3_sk1_otdaca_ves"] = 2, ["wpn_famas_p3_sk1_ves"] = 2, ["wpn_l85"] = 2, ["wpn_l85_m1"] = 2, ["wpn_l85_m2"] = 2, ["wpn_l85_kalibr"] = 2, ["wpn_l85_otdaca"] = 2, ["wpn_l85_kalibr_ves"] = 2, ["wpn_l85_otdaca_ves"] = 2, ["wpn_l85_ves"] = 2, ["wpn_sig_m1"] = 2, ["wpn_sig_m2"] = 2, ["wpn_sig550"] = 2, ["wpn_sig550_kalibr"] = 2, ["wpn_sig550_otdaca"] = 2, ["wpn_sig550_kalibr_ves"] = 2, ["wpn_sig550_otdaca_ves"] = 2, ["wpn_sig550_ves"] = 2, ["wpn_sg552_sk1"] = 2, ["wpn_sg552_sk1_kalibr"] = 2, ["wpn_sg552_sk1_otdaca"] = 2, ["wpn_sg552_sk1_kalibr_ves"] = 2, ["wpn_sg552_sk1_otdaca_ves"] = 2, ["wpn_sg552_sk1_ves"] = 2, ["wpn_awm"] = 2, ["wpn_awm_ves"] = 2, ["wpn_famas_p3_sk1"] = 2, ["wpn_m16a2_sk1"] = 2, ["wpn_m16a2_sk12"] = 2, ["wpn_m16a2_sk1_kalibr"] = 2, ["wpn_m16a2_sk1_otdaca"] = 2, ["wpn_m16a2_sk1_kalibr_ves"] = 2, ["wpn_m16a2_sk1_otdaca_ves"] = 2, ["wpn_m16a2_sk1_ves"] = 2, ["wpn_hk417_sk1"] = 2, ["wpn_hk417_sk1_otdaca"] = 2, ["wpn_hk417_sk1_otdaca_ves"] = 2, ["wpn_hk417_sk1_ves"] = 2, ["wpn_sr25_mk11_mod0_sk1"] = 2, ["wpn_sr25_mk11_mod0_sk1_otdaca"] = 2, ["wpn_sr25_mk11_mod0_sk1_otdaca_ves"] = 2, ["wpn_sr25_mk11_mod0_sk1_ves"] = 2, ["wpn_fn2000_comp"] = 2,  ["wpn_k98_obrez"] = 2, ["wpn_obrez_m1891"] = 2, ["wpn_m1891_30_scope"] = 2, ["wpn_m1891_30_scope_ves"] = 2, ["wpn_crossbow"] = 2, ["wpn_crossbow_m1"] = 2, ["wpn_walther_wa2000"] = 2, ["wpn_gauss"] = 2, ["wpn_gauss2b"] = 2,  ["wpn_gauss_krayzis"] = 2,  ["wpn_gauss_ves"] = 2,
+	-- "type3" =  --"Автомат "..m_act:section()
+	["wpn_val"] = 3, ["wpn_val_m1"] = 3, ["wpn_val_ves"] = 3, ["wpn_ak9"] = 3, ["wpn_ak9_m1"] = 3, ["wpn_scar_cry"] = 3, ["wpn_scar_mk17"] = 3, ["wpn_scar_snip"] = 3, ["wpn_scar_792"] = 3, ["wpn_scar_mk16"] = 3, ["wpn_sl8"] = 3, ["wpn_hk417_camo"] = 3, ["wpn_acr"] = 3, ["wpn_sr3t"] = 3, ["wpn_hostel"] = 3, ["wpn_g3"] = 3, ["wpn_g41"] = 3, ["wpn_g3sg1"] = 3, ["wpn_m4a1"] = 3, ["wpn_hk416"] = 3, ["wpn_rpkm40"] = 3, ["wpn_ak74u_svd"] = 3, ["wpn_val_voron"] = 3, ["wpn_ak107"] = 3, ["wpn_ak107_m1"] = 3, ["wpn_ak109"] = 3, ["wpn_gauss_predator"] = 3, ["wpn_akms_m2"] = 3, ["wpn_ak12"] = 3, ["wpn_aek973"] = 3, ["wpn_ak74_m2"] = 3, ["wpn_ak108"] = 3, ["wpn_ak105"] = 3, ["wpn_ak103"] = 3, ["wpn_sbr"] = 3, ["wpn_sig552"] = 3, ["wpn_sg550_sr"] = 3, ["wpn_ak203"] = 3, ["wpn_akm203_pso"] = 3, ["wpn_sig550_sk1"] = 3, ["wpn_vsk94"] = 3, ["wpn_ak104t"] = 3, ["wpn_m4_a3"] = 3, ["wpn_fn2000_paratrooper"] = 3, ["wpn_ak47_sk1"] = 3, ["wpn_aks47"] = 3, ["wpn_ak47_sh"] = 3, ["wpn_rpk47_bub"] = 3, ["wpn_rpk47_m1"] = 3, ["wpn_rpk47_sk1"] = 3, ["wpn_ak74"] = 3, ["wpn_ak104"] = 3, ["wpn_aug_a1"] = 3, ["wpn_aug_a2"] = 3, ["wpn_akm_sk2"] = 3, ["wpn_akm_ves_otdaca"] = 3, ["wpn_akms"] = 3, ["wpn_akms_m1"] = 3, ["wpn_akm_m1"] = 3, ["wpn_akm_m3"] = 3, ["wpn_vepr545"] = 3, ["wpn_rpk74_sk1"] = 3, ["wpn_stg44"] = 3, ["wpn_mkb_42"] = 3, ["wpn_ak47_md"] = 3, ["wpn_peceneg"] = 3, ["wpn_oicw"] = 3, ["wpn_m4_m1"] = 3, ["wpn_aks74m"] = 3, ["wpn_aks74"] = 3, ["wpn_aks74_m1"] = 3, ["wpn_aks74_m2"] = 3, ["wpn_ak74_m1"] = 3, ["wpn_ak74_m3"] = 3, ["wpn_fn_fal_c1"] = 3, ["wpn_ak74_kalibr"] = 3, ["wpn_ak74_otdaca"] = 3, ["wpn_ak74_kalibr_ves"] = 3, ["wpn_ak74_otdaca_ves"] = 3, ["wpn_ak74_ves"] = 3, ["wpn_aks74_kalibr_ves_otdaca"] = 3, ["wpn_ak74u"] = 3, ["wpn_ak74u_m1"] = 3, ["wpn_dark_gauss"] = 3, ["wpn_ak74u_kalibr"] = 3, ["wpn_ak74u_otdaca"] = 3, ["wpn_ak74u_kalibr_ves"] = 3, ["wpn_ak74u_otdaca_ves"] = 3, ["wpn_ak74u_ves"] = 3, ["wpn_ak47"] = 3, ["wpn_ak47_otdaca"] = 3, ["wpn_ak47_otdaca_ves"] = 3, ["wpn_ak47_ves"] = 3, ["wpn_fn2000"] = 3, ["wpn_fn2000_old"] = 3, ["wpn_fn2000_kalibr"] = 3, ["wpn_fn2000_otdaca"] = 3, ["wpn_fn2000_kalibr_ves"] = 3, ["wpn_fn2000_otdaca_ves"] = 3, ["wpn_fn2000_ves"] = 3, ["wpn_abakan"] = 3, ["wpn_abakan_m1"] = 3, ["wpn_abakan_m2"] = 3, ["wpn_abakan_kalibr"] = 3, ["wpn_abakan_otdaca"] = 3, ["wpn_abakan_kalibr_ves"] = 3, ["wpn_abakan_otdaca_ves"] = 3, ["wpn_abakan_ves"] = 3, ["wpn_groza"] = 3, ["wpn_groza_m1"] = 3, ["wpn_groza_m2"] = 3, ["wpn_groza_m3"] = 3, ["wpn_groza_ves"] = 3, ["wpn_groza_sn"] = 3, ["wpn_m16a2"] = 3, ["wpn_rpkcustom"] = 3, ["wpn_rpkcstmcol"] = 3, ["wpn_sig552camo"] = 3, ["wpn_sks_cust"] = 3, ["wpn_mg42"] = 3, ["wpn_xm8_para_sk2"] = 3, ["wpn_m_134"] = 3, ["wpn_m249"] = 3, ["wpn_m_134_baty"] = 3, ["wpn_m134"] = 3, ["wpn_m4"] = 3, ["wpn_m4_kalibr"] = 3, ["wpn_m4_kalibr_ves"] = 3, ["wpn_m4_otdaca"] = 3, ["wpn_m4_otdaca_ves"] = 3, ["wpn_m4_ves"] = 3, ["wpn_pkm"] = 3, ["wpn_kord"] = 3, ["wpn_kord_m1"] = 3, ["wpn_pkm_ves"] = 3, ["wpn_tavor"] = 3, ["wpn_tavor_kalibr"] = 3, ["wpn_tavor_otdaca"] = 3, ["wpn_tavor_kalibr_ves"] = 3, ["wpn_tavor_otdaca_ves"] = 3, ["wpn_tavor_ves"] = 3, ["wpn_g36"] = 3, ["wpn_g36_kalibr"] = 3, ["wpn_g36_otdaca"] = 3, ["wpn_g36_kalibr_ves"] = 3, ["wpn_g36_otdaca_ves"] = 3, ["wpn_g36_ves"] = 3, ["wpn_g36_m1"] = 3, ["wpn_g36c"] = 3, ["wpn_aks74m_kalibr"] = 3, ["wpn_aks74m_otdaca"] = 3, ["wpn_aks74m_kalibr_ves"] = 3, ["wpn_aks74m_otdaca_ves"] = 3, ["wpn_aks74m_ves"] = 3, ["wpn_g3_otdaca_ves"] = 3, ["wpn_mp5k_pdw57"] = 3, ["wpn_mp5k_pdw_tt"] = 3, ["wpn_akms_otdaca_ves"] = 3, ["wpn_aek973_otdaca_ves"] = 3,
+	-- "type4" =  --"Обрез "..m_act:section()
+	["wpn_shotgun"] = 4, ["wpn_bm16"] = 4, ["wpn_bm16_ves"] = 4, ["wpn_rem870_magnum"] = 4, ["wpn_rem870_magnum"] = 4, ["wpn_ks23"] = 4, ["wpn_rossi92"] = 4, ["wpn_mp153"] = 4, ["wpn_mp153pract"] = 4, ["wpn_hawk"] = 4, ["wpn_m500_custom"] = 4, ["wpn_sayga_un"] = 4, ["wpn_sayga_al"] = 4, ["wpn_usas12"] = 4, ["wpn_sayga12k"] = 4, ["wpn_aa12"] = 4, ["wpn_aa12_m1"] = 4, ["wpn_vepr12"] = 4, ["wpn_vepr12_m1"] = 4, ["wpn_vepr"] = 4, ["wpn_vepr12_col"] = 4, ["wpn_vepr12_20"] = 4, ["wpn_sayga12_sk1"] = 4, ["wpn_toz34"] = 4, ["wpn_toz34_ves"] = 4, ["hunters_toz"] = 4, ["wpn_k98"] = 4, ["wpn_protecta" ] = 4, ["wpn_protecta_ves"] = 4, ["wpn_mossberg590"] = 4, ["wpn_ba5short"] = 4, ["wpn_browningauto5"] = 4, ["wpn_benelli_m3"] = 4, ["wpn_benelli_m3_short"] = 4, ["wpn_benelli_m3_tactik"] = 4, ["wpn_m4super90"] = 4, ["wpn_m4super90_ves"] = 4, ["wpn_spas12"] = 4, ["wpn_spas12_m1"] = 4, ["wpn_spas12_ves"] = 4, ["wpn_saiga12c"] = 4, ["wpn_saiga12c_ves"] = 4, ["wpn_winch1887"] = 4, ["wpn_wincheaster1300"] = 4, ["wpn_wincheaster1300_ves"] = 4, ["wpn_winchester_m1"] = 4,
+	-- "type5" =  --"Гранатомет "..m_act:section()
+	["wpn_rpg7"] = 5, ["wpn_rg-6"] = 5, ["wpn_rg6_m1"] = 5, ["wpn_shmel"] = 5, ["wpn_m79"] = 5, ["wpn_m79_ves"] = 5, ["wpn_gravigun"] = 5, ["wpn_m79_m1"] = 5,
+	-- "type6" =  --"Нож "..m_act:section()
+	["wpn_knife"] = 6, ["wpn_bat_a"] = 6, ["wpn_bat_b"] = 6, ["wpn_crowbar"] = 6, ["wpn_elf"] = 6, ["wpn_fist"] = 6, ["wpn_fist_m"] = 6, ["wpn_knif2"] = 6, ["wpn_knif3"] = 6, ["wpn_knif4"] = 6, ["wpn_knifa"] = 6, ["wpn_knife_m"] = 6, ["wpn_knife_n"] = 6, ["wpn_knife_new"] = 6, ["wpn_kuvalda"] = 6, ["wpn_kukri"] = 6,  ["wpn_machete"] = 6, ["wpn_topor"] = 6, ["wpn_kolbasa"] = 6,
+	-- "type7" =  --"Граната "..m_act:section()
+	["wpn_addon_grenade_launcher"] = 7, ["wpn_addon_grenade_launcher_m203"] = 7, ["wpn_addon_grenade_launcher_ag36"] = 7, ["grenade_f1"] = 7, ["grenade_f1_double"] = 7, ["grenade_7643b"] = 7, ["grenade_he"] = 7, ["grenade_sg"] = 7, ["grenade_fb"] = 7, ["grenade_m61"] = 7, ["grenade_rgd5"] = 7, ["grenade_flash"] = 7,
+	-- "type8" =  --"Огнемёт "..m_act:section()
+	["wpn_flame"] = 8, ["wpn_ognemet"] = 8,  ["wpn_ognemet_m1"] = 8
+}
+function get_weapon_type(weapon)
+    if(weapon and IAmAWeapon[weapon:clsid()]) then
+        local id = get_weapon_name(weapon)
+        if id == nil then 
+            return 0
+        elseif weapon_types[id] then
+			return weapon_types[id]
+        end
+        trace("Unknown weapon type ["..id.."] "..weapon:name())
+    end
+    return 0
+end
+
+function get_weapon_name(weapon)
+	if(weapon and IAmAWeapon[weapon:clsid()]) then
+		local result = ""
+		if weapon.section then
+			result = weapon:section()
+		elseif weapon.section_name then
+			result = weapon:section_name()
+		end
+		if result == nil then result = "" end
+		return result
+	end
+	return ""
+end
+
+function get_npc_weapon(obj)
+	if (obj) then
+		local ob
+		if (isGameObject(obj) == false) then
+			ob = get_obj(obj.id)
+		else
+			ob = obj
+		end
+		if (ob) then
+			if (ob.active_item) then
+				local m_act = ob:active_item()
+				if (m_act) then
+					if (IAmAWeapon[m_act:clsid()]) then
+						return m_act
+					else
+						if _debug == true then mylog("get_npc_weapon - m_act is not a weapon - "..get_clsid(m_act)) end
+					end
+				else
+					if _debug == true then mylog("get_npc_weapon - m_act = nil") end
+				end
+			else
+				if _debug == true then
+				mylog("get_npc_weapon - no active_item")
+				if(ob.name) then mylog("get_npc_weapon - name: "..ob:name()) end
+				mylog("get_npc_weapon - clsid: "..get_clsid(ob))
+			end
+			end
+		else
+			if _debug == true then mylog("get_npc_weapon - ob is nil") end
+		end
+	else
+		if _debug == true then mylog("get_npc_weapon - obj is nil") end
+	end
+	return nil
+end
+
+function get_monster_name(obj, index)
+	local m_comm = ""
+	local m_n = ""
+	if obj then
+		local m_clsid = obj:clsid()
+	if index == nil then index = 1 end
+		if IAmAMonster[m_clsid] then
+		if m_clsid then
+			m_comm = news_data.monster_classes[m_clsid]
+			if m_comm == nil then
+				trace("Unknown monster class_id: "..m_clsid.." for "..obj:name())
+				m_n = ""
+			else
+				if (news_data.monster_classes[m_clsid][index] ~= nil) then
+					m_n = news_data.monster_classes[m_clsid][index]
+				else
+					trace("Unknown monster name for class_id: "..m_clsid.." index="..index)
+				end
+			end
+		end
+	end
+	end
+	return m_n
+end
+
+function get_monster_name_by_string(str, index)
+	local m_comm = ""
+	local m_n = ""
+	if index == nil then index = 1 end
+	if index < 1 then index = 1 end
+	if(str) then
+		for k, v in pairs(news_data.monster_classes) do
+			if (v and #v >= index and v[1] == str) then
+				m_n = v[index]
+			end
+		end
+	end
+	return m_n
+end
+
+function get_npc_rank(obj)
+	local m_rank = ""
+	if (obj) then
+		m_rank = ranks.get_obj_rank_name(obj)
+		if (m_rank == nil) then
+			m_rank = ""
+		end
+	end
+	return m_rank
+end
+
+function get_monster_rank(obj)
+	local m_rank = ""
+	if (obj) then
+		if (obj and IAmAMonster[obj:clsid()]) then
+			m_rank = ranks.get_obj_rank_name(obj)
+			if (m_rank == nil) then
+				m_rank = ""
+			end
+		end
+	end
+	return m_rank
+end
+
+function get_anomaly_name(obj, index)
+	local m_name = ""
+	local m_n = ""
+	if index == nil then index = 1 end
+	if (IsAnomaly(obj)) then
+		local m_type = ""		
+		if (isGameObject(obj) and obj.section) then
+			m_type = obj:section()
+		elseif (obj.section_name) then
+			m_type = obj:section_name()
+		end
+		if m_type then
+			for k,v in pairs(news_data.anomaly_classes) do
+				if string_find(m_type, k) then
+					if (v[index] ~= nil) then
+						m_n = v[index]
+					end
+					break
+				end
+			end
+		end
+	end
+	return m_n
+end
+
+function IsNpcOther(obj)
+	if (obj and IAmAStalker[obj:clsid()]) then
+		local m_comm  = get_npc_community(obj)
+		if (m_comm == "actor"  or m_comm == "actor_dolg" or m_comm == "actor_freedom" or m_comm == "stalker" or m_comm == "dolg" or m_comm == "freedom" or m_comm == "stalker" or m_comm == "nebo" or m_comm == "green") then
+			return false
+		end
+		return true
+	else
+		return false
+	end
+end
+
+function IsNpcStalker(obj)
+	if (obj and IAmAStalker[obj:clsid()]) then
+		local m_comm  = get_npc_community(obj)
+		if (m_comm == "actor" or m_comm == "actor_dolg" or m_comm == "actor_freedom" or m_comm == "stalker" or m_comm == "dolg" or m_comm == "freedom" or m_comm == "nebo" or m_comm == "green") then
+			if (obj.name and obj:name() ~= "agr_ratcatcher") then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+function IsNpcActor(obj)
+	if (obj and IAmAStalker[obj:clsid()]) then
+		local m_comm  = get_npc_community(obj)
+		if (m_comm == "actor" or m_comm == "actor_dolg" or m_comm == "actor_freedom") then
+			return true
+		end
+	end
+	return false
+end
+
+function IsAnomaly(obj)
+	return (obj and amk_anoms.is_anomaly(obj:clsid()))
+	--[[if (obj) then
+		local otype = get_clsid(obj)
+		if (otype>172 and otype<180) then
+			return true
+		else		
+		end
+	end
+	return false]]
+end
+
+
+function do_news(text, from, timeout, showtime, section, author_id, priority)
+	if (text == nil) then text = "nil" end
+	if (from == nil) then from = "nil" end
+	dbglog("add_news ==> "..text..": "..from)
+	if (timeout == nil) then timeout = 0 end
+	if (priority == nil) then priority = 0 end
+	showtime = string.len(text)/10
+	add_news(text, from, 1, timeout, showtime, section, author_id, priority)
+end
+
+function add_news(news_text, news_from, news_type, news_timeout, news_showtime, news_section, author_id, priority)
+	newsitem = {
+		eventType = news_type,
+		created = amk.game_minutes(),
+		text = news_text,
+		from = news_from,
+		timeout = amk.game_minutes() + (news_timeout / 60),
+		showtime = news_showtime,
+		section = news_section,
+		lifetime = amk.game_minutes() + (news_timeout / 60) + 20,
+		activated = nil,
+		author_id = tonumber(author_id),
+		priority = priority
+	}
+	table.insert(news_stack, newsitem)
+end
+
+function show_news(text, from, timeout, showtime, section)
+	local rnd = math.random
+	if (isIsolatedLevel(level.name()) == true) then return end
+	if (text == "") then return end
+	if (from == "") then return end
+	if sleep_manager.is_sleep_active() then return end
+	local blow = amk.load_variable("blowout",-1)
+	if blow > -1 and blow < 5 then return end	
+		local now = amk.game_minutes()
+	local diff = 0
+	if (timer_next_blow ~= 0) then	
+		diff = (timer_next_blow - now) * 60 -- Разница в игровых секундах.
+		local eventtime = timeout * time_factor -- Сколько пройдет игровых минут
+		--trace("show_news: diff="..diff.." eventtime="..eventtime.." ["..timeout.."]")
+		--flushlog()
+		if eventtime >= diff then return end
+	end
+
+	if (text == nil) then text = "nil" end
+	if (from == nil) then from = "nil" end
+	if (timeout > 1000) then timeout = rnd(timer_general, timer_general * 4) end
+	dbglog("show_news ==> ["..timeout.."] "..from..": "..text)
+	
+	table.insert(spammers, from)
+	
+	if not sleep_manager.is_sleep_active() then
+		amk.send_tip(text, from, timeout, showtime, section)
+	end
+	timer_last_showed = amk.game_minutes()
+end
+
+function format_death_by_monster(obj)
+	local rnd = math.random
+	local m_s = ""
+	local m_prefix = ""
+	local m_suffix = ""
+	local m_class = ""
+	local m_postfix = ""
+	if (obj) then
+	-- monster_prefix + monster_classes + monster_suffix
+	-- monster_suffix + monster_classes + monster_prefix
+		m_prefix = news_data.monster_prefix[rnd(#news_data.monster_prefix)].." "
+		local m_suffid = rnd(#news_data.monster_suffix)
+		local m_suff = news_data.monster_suffix[m_suffid]
+		if (m_suff) then
+			m_suffix = m_suff[rnd(#m_suff)]
+			m_class = get_monster_name(obj, m_suffid+1)
+			m_postfix = news_data.rate_postfix[rnd(#news_data.rate_postfix)]
+		end
+		if (rnd() < 0.5) then
+			m_s = m_prefix..""..m_suffix..""..m_class.."."..m_postfix
+		else
+			m_s = m_suffix..""..m_class..". "..m_prefix..""..m_postfix
+		end
+	end
+	return m_s
+end
+
+function format_death_by_anomaly(obj)
+	local rnd = math.random
+	local m_s = ""
+	local m_prefix = ""
+	local m_suffix = ""
+	local m_class = ""
+	--local m_postfix = ""
+	if (obj) then
+	-- anomaly_prefix + anomaly_classes + anomaly_classes[3,4]
+		m_prefix = news_data.anomaly_prefix[rnd(#news_data.anomaly_prefix)]
+		m_class = get_anomaly_name(obj, 2)
+		m_suffix = get_anomaly_name(obj, rnd(3, 4))
+		--m_postfix = anomaly_postfix[rnd(#anomaly_postfix)]
+		if (rnd() < 0.5) then
+			m_s = m_prefix..""..m_class..". "..m_suffix.."." --..m_postfix.."."
+		else
+			m_s = m_prefix..""..m_class.."." --..m_postfix.."."
+		end
+	end
+	return m_s
+end
+
+function format_death_by_stalker(obj)
+	local m_s = ""
+	if (obj) then
+		local m_wpn = get_npc_weapon(obj)
+		if (m_wpn) then
+			local m_weapon = get_weapon_type(m_wpn)
+			if m_weapon ~= 0 then
+			m_s = format_template_weapon(m_weapon)
+			end
+		else
+			if _debug == true then mylog("format_death_by_stalker - no weapon") end
+		end
+	end
+	return m_s
+end
+
+function format_death_by_weapon(obj)
+	local m_s = ""
+	if (obj) then
+		local m_weapon = get_weapon_type(obj)
+		if m_weapon ~= 0 then
+		m_s = format_template_weapon(m_weapon)
+		end
+	else
+		if _debug == true then mylog("format_death_by_weapon - no weapon") end
+	end
+	return m_s
+end
+
+function format_death_stalker_corpse(obj)
+	local m_s = ""
+	if (obj) then
+		m_s = format_template_corpse_stalker(obj)
+	end
+	return m_s
+end
+
+function format_death_npc_corpse(obj)
+	local m_s = ""
+	if (obj) then
+		m_s = format_template_corpse_npc(obj)
+	end
+	return m_s
+end
+
+function format_death_monster_corpse(obj)
+	local m_s = ""
+	if (obj) then
+		m_s = format_template_corpse_monster(obj)
+	end
+	return m_s
+end
+
+function format_death_hear_sounds(victim_, killer_, weapon_)
+	local rnd = math.random
+	local m_s = ""
+	local m_hear_a = ""
+	local m_hear_z = ""
+	if (victim_) then
+		if (killer_ and (IsNpcStalker(killer_) or IsNpcOther(killer_))) then -- Если killer == НПС - то стрельбу или взрывы
+			if (weapon_ == nil) then
+				local m_wpn = get_npc_weapon(killer_)
+				if (m_wpn) then
+					local m_weapon = get_weapon_type(m_wpn)
+					if (m_weapon == 0) then return "" end
+					if (m_weapon and news_data.weapon_classes[m_weapon]) then
+						if (rnd() > news_data.weapon_classes[m_weapon]["hear_p"]) then
+							return ""; -- Ничего не услышали, слишком тихое оружие...
+						end
+						m_hear_a = news_data.weapon_classes[m_weapon]["hear_a"][rnd(#news_data.weapon_classes[m_weapon]["hear_a"])]
+						m_hear_z = news_data.weapon_classes[m_weapon]["hear_z"][rnd(#news_data.weapon_classes[m_weapon]["hear_z"])]
+						m_s = format_template_hear(victim_, m_hear_a, m_hear_z)
+					end
+				end
+			else
+				local m_weapon = get_weapon_type(weapon_)
+				if (m_weapon ==0) then return "" end
+				if (m_weapon and news_data.weapon_classes[m_weapon]) then
+					if (rnd() > news_data.weapon_classes[m_weapon]["hear_p"]) then
+						return ""; -- Ничего не услышали, слишком тихое оружие...
+					end
+					m_hear_a = news_data.weapon_classes[m_weapon]["hear_a"][rnd(#news_data.weapon_classes[m_weapon]["hear_a"])]
+					m_hear_z = news_data.weapon_classes[m_weapon]["hear_z"][rnd(#news_data.weapon_classes[m_weapon]["hear_z"])]
+					m_s = format_template_hear(victim_, m_hear_a, m_hear_z)
+				end			
+			end
+		elseif (killer_ and victim_ and IAmAMonster[victim_:clsid()] ~= true and (IsAnomaly(killer_) or IAmAMonster[killer_:clsid()])) then -- Если killer == аномалия и victim ~= монстры - то крики
+			m_hear_a = "Слышал ужасные крики"
+			m_hear_z = "слышал ужасные крики"
+			m_s = format_template_hear(victim_, m_hear_a, m_hear_z)
+		elseif ((killer_ and IAmAMonster[killer_:clsid()]) or (victim_ and IAmAMonster[victim_:clsid()])) then -- Если killer == монстры  или victim == монстры - то звуки
+			m_hear_a = "Слышал страшный рык"
+			m_hear_z = "слышал страшный рык"
+			m_s = format_template_hear(victim_, m_hear_a, m_hear_z)
+		else
+			if _debug == true then
+			if (victim_ and victim_.name) then
+				mylog("format_death_hear_sounds - victim : "..victim_:name())
+			end
+			if (killer_) then
+				mylog("format_death_hear_sounds - killer :  exists")
+			end
+			if (killer_ and killer_.name) then
+				mylog("format_death_hear_sounds - killer : "..killer_:name())
+			end
+		end
+	end
+	end
+	return m_s
+end
+
+function format_template_killer_act(obj)
+	local rnd = math.random
+	local m_s = ""
+	if(obj ~= nil) then
+		local m_class = ""
+		local m_level = get_point_description(get_object_levelname(obj), get_object_position(obj))
+		if (m_level == "") then return "" end
+		if IAmAMonster[obj:clsid()] then
+			m_class = get_monster_name(obj, 4)
+		else
+			local m_comm  = get_npc_community(obj)
+			if (m_comm and news_data.community_name[m_comm]) then
+				m_class = news_data.community_name[m_comm][3]
+			end
+		end
+		local t = {
+			["class"] = m_class,
+			["level"] = m_level,
+			["killed_a"] = news_data.common["killed_a"][rnd(#news_data.common["killed_a"])],
+			["killed_z"] = news_data.common["killed_z"][rnd(#news_data.common["killed_z"])],
+			["hard_a"] = news_data.common["hard_a"][rnd(#news_data.common["hard_a"])],
+			["hard_z"] = news_data.common["hard_z"][rnd(#news_data.common["hard_z"])],
+			["meet_a"] = news_data.common["meet_a"][rnd(#news_data.common["meet_a"])],
+			["meet_z"] = news_data.common["meet_z"][rnd(#news_data.common["meet_z"])],
+			["when_a"] = news_data.common["when_a"][rnd(#news_data.common["when_a"])],
+			["when_z"] = news_data.common["when_z"][rnd(#news_data.common["when_z"])]			
+		}
+		local m_string = news_data.killer_act_templates[rnd(#news_data.killer_act_templates)]			
+		for key0, value in pairs(t) do
+			m_s = string_gsub(m_string, "%$"..key0, value)
+			m_string = m_s
+		end
+		m_s = m_string
+	end
+	return m_s
+end
+
+function format_template_heli(obj, template_type)
+	local rnd = math.random
+	local m_s = ""
+	local m_level = ""
+	local m_pos
+	if (obj ~= nil and template_type and news_data.heli_templates[template_type]) then
+		m_pos = get_object_position(obj)
+		if (m_pos) then
+			m_level = get_point_description(get_object_levelname(obj), m_pos)
+			if (m_level == "") then return "" end
+		end
+		local t = {
+			["level"] = m_level, 
+			["carefull_a"] = news_data.common["carefull_a"][rnd(#news_data.common["carefull_a"])],
+			["carefull_z"] = news_data.common["carefull_z"][rnd(#news_data.common["carefull_z"])],
+			["when_a"] = news_data.common["when_a"][rnd(#news_data.common["when_a"])],
+			["when_z"] = news_data.common["when_z"][rnd(#news_data.common["when_z"])]
+		}
+		local m_string = news_data.heli_templates[template_type][rnd(#news_data.heli_templates[template_type])]		
+		for key0, value in pairs(t) do
+			m_s = string_gsub(m_string, "%$"..key0, value)
+			m_string = m_s
+		end
+		m_s = m_string
+	end
+	return m_s
+end
+
+function format_template_weapon(weapon_type)
+	local rnd = math.random
+	local m_s = ""
+	if(weapon_type and news_data.weapon_classes[weapon_type] ~= nil and news_data.weapon_classes[weapon_type]["name"]) then
+		local t = {
+			["weapon_name_2"] = news_data.weapon_classes[weapon_type]["name"][2],
+			["weapon_name_3"] = news_data.weapon_classes[weapon_type]["name"][3],
+			["weapon_hit_a"] = news_data.weapon_classes[weapon_type]["hit_a"][rnd(#news_data.weapon_classes[weapon_type]["hit_a"])],
+			["weapon_hit_z"] = news_data.weapon_classes[weapon_type]["hit_z"][rnd(#news_data.weapon_classes[weapon_type]["hit_z"])],
+			["kill_a"] = news_data.common["kill_a"][rnd(#news_data.common["kill_a"])],
+			["kill_z"] = news_data.common["kill_z"][rnd(#news_data.common["kill_z"])],
+			["sad_a"] = news_data.common["sad_a"][rnd(#news_data.common["sad_a"])],
+			["sad_z"] = news_data.common["sad_z"][rnd(#news_data.common["sad_z"])],
+			["fun_a"] = news_data.common["fun_a"][rnd(#news_data.common["fun_a"])],
+			["fun_z"] = news_data.common["fun_z"][rnd(#news_data.common["fun_z"])],
+			["prob_a"] = news_data.common["prob_a"][rnd(#news_data.common["prob_a"])],
+			["prob_z"] = news_data.common["prob_z"][rnd(#news_data.common["prob_z"])]
+		}
+		local m_string = news_data.weapon_templates[rnd(#news_data.weapon_templates)]			
+		for key0, value in pairs(t) do
+			m_s = string_gsub(m_string, "%$"..key0, value)
+			m_string = m_s
+		end
+		m_s = m_string
+	end
+	return m_s
+end
+
+function format_template_corpse_stalker(obj)
+	local rnd = math.random
+	local m_s = ""
+	if(obj ~= nil) then
+		local m_name  = get_npc_name(obj)
+		local m_level = get_point_description(get_object_levelname(obj), get_object_position(obj)) 
+		if (m_level == "") then return "" end
+		local m_rank  = get_npc_rank(obj)
+		local m_rank_s = ""
+		if (m_rank and news_data.rate_name[m_rank]) then
+			m_rank_s = news_data.rate_name[m_rank][rnd(2, #news_data.rate_name[m_rank])]
+		end
+		local t = {
+			["name"] = m_name,
+			["level"] = m_level,
+			["rate"] = m_rank_s,
+			["kill_a"] = news_data.common["kill_a"][rnd(#news_data.common["kill_a"])],
+			["kill_z"] = news_data.common["kill_z"][rnd(#news_data.common["kill_z"])],
+			["sad_a"] = news_data.common["sad_a"][rnd(#news_data.common["sad_a"])],
+			["sad_z"] = news_data.common["sad_z"][rnd(#news_data.common["sad_z"])],
+			["fun_a"] = news_data.common["fun_a"][rnd(#news_data.common["fun_a"])],
+			["fun_z"] = news_data.common["fun_z"][rnd(#news_data.common["fun_z"])],
+			["prob_a"] = news_data.common["prob_a"][rnd(#news_data.common["prob_a"])],
+			["prob_z"] = news_data.common["prob_z"][rnd(#news_data.common["prob_z"])],
+			["corpse_a"] = news_data.common["corpse_a"][rnd(#news_data.common["corpse_a"])],
+			["corpse_z"] = news_data.common["corpse_z"][rnd(#news_data.common["corpse_z"])],
+			["seen_a"] = news_data.common["seen_a"][rnd(#news_data.common["seen_a"])],
+			["seen_z"] = news_data.common["seen_z"][rnd(#news_data.common["seen_z"])],
+			["when_a"] = news_data.common["when_a"][rnd(#news_data.common["when_a"])],
+			["when_z"] = news_data.common["when_z"][rnd(#news_data.common["when_z"])]			
+		}
+		local m_string = news_data.stalker_corpse_templates[rnd(#news_data.stalker_corpse_templates)]
+		for key0, value in pairs(t) do
+			m_s = string_gsub(m_string, "%$"..key0, value)
+			m_string = m_s
+		end
+		m_s = m_string
+	end
+	return m_s
+end
+
+function format_template_corpse_npc(obj)
+	local rnd = math.random
+	local m_s = ""
+	if(obj ~= nil) then
+		local m_name  = get_npc_name(obj)
+		if (m_name == "") then
+			m_name = "недавно в Зоне"
+			local m_rank  = get_npc_rank(obj)
+			local m_rank_s = ""
+			if (m_rank and news_data.rate_name[m_rank]) then
+				m_rank_s = news_data.rate_name[m_rank][rnd(2, #news_data.rate_name[m_rank])]
+				m_name = m_rank_s
+			end					
+		end
+		local m_level = get_point_description(get_object_levelname(obj), get_object_position(obj))
+		if (m_level == "") then return "" end
+		local m_comm  = get_npc_community(obj)
+		local m_class = ""
+		if (m_comm and news_data.community_name[m_comm]) then
+			m_class = news_data.community_name[m_comm][3]
+		end
+		local t = {
+			["name"] = m_name,
+			["level"] = m_level,
+			["class"] = m_class,
+			["kill_a"] = news_data.common["kill_a"][rnd(#news_data.common["kill_a"])],
+			["kill_z"] = news_data.common["kill_z"][rnd(#news_data.common["kill_z"])],
+			["sad_a"] = news_data.common["sad_a"][rnd(#news_data.common["sad_a"])],
+			["sad_z"] = news_data.common["sad_z"][rnd(#news_data.common["sad_z"])],
+			["fun_a"] = news_data.common["fun_a"][rnd(#news_data.common["fun_a"])],
+			["fun_z"] = news_data.common["fun_z"][rnd(#news_data.common["fun_z"])],
+			["prob_a"] = news_data.common["prob_a"][rnd(#news_data.common["prob_a"])],
+			["prob_z"] = news_data.common["prob_z"][rnd(#news_data.common["prob_z"])],
+			["corpse_a"] = news_data.common["corpse_a"][rnd(#news_data.common["corpse_a"])],
+			["corpse_z"] = news_data.common["corpse_z"][rnd(#news_data.common["corpse_z"])],
+			["corpse_name_a"] = news_data.common["corpse_name_a"][rnd(#news_data.common["corpse_name_a"])],
+			["corpse_name_z"] = news_data.common["corpse_name_z"][rnd(#news_data.common["corpse_name_z"])],
+			["seen_a"] = news_data.common["seen_a"][rnd(#news_data.common["seen_a"])],
+			["seen_z"] = news_data.common["seen_z"][rnd(#news_data.common["seen_z"])],
+			["when_a"] = news_data.common["when_a"][rnd(#news_data.common["when_a"])],
+			["when_z"] = news_data.common["when_z"][rnd(#news_data.common["when_z"])]			
+		}
+		local m_string = news_data.npc_corpse_templates[rnd(#news_data.npc_corpse_templates)]			
+		for key0, value in pairs(t) do
+			m_s = string_gsub(m_string, "%$"..key0, value)
+			m_string = m_s
+		end
+		m_s = m_string
+	end
+	return m_s
+end
+
+function format_template_corpse_monster(obj)
+	local rnd = math.random
+	local m_s = ""
+	if(obj ~= nil) then
+		local m_level = get_point_description(get_object_levelname(obj), get_object_position(obj))
+		if (m_level == "") then return "" end		
+		local m_name  = get_monster_name(obj, 3)
+		local m_name2 = get_monster_name(obj, 4)
+		local t = {
+			["name"] = m_name,
+			["class"] = m_name2,
+			["c_corpse"] = m_name,
+			["level"] = m_level,
+			["kill_a"] = news_data.common["kill_a"][rnd(#news_data.common["kill_a"])],
+			["kill_z"] = news_data.common["kill_z"][rnd(#news_data.common["kill_z"])],
+			["sad_a"] = news_data.common["sad_a"][rnd(#news_data.common["sad_a"])],
+			["sad_z"] = news_data.common["sad_z"][rnd(#news_data.common["sad_z"])],
+			["fun_a"] = news_data.common["fun_a"][rnd(#news_data.common["fun_a"])],
+			["fun_z"] = news_data.common["fun_z"][rnd(#news_data.common["fun_z"])],
+			["prob_a"] = news_data.common["prob_a"][rnd(#news_data.common["prob_a"])],
+			["prob_z"] = news_data.common["prob_z"][rnd(#news_data.common["prob_z"])],
+			["corpse_a"] = news_data.common["corpse_a"][rnd(#news_data.common["corpse_a"])],
+			["corpse_z"] = news_data.common["corpse_z"][rnd(#news_data.common["corpse_z"])],
+			["seen_a"] = news_data.common["seen_a"][rnd(#news_data.common["seen_a"])],
+			["seen_z"] = news_data.common["seen_z"][rnd(#news_data.common["seen_z"])],
+			["when_a"] = news_data.common["when_a"][rnd(#news_data.common["when_a"])],
+			["when_z"] = news_data.common["when_z"][rnd(#news_data.common["when_z"])]			
+		}
+		local m_string = news_data.monster_corpse_templates[rnd(#news_data.monster_corpse_templates)]			
+		for key0, value in pairs(t) do
+			m_s = string_gsub(m_string, "%$"..key0, value)
+			m_string = m_s
+		end
+		m_s = m_string
+	end
+	return m_s
+end
+
+function format_template_hear(obj, hear_a, hear_z)
+	local rnd = math.random
+	local m_s = ""
+	local m_level = ""
+	local m_pos
+	if (obj) then
+		if (isGameObject(obj)) then
+			m_pos = obj:position()
+		else
+			m_pos = obj.position
+		end
+		if (m_pos) then
+			m_level = get_point_description(get_object_levelname(obj), m_pos)
+			if (m_level == "") then return "" end			
+		end
+		local t = {
+			["level"] = m_level, 
+			["hear_a"] = hear_a,
+			["hear_z"] = hear_z,
+			["carefull_a"] = news_data.common["carefull_a"][rnd(#news_data.common["carefull_a"])],
+			["carefull_z"] = news_data.common["carefull_z"][rnd(#news_data.common["carefull_z"])],
+			["when_a"] = news_data.common["when_a"][rnd(#news_data.common["when_a"])],
+			["when_z"] = news_data.common["when_z"][rnd(#news_data.common["when_z"])]			
+		}
+		local m_string = news_data.hear_sounds_tempates[rnd(#news_data.hear_sounds_tempates)]		
+		for key0, value in pairs(t) do
+			m_s = string_gsub(m_string, "%$"..key0, value)
+			m_string = m_s
+		end
+		m_s = m_string
+	end
+	return m_s
+end
+
+function format_template_spawn(level_, position, class)
+	local rnd = math.random
+	local m_s = ""
+	local m_level = ""
+	local m_pos
+	if (level_ and position and class) then
+		m_pos = position
+		m_level = get_point_description(level_, m_pos)
+		if (m_level == "") then return "" end			
+		local t = {
+			["level"] = m_level, 
+			["class"] = class,
+			["carefull_a"] = news_data.common["carefull_a"][rnd(#news_data.common["carefull_a"])],
+			["carefull_z"] = news_data.common["carefull_z"][rnd(#news_data.common["carefull_z"])],
+			["seen_a"] = news_data.common["spawn_seen_a"][rnd(#news_data.common["spawn_seen_a"])],
+			["seen_z"] = news_data.common["spawn_seen_z"][rnd(#news_data.common["spawn_seen_z"])],
+			["when_a"] = news_data.common["when_a"][rnd(#news_data.common["when_a"])],
+			["when_z"] = news_data.common["when_z"][rnd(#news_data.common["when_z"])]
+		}
+		local m_string = news_data.spawn_templates[rnd(#news_data.spawn_templates)]		
+		for key0, value in pairs(t) do
+			m_s = string_gsub(m_string, "%$"..key0, value)
+			m_string = m_s
+		end
+		m_s = m_string
+	end
+	return m_s
+end
+
+function format_template_spawn_group(level_, position, class, count)
+	local rnd = math.random
+	local m_s = ""
+	local m_level = ""
+	local m_pos
+	if (level_ and position and class and count) then
+		m_pos = position
+		m_level = get_point_description(level_, m_pos)
+		if (m_level == "") then return "" end			
+		local s_count = ""
+		if (count == 1) then
+			s_count = "одного"
+		elseif(count == 2) then
+			s_count = "парочку"
+		elseif(count == 3) then
+			s_count = "несколько"
+		elseif(count >= 4 and count < 6) then
+			s_count = "группу"
+		elseif(count >= 6 and count < 8) then
+			s_count = "большую группу"
+		else
+			--s_count = "большую группу ("..count..")"
+			s_count = "кучу"
+		end
+		
+		local t = {
+			["level"] = m_level, 
+			["class"] = class,
+			["count"] = s_count,
+			["carefull_a"] = news_data.common["carefull_a"][rnd(#news_data.common["carefull_a"])],
+			["carefull_z"] = news_data.common["carefull_z"][rnd(#news_data.common["carefull_z"])],
+			["seen_a"] = news_data.common["spawn_seen_a"][rnd(#news_data.common["spawn_seen_a"])],
+			["seen_z"] = news_data.common["spawn_seen_z"][rnd(#news_data.common["spawn_seen_z"])],
+			["when_a"] = news_data.common["when_a"][rnd(#news_data.common["when_a"])],
+			["when_z"] = news_data.common["when_z"][rnd(#news_data.common["when_z"])]
+		}
+		local m_string = news_data.spawn_templates_group[rnd(#news_data.spawn_templates_group)]		
+		for key0, value in pairs(t) do
+			m_s = string_gsub(m_string, "%$"..key0, value)
+			m_string = m_s
+		end
+		m_s = m_string
+	end
+	return m_s
+end
+
+function format_template_actor_seen(level_, position, class)
+	local rnd = math.random
+	local m_s = ""
+	local m_level = ""
+	local m_pos
+	if (level_ and position and class) then
+		m_pos = position
+		m_level = get_point_description(level_, m_pos)
+		if (m_level == "") then return "" end			
+		local t = {
+			["level"] = m_level, 
+			["class"] = class,
+			["kill_seen_a"] = news_data.common["kill_seen_a"][rnd(#news_data.common["kill_seen_a"])],
+			["kill_seen_z"] = news_data.common["kill_seen_z"][rnd(#news_data.common["kill_seen_z"])],
+			["when_a"] = news_data.common["when_a"][rnd(#news_data.common["when_a"])],
+			["when_z"] = news_data.common["when_z"][rnd(#news_data.common["when_z"])],
+			["fun_a"] = news_data.common["fun_a"][rnd(#news_data.common["fun_a"])],
+			["fun_z"] = news_data.common["fun_z"][rnd(#news_data.common["fun_z"])],
+			["killed_a"] = news_data.common["killed_a"][rnd(#news_data.common["killed_a"])],
+			["killed_z"] = news_data.common["killed_z"][rnd(#news_data.common["killed_z"])],
+			["cool_a"] = news_data.common["cool_a"][rnd(#news_data.common["cool_a"])],
+			["cool_z"] = news_data.common["cool_z"][rnd(#news_data.common["cool_z"])]						
+		}
+		local m_string = ""
+		m_string = news_data.actor_seen_public_templates[rnd(#news_data.actor_seen_public_templates)]		
+		for key0, value in pairs(t) do
+			m_s = string_gsub(m_string, "%$"..key0, value)
+			m_string = m_s
+		end
+		m_s = m_string
+	end
+	return m_s
+end
+
+function format_template_actor_seen_group(level_, position, class, count)
+	local rnd = math.random
+	local m_s = ""
+	local m_level = ""
+	local m_pos
+	if (level_ and position and class and count) then
+		m_pos = position
+		m_level = get_point_description(level_, m_pos)
+		if (m_level == "") then return "" end			
+		local s_count = ""
+		if (count == 1) then
+			s_count = ""
+		elseif(count == 2) then
+			s_count = "парочку"
+		elseif(count == 3) then
+			s_count = "несколько"
+		elseif(count >= 4 and count < 6) then
+			s_count = "группу"
+		else
+			s_count = "большую группу"
+		end
+		local t = {
+			["level"] = m_level, 
+			["class"] = class,
+			["count"] = s_count,
+			["fun_a"] = news_data.common["fun_a"][rnd(#news_data.common["fun_a"])],
+			["fun_z"] = news_data.common["fun_z"][rnd(#news_data.common["fun_z"])],
+			["kill_seen_a"] = news_data.common["kill_seen_a"][rnd(#news_data.common["kill_seen_a"])],
+			["kill_seen_z"] = news_data.common["kill_seen_z"][rnd(#news_data.common["kill_seen_z"])],
+			["when_a"] = news_data.common["when_a"][rnd(#news_data.common["when_a"])],
+			["when_z"] = news_data.common["when_z"][rnd(#news_data.common["when_z"])],
+			["killed_a"] = news_data.common["killed_a"][rnd(#news_data.common["killed_a"])],
+			["killed_z"] = news_data.common["killed_z"][rnd(#news_data.common["killed_z"])],
+			["cool_a"] = news_data.common["cool_a"][rnd(#news_data.common["cool_a"])],
+			["cool_z"] = news_data.common["cool_z"][rnd(#news_data.common["cool_z"])]						
+		}
+		local m_string = ""
+		m_string = news_data.actor_seen_public_templates_group[rnd(#news_data.actor_seen_public_templates_group)]		
+		for key0, value in pairs(t) do
+			m_s = string_gsub(m_string, "%$"..key0, value)
+			m_string = m_s
+		end
+		m_s = m_string
+	end
+	return m_s
+end
+
+
+function get_point_description(level, point)
+	local m_s = ""
+	local dist = 10000
+	local angle = 0	
+	local m_tmp_str = ""
+	if (level == "l10u_bunker" or level == "l11_pripyat" or level == "l12_stancia" or level == "l12_stancia_2" or level == "l12u_control_monolith" or level == "l12u_sarcofag") then
+		if (isRadarDeactivated() == false) then	return "" end
+	end
+	if (level and news_data.level_name[level] ~= nil) then
+		if (news_data.level_name[level][2] ~= nil) then
+			m_tmp_str = news_data.level_name[level][2]..""
+		end
+	end	
+	if (level and news_data.base_points[level] and point) then
+		local m_str = ""
+		local m_str0 = ""
+		local m_point = nil
+		local m_dist = 0
+		local m_points = news_data.base_points[level]
+		local dx = 0
+		local dy = 0
+		local radians = 0
+		for key0, value in pairs(m_points) do
+			m_point = vector():set(value["p"][1],value["p"][2],value["p"][3])
+			if (m_point) then
+				m_dist = m_point:distance_to(point)
+				if m_dist < dist then
+					dist = m_dist
+					m_str = value["text"]
+					m_str0 = value["text0"]
+					dx = point.x - m_point.x
+					dy = point.z - m_point.z
+					radians = math_atan2(dy, dx)
+					if(radians) then
+						angle = radians * 57
+						if (angle < 0) then
+							angle = angle + 360
+						end
+						if (angle > 360) then
+							angle = angle - 360
+						end
+					end
+				end
+			end
+		end
+		if dist<= 20 then
+			m_s = m_tmp_str.." "..m_str0
+		elseif dist < 50 then
+			m_s = m_tmp_str.." возле "..m_str
+		elseif dist < 100 then
+			m_s = m_tmp_str.." около "..m_str
+		else --Говорим, куда (север, юг...)
+			if (angle >= 330 or angle <= 30) then -- на востоке
+				m_s = m_tmp_str.." к востоку от "..m_str
+			elseif (angle >30 and angle <=60) then --северо-восток
+				m_s = m_tmp_str.." к северо-востоку от "..m_str
+			elseif (angle >60 and angle <=120) then --север
+				m_s = m_tmp_str.." к северу от "..m_str
+			elseif (angle >120 and angle <=150) then --северо-запад
+				m_s = m_tmp_str.." к северо-западу от "..m_str
+			elseif (angle >150 and angle <=210) then --запад
+				m_s = m_tmp_str.." к западу от "..m_str
+			elseif (angle >210 and angle <=240) then --юго-запад
+				m_s = m_tmp_str.." к юго-западу от "..m_str
+			elseif (angle >240 and angle <= 300) then --юг
+				m_s = m_tmp_str.." к югу от "..m_str
+			elseif (angle >300 and angle <=330) then --юго-восток
+				m_s = m_tmp_str.." к юго-востоку от "..m_str
+			else
+				m_s = m_tmp_str.." недалеко от "..m_str
+			end
+		end
+	else
+		m_s = m_tmp_str
+	end
+	return m_s
+end
+
+function get_point_description1(level, point)
+	local m_s = ""
+	local dist = 10000
+	local angle = 0	
+	local m_tmp_str = ""
+	if (level == "l10u_bunker" or level == "l11_pripyat" or level == "l12_stancia" or level == "l12_stancia_2" or level == "l12u_control_monolith" or level == "l12u_sarcofag") then
+		if (isRadarDeactivated() == false) then	return "" end
+	end
+	if (level and news_data.level_name[level] ~= nil) then
+		if (news_data.level_name[level][2] ~= nil) then
+			m_tmp_str = news_data.level_name[level][2]..""
+		end
+	end	
+	if (level and news_data.base_points[level] and point) then
+		local m_str = ""
+		local m_str0 = ""
+		local m_point = nil
+		local m_dist = 0
+		local m_points = news_data.base_points[level]
+		local dx = 0
+		local dy = 0
+		local radians = 0
+		for key0, value in pairs(m_points) do
+			m_point = vector():set(value["p"][1],value["p"][2],value["p"][3])
+			if (m_point) then
+				m_dist = m_point:distance_to(point)
+				if m_dist < dist then
+					dist = m_dist
+					m_str = value["text"]
+					m_str0 = value["text0"]
+					dx = point.x - m_point.x
+					dy = point.z - m_point.z
+					radians = math_atan2(dy, dx)
+					if(radians) then
+						angle = radians * 57
+						if (angle < 0) then
+							angle = angle + 360
+						end
+						if (angle > 360) then
+							angle = angle - 360
+						end
+					end
+				end
+			end
+		end
+		if dist<= 20 then
+			m_s = m_tmp_str..""..m_str0
+		elseif dist < 50 then
+			m_s = m_tmp_str.." возле "..m_str
+		elseif dist < 100 then
+			m_s = m_tmp_str.." около "..m_str
+		else --Говорим, куда (север, юг...)
+			if (angle >= 330 or angle <= 30) then -- на востоке
+				m_s = m_tmp_str.." к востоку от "..m_str
+			elseif (angle >30 and angle <=60) then --северо-восток
+				m_s = m_tmp_str.." к северо-востоку от "..m_str
+			elseif (angle >60 and angle <=120) then --север
+				m_s = m_tmp_str.." к северу от "..m_str
+			elseif (angle >120 and angle <=150) then --северо-запад
+				m_s = m_tmp_str.." к северо-западу от "..m_str
+			elseif (angle >150 and angle <=210) then --запад
+				m_s = m_tmp_str.." к западу от "..m_str
+			elseif (angle >210 and angle <=240) then --юго-запад
+				m_s = m_tmp_str.." к юго-западу от "..m_str
+			elseif (angle >240 and angle <= 300) then --юг
+				m_s = m_tmp_str.." к югу от "..m_str
+			elseif (angle >300 and angle <=330) then --юго-восток
+				m_s = m_tmp_str.." к юго-востоку от "..m_str
+			else
+				m_s = m_tmp_str.." недалеко от "..m_str
+			end
+		end
+	else
+		m_s = m_tmp_str
+	end
+	return m_s
+end
+
+function isGameObject(obj)
+	local bResult = false
+	if (obj and obj.fov) then
+		bResult = true
+	end
+	return bResult
+end
+
+function get_object_levelname(obj)
+	local sim = alife()
+	local mlevel = "null"	
+	if (obj) then
+		local m_game_vertex
+		local nm = "nil"
+		if (obj.name) then nm = obj:name() end
+		if (isGameObject(obj)) then
+			m_game_vertex = obj:game_vertex_id()
+		else
+			m_game_vertex = obj.m_game_vertex_id
+		end
+		if (m_game_vertex and game_graph():valid_vertex_id(m_game_vertex)) then
+			local lvert = game_graph():vertex(m_game_vertex)
+			if (lvert ~= nil and lvert.level_id) then
+				local lid = lvert:level_id()
+				if (lid ~= nil) then
+					mlevel = sim:level_name(lid)
+				else
+					if _debug == true then mylog(" get_object_levelname - level id is null "..nm) end
+				end
+			else
+				if _debug == true then mylog(" get_object_levelname - vertex is null "..nm) end
+			end
+			if mlevel == nil then mlevel = "nil" end
+		else
+			if _debug == true then mylog(" get_object_levelname - vertex_id is null "..nm) end
+		end
+	else
+		if _debug == true then mylog("get_object_levelname - no obj") end
+	end
+	return mlevel
+end
+
+function check_news()
+	-- выдать те новости, что успели собраться и сгрупироватся.
+	amk.oau_reason="cn table_spawned"
+	if table_spawned then
+		-- for k, v in pairs(table_spawned) do
+		for i=1, #table_spawned do
+			local v = table_spawned[i]
+			on_spawn_group(v.community, v.level, v.position, v.count, v.o_type)
+		end
+		-- _g.clear_table(table_spawned)
+		table_spawned = {}
+	end
+	
+	amk.oau_reason="cn killed_by_actor"
+	if table_killed_by_actor then
+		--for k, v in pairs(table_killed_by_actor) do
+		for i=1, #table_killed_by_actor do
+			local v = table_killed_by_actor[i]
+			on_hero_seen(v.community, v.level, v.position, v.count, v.o_type)
+		end
+		-- _g.clear_table(table_killed_by_actor)
+		table_killed_by_actor = {}
+	end
+	
+	if (timer_last_showed + timer_show_freq < amk.game_minutes()) then
+		-- Пора показывать, если есть что.
+		amk.oau_reason="cn on_news"
+		on_news()
+	end
+
+	spammers = {}
+	amk.oau_reason="cn start_timer"	
+  if not amk.has_g_timer("news_check") then
+    amk.g_start_timer("news_check", 0, 0, timer_check_freq)
+  end  
+end
+
+function add_spawned_object(obj)
+	local sim = alife()
+	if (obj and (IAmAStalker[obj:clsid()] or IAmAMonster[obj:clsid()])) then
+		if obj.can_switch_online and obj:can_switch_online() == false then return end
+		local s_comm = get_npc_community(obj)
+		local communities = {
+			[ "actor"] = true,
+			[ "stalker"] = true,
+			[ "dolg"] = true,
+			[ "freedom"] = true,
+			[ "stranger"] = true,
+			[ "trader"] = true,
+			[ "arena_enemy"] = true,
+			[ "actor_dolg"] = true,
+			[ "actor_freedom"] = true,
+			[ "ecolog"] = true,
+			[ "nebo"] = true,
+			[ "green"] = true
+			}
+		if (s_comm and communities[s_comm]) then 
+			return -- это сталкер
+		end
+		local s_id = ""
+		local pos = get_object_position(obj)
+		local lev = get_object_levelname(obj)
+		local obj_type = 0
+		if IAmAStalker[obj:clsid()] then 
+			obj_type = 1
+		elseif IAmAMonster[obj:clsid()] then 
+			obj_type = 2 
+		end
+		if (isGameObject(obj)) then
+			s_id = obj:id()
+		else
+			s_id = obj.id
+		end	
+		-- Проверим, не фильтруется ли он по smart_terrain
+		if (news_data.smart_filters and #news_data.smart_filters>0) then
+			local m_obj = nil
+			if (obj.smart_terrain_id) then
+				m_obj = obj
+			else
+				m_obj = sim:object(s_id)
+			end
+			if (m_obj and m_obj.smart_terrain_id and m_obj:smart_terrain_id() and m_obj:smart_terrain_id()~=65535 and news_data.smart_filters[s_comm]) then
+				local sm = sim:object(m_obj:smart_terrain_id())
+				if (sm and sm.name and sm:name()) then
+					local sn = sm:name()
+					for ks, vs in pairs (news_data.smart_filters[s_comm]) do
+						if string_find(sn, "^"..vs) then
+							if _debug == true then mylog("add_spawned_object - "..s_comm.." on "..sn.." filtered") end
+							return
+						end
+					end
+				end
+			end
+		end
+		-- Проверим, не монолитовцы ли это...
+		if s_comm == "monolith" then
+			if lev == "l10_radar" or lev == "l10u_bunker" or lev == "l11_pripyat" or lev == "l12_stancia" or lev == "l12_stancia_2" or lev == "l12u_control_monolith" or lev == "l12u_sarcofag" then
+				return
+			end
+		end
+		if s_comm == "zombie" or s_comm == "zombied" then
+			if lev == "l08_yantar" then
+				return
+			end
+		end
+		local b_added = false
+		if table_spawned then
+			-- for k, v in pairs(table_spawned) do
+			for i=1, #table_spawned do
+				local v = table_spawned[i]
+				if (v.community == s_comm and v.level == lev) then
+					local mpos = v.position
+					if (mpos) then
+						local dist = pos:distance_to(mpos)
+						if (dist < distance_close) then
+							v.count = v.count + 1
+							b_added = true
+							break
+						end
+					end
+				end
+			end
+		end
+		if (b_added == false) then
+			t = {id = s_id, community = s_comm, count = 1, level = lev, position = pos, o_type = obj_type}
+			table.insert(table_spawned, t)
+		else
+			--
+		end
+	end
+end
+
+function add_killed_by_actor(obj)
+	if (obj and (IAmAStalker[obj:clsid()] or IAmAMonster[obj:clsid()])) then
+		local s_comm = get_npc_community(obj)
+		if (s_comm and s_comm == "actor" or s_comm == "stalker" or s_comm == "dolg" or s_comm == "freedom" or s_comm == "trader" or s_comm == "ecolog" or s_comm == "nebo" or s_comm == "green") then 
+			return -- это сталкер
+		end
+		local s_id = ""
+		local lev = get_object_levelname(obj)
+		local pos = get_object_position(obj)
+		if (isGameObject(obj)) then
+			s_id = obj:id()
+		else
+			s_id = obj.id
+		end	
+		local b_added = false
+		local obj_type = 0
+		if IAmAStalker[obj:clsid()] then
+			obj_type = 1
+		elseif IAmAMonster[obj:clsid()] then
+			obj_type = 2
+		end
+		if table_killed_by_actor then
+			-- for k, v in pairs(table_killed_by_actor) do
+			for i=1, #table_killed_by_actor do
+				local v = table_killed_by_actor[i]
+				if (v.community == s_comm and v.level == lev) then
+					local mpos = v.position
+					if (mpos) then
+						local dist = pos:distance_to(mpos)
+						if (dist < distance_close) then
+							v.count = v.count + 1
+							b_added = true
+							break
+						end
+					end
+				end
+			end
+		end
+		if (b_added == false) then
+			t = {id = s_id, community = s_comm, count = 1, level = lev, position = pos, o_type = obj_type}
+			table.insert(table_killed_by_actor, t)
+		else
+			--
+		end
+	end	
+end
+
+function on_weather_change(old_weather, new_weather)
+-- clear, pasmurno, rain, groza
+	local rnd = math.random
+	if (old_weather and new_weather) then
+		if (amk.game_minutes() - timer_weather_showed > timer_weather_freq) then	
+			local s_weather = old_weather.."_"..new_weather
+			local m_h = level:get_time_hours()
+			local s_list = nil
+			if m_h >= 6 and m_h < 21 then
+				s_list = news_data.weather_templates_day
+			else
+				s_list = news_data.weather_templates_night
+			end
+			if (s_list and s_list[s_weather]) then
+				local s_text = s_list[s_weather][rnd(#s_list[s_weather])]
+				if (rnd() < prob) then
+					local name, sname = amk_names_lists.get_strings()
+					--mylog("on_weather_change ["..s_weather.."] "..s_text)
+					show_news(s_text, name.." "..sname, rnd(timer_weather, timer_weather * 5), 15, "gen_info")
+					timer_weather_showed = amk.game_minutes()
+				end
+			end
+		end
+	end
+end
+
+function on_daytime()
+-- ночь, рассвет, закат...
+	local rnd = math.random
+	if (amk.game_minutes() - timer_daytime_showed > timer_daytime_freq) then
+		local m_h = level:get_time_hours()
+		local m_m = level:get_time_minutes()
+		local m_t = m_h * 60 + m_m
+		local s_text = ""
+		if (m_t >= 4*60+30 and m_t <= 6*60) then 
+			-- 04:30 - 06:00 Рассвет
+			if (rnd() < prob) then
+				s_text = news_data.morning_templates[rnd(#news_data.morning_templates)]
+				local name, sname = amk_names_lists.get_strings()
+				show_news(s_text, name.." "..sname, rnd(timer_weather, timer_weather * 5), 15, "gen_info")
+				timer_daytime_showed = amk.game_minutes()
+			end
+		elseif(m_t >= 20*60+30 and m_t <= 22*60) then 
+			-- 20:30 - 22:00 Закат
+			if (rnd() < prob) then
+				s_text = news_data.evening_templates[rnd(#news_data.evening_templates)]
+				local name, sname = amk_names_lists.get_strings()
+				show_news(s_text, name.." "..sname, rnd(timer_weather, timer_weather * 5), 15, "gen_info")
+				timer_daytime_showed = amk.game_minutes()
+			end
+		elseif(m_t >= 23*60 and m_t <= 24*60) or (m_t >= 0*60 and m_t <= 4*60) then 
+			--23:00 - 04:00 Ночь			
+			if (rnd() < prob) then
+				local tbl = news_data.night_templates[rnd(#news_data.night_templates)]
+				local texts = tbl.texts
+				local comments = tbl.comments
+				local probl = tonumber(tbl.prob)
+				local base_wait = rnd(timer_weather, timer_weather * 5)
+				if (texts) then
+					local name = "[источник неизвестен]"
+					local i = 0
+					for k, v in pairs(texts) do
+					if (comments == nil) then
+						local name_, sname_ = amk_names_lists.get_strings()
+						name = name_.." "..sname_
+					end
+						s_text = v
+						show_news(s_text, name, base_wait + k * 2, 10, "uniq")
+						i = i + 1
+					end
+					if (probl and comments and news_data.comments_templates[comments] and rnd() < probl) then
+						s_text = news_data.comments_templates[comments][rnd(#news_data.comments_templates[comments])]
+						local name, sname = amk_names_lists.get_strings()
+						show_news(s_text, name.." "..sname, base_wait + (i+1) * 3, 15, "gen_info")
+					end
+					timer_daytime_showed = amk.game_minutes()
+				end				 
+			end
+			
+		end
+	end
+end
+
+-- Видели, как ГГ что-то делал
+function on_hero_seen(community, level, position, count, o_type)
+	local rnd = math.random
+	if (community and level and position and count and o_type and o_type > 0) then		
+		local name, sname = amk_names_lists.get_strings()
+		local s_author = name.." "..sname
+		local m_str = ""
+		local aid = nil
+		local author = get_nearest_stalker(level, position, dist_seen, 30)
+		if (author) then
+			s_author = get_npc_name(author)
+			aid = author.id
+		else
+			if (_debug == true) then mylog("on_hero_seen - skip") end
+			return
+		end
+
+		-- o_type = 1 - НПС
+		-- o_type = 2 - монстры
+		if(o_type == 2) then
+			local coeff = 0.0
+			local mon = community
+			if (mon == "") then return end
+			if (mon == "tushkano" or mon == "flesh" or mon == "dog" or mon == "psy_dog" or mon == "pseudodog" or mon == "cat" or mon == "boar") then
+				coeff = -0.65
+			elseif (mon == "bloodsucker" or mon == "controller") then
+				coeff = 0.3					
+			end
+			if (rnd() < (prob + coeff)) then
+				if (count == 1) then
+					m_str = format_template_actor_seen(level, potition, get_monster_name_by_string(mon, 4))
+				else
+					m_str = format_template_actor_seen_group(level, position, get_monster_name_by_string(mon, 6), count)
+				end
+				do_news(m_str, s_author, rnd(timer_corpse*5, timer_corpse*10), 15, "gen_info", aid)
+			end
+		elseif(o_type == 1) then
+			if (rnd() < prob) then
+				local zz = community
+				local m_who = ""
+				if (zz and news_data.community_name[zz]) then
+					if (zz == "actor" or zz == "stalker" or zz == "dolg" or zz == "freedom" or zz== "trader" or zz=="ecolog" or zz=="nebo" or zz=="green") then -- это сталкер
+						return
+					end
+					if (count == 1) then
+					m_who = news_data.community_name[zz][3]
+					else
+						m_who = news_data.community_name[zz][4]					
+					end
+				end
+				if (m_who == "") then return end
+				if (count == 1) then
+					m_str = format_template_actor_seen(level, position, m_who)
+				else
+					m_str = format_template_actor_seen_group(level, position, m_who, count)
+				end
+				do_news(m_str, s_author, rnd(timer_corpse*5, timer_corpse*10), 15, "gen_info", aid)
+			end
+		end
+	end	
+end
+
+
+-- где-то веролет дает прикурить (heli_combat:round, heli_combat.heli_combat:search, heli_combat.heli_combat:flyby)
+function on_heli_combat(obj)
+	local rnd = math.random
+	if (obj and amk.game_minutes() - timer_heli_showed > timer_heli_freq) then	
+		if (rnd() < 0.5) then -- Не надо слишком часть о вертолетике сообщать
+			if (rnd() < prob) then
+				local name, sname = amk_names_lists.get_strings()
+				local s_author = name.." "..sname
+				local m_str = ""
+				m_str = format_template_heli(obj, "combat")
+				local author = get_nearest_stalker(get_object_levelname(obj), get_object_position(obj), dist_heli_seen, 0)
+				if (author) then
+					s_author = get_npc_name(author)
+				else
+					return
+				end
+				--show_news(m_str, s_author, rnd(timer_heli, timer_heli * 5), 15, "gen_info")
+				do_news(m_str, s_author, rnd(timer_heli, timer_heli * 5), 15, "gen_info", author.id, 1)
+				timer_heli_showed = amk.game_minutes()
+			end
+		end
+	end
+end
+
+-- видели вертолет
+function on_heli_seen(obj)
+	local rnd = math.random
+	if (obj and amk.game_minutes() - timer_heli_showed > timer_heli_freq) then
+		if (rnd() < prob) then
+			local name, sname = amk_names_lists.get_strings()
+			local s_author = name.." "..sname
+			local m_str = ""
+			m_str = format_template_heli(obj, "seen")
+			local author = get_nearest_stalker(get_object_levelname(obj), get_object_position(obj), dist_heli_seen, 0)
+			if (author) then
+				s_author = get_npc_name(author)
+			else
+				return
+			end
+			--show_news(m_str, s_author, rnd(timer_heli, timer_heli * 5), 15, "gen_info")
+			do_news(m_str, s_author, rnd(timer_heli, timer_heli * 5), 15, "gen_info", author.id, 1)
+			timer_heli_showed = amk.game_minutes()
+		end
+	end
+end
+
+-- подбили вертолет
+function on_heli_flame(obj)
+	local rnd = math.random
+	if (obj and amk.game_minutes() - timer_heli_showed > timer_heli_freq) then	
+		if (rnd() < prob) then
+			local name, sname = amk_names_lists.get_strings()
+			local s_author = name.." "..sname
+			local m_str = ""
+			m_str = format_template_heli(obj, "flame")
+			local author = get_nearest_stalker(get_object_levelname(obj), get_object_position(obj), dist_heli_seen, 0)
+			if (author) then
+				s_author = get_npc_name(author)
+			else
+				return
+			end
+			--show_news(m_str, s_author, rnd(timer_heli, timer_heli * 5), 15, "gen_info")
+			do_news(m_str, s_author, rnd(timer_heli, timer_heli * 5), 15, "gen_info", author.id, 1)
+			timer_heli_showed = amk.game_minutes()
+		end
+	end
+end
+
+-- упал вертолет
+function on_heli_die(obj)
+	local rnd = math.random
+	if (obj and amk.game_minutes() - timer_heli_showed > timer_heli_freq) then	
+		if (rnd() < prob) then
+			local name, sname = amk_names_lists.get_strings()
+			local s_author = name.." "..sname
+			local m_str = ""
+			m_str = format_template_heli(obj, "die")
+			local author = get_nearest_stalker(get_object_levelname(obj), get_object_position(obj), dist_heli_seen, 0)
+			if (author) then
+				s_author = get_npc_name(author)
+			else
+				return
+			end			
+			--show_news(m_str, s_author, rnd(timer_heli, timer_heli * 5), 15, "gen_info")
+			do_news(m_str, s_author, rnd(timer_heli, timer_heli * 5), 15, "gen_info", author.id, 1)
+			timer_heli_showed = amk.game_minutes()
+		end
+	end
+end
+
+-- улетел вертолетик
+function on_heli_retreat(obj)
+	local rnd = math.random
+	if (obj and amk.game_minutes() - timer_heli_showed > timer_heli_freq) then	
+		if (rnd() < prob) then
+			local name, sname = amk_names_lists.get_strings()
+			local s_author = name.." "..sname
+			local m_str = ""
+			m_str = format_template_heli(obj, "retreat")
+			local author = get_nearest_stalker(get_object_levelname(obj), get_object_position(obj), dist_heli_seen, 0)
+			if (author) then
+				s_author = get_npc_name(author)
+			else
+				return
+			end			
+			--show_news(m_str, s_author, rnd(timer_heli, timer_heli * 5), 15, "gen_info")
+			do_news(m_str, s_author, rnd(timer_heli, timer_heli * 5), 15, "gen_info", author.id, 1)
+			timer_heli_showed = amk.game_minutes()
+		end
+	end
+end
+
+-- Видели монстров. Будем спавнить.
+function do_seen_monster()
+	local sim = alife()
+	local rnd = math.random
+	local avail = {}
+	local name, sname = amk_names_lists.get_strings()
+	local s_author = name.." "..sname
+	local o_author = ""
+	local icon = "gen_info"
+	local author_id = nil
+	local where = ""
+	for k,v in pairs(news_data.do_seen_monster_templates) do
+		if (v.enabled == true) then
+			-- Проверим, как там с режимом день\ночь
+			local bDayOk = true
+			for idx, cls in pairs(v.spawn) do
+				local class = cls.class
+				if (news_data.class_templates[class] and #news_data.class_templates[class] >0 ) then
+					class = news_data.class_templates[class][rnd(#news_data.class_templates[class])]
+				end
+				if (is_creature_day(class) == false) then
+					bDayOk = false
+					break
+				end
+			end
+			if v.alive then
+				local alive = tonumber(v.alive)
+				if (alive and isAlive(alive) == false) then
+					bDayOk = false
+				end
+			end
+			if bDayOk == true then
+				table.insert(avail, k)
+			else
+				--trace("Not day for "..v.text.." at "..level.get_time_hours())
+			end
+		end
+	end
+
+	if #avail > 0 then
+		local t = avail[rnd(#avail)]
+		local z = news_data.do_seen_monster_templates[t]
+		local obj
+		if (z) then
+			-- Вытягиваем что надо.
+			local spawn = z.spawn
+			local text = z.text
+			if (z.author) then 
+				o_author = z.author
+				s_author = z.author
+			end
+			if (z.icon) then icon = z.icon end
+			local bInfo = true
+			local info = z.has_info
+			if (info) then				
+				local tbl = amk.str_explode(",", amk.trim(info), true)
+				if (tbl and #tbl) then
+					bInfo = false
+					for ki, vi in pairs(tbl) do
+						if has_alife_info(vi) then
+							bInfo = true
+						end
+					end
+				end
+			end
+			if (bInfo == false) then
+				if _debug == true then mylog("do_seen_monster skip - "..text)	end
+				return
+			end
+			if (text and spawn and (#spawn > 0)) then
+				local b_ok = false
+				for l,m in pairs(spawn) do
+					local class = m.class
+					local count = m.count
+					local point = m.point
+					local lv = m.lv
+					local gv = m.gv
+					if (class and count and point and lv and gv) then
+						local index
+						local new_pos, x_offset, z_offset
+						for index=1, count do
+							x_offset = rnd(5)
+							z_offset = rnd(5)
+							new_pos = vector():set( point[1], point[2], point[3])
+							new_pos.x = new_pos.x + x_offset
+							new_pos.z = new_pos.z + z_offset
+							if (point_is_far(new_pos, lv, gv, dist_far) == false) then
+								-- Слишком близко.
+								return
+							end
+							obj = sim:create(class, new_pos, lv, gv)
+							if (obj) then
+								if (o_author == "") then
+									local author = get_nearest_stalker(get_object_levelname(obj), get_object_position(obj), dist_seen, 0)
+									if (author and get_npc_name(author) ~= "") then
+										s_author = get_npc_name(author)
+										o_author = s_author
+										author_id = author.id
+									end
+								end
+								if (where == "" and string_find(text,"$where")) then
+									local m_where = get_point_description(get_object_levelname(obj), get_object_position(obj))
+									if m_where then
+										text = string_gsub(text, "$where", m_where)
+										where = m_where
+									end
+								end
+								if IAmAMonster[obj:clsid()] then
+									local tbl = amk.read_monster_params(obj)
+									local cd = amk.parse_custom_data(tbl.custom)
+									if not cd.smart_terrains then cd.smart_terrains={} end
+									cd.smart_terrains.none = "true"
+									-- Микроквест
+									if (z.reward and z.reward.c_min and z.reward.c_max and index == 1 and l == 1) then
+										if not cd.microquest then cd.microquest={} end
+										cd.microquest.reward_money = rnd(z.reward.c_min, z.reward.c_max) * 100
+										cd.microquest.reward_items = ""
+										local rank = get_npc_rank(db.actor)
+										if (rank and news_data.miniquest_rewards and news_data.miniquest_rewards[rank]) then
+											for i=1, 3 do
+												local section = news_data.miniquest_rewards[rank][rnd(#news_data.miniquest_rewards[rank])]
+												if (section) then
+													if (cd.microquest.reward_items == "") then
+														cd.microquest.reward_items = section
+													else
+														cd.microquest.reward_items = cd.microquest.reward_items..","..section
+													end
+												end
+											end
+										end
+										s_from = string_gsub(s_author, " ", "_")
+										cd.microquest.reward_from = s_from
+										if (_debug == true) then amk.add_spot_on_map(obj.id, "red_location", text) end
+									end
+									tbl.custom = amk.gen_custom_data(cd)
+									amk.write_monster_params(tbl, obj)
+								end
+								b_ok = true
+							end
+						end					
+					end
+				end
+				if (b_ok == true) then
+					if (s_author ~= "") then
+						if author_id then
+							do_news(text, s_author, rnd(timer_spawn, timer_spawn * 3), 15, icon, author_id, 1)
+						else
+							show_news(text, s_author, rnd(timer_spawn, timer_spawn * 3), 15, icon)
+						end
+					end					
+					news_data.do_seen_monster_templates[t].enabled = false				
+					timer_def_spawn = amk.game_minutes()					
+				end
+			end
+		end
+	else
+		if _debug == true then mylog("do_seen_monster - no free news left.") end
+		for k,v in pairs(news_data.do_seen_monster_templates) do
+			v.enabled = true
+		end
+	end
+end
+
+function on_wound(obj)
+	local rnd = math.random
+	if (obj and obj.name) then
+		if (IsNpcStalker(obj)) then
+			if (rnd() < prob) then
+				local stype = "single"
+				local author_id = obj.id
+				if (rnd() < 0.5) then stype = "group" end
+				local stext = news_data.wound_templates[stype][rnd(#news_data.wound_templates[stype])]				
+				local m_pos = get_object_position(obj)
+				local m_level = ""
+				if (m_pos) then
+					m_level = get_point_description(get_object_levelname(obj), m_pos)
+					if (m_level == "") then return end
+				end
+				local sname = get_npc_name(obj)
+				local t = { ["level"] = m_level, ["name"] = sname }
+				local m_s = ""
+				for key0, value in pairs(t) do
+					m_s = string_gsub(stext, "%$"..key0, value)
+					stext = m_s
+				end
+				m_s = stext
+				local sfrom = sname
+				if (stype == "group") then
+					local name, sname = amk_names_lists.get_strings()
+					sfrom = name.." "..sname
+					local author = get_nearest_stalker(get_object_levelname(obj), get_object_position(obj), dist_seen, 0)
+					if (author and get_npc_name(author) ~= "") then
+						s_from = get_npc_name(author)
+						author_id = author.id
+					end
+				end
+				--show_news(m_s, sfrom, rnd(timer_stalker_death, timer_stalker_death * 2), 10, "gen_info")
+				do_news(m_s, sfrom, rnd(timer_stalker_death, timer_stalker_death * 2), 10, "gen_info", author_id, 1)
+				if (isGameObject(obj)) then
+					if (_debug) then amk.add_spot_on_map(obj:id(), "red_location", m_s) end
+				else
+					if (_debug) then amk.add_spot_on_map(obj.id, "red_location", m_s) end
+				end
+			end
+		end
+	end
+end
+
+local sem_death_komment = {
+"Опять Юра ласты склеил! Добрый знак.",
+"Семецкий кони двинул? Значит, рейд удачный будет!",
+"Что-то Семецкий зачастил... Может, предупреждает?",
+"Та-а-ак. Пойду-ка я в рейд. Авось не зря Семецкий помер опять.",
+"А правда, что когда Семецкий помирает - это на удачу?"
+}
+-- Сообщение о гибели Семецкого
+function do_eternal_stalker()
+	local rnd = math.random
+	local m_level = news_data.levels[rnd(#news_data.levels-5)]
+	local b_indoor = news_data.levels_types[m_level]
+	if (m_level and news_data.level_name[m_level]) then
+		m_level = news_data.level_name[m_level][1]
+	end
+	local m_name = "Юрий Семецкий"
+	local m_killer_str = ""
+	-- Аномалия, монстр или НПС(?).
+	if (rnd() < 0.4) then
+		-- Аномалия
+		if (b_indoor == 0) then
+			m_killer_str = news_data.anomalies[rnd(#news_data.anomalies)]
+		else
+			-- Не все аномалии под землей бывают...
+			m_killer_str = news_data.anomalies[rnd(#news_data.anomalies-3)]			
+		end
+	else
+		-- Монстры
+		if (b_indoor == 0) then
+			m_killer_str = news_data.monsters[rnd(#news_data.monsters)]
+		else
+			-- Не все монстры под землей бывают...
+			m_killer_str = news_data.monsters[rnd(#news_data.monsters-6)]
+		end
+	end
+	local m_string = m_name..", "..m_level..", "..m_killer_str.."."
+	local sem_timeout = rnd(timer_stalker_death, timer_stalker_death * 5)
+	show_news(m_string, "Погиб сталкер:", sem_timeout, 10, "death")
+	timer_eternal_stalker = amk.game_minutes()
+
+	if (rnd() < 0.3) then
+		local name, sname = amk_names_lists.get_strings()
+		local m_string = sem_death_komment[math.random(table.getn(sem_death_komment))]
+		show_news(m_string, name.." "..sname, sem_timeout+rnd(4,6), 10, "gen_info")
+	end
+end
+
+function next_blow(timer)
+	timer_next_blow = amk.game_minutes() + timer
+end
+
+--[[------------------------ новости о времени до выброса ----------------------]]
+function do_blow_news()
+local rnd = math.random
+if game_options.run_blowout_pp == 0 then return end
+	if (timer_next_blow == 0) then return end
+	if (amk.load_variable("blowout",-1) > -1 and amk.load_variable("blowout",-1) < 5) then return end
+	local m_time = amk.game_minutes()
+	local diff = (timer_next_blow - m_time) / 60 -- Разница в игровых часах
+	if diff < 1 then return end
+	local item = news_data.blowout_templates[rnd(#news_data.blowout_templates)]
+	local stext = item["text"]
+	local alive = tonumber(item["alive"])
+	if (alive and isAlive(alive) == false) then
+		return
+	end
+	if (stext) then
+		local when = ""
+		if (diff < 2) then
+			when = "через час-другой"
+		elseif (diff >= 2 and diff <=4) then	
+			when = "через пару часов"
+		elseif (diff > 4 and diff <=8) then	
+			when = "часов через 6-7"
+		elseif (diff > 8) then
+			local m_h = level:get_time_hours()
+			local n_h = m_h + diff
+			if (n_h >= 9 and n_h < 11) then when = "утром" end
+			if (n_h >= 11 and n_h < 14) then when = "днем" end
+			if (n_h >= 14 and n_h < 18) then when = "после обеда" end
+			if (n_h >= 18 and n_h < 22) then when = "вечером" end
+			if (n_h >= 22 and n_h < 30) then when = "ночью" end
+			if (n_h >= 30 and n_h < 34) then when = "завтра утром" end
+			if (n_h >= 34 and n_h < 38) then when = "завтра днем" end
+			if (n_h >= 38 and n_h < 42) then when = "завтра после обеда" end
+			if (n_h >= 42 and n_h < 50) then when = "завтра ночью" end
+		end
+		if (when == "") then return end
+		local t = { ["when"] = when}
+		local m_s = ""
+		for key0, value in pairs(t) do
+			m_s = string_gsub(stext, "%$"..key0, value)
+			stext = m_s
+		end
+		m_s = stext
+		local sfrom = ""
+		local name, sname = amk_names_lists.get_strings()
+		sfrom = name.." "..sname					
+		show_news(stext, sfrom, rnd(10, timer_general), 10, "gen_info")
+		timer_blow_showed = amk.game_minutes()
+   end
+ end
+--[[--------------------------------- lsclon -----------------------------------]]
+
+function news_sort(a,b)
+	if (a.priority==1 and b.priority ~=1) then
+		return false
+	end
+	return a.created < b.created
+	--return a.timeout < b.timeout
+end
+
+
+function on_news()
+	local sim = alife()
+	local rnd = math.random
+	local avail = {}
+	if news_stack then 
+		amk.oau_reason="cn on_news first pass"
+		for k,v in pairs(news_stack) do
+			if v.activated == nil then
+				if (v.lifetime > amk.game_minutes()) then
+--[[					if (v.timeout < game_minutes) then -- Новость актуальна.
+						--ti(avail, k)
+					else
+						mylog("Not ready yet - ".. v.from) -- Еще не время.
+					end]]
+				else -- Новость устарела.
+						-- mylog("Too old - "..v.from..": "..v.text)
+					table_remove(news_stack, k)
+				end
+			else -- Новость уже была.
+				table_remove(news_stack, k)
+			end
+		end
+		amk.oau_reason="cn on_news sort"
+		-- Отсортируем.
+		table_sort(news_stack, news_sort)
+		--amk.dump_table(news_stack)
+		amk.oau_reason="cn on_news second pass"
+		for k,v in pairs(news_stack) do
+			if v.activated == nil then
+				if (v.lifetime > amk.game_minutes()) then
+					if (v.timeout < amk.game_minutes()) then -- Новость актуальна.
+						table.insert(avail, k)
+					else
+						if _debug == true then mylog("Not ready yet - ".. v.from..": "..v.text) end -- Еще не время.
+					end
+				else -- Новость устарела.
+						if _debug == true then mylog("Too old - "..v.from..": "..v.text) end
+					table_remove(news_stack, k)
+				end
+			else -- Новость уже была.
+				table_remove(news_stack, k)
+			end
+		end
+	end
+	
+	if avail and #avail > 0 then
+		amk.oau_reason="cn on_news get available"
+		--local t = avail[rnd(#avail)]
+		local t = avail[1]
+		local z = news_stack[t]
+		if (z) then
+			local bAlive = false
+			local m_author_id = tonumber(z.author_id)
+			if (m_author_id ~= nil) then
+				amk.oau_reason="cn on_news check author"
+				bAlive = false
+				local obj = sim:object(m_author_id)
+				amk.oau_reason="cn on_news check author obj"
+				if (obj) then
+					amk.oau_reason="cn on_news author obj exists"
+					if (IAmAStalker[obj:clsid()]) then
+						amk.oau_reason="cn on_news author obj is NPC"
+						if IsNpcStalker(obj) then
+							amk.oau_reason="cn on_news check author alive"
+					if (obj.alive and obj:alive()==true and obj.health and obj:health() > 0) then
+						if (_debug == true) then amk.add_spot_on_map(obj.id, "red_location", z.from..": "..z.text) end
+								amk.oau_reason="cn on_news author is alive"
+						bAlive = true
+					end
+				end
+					end
+				end
+			else
+				bAlive = true
+			end
+			if (bAlive == true) then
+				amk.oau_reason="cn on_news show_news"
+				--show_news(z.from, z.text, z.timeout, z.showtime, z.section)
+				show_news(z.text, z.from, 0, z.showtime, z.section)
+				amk.oau_reason="cn on_news set activated"
+				z.activated = amk.game_minutes()
+			else
+				amk.oau_reason="cn on_news show_news alive is false"
+			end
+		end
+	else
+--		mylog("on_news [5] - no news ")
+	end	
+
+	amk.oau_reason="cn on_news continue"
+
+	if (timer_next_blow == 0) then
+		local name, delay
+		for a=1,100,1 do
+		local tmp = amk.load_variable("gt"..a,nil)
+			if tmp ~= nil then
+				name 	= amk.load_variable("gt"..a, nil)		
+				delay 	= amk.load_variable("gd"..a, nil)
+				if (name and delay and name == "blow_shift") then
+					timer_next_blow = delay
+					--next_blow(delay)
+				end
+			end
+		end	
+	end
+
+    local gtime = amk.game_minutes()
+	
+	if (gtime - timer_alife_showed > timer_alife_freq) then
+		amk.oau_reason="cn on_news offline_alife start"
+		amk_offline_alife.offline_alife()
+		amk.oau_reason="cn on_news offline_alife exit"
+		timer_alife_showed = amk.game_minutes()
+	end
+	if (gtime - timer_blow_showed > timer_blow_freq) then
+		do_blow_news()
+	end
+	if (gtime - timer_eternal_stalker > timer_eternal_stalker_freq) then
+		do_eternal_stalker()	
+	end
+	--[[ if (gtime - timer_random_spawn > timer_random_spawn_freq) then
+		do_seen()
+	end ]]
+	if (gtime - timer_def_spawn > timer_def_spawn_freq) then
+		do_seen_monster()	
+	end	
+	if (gtime - timer_daytime_showed > timer_daytime_freq) then
+		on_daytime()
+	end
+end
+
+--[[function game_minutes()
+	local gtime = level.get_time_days()*60*24+level.get_time_hours()*60+level.get_time_minutes()  --time in game minutes
+	return gtime
+end]]
+
+function on_offline_item_found(who, object)
+	if _debug == true then
+	if (who and object) then
+		mylog(get_npc_name(who).." нашел "..get_object_name(object))
+	end
+end
+end
+
+function on_offline_artifact_found(who, object)
+	if _debug == true then
+	if (who and object) then
+		mylog(get_npc_name(who).." нашел "..get_object_name(object))
+	end	
+end
+end
+
+function on_offline_weapon_found(who, object)
+	if _debug == true then
+	if (who and object) then
+		mylog(get_npc_name(who).." нашел "..get_object_name(object))
+	end
+end
+end
+
+function on_offline_monster_found(who, object)
+	if (who and object) then
+		local s_enemy = ""
+		if (IAmAMonster[object:clsid()]) then
+			s_enemy = get_monster_name(object, 2)
+		end
+		mylog(get_npc_name(who).." воюет с "..s_enemy)
+	end	
+end
+
+function on_offline_enemy_found(who, object)
+	if (who and object) then
+		local s_enemy = ""
+		if (IAmAStalker[object:clsid()]) then
+			s_enemy = get_npc_community(object)
+		end
+		if _debug == true then mylog(get_npc_name(who).." воюет с "..s_enemy) end
+	end
+end
+
+-- Кого-то грохнули в оффлайн.
+function on_offline_death(victim, killer, weapon)
+	if (victim and killer) then
+		if (IAmAStalker[victim:clsid()]) then
+			if (IsNpcStalker(victim)) then
+				on_offline_stalker_death(victim, killer, weapon)
+			else
+				on_offline_npc_death(victim, killer, weapon)
+			end
+		end	
+	end
+end
+
+function on_offline_stalker_death(victim_, killer_, weapon_)
+	if (victim_ == nil) then
+		return
+	end
+	local rnd = math.random
+	local m_killer = ""
+	local m_killer_s = ""
+	local m_victim = ""
+	local aid = nil
+	local m_name  = get_npc_name(victim_)
+	m_victim = format_death_stalker_corpse(victim_)
+	local m_level = get_level_name(get_object_levelname(victim_))
+	if (killer_) then
+		if IAmAMonster[killer_:clsid()] then
+			m_killer = format_death_by_monster(killer_)
+			m_killer_str = get_monster_name(killer_, 2)
+		elseif (IsAnomaly(killer_)) then
+			m_killer = format_death_by_anomaly(killer_)
+			m_killer_str = get_anomaly_name(killer_, 1)
+		elseif (IsNpcStalker(killer_)) then
+			local m_o_weapon = weapon_
+			local m_s_weapon = ""
+			if (m_o_weapon) then
+				m_s_weapon = get_weapon_type(m_o_weapon)
+				if (m_s_weapon < 5) then m_killer_str = "пулевое ранение" end
+				if (m_s_weapon == 6) then m_killer_str = "нож" end
+				if (m_s_weapon == 8) then m_killer_str = "ожоги" end
+				if (m_s_weapon == 7 or m_s_weapon == 5) then m_killer_str = "граната" end
+			end
+			m_killer = format_death_by_weapon(weapon_)
+		elseif (IsNpcOther(killer_)) then
+			local m_o_weapon2 = weapon_
+			local m_s_weapon2 = ""
+			if (m_o_weapon2) then
+				m_s_weapon2 = get_weapon_type(m_o_weapon2)
+				if (m_s_weapon2 < 5) then m_killer_str = "пулевое ранение" end
+				if (m_s_weapon2 == 6) then m_killer_str = "нож" end
+				if (m_s_weapon == 8) then m_killer_str = "ожоги" end
+				if (m_s_weapon2 == 7 or m_s_weapon2 == 5) then m_killer_str = "граната" end
+			end
+			m_killer = format_death_by_weapon(weapon_)
+		else
+			m_killer_str = "причина смерти - неустановлена"
+			m_killer = ""
+			--mylog("On offline stalker death - unknown killer. "..killer:name().." clsid="..get_clsid(killer))				
+		end
+	end
+	if (m_killer_str==nil or m_killer_str=="") then m_killer_str = "причина смерти - неустановлена" end
+	local m_string = m_name..", "..m_level..", "..m_killer_str.."."
+	if _debug == true then mylog("Offline: Погиб сталкер: "..m_string)  end
+	if (rnd() < 0.5) then -- слишком часто приходят сообщения о смерти
+		do_news(m_string, "Погиб сталкер:", rnd(timer_stalker_death, timer_stalker_death * 5), 10, "death", nil, 1) 
+	end
+
+	if (rnd() < prob) then
+		local name, sname = amk_names_lists.get_strings()
+		local s_author = "" --name.." "..sname
+		local m_str = ""
+		if (rnd() < 0.5) then
+			if (rnd() < 0.5) then
+				m_str = m_victim.." "..m_killer..""
+			else
+				m_str = m_victim..""
+			end
+			local author = get_nearest_stalker(get_object_levelname(victim_), get_object_position(victim_), dist_seen, 0)
+			if (author) then
+				s_author = get_npc_name(author)
+				aid = author.id
+			end			
+		else
+			local author = get_nearest_stalker(get_object_levelname(victim_), get_object_position(victim_), dist_hear_max, dist_hear_min)
+			if (author) then
+				s_author = get_npc_name(author)
+				aid = author.id
+			else
+				return
+			end		
+			m_str = format_death_hear_sounds(victim_, killer_, weapon_)
+		end
+		if (m_str ~= "" and s_author ~= "") then
+			if _debug == true then mylog("Offline: "..s_author.." "..m_str)  end
+			do_news(m_str, s_author, rnd(timer_corpse, timer_corpse *5), 15, "gen_info", aid)
+		end
+	end
+end
+
+function on_offline_npc_death(victim_, killer_, weapon_)
+	if (victim_ == nil) then
+		return
+	end
+	local rnd = math.random
+	local m_victim = ""
+	local m_killer = ""
+	local aid = nil
+	m_victim = format_death_npc_corpse(victim_)
+	if (killer_) then
+		if IAmAMonster[killer_:clsid()] then
+			m_killer = format_death_by_monster(killer_)
+		elseif (IsNpcStalker(killer_)) then -- Хм, и кто ж его так? Или свои, или ГГ
+			m_killer = format_death_by_weapon(weapon_)
+		elseif (IsNpcOther(killer_)) then -- Ага. Или бандиты, или вояки, или киллеры... Вобщем, люди.
+			m_killer = format_death_by_weapon(weapon_)
+		elseif (IsAnomaly(killer_)) then
+			m_killer = format_death_by_anomaly(killer_)
+		else
+			m_killer = ""
+			if _debug == true then mylog("On offline npc death - unknown killer. "..killer:name().." clsid="..get_clsid(killer))	end
+		end
+	else
+		if _debug == true then mylog("Хм. no killer. "..victim_:name()) end
+	end
+	if (rnd() < prob) then
+		local name, sname = amk_names_lists.get_strings()
+		local s_from = "" --name.." "..sname
+		local s_author = s_from
+		local m_str = ""
+		if (rnd() < 0.5) then
+			if (rnd() < 0.5) then
+				m_str = m_victim.." "..m_killer..""
+			else
+				m_str = m_victim..""
+			end
+			local author = get_nearest_stalker(get_object_levelname(victim_), get_object_position(victim_), dist_seen, 0)
+			if (author) then
+				s_author = get_npc_name(author)
+				s_from = s_author
+				aid = author.id
+			end			
+		else
+			local author = get_nearest_stalker(get_object_levelname(victim_), get_object_position(victim_), dist_hear_max, dist_hear_min)
+			if (author) then
+				s_author = get_npc_name(author)
+				s_from = s_author
+				aid = author.id
+			else
+				return
+			end		
+			m_str = format_death_hear_sounds(victim_, killer_, weapon_)
+		end
+		if (m_str ~= "" and s_from ~= "") then
+			do_news(m_str, s_from, rnd(timer_corpse, timer_corpse *5), 15, "gen_info", aid)
+			if _debug == true then mylog("Offline: "..s_from.." "..m_str) end
+		end
+	end
+end
+
+-- Кого-то ранили в оффлайн.
+function on_offline_wound(victim)
+	if (victim) then
+		if _debug == true then mylog("Offline: "..victim:name().." is wounded") end
+		on_wound(victim)
+	end
+end
+
+function on_offline_fight(team_A, team_B)
+ -- Была перестрелка с . Всех перебили
+-- Нарвался (Нарвались) на . Всех перебили
+-- Была перестрелка с . 2 положили.
+-- Нарвался (Нарвались) на . 4 положили.
+-- Была перестрелка с . 2 наших положили.
+-- Нарвался (Нарвались) на . 4 наших положили.
+end
+
+function on_offline_corpse_found(who, object)
+	local rnd = math.random
+	if (who and object) then
+		if (IAmAStalker[who:clsid()] and IsNpcStalker(who)) then
+			local s_corpse = ""
+			if IAmAMonster[object:clsid()] then
+				s_corpse = format_template_corpse_monster(object)
+			elseif (IAmAStalker[object:clsid()]) then
+				if (IsNpcStalker(object)) then
+					s_corpse = format_template_corpse_stalker(object)			
+				else
+					s_corpse = format_template_corpse_npc(object)
+				end
+			end
+			if (s_corpse == nil) then s_corpse = "" end
+			local s_from = get_npc_name(who)
+			if (s_from and s_corpse and s_corpse ~= "" and s_from ~= "") then
+				do_news(s_corpse, s_from, rnd(timer_corpse, timer_corpse *5), 15, "gen_info")
+			end
+			-- amk.mylog("Offline: "..get_npc_community(who).." found a corpse. "..s_corpse)
+		end
+	end
+end
+
+function on_offline_trade(npc, item)
+	local rnd = math.random
+	if (npc and item and rnd() < 0.02) then
+		local m_from = get_npc_name(npc)
+		local m_str = news_data.trade_templates[rnd(#news_data.trade_templates)]
+		local m_level = get_point_description(get_object_levelname(npc), get_object_position(npc))
+		if (m_level == "") then return end		
+		local m_title = get_object_name(item)
+		local t = {["level"] = m_level, ["item"] = m_title}
+		for key0, value in pairs(t) do
+			m_str = string_gsub(m_str, "%$"..key0, value)
+		end
+		if (m_str ~= "") then
+			if _debug == true then mylog("Offline: Trade "..m_from.." "..m_str) end
+			--show_news(m_str, m_from, rnd(timer_general, timer_general *5), 15, "trade")
+			do_news(m_str, m_from, rnd(timer_general, timer_general * 10), 15, "trade", npc.id, 1)
+			if (_debug == true) then amk.add_spot_on_map(npc.id,"red_location", m_str) end
+		end
+	end
+end
+
+function create_treasurebox()
+	local sim = alife()
+	local actor = db.actor
+	local obj
+	local pos = actor:position()
+	obj = sim:create("m_inventory_box", pos, actor:level_vertex_id(), actor:game_vertex_id())
+	if (obj) then
+		local t = amk.get_invbox_data(obj)
+		t.custom = "[logic]\ncfg = scripts\\treasure_inventory_box.ltx"
+		amk.set_invbox_data(t, obj)
+
+		--amk.add_spot_on_map(obj.id, "treasure_spot", "My treasure")
+	end
+end
+
+function on_miniquest_reward(trader)
+	local sim = alife()
+	if (trader and db.actor) then
+		local money = 0
+		local items = ""
+		local story_id = -1
+		if (trader.m_story_id) then
+			story_id = trader.m_story_id
+		elseif(trader.story_id) then
+			story_id = trader:story_id()
+		end
+		if (story_id == 3) then
+			local obj = sim:story_object(3)
+			if (obj) then
+				local t = amk.get_trader_data(obj)
+				local cd = amk.parse_custom_data(t.custom)
+				if (cd.microquest and cd.microquest.reward_money and cd.microquest.reward_items) then
+					money = tonumber(cd.microquest.reward_money)
+					items = cd.microquest.reward_items
+				end
+				if (money and items and money > 0 and items ~= "") then
+					dialogs.relocate_money(trader, money, "in")
+					local tbl = amk.str_explode(",", items, true)
+					for k, v in pairs(tbl) do
+						local section = v
+						if (section) then
+							dialogs.relocate_item_section(trader, section, "in")
+						end
+					end
+					cd.microquest = {}
+					cd.microquest.reward_money = 0
+					cd.microquest.reward_items = ""
+					t.custom = amk.gen_custom_data(cd)
+					amk.set_trader_data(t, obj)
+				end
+			end
+		elseif (story_id == 500) then
+			local obj = sim:story_object(500)
+			if (obj) then
+				local t = amk.read_stalker_params(obj)
+				local cd = amk.parse_custom_data(t.custom)
+				if (cd.microquest and cd.microquest.reward_money and cd.microquest.reward_items) then
+					money = tonumber(cd.microquest.reward_money)
+					items = cd.microquest.reward_items
+				end
+				if (money and items and money > 0 and items ~= "") then
+					dialogs.relocate_money(trader, money, "in")
+					local tbl = amk.str_explode(",", items, true)
+					for k, v in pairs(tbl) do
+						local section = v
+						if (section) then
+							dialogs.relocate_item_section(trader, section, "in")
+						end
+					end
+					cd.microquest = {}
+					cd.microquest.reward_money = 0
+					cd.microquest.reward_items = ""
+					t.custom = amk.gen_custom_data(cd)
+					amk.write_stalker_params(t, obj, true)
+				end
+			end		
+		else
+			if story_id == nil then story_id = -1 end
+			trace("on_miniquest_reward - strange story_id="..story_id)
+		end		
+	end	
+end
+
+
+function point_is_far(point, lv, gv, distance)
+	local sim = alife()
+	local actor = db.actor
+	local result = true
+	if (actor and point and lv and gv and distance and game_graph():valid_vertex_id(gv)) then
+		-- на одном ли уровне?
+		local map = sim:level_name(game_graph():vertex(gv):level_id())
+		if (map and level.name() == map) then
+			-- Достаточно ли далеко?
+			if (point:distance_to(actor:position()) < distance) then
+				result = false
+			end
+		end
+   end
+   return result
+end
+
+function get_nearest_stalker(level, point, dist_max, dist_min)
+	local sim = alife()
+	local obj = nil
+	local map = level
+	local min_dist = 1000000
+	if (dist_max == nil or dist_max == 0) then dist_max = dist_seen end
+	if (dist_min == nil) then dist_min = 0 end
+	if (map and point and amk_offline_alife.off_npcs[map] and amk_offline_alife.off_npcs[map].stalkers and #amk_offline_alife.off_npcs[map].stalkers > 0) then
+		for k, v in pairs(amk_offline_alife.off_npcs[map].stalkers) do
+			if v then
+				local stalker = sim:object(v.id)
+				-- На одном ли уровне?
+				if stalker and stalker.id ~= db.actor:id() and stalker.health and stalker.can_switch_online and stalker:can_switch_online() and stalker.m_game_vertex_id and game_graph():valid_vertex_id(stalker.m_game_vertex_id) then
+					local s_map = sim:level_name(game_graph():vertex(stalker.m_game_vertex_id):level_id())
+					if (map == s_map) then
+						if (stalker:health() > 0 and stalker.alive and stalker:alive()==true) then
+							local zz = get_npc_community(stalker)
+							if (zz == "stalker" or zz == "dolg" or zz == "freedom" or zz == "nebo" or zz == "green") then -- это сталкер
+								if (stalker.name and stalker:name() ~= "agr_ratcatcher") then
+								-- Достаточно ли далеко?
+									local s_dist = stalker.position:distance_to(point)
+									if (s_dist <= dist_max and s_dist >= dist_min and s_dist < min_dist) then
+										-- А не спамил ли он в последнее время?
+										local b_ok = true
+										if (spammers and #spammers > 0) then
+											local sn = get_npc_name(stalker)
+											if (sn ~= "" and sn ~= nil) then
+												for sk, sv in pairs(spammers) do
+													if (sv == sn) then
+														b_ok = false
+														break
+													end
+												end
+											end
+										end
+										if (b_ok == true) then
+											min_dist = s_dist
+											obj = stalker
+										end
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	return obj
+end
+
+function isAlive(story_id)
+	local sim = alife()
+	local result = false
+	if (story_id) then
+		local obj = sim:story_object(story_id)
+		if (obj and obj.alive and obj:alive()==true) then
+			result = true
+		end
+	end
+	return result
+end
+
+function on_info(info_id)
+--	if (info_id) then
+--		amk.mylog("on_info : "..tostring(info_id))
+--	end
+end
+
+function isRadarDeactivated()
+	local result = false
+	if (has_alife_info("bar_deactivate_radar_done")) then
+		result = true
+	end
+	return result
+end
+
+-- Функция отключена, чтобы всегда приходили сообщения о погибших квестовиках и ограбленных нычках
+function isIsolatedLevel(level_name)
+	local result = false
+--[[	local ln = level_name
+	if (ln == "av_peshera" or ln == "l03u_agr_underground" or ln == "l04u_labx18" or ln == "l08u_brainlab" or ln == "l10u_bunker" or ln == "peshera" or ln == "l12u_control_monolith" or ln == "l12u_sarcofag" or ln == "jupiter_underground" or ln == "labx8" or ln == "warlab") then
+		result = true
+	end]]
+	return result
+end
+
+function on_connect()
+	local rnd = math.random
+	local text = news_data.connect_templates[rnd(#news_data.connect_templates)]
+	if (text) then
+		amk.send_tip(text, "Статус соединения:", 0, 15, "uniq")
+	end
+end
+
+function on_disconnect()
+	local rnd = math.random
+	local text = news_data.disconnect_templates[rnd(#news_data.disconnect_templates)]
+	if (text) then
+		amk.send_tip(text, "Статус соединения:", 0, 15, "uniq")
+	end
+end
+
+function is_creature_day(obj_section)
+	--проверка на дневной/ночной режим
+	--local day_begin = utils.cfg_get_number(system_ini(), obj_section, "DayTime_Begin", nil, false, -1)
+	local day_begin = getIniValueFloat(obj_section, "DayTime_Begin", -1, nil)
+	--local day_end = utils.cfg_get_number(system_ini(), obj_section, "DayTime_End", nil, false, -1)
+	local day_end = getIniValueFloat(obj_section, "DayTime_End", -1, nil)
+	if day_begin~=-1 and day_end~=-1 then
+		local hrs = level.get_time_hours()
+		local de = day_end
+		if day_begin>day_end then
+			hrs = hrs+24
+			de=de+24
+		end
+		if not (hrs >= day_begin and hrs < de) then
+			return false
+		end
+	end
+	return true
+end
