@@ -5,6 +5,9 @@ function attach( sm )
 end
 
 
+local st = {}
+
+
 function on_drop( obj, sobj )
   if not sobj then return end
   local sect = obj:section()
@@ -21,7 +24,7 @@ end
 
 
 function on_use( obj )
-  local rukzak = ui_rukzak( obj )
+  local rukzak = ui_rukzak( obj:id() )
   level.start_stop_menu( rukzak, true )
 end
 
@@ -61,7 +64,7 @@ end
 
 
 class "rukzak_item" ( CUIListItemEx )
-function rukzak_item:__init( name, cond ) super()
+function rukzak_item:__init( name, cond, cnt ) super()
   self:SetWndRect( 0, 0, 475, 22 )
   local ca = 255
   local cr = 216
@@ -89,7 +92,7 @@ function rukzak_item:__init( name, cond ) super()
   self.item_cnt:SetAutoDelete( true )
   self:AttachChild( self.item_cnt )
   self.item_cnt:SetWndRect( 435, 0, 40, 22 )
-  self.item_cnt:SetText( "x1" )
+  self.item_cnt:SetText( "x" .. cnt )
   self.item_cnt:SetTextAlign( CGameFont.alLeft )
   self.item_cnt:SetFont( GetFontLetterica16Russian() )
   self.item_cnt:SetTextColor( ca, cr, cg, cb )
@@ -97,11 +100,9 @@ end
 
 
 class "ui_rukzak" ( CUIScriptWnd )
-function ui_rukzak:__init( owner ) super()
-  self.list_other = {}
-  self.list_our   = {}
-  self.owner      = owner
-  self.xml_fname  = "ui_dsh_rukzak.xml"
+function ui_rukzak:__init( owner_id ) super()
+  self.owner_id  = owner_id
+  self.xml_fname = "ui_dsh_rukzak.xml"
   self:InitControls()
   self:InitCallBacks()
   self:FillOurList()
@@ -145,6 +146,13 @@ function ui_rukzak:InitCallBacks()
   self:AddCallback( "btn_4", ui_events.BUTTON_CLICKED, self.rep_btn, self )
   self:AddCallback( "btn_quit", ui_events.BUTTON_CLICKED, self.on_quit, self )
   self:AddCallback(
+    "list_other", ui_events.LIST_ITEM_CLICKED, self.OnListItemClicked, self
+  )
+  self:AddCallback(
+    "list_other", ui_events.WINDOW_LBUTTON_DB_CLICK, self.OnListItemDbClicked,
+    self
+  )
+  self:AddCallback(
     "list_our", ui_events.LIST_ITEM_CLICKED, self.OnListItemClicked, self
   )
   self:AddCallback(
@@ -163,18 +171,38 @@ function ui_rukzak:OnTabChange()
   elseif i == 1 then
     self.dlg_our:Show( true )
   end
+  self.btn_4:Enable( false )
 end
 
 
 function ui_rukzak:rep_btn()
-  local list = self.ui_list_our
-  if list:GetSize() == 0 then return end
-  local index = list:GetSelectedItem()
-  if index == -1 then return end
-  local item = list:GetItem( index )
+  local item = self:get_selected_item()
   if not item then return end
-  local destr_item_index = tonumber( item.itmnum:GetText() )
-  local destr_item = self.list_items[ destr_item_index ]
+end
+
+
+function ui_rukzak:get_current_list_box()
+  local list_box
+  local i = self.tab:GetActiveIndex()
+  if     i == 0 then
+    list_box = self.ui_list_other
+  elseif i == 1 then
+    list_box = self.ui_list_our
+  end
+  return list_box
+end
+
+
+function ui_rukzak:get_selected_item()
+  local list_box = self:get_current_list_box()
+  local item
+  if list_box:GetSize() > 0 then
+    local itm_index = list_box:GetSelectedItem()
+    if itm_index >= 0 then
+      item = list_box:GetItem( itm_index )
+    end
+  end
+  return item
 end
 
 
@@ -185,11 +213,7 @@ end
 
 
 function ui_rukzak:OnListItemClicked()
-  local list_box = self.ui_list_our
-  if list_box:GetSize() == 0 then return end
-  local itm_index = list_box:GetSelectedItem()
-  if itm_index == -1 then return end
-  local item      = list_box:GetItem( itm_index )
+  local item = self:get_selected_item()
   if not item then return end
   self.btn_4:Enable( true )
 end
@@ -201,38 +225,55 @@ end
 
 
 function ui_rukzak:FillOurList()
+  local by_key = {}
+  local items  = {}
   for i = 0, db.actor:object_count() - 1 do
-    local item_from_inv = db.actor:object( i )
-    if self:can_include_into_list( item_from_inv ) then
-      table.insert( self.list_our, item_from_inv )
-      local _item_name = sys_ini:r_string_wq(
-        item_from_inv:section(), "inv_name_short"
-      )
-      if not _item_name then
-        _item_name = sys_ini:r_string_wq(
-          item_from_inv:section(), "inv_name"
-        )
+    local obj = db.actor:object( i )
+    if self:can_include_into_list( obj ) then
+      local sect = item_from_inv:section()
+      local cond = string.format( "%.1f", obj:condition() * 100 )
+      local key = sect .. ":" .. cond
+      if by_key[ key ] then
+        table.insert( by_key[ key ].game_objs, obj )
+      else
+        local item = {
+          [ "section"   ] = sect,
+          [ "game_objs" ] = { obj },
+          [ "condition" ] = cond,
+        }
+        by_key[ key ] = item
+        table.insert( items, item )
       end
-      _item_name = game.translate_string( _item_name )
-      local _item_cond = item_from_inv:condition() * 100
-      self:AddItemToList( self.ui_list_our, _item_name, _item_cond )
     end
+  end
+  for _, item in ipairs( items ) do
+    local sect = item.section
+    local name = sys_ini:r_string_wq( sect, "inv_name_short" )
+    if not name then
+      name = sys_ini:r_string_wq( sect, "inv_name" )
+    end
+    name = game.translate_string( name )
+    local ui_item = rukzak_item(
+      name, item.condition, table.getn( item.game_objs )
+    )
+    ui_item.data = item
+    self.ui_list_our:AddItem( ui_item )
   end
 end
 
 
 function ui_rukzak:can_include_into_list( item )
   if db.actor:is_in_ruck( item ) then
-    local quest_item = get_bool( item:section(), "quest_item" )
-    return not quest_item
+    local sect = item:section()
+    if not get_bool( sect, "quest_item" ) then
+      local igw = sys_ini:r_u32( sect, "inv_grid_width",  0 )
+      local igh = sys_ini:r_u32( sect, "inv_grid_height", 0 )
+      if igw > 0 and igh > 0 then
+        return true
+      end
+    end
   end
   return false
-end
-
-
-function ui_rukzak:AddItemToList( ui_list, item_name, item_cond )
-  local _itm = rukzak_item( item_name, item_cond )
-  ui_list_our:AddItem( _itm )
 end
 
 
