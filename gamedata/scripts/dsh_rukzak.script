@@ -5,9 +5,6 @@ function attach( sm )
 end
 
 
-local st = {}
-
-
 function on_drop( obj, sobj )
   if not sobj then return end
   local sect = obj:section()
@@ -26,6 +23,55 @@ end
 function on_use( obj )
   local rukzak = ui_rukzak( obj:id() )
   level.start_stop_menu( rukzak, true )
+end
+
+
+function load_rukzak( id )
+  local prefix     = "dsh_rukzak." .. id
+  local sections   = ogse.load_var( prefix .. ".sections", {}, "array" )
+  local conds      = ogse.load_var( prefix .. ".conds",    {}, "array" )
+  local game_types = ogse.load_var( prefix .. ".types",    {}, "array" )
+  local counts     = ogse.load_var( prefix .. ".counts",   {}, "array" )
+  local data = {}
+  for i, sect in ipairs( sections ) do
+    local cond = conds[ i ]
+    local key  = sect .. cond
+    local item = {
+      [ "section"   ] = sect,
+      [ "condition" ] = tonumber( cond ),
+      [ "game_type" ] = game_types[ i ],
+      [ "count"     ] = counts[ i ],
+      [ "key"       ] = key,
+    }
+    table.insert( data, item )
+  end
+  return data
+end
+
+
+function save_rukzak( id, data )
+  local prefix = "dsh_rukzak." .. id
+  local sections   = {}
+  local conds      = {}
+  local game_types = {}
+  local counts     = {}
+  for _, item in ipairs( data ) do
+    table.insert( sections,   item.section )
+    table.insert( conds,      string.format( "%.2f", item.condition ) )
+    table.insert( game_types, ( item.game_type or "" ) )
+    table.insert( counts,     item.count   )
+  end
+  if table.getn( sections ) > 0 then
+    ogse.save_var( prefix .. ".sections", sections,   "array" )
+    ogse.save_var( prefix .. ".conds",    conds,      "array" )
+    ogse.save_var( prefix .. ".types",    game_types, "array" )
+    ogse.save_var( prefix .. ".counts",   counts,     "array" )
+  else
+    ogse.delete_var( prefix .. ".sections" )
+    ogse.delete_var( prefix .. ".conds"    )
+    ogse.delete_var( prefix .. ".types"    )
+    ogse.delete_var( prefix .. ".counts"   )
+  end
 end
 
 
@@ -91,9 +137,9 @@ function rukzak_item:__init( name, cond, cnt ) super()
   self.item_cnt = CUIStatic()
   self.item_cnt:SetAutoDelete( true )
   self:AttachChild( self.item_cnt )
-  self.item_cnt:SetWndRect( 435, 0, 40, 22 )
+  self.item_cnt:SetWndRect( 435, 0, 20, 22 )
   self.item_cnt:SetText( "x" .. cnt )
-  self.item_cnt:SetTextAlign( CGameFont.alLeft )
+  self.item_cnt:SetTextAlign( CGameFont.alRight )
   self.item_cnt:SetFont( GetFontLetterica16Russian() )
   self.item_cnt:SetTextColor( ca, cr, cg, cb )
 end
@@ -101,10 +147,14 @@ end
 
 class "ui_rukzak" ( CUIScriptWnd )
 function ui_rukzak:__init( owner_id ) super()
+  self.changed   = false
+  self.index_other = {}
+  self.index_our   = {}
   self.owner_id  = owner_id
   self.xml_fname = "ui_dsh_rukzak.xml"
   self:InitControls()
   self:InitCallBacks()
+  self:FillOtherList()
   self:FillOurList()
 end
 function ui_rukzak:__finalize() end
@@ -176,8 +226,55 @@ end
 
 
 function ui_rukzak:rep_btn()
-  local item = self:get_selected_item()
-  if not item then return end
+  local ui_item = self:get_selected_item()
+  if not ui_item then return end
+  local item = ui_item.data
+  if item.game_objs then
+    local obj      = table.remove( item.game_objs, 1 )
+    local ui_other = self.index_other[ item.key ]
+    local other
+    if ui_other then
+      other = ui_other.data
+    else
+      other = {
+        [ "section"   ] = item.section,
+        [ "condition" ] = item.condition,
+        [ "game_type" ] = item.game_type,
+        [ "count"     ] = 0,
+        [ "key"       ] = item.key,
+      }
+      table.insert( self.items_other, other )
+    end
+    local size
+    if obj:is_ammo() then
+      size = dunin_ammo.get_ammo_size( obj )
+      item.count = item.count - size
+    else
+      size = 1
+    end
+    other.count = other.count + size
+    if ui_other then
+      ui_other.item_cnt:SetText( "x" .. other.count )
+    else
+      ui_other = rukzak_item(
+        ui_item.item_name:GetText(), other.condition, other.count
+      )
+      ui_other.data = other
+      self.index_other[ other.key ] = ui_other
+      self.ui_list_other:AddItem( ui_other )
+    end
+    if table.getn( item.game_objs ) > 0 then
+      ui_item.item_cnt:SetText(
+        "x" .. ( item.count or table.getn( item.game_objs ) )
+      )
+    else
+      local pos = self.ui_list_our:GetItemPos( ui_item )
+      self.ui_list_our:RemoveItem( pos )
+    end
+    ogse.remove_item_from_inventory( obj )
+  else
+  end
+  self.changed = true
 end
 
 
@@ -207,6 +304,9 @@ end
 
 
 function ui_rukzak:on_quit()
+  if self.changed then
+    save_rukzak( self.owner_id, self.items_other )
+  end
   self:GetHolder():start_stop_menu( self, true )
   collectgarbage( "collect" )
 end
@@ -224,25 +324,52 @@ function ui_rukzak:OnListItemDbClicked()
 end
 
 
+function ui_rukzak:FillOtherList()
+  self.items_other = load_rukzak( self.owner_id )
+  for _, item in ipairs( self.items_other ) do
+    local sect = item.section
+    local name = sys_ini:r_string_wq( sect, "inv_name_short" )
+    if not name then
+      name = sys_ini:r_string_wq( sect, "inv_name" )
+    end
+    name = game.translate_string( name )
+    local ui_item = rukzak_item( name, item.condition, item.count )
+    ui_item.data = item
+    self.index_other[ item.key ] = ui_item
+    self.ui_list_other:AddItem( ui_item )
+  end
+end
+
+
 function ui_rukzak:FillOurList()
   local by_key = {}
   local items  = {}
   for i = 0, db.actor:object_count() - 1 do
     local obj = db.actor:object( i )
     if self:can_include_into_list( obj ) then
-      local sect = item_from_inv:section()
-      local cond = string.format( "%.1f", obj:condition() * 100 )
-      local key = sect .. ":" .. cond
-      if by_key[ key ] then
+      local sect = obj:section()
+      local cond = string.format( "%.2f", obj:condition() * 100 )
+      local key  = sect .. ":" .. cond
+      local item = by_key[ key ]
+      if item then
         table.insert( by_key[ key ].game_objs, obj )
       else
-        local item = {
+        item = {
           [ "section"   ] = sect,
-          [ "game_objs" ] = { obj },
           [ "condition" ] = cond,
+          [ "game_objs" ] = { obj },
+          [ "game_type" ] = self:get_game_type( obj ),
+          [ "key"       ] = key,
         }
         by_key[ key ] = item
         table.insert( items, item )
+      end
+      if item.game_type == "ammo" then
+        if item.count then
+          item.count = item.count + dunin_ammo.get_ammo_size( obj )
+        else
+          item.count = dunin_ammo.get_ammo_size( obj )
+        end
       end
     end
   end
@@ -254,11 +381,21 @@ function ui_rukzak:FillOurList()
     end
     name = game.translate_string( name )
     local ui_item = rukzak_item(
-      name, item.condition, table.getn( item.game_objs )
+      name, item.condition, ( item.count or table.getn( item.game_objs ) )
     )
     ui_item.data = item
+    self.index_our[ item.key ] = ui_item
     self.ui_list_our:AddItem( ui_item )
   end
+end
+
+
+function ui_rukzak:get_game_type( obj )
+  local game_type
+  if obj:is_ammo() then
+    game_type = "ammo"
+  end
+  return game_type
 end
 
 
