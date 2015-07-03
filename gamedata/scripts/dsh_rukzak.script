@@ -1,7 +1,8 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 function attach( sm )
   sm:subscribe({ signal = "on_drop", fun = this.on_drop })
-  sm:subscribe({ signal = "on_rukzak_use", fun = this.on_use })
+  sm:subscribe({ signal = "on_use",  fun = this.on_use })
+  sm:subscribe({ signal = "on_rukzak_use", fun = this.on_rukzak_use })
 end
 
 
@@ -9,18 +10,38 @@ function on_drop( obj, sobj )
   if not sobj then return end
   local sect = obj:section()
   if sect == "treasure_item" and sobj.parent_id == 65535 then
-    local real = get_string( sect, "real_item_section" )
     ogse.remove_item( obj )
-    local pos = db.actor:position()
-    local new = alife():create(
-      real, pos, db.actor:level_vertex_id(), db.actor:game_vertex_id()
-    )
+    spawn_magic_rukzak( sect )
+    level.start_stop_menu( level.main_input_receiver(), true )
     return true
   end
 end
 
 
-function on_use( obj )
+function on_use( obj, sobj )
+  local sect = obj:section()
+  if sect == "treasure_item" then
+    spawn_magic_rukzak( sect )
+    level.start_stop_menu( level.main_input_receiver(), true )
+    return true
+  end
+end
+
+
+function spawn_magic_rukzak( sect )
+  if ui_mm_opt_main.GetOption( "magic_rukzak_enabled" ) then
+    local real = get_string( sect, "real_item_section" )
+    local pos  = db.actor:position()
+    local new  = alife():create(
+      real, pos, db.actor:level_vertex_id(), db.actor:game_vertex_id()
+    )
+  else
+    news_main.create_treasurebox()
+  end
+end
+
+
+function on_rukzak_use( obj )
   local rukzak = ui_rukzak( obj:id() )
   level.start_stop_menu( rukzak, true )
 end
@@ -56,10 +77,12 @@ function save_rukzak( id, data )
   local game_types = {}
   local counts     = {}
   for _, item in ipairs( data ) do
-    table.insert( sections,   item.section )
-    table.insert( conds,      string.format( "%.2f", item.condition ) )
-    table.insert( game_types, ( item.game_type or "" ) )
-    table.insert( counts,     item.count   )
+    if data.count > 0 then
+      table.insert( sections,   item.section )
+      table.insert( conds,      string.format( "%.2f", item.condition ) )
+      table.insert( game_types, ( item.game_type or "" ) )
+      table.insert( counts,     item.count   )
+    end
   end
   if table.getn( sections ) > 0 then
     ogse.save_var( prefix .. ".sections", sections,   "array" )
@@ -212,6 +235,18 @@ function ui_rukzak:InitCallBacks()
 end
 
 
+function ui_rukzak:OnKeyboard( dik, keyboard_action )
+  CUIScriptWnd.OnKeyboard( self, dik, keyboard_action )
+  if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
+    -- на выход повесим Esc
+    if dik == DIK_keys.DIK_ESCAPE then
+      self:on_quit()
+    end
+  end
+  return true
+end
+
+
 function ui_rukzak:OnTabChange()
   self.dlg_other:Show( false )
   self.dlg_our:Show( false )
@@ -228,53 +263,126 @@ end
 function ui_rukzak:rep_btn()
   local ui_item = self:get_selected_item()
   if not ui_item then return end
-  local item = ui_item.data
-  if item.game_objs then
-    local obj      = table.remove( item.game_objs, 1 )
-    local ui_other = self.index_other[ item.key ]
-    local other
-    if ui_other then
-      other = ui_other.data
-    else
-      other = {
-        [ "section"   ] = item.section,
-        [ "condition" ] = item.condition,
-        [ "game_type" ] = item.game_type,
-        [ "count"     ] = 0,
-        [ "key"       ] = item.key,
-      }
-      table.insert( self.items_other, other )
-    end
-    local size
-    if obj:is_ammo() then
-      size = dunin_ammo.get_ammo_size( obj )
-      item.count = item.count - size
-    else
-      size = 1
-    end
-    other.count = other.count + size
-    if ui_other then
-      ui_other.item_cnt:SetText( "x" .. other.count )
-    else
-      ui_other = rukzak_item(
-        ui_item.item_name:GetText(), other.condition, other.count
-      )
-      ui_other.data = other
-      self.index_other[ other.key ] = ui_other
-      self.ui_list_other:AddItem( ui_other )
-    end
-    if table.getn( item.game_objs ) > 0 then
-      ui_item.item_cnt:SetText(
-        "x" .. ( item.count or table.getn( item.game_objs ) )
-      )
-    else
-      local pos = self.ui_list_our:GetItemPos( ui_item )
-      self.ui_list_our:RemoveItem( pos )
-    end
-    ogse.remove_item_from_inventory( obj )
-  else
-  end
   self.changed = true
+  if ui_item.data.game_objs then
+    self:move_from_our( ui_item )
+  else
+    self:move_from_other( ui_item )
+    if self.ui_list_other:GetSize() == 0 then
+      ogse.spawn_item_in_inv( "treasure_item" )
+      local obj = level.object_by_id( self.owner_id )
+      ogse.remove_item( obj )
+      self:on_quit()
+    end
+  end
+end
+
+
+function ui_rukzak:move_from_other( ui_item )
+  local item = ui_item.data
+  local ui_our = self.index_our[ item.key ]
+  local our
+  if ui_our then
+    our = ui_our.data
+  else
+    our = {
+      [ "section"   ] = item.section,
+      [ "condition" ] = item.condition,
+      [ "game_type" ] = item.game_type,
+      [ "game_objs" ] = {},
+      [ "key"       ] = item.key,
+    }
+  end
+  local sobj
+  if our.game_type == "ammo" then
+    if not our.count then our.count = 0 end
+    local box_size = dunin_ammo.ammo[ item.section ].box
+    if item.count > box_size then
+      sobj = ogse.spawn_ammo_in_inv( item.section, box_size )
+      item.count = item.count - box_size
+      our.count  = our.count  + box_size
+    else
+      sobj = ogse.spawn_ammo_in_inv( item.section, item.count )
+      our.count  = our.count  + item.count
+      item.count = 0
+    end
+  else
+    sobj = ogse.spawn_item_in_inv( item.section )
+    item.count = item.count - 1
+  end
+  if ui_our then
+    ui_our.item_cnt:SetText(
+      "x" .. ( our.count or table.getn( our.game_objs ) )
+    )
+  else
+    ui_our = rukzak_item(
+      ui_item.item_name:GetText(), our.condition,
+      ( our.count or table.getn( our.game_objs ) )
+    )
+    ui_our.data = our
+    self.index_our[ our.key ] = ui_our
+    self.ui_list_our:AddItem( ui_our )
+  end
+  if item.count > 0 then
+    ui_item.item_cnt:SetText( "x" .. item.count )
+  else
+    local pos = self.ui_list_other:GetItemPos( ui_item )
+    self.ui_list_other:RemoveItem( pos )
+    self.index_other[ item.key ] = nil
+  end
+  local obj = level.object_by_id( sobj.id )
+  table.insert( our.game_objs, obj )
+  if our.condition < 100 then
+    dsh.set_condition( obj, our.condition / 100 )
+  end
+end
+
+
+function ui_rukzak:move_from_our( ui_item )
+  local item = ui_item.data
+  local obj      = table.remove( item.game_objs, 1 )
+  local ui_other = self.index_other[ item.key ]
+  local other
+  if ui_other then
+    other = ui_other.data
+  else
+    other = {
+      [ "section"   ] = item.section,
+      [ "condition" ] = item.condition,
+      [ "game_type" ] = item.game_type,
+      [ "count"     ] = 0,
+      [ "key"       ] = item.key,
+    }
+    table.insert( self.items_other, other )
+  end
+  local size
+  if obj:is_ammo() then
+    size = dunin_ammo.get_ammo_size( obj )
+    item.count = item.count - size
+  else
+    size = 1
+  end
+  other.count = other.count + size
+  if ui_other then
+    ui_other.item_cnt:SetText( "x" .. other.count )
+  else
+    ui_other = rukzak_item(
+      ui_item.item_name:GetText(), other.condition, other.count
+    )
+    ui_other.data = other
+    self.index_other[ other.key ] = ui_other
+    self.ui_list_other:AddItem( ui_other )
+  end
+  if table.getn( item.game_objs ) > 0 then
+    ui_item.item_cnt:SetText(
+      "x" .. ( item.count or table.getn( item.game_objs ) )
+    )
+  else
+    local pos = self.ui_list_our:GetItemPos( ui_item )
+    self.ui_list_our:RemoveItem( pos )
+    self.index_our[ item.key ] = nil
+  end
+  ogse.remove_item_from_inventory( obj )
 end
 
 
