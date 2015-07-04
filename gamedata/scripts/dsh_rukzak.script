@@ -1,4 +1,8 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
+local override_game_type = {
+  [ "amk_metka" ] = "",
+}
+
 function attach( sm )
   sm:subscribe({ signal = "on_drop", fun = this.on_drop })
   sm:subscribe({ signal = "on_use",  fun = this.on_use })
@@ -57,13 +61,13 @@ function load_rukzak( id )
   local data = {}
   for i, sect in ipairs( sections ) do
     local cond = conds[ i ]
-    local info = infos[ i ]
+    local info = infos[ i ] or ""
     local key  = sect .. ":" .. cond .. ":" .. info
     local item = {
       [ "section"   ] = sect,
       [ "condition" ] = tonumber( cond ),
-      [ "game_type" ] = game_types[ i ],
-      [ "count"     ] = counts[ i ],
+      [ "game_type" ] = ( override_game_type[ sect ] or game_types[ i ] ),
+      [ "count"     ] = tonumber( counts[ i ] ),
       [ "info"      ] = info,
       [ "key"       ] = key,
     }
@@ -81,7 +85,7 @@ function save_rukzak( id, data )
   local counts     = {}
   local infos      = {}
   for _, item in ipairs( data ) do
-    if data.count > 0 then
+    if item.count > 0 then
       table.insert( sections,   item.section )
       table.insert( conds,      string.format( "%.2f", item.condition ) )
       table.insert( game_types, ( item.game_type or "" ) )
@@ -123,6 +127,29 @@ end
 
 function get_wpn_info( obj )
   return ""
+end
+
+
+function spawn_ammo_in_inv( sect, box_size )
+  return alife():create_ammo(
+    sect,
+    db.actor:position(),
+    db.actor:level_vertex_id(),
+    db.actor:game_vertex_id(),
+    db.actor:id(),
+    box_size
+  )
+end
+
+
+function get_ammo_box_size( sect )
+  local box_size
+  if dunin_ammo.ammo[ sect ] then
+    box_size = dunin_ammo.ammo[ sect ].box
+  else
+    box_size = sys_ini:r_u32( sect, "box_size" )
+  end
+  return box_size
 end
 
 
@@ -325,18 +352,23 @@ function ui_rukzak:move_from_other( ui_item )
   local sobj
   if our.game_type == "ammo" then
     if not our.count then our.count = 0 end
-    local box_size = dunin_ammo.ammo[ item.section ].box
+    local box_size = get_ammo_box_size( item.section )
     if item.count > box_size then
-      sobj = ogse.spawn_ammo_in_inv( item.section, box_size )
+      sobj = spawn_ammo_in_inv( item.section, box_size )
       item.count = item.count - box_size
       our.count  = our.count  + box_size
     else
-      sobj = ogse.spawn_ammo_in_inv( item.section, item.count )
+      sobj = spawn_ammo_in_inv( item.section, item.count )
       our.count  = our.count  + item.count
       item.count = 0
     end
   else
     sobj = ogse.spawn_item_in_inv( item.section )
+    if string.find( item.section, "arc_art_box_" ) then
+      local data  = m_net_utils.get_item_data( sobj )
+      data.custom = item.info or ""
+      m_net_utils.get_item_data( data, sobj )
+    end
     item.count = item.count - 1
   end
   if ui_our then
@@ -352,17 +384,23 @@ function ui_rukzak:move_from_other( ui_item )
     self.index_our[ our.key ] = ui_our
     self.ui_list_our:AddItem( ui_our )
   end
+  level.client_spawn_manager():add(
+    sobj.id, -1, function( id, obj )
+      if our.condition < 100 then
+        dsh.set_condition( obj, our.condition / 100 )
+      end
+      table.insert( our.game_objs, obj )
+      ui_our.item_cnt:SetText(
+        "x" .. ( our.count or table.getn( our.game_objs ) )
+      )
+    end
+  )
   if item.count > 0 then
     ui_item.item_cnt:SetText( "x" .. item.count )
   else
     local pos = self.ui_list_other:GetItemPos( ui_item )
     self.ui_list_other:RemoveItem( pos )
     self.index_other[ item.key ] = nil
-  end
-  local obj = level.object_by_id( sobj.id )
-  table.insert( our.game_objs, obj )
-  if our.condition < 100 then
-    dsh.set_condition( obj, our.condition / 100 )
   end
 end
 
@@ -386,7 +424,7 @@ function ui_rukzak:move_from_our( ui_item )
     table.insert( self.items_other, other )
   end
   local size
-  if obj:is_ammo() then
+  if item.game_type == "ammo" then
     size = dunin_ammo.get_ammo_size( obj )
     item.count = item.count - size
   else
@@ -495,7 +533,7 @@ function ui_rukzak:FillOurList()
       else
         item = {
           [ "section"   ] = sect,
-          [ "condition" ] = cond,
+          [ "condition" ] = tonumber( cond ),
           [ "game_objs" ] = { obj },
           [ "game_type" ] = self:get_game_type( obj ),
           [ "info"      ] = info,
@@ -532,7 +570,10 @@ end
 
 function ui_rukzak:get_game_type( obj )
   local game_type
-  if obj:is_ammo() then
+  local sect = obj:section()
+  if override_game_type[ sect ] then
+    game_type = override_game_type[ sect ]
+  elseif obj:is_ammo() then
     game_type = "ammo"
   elseif obj:is_weapon_magazined() then
     game_type = "weapon"
