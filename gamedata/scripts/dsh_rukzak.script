@@ -1,5 +1,5 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
-local override_game_type = {
+local override_game_types = {
   [ "amk_metka" ] = "",
 }
 
@@ -51,6 +51,16 @@ function on_rukzak_use( obj )
 end
 
 
+function override_game_type( sect )
+  if     string.find( sect, "^fake_wpn_" ) then
+    return "knife"
+  elseif string.find( sect, "^wpn_binoc" ) then
+    return ""
+  end
+  return override_game_types[ sect ]
+end
+
+
 function load_rukzak( id )
   local prefix     = "dsh_rukzak." .. id
   local sections   = ogse.load_var( prefix .. ".sections", {}, "array" )
@@ -66,7 +76,7 @@ function load_rukzak( id )
     local item = {
       [ "section"   ] = sect,
       [ "condition" ] = tonumber( cond ),
-      [ "game_type" ] = ( override_game_type[ sect ] or game_types[ i ] ),
+      [ "game_type" ] = ( override_game_type( sect ) or game_types[ i ] ),
       [ "count"     ] = tonumber( counts[ i ] ),
       [ "info"      ] = info,
       [ "key"       ] = key,
@@ -125,8 +135,65 @@ function get_item_info( obj )
 end
 
 
-function get_wpn_info( obj )
-  return ""
+function get_wpn_info( wpn )
+  local info = {}
+  local gl_status = 0
+  if
+    ogse_wpn_utils.get_grenade_launcher_status( wpn ) == 2
+    and
+    ogse_wpn_utils.get_grenade_launcher_flag( wpn )
+  then
+    gl_status = 1
+  end
+  local has_gl = (
+    ogse_wpn_utils.get_grenade_launcher_status( wpn ) == 1
+    or
+    gl_status == 1
+  )
+  if has_gl and ogse_wpn_utils.get_gl_mode( wpn ) then
+    local hidden_t = ogse_wpn_utils.get_hidden_ammo_type( wpn )
+    local hidden_n = ogse_wpn_utils.get_ammo_elapsed2( wpn )
+    table.insert( info, hidden_t )
+    table.insert( info, hidden_n )
+    local cur_t = ogse_wpn_utils.get_active_ammo_type( wpn )
+    table.insert( info, cur_t    )
+    local cur_n = wpn:get_ammo_in_magazine()
+    table.insert( info, cur_n    )
+  else
+    local cur_t = ogse_wpn_utils.get_active_ammo_type( wpn )
+    table.insert( info, cur_t )
+    local cur_n = wpn:get_ammo_in_magazine()
+    table.insert( info, cur_n )
+    if has_gl then
+      local hidden_t = ogse_wpn_utils.get_hidden_ammo_type( wpn )
+      local hidden_n = ogse_wpn_utils.get_ammo_elapsed2( wpn )
+      table.insert( info, hidden_t )
+      table.insert( info, hidden_n )
+    else
+      table.insert( info, 0 )
+      table.insert( info, 0 )
+    end
+  end
+  local scope_status = 0
+  if
+    ogse_wpn_utils.get_scope_status( wpn ) == 2
+    and
+    ogse_wpn_utils.get_scope_flag( wpn )
+  then
+    scope_status = 1
+  end
+  local silencer_status = 0
+  if
+    ogse_wpn_utils.get_silencer_status( wpn ) == 2
+    and
+    ogse_wpn_utils.get_silencer_flag( wpn )
+  then
+    silencer_status = 1
+  end
+  table.insert( info, scope_status    )
+  table.insert( info, gl_status       )
+  table.insert( info, silencer_status )
+  return table.concat( info, "," )
 end
 
 
@@ -139,6 +206,49 @@ function spawn_ammo_in_inv( sect, box_size )
     db.actor:id(),
     box_size
   )
+end
+
+
+function parse_weapon_info_str( info_str )
+  local ammo1_t, ammo1_n, ammo2_t, ammo2_n, scope, gl, silencer =
+    unpack( split_comma_separated_list( info_str ) )
+  ammo1_t = tonumber( ammo1_t )
+  ammo1_n = tonumber( ammo1_n )
+  ammo2_t = tonumber( ammo2_t )
+  ammo2_n = tonumber( ammo2_n )
+  if scope    == "1" then scope    = true else scope    = false end
+  if gl       == "1" then gl       = true else gl       = false end
+  if silencer == "1" then silencer = true else silencer = false end
+  return ammo1_t, ammo1_n, ammo2_t, ammo2_n, scope, gl, silencer
+end
+
+
+local addons_flags = {
+  scope    = 1,
+  gl       = 2,
+  silencer = 4,
+}
+
+function spawn_weapon_in_inv( sect, info_str )
+  local ammo1_t, ammo1_n, ammo2_t, ammo2_n, scope, gl, silencer =
+    parse_weapon_info_str( info_str )
+  local addons = 0
+  if scope    then addons = addons + addons_flags.scope    end
+  if gl       then addons = addons + addons_flags.gl       end
+  if silencer then addons = addons + addons_flags.silencer end
+  local modified_params = {
+    addon_flags  = addons,
+    ammo_type    = ammo1_t,
+    ammo_elapsed = ammo1_n,
+  }
+  se_item.modified_params = modified_params
+  local s_new_weapon = ogse.spawn_item_in_inv( sect )
+  if ammo2_n > 0 then
+    local ammo_sections = get_names( sect, "grenade_class" )
+    local ammo_sect     = ammo_sections[ ammo2_t + 1 ]
+    spawn_ammo_in_inv( ammo_sect, ammo2_n )
+  end
+  return s_new_weapon
 end
 
 
@@ -363,11 +473,15 @@ function ui_rukzak:move_from_other( ui_item )
       item.count = 0
     end
   else
-    sobj = ogse.spawn_item_in_inv( item.section )
+    if our.game_type == "weapon" then
+      sobj = spawn_weapon_in_inv( item.section, item.info )
+    else
+      sobj = ogse.spawn_item_in_inv( item.section )
+    end
     if string.find( item.section, "arc_art_box_" ) then
       local data  = m_net_utils.get_item_data( sobj )
       data.custom = item.info or ""
-      m_net_utils.get_item_data( data, sobj )
+      m_net_utils.set_item_data( data, sobj )
     end
     item.count = item.count - 1
   end
@@ -401,6 +515,9 @@ function ui_rukzak:move_from_other( ui_item )
     local pos = self.ui_list_other:GetItemPos( ui_item )
     self.ui_list_other:RemoveItem( pos )
     self.index_other[ item.key ] = nil
+    if item.section == "amk_metka" then
+      level.map_remove_object_spot( self.owner_id, "habar_location" )
+    end
   end
 end
 
@@ -451,6 +568,11 @@ function ui_rukzak:move_from_our( ui_item )
     self.index_our[ item.key ] = nil
   end
   ogse.remove_item_from_inventory( obj )
+  if other.count == 1 and other.section == "amk_metka" then
+    level.map_add_object_spot_ser(
+      self.owner_id, "habar_location", "аўъчръ"
+    )
+  end
 end
 
 
@@ -570,11 +692,14 @@ end
 
 function ui_rukzak:get_game_type( obj )
   local game_type
-  local sect = obj:section()
-  if override_game_type[ sect ] then
-    game_type = override_game_type[ sect ]
+  local sect          = obj:section()
+  local override_type = override_game_type( sect )
+  if override_type then
+    game_type = override_type
   elseif obj:is_ammo() then
     game_type = "ammo"
+  elseif obj:is_knife() then
+    game_type = "knife"
   elseif obj:is_weapon_magazined() then
     game_type = "weapon"
   elseif obj:is_outfit() then
