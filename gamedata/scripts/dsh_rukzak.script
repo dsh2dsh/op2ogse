@@ -367,6 +367,7 @@ function ui_rukzak:InitControls()
   self.dialog:AttachChild( self.dlg_our )
 
   self.edit_amount = xml:InitEditBox( "main_dialog:edit_amount", self.dialog )
+  self.reset_edit_amount()
   self:Register( self.edit_amount, "edit_amount" )
 
   self.btn_4 = xml:Init3tButton( "main_dialog:btn_4", self.dialog )
@@ -374,6 +375,7 @@ function ui_rukzak:InitControls()
   self.btn_4:Enable( false )
 
   self.label_weight = xml:InitStatic( "main_dialog:label_weight", self.dialog )
+  self:show_cur_weight()
 
   self:Register(
     xml:Init3tButton( "main_dialog:btn_quit", self.dialog ),
@@ -427,6 +429,7 @@ function ui_rukzak:OnTabChange()
   elseif i == 1 then
     self.dlg_our:Show( true )
   end
+  self:reset_edit_amount()
   self.btn_4:Enable( false )
 end
 
@@ -435,16 +438,38 @@ function ui_rukzak:rep_btn()
   local ui_item = self:get_selected_item()
   if not ui_item then return end
   self.changed = true
+  local amount = tonumber( self.edit_amount:GetText() ) or 1
   if ui_item.data.game_objs then
-    self:move_from_our( ui_item )
+    self:move_by_amount(
+      function()
+        self:move_from_our( ui_item )
+      end,
+      amount
+    )
   else
-    self:move_from_other( ui_item )
+    self:move_by_amount(
+      function()
+        self:move_from_other( ui_item )
+      end,
+      amount
+    )
     if self.ui_list_other:GetSize() == 0 then
       ogse.spawn_item_in_inv( "treasure_item" )
       local obj = level.object_by_id( self.owner_id )
       ogse.remove_item( obj )
-      self:on_quit()
+      return self:on_quit()
     end
+  end
+  self:reset_edit_amount()
+  self:show_cur_weight()
+end
+
+
+function ui_rukzak:move_by_amount( f, amount )
+  while amount > 0 do
+    local moved = f()
+    if moved == 0 then moved = amount end
+    amount = amount - moved
   end
 end
 
@@ -465,16 +490,18 @@ function ui_rukzak:move_from_other( ui_item )
       [ "key"       ] = item.key,
     }
   end
-  local sobj
+  local size, sobj
   if our.game_type == "ammo" then
     if not our.count then our.count = 0 end
     local box_size = get_ammo_box_size( item.section )
     if item.count > box_size then
       sobj = spawn_ammo_in_inv( item.section, box_size )
+      size       = box_size
       item.count = item.count - box_size
       our.count  = our.count  + box_size
     else
       sobj = spawn_ammo_in_inv( item.section, item.count )
+      size       = item.count
       our.count  = our.count  + item.count
       item.count = 0
     end
@@ -490,6 +517,7 @@ function ui_rukzak:move_from_other( ui_item )
       m_net_utils.set_item_data( data, sobj )
     end
     item.count = item.count - 1
+    size       = 1
   end
   if ui_our then
     ui_our.item_cnt:SetText(
@@ -524,13 +552,15 @@ function ui_rukzak:move_from_other( ui_item )
     if item.section == "amk_metka" then
       level.map_remove_object_spot( self.owner_id, "habar_location" )
     end
+    size = 0
   end
+  return size
 end
 
 
 function ui_rukzak:move_from_our( ui_item )
   local item = ui_item.data
-  local obj      = table.remove( item.game_objs, 1 )
+  local obj  = table.remove( item.game_objs, 1 )
   local ui_other = self.index_other[ item.key ]
   local other
   if ui_other then
@@ -572,6 +602,7 @@ function ui_rukzak:move_from_our( ui_item )
     local pos = self.ui_list_our:GetItemPos( ui_item )
     self.ui_list_our:RemoveItem( pos )
     self.index_our[ item.key ] = nil
+    size = 0
   end
   ogse.remove_item_from_inventory( obj )
   if other.count == 1 and other.section == "amk_metka" then
@@ -579,6 +610,7 @@ function ui_rukzak:move_from_our( ui_item )
       self.owner_id, "habar_location", "Ðþêçàê"
     )
   end
+  return size
 end
 
 
@@ -619,6 +651,7 @@ end
 function ui_rukzak:OnListItemClicked()
   local item = self:get_selected_item()
   if not item then return end
+  self:reset_edit_amount()
   self.btn_4:Enable( true )
 end
 
@@ -749,6 +782,30 @@ function ui_rukzak:can_include_into_list( item )
     end
   end
   return false
+end
+
+
+function ui_rukzak:show_cur_weight()
+  local inv_weight = db.actor:get_inventory_weight()
+  local max_weight = db.actor:get_actor_max_walk_weight()
+  local outfit     = db.actor:item_in_slot( 6 )
+  if outfit then
+    local addl_weight = sys_ini:r_float(
+      sect, "additional_inventory_weight", 0.0
+    )
+    max_weight = max_weight + addl_weight
+  end
+  if inv_weight > max_weight then
+    self.item_name:SetTextColor( 255, 255,  50,  0 )
+  else
+    self.item_name:SetTextColor( 255, 238, 153, 26 )
+  end
+  self.label_weight:SetText( string.format( "Âåñ: %.1f êã.", inv_weight ) )
+end
+
+
+function ui_rukzak:reset_edit_amount()
+  self.edit_amount:SetText( "1" )
 end
 
 
