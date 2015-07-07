@@ -349,7 +349,7 @@ function ui_rukzak:__finalize() end
 
 
 function ui_rukzak:InitControls()
-  self:Init( 50, 50, 500, 600 )
+  self:Init( 50, 50, 620, 600 )
   self:Enable( true )
 
   local xml = CScriptXmlInit()
@@ -367,7 +367,7 @@ function ui_rukzak:InitControls()
   self.dialog:AttachChild( self.dlg_our )
 
   self.edit_amount = xml:InitEditBox( "main_dialog:edit_amount", self.dialog )
-  self.reset_edit_amount()
+  self:reset_edit_amount()
   self:Register( self.edit_amount, "edit_amount" )
 
   self.btn_4 = xml:Init3tButton( "main_dialog:btn_4", self.dialog )
@@ -384,6 +384,18 @@ function ui_rukzak:InitControls()
 
   self.tab = xml:InitTab( "main_dialog:tab", self.dialog )
   self:Register( self.tab, "tab" )
+
+  xml:InitStatic( "main_dialog:label_filter", self.dialog )
+  self.edit_filter = xml:InitEditBox( "main_dialog:edit_filter", self.dialog )
+  self:Register( self.edit_filter, "edit_amount" )
+
+  xml:InitStatic( "main_dialog:label_show", self.dialog )
+  self.radio_show = xml:InitTab( "main_dialog:radio_show", self.dialog )
+  self:Register( self.radio_show, "radio_show" )
+
+  xml:InitStatic( "main_dialog:label_sort", self.dialog )
+  self.radio_sort = xml:InitTab( "main_dialog:radio_sort", self.dialog )
+  self:Register( self.radio_sort, "radio_sort" )
 end
 
 
@@ -404,6 +416,12 @@ function ui_rukzak:InitCallBacks()
   self:AddCallback(
     "list_our", ui_events.WINDOW_LBUTTON_DB_CLICK, self.OnListItemDbClicked,
     self
+  )
+  self:AddCallback(
+    "edit_amount", ui_events.EDIT_TEXT_COMMIT, self.rep_btn, self
+  )
+  self:AddCallback(
+    "edit_filter", ui_events.EDIT_TEXT_COMMIT, self.search_items, self
   )
 end
 
@@ -442,18 +460,18 @@ function ui_rukzak:rep_btn()
   if ui_item.data.game_objs then
     self:move_by_amount(
       function()
-        self:move_from_our( ui_item )
+        return self:move_from_our( ui_item )
       end,
       amount
     )
   else
     self:move_by_amount(
       function()
-        self:move_from_other( ui_item )
+        return self:move_from_other( ui_item )
       end,
       amount
     )
-    if self.ui_list_other:GetSize() == 0 then
+    if self:is_rukzak_empty( self.ui_list_other ) then
       ogse.spawn_item_in_inv( "treasure_item" )
       local obj = level.object_by_id( self.owner_id )
       ogse.remove_item( obj )
@@ -461,7 +479,12 @@ function ui_rukzak:rep_btn()
     end
   end
   self:reset_edit_amount()
-  self:show_cur_weight()
+  self:show_cur_weight_delay()
+end
+
+
+function ui_rukzak:is_rukzak_empty( ui_list )
+  return ui_list:GetSize() == 0
 end
 
 
@@ -642,7 +665,12 @@ end
 function ui_rukzak:on_quit()
   if self.changed then
     save_rukzak( self.owner_id, self.items_other )
+    if not ui_mm_opt_main.GetOption( "art_degradation" ) then
+      inventory.check_immunities()
+    end
+    inventory.forced_inventory_update( false )
   end
+  if self.weight_timer then self.weight_timer:stop() end
   self:GetHolder():start_stop_menu( self, true )
   collectgarbage( "collect" )
 end
@@ -663,24 +691,39 @@ end
 
 function ui_rukzak:FillOtherList()
   self.items_other = load_rukzak( self.owner_id )
-  for _, item in ipairs( self.items_other ) do
-    local sect = item.section
-    local name = sys_ini:r_string_wq( sect, "inv_name_short" )
-    if not name then
-      name = sys_ini:r_string_wq( sect, "inv_name" )
+  self:FillList( self.items_other, self.ui_list_other, self.index_other )
+end
+
+
+function ui_rukzak:FillList( items, ui_list, index )
+  for _, item in ipairs( items ) do
+    if
+      ( item.count and item.count > 0 )
+      or
+      table.getn( item.game_objs ) > 0
+    then
+      if not item.name then
+        local sect = item.section
+        local name = sys_ini:r_string_wq( sect, "inv_name_short" )
+        if not name then
+          name = sys_ini:r_string_wq( sect, "inv_name" )
+        end
+        item.name = game.translate_string( name )
+      end
+      local ui_item = rukzak_item(
+        item.name, item.condition, ( item.count or table.getn( item.game_objs ) )
+      )
+      ui_item.data      = item
+      index[ item.key ] = ui_item
+      ui_list:AddItem( ui_item )
     end
-    name = game.translate_string( name )
-    local ui_item = rukzak_item( name, item.condition, item.count )
-    ui_item.data = item
-    self.index_other[ item.key ] = ui_item
-    self.ui_list_other:AddItem( ui_item )
   end
 end
 
 
 function ui_rukzak:FillOurList()
-  local by_key = {}
-  local items  = {}
+  self.items_our = {}
+  local by_key   = {}
   for i = 0, db.actor:object_count() - 1 do
     local obj = db.actor:object( i )
     if self:can_include_into_list( obj ) then
@@ -701,7 +744,7 @@ function ui_rukzak:FillOurList()
           [ "key"       ] = key,
         }
         by_key[ key ] = item
-        table.insert( items, item )
+        table.insert( self.items_our, item )
       end
       if item.game_type == "ammo" then
         if item.count then
@@ -712,20 +755,7 @@ function ui_rukzak:FillOurList()
       end
     end
   end
-  for _, item in ipairs( items ) do
-    local sect = item.section
-    local name = sys_ini:r_string_wq( sect, "inv_name_short" )
-    if not name then
-      name = sys_ini:r_string_wq( sect, "inv_name" )
-    end
-    name = game.translate_string( name )
-    local ui_item = rukzak_item(
-      name, item.condition, ( item.count or table.getn( item.game_objs ) )
-    )
-    ui_item.data = item
-    self.index_our[ item.key ] = ui_item
-    self.ui_list_our:AddItem( ui_item )
-  end
+  self:FillList( self.items_our, self.ui_list_our, self.index_our )
 end
 
 
@@ -787,25 +817,80 @@ end
 
 function ui_rukzak:show_cur_weight()
   local inv_weight = db.actor:get_inventory_weight()
-  local max_weight = db.actor:get_actor_max_walk_weight()
+  local max_weight = db.actor:get_actor_max_weight()
   local outfit     = db.actor:item_in_slot( 6 )
   if outfit then
     local addl_weight = sys_ini:r_float(
-      sect, "additional_inventory_weight", 0.0
+      outfit:section(), "additional_inventory_weight", 0.0
     )
     max_weight = max_weight + addl_weight
   end
   if inv_weight > max_weight then
-    self.item_name:SetTextColor( 255, 255,  50,  0 )
+    self.label_weight:SetTextColor( 255, 255,  50,  0 )
   else
-    self.item_name:SetTextColor( 255, 238, 153, 26 )
+    self.label_weight:SetTextColor( 255, 238, 153, 26 )
   end
   self.label_weight:SetText( string.format( "Вес: %.1f кг.", inv_weight ) )
 end
 
 
+function ui_rukzak:show_cur_weight_delay()
+  if not self.weight_timer then
+    self.weight_timer = dsh.timeout(
+      500, function()
+        self:show_cur_weight()
+        self.weight_timer = nil
+      end
+    )
+  end
+end
+
+
 function ui_rukzak:reset_edit_amount()
   self.edit_amount:SetText( "1" )
+end
+
+
+function ui_rukzak:search_items()
+  self:clear_all_lists()
+  local term = self.edit_search:GetText():lower()
+  if term == "" then
+    self:FillList( self.items_other, self.ui_list_other, self.index_other )
+    self:FillList( self.items_our,   self.ui_list_our,   self.index_our   )
+  else
+    local by_name = function( item )
+      return string.find( item.name:lower(), term )
+    end
+    self:FillList(
+      self:grep_items_by( self.items_other, by_name ),
+      self.ui_list_other,
+      self.index_other
+    )
+    self:FillList(
+      self:grep_items_by( self.items_our,   by_name ),
+      self.ui_list_our,
+      self.index_our
+    )
+  end
+end
+
+
+function ui_rukzak:clear_all_lists()
+  self.index_other = {}
+  self.index_our   = {}
+  self.ui_list_other:RemoveAll()
+  self.ui_list_our:RemoveAll()
+end
+
+
+function ui_rukzak:grep_items_by( items, f )
+    local filtered = {}
+    for _, item in pairs( items ) do
+      if f( item ) then
+        table.insert( filterd, item )
+      end
+    end
+    return filtered
 end
 
 
