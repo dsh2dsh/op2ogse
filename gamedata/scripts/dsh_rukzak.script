@@ -1,6 +1,21 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 local override_game_types = {
-  [ "amk_metka" ] = "",
+  [ "amk_metka"     ] = "",
+  [ "ammo_20x85"    ] = "grenade",
+  [ "ammo_kumul_82" ] = "grenade",
+  [ "ammo_m209"     ] = "grenade",
+  [ "ammo_vog-25"   ] = "grenade",
+  [ "ammo_vog-25p"  ] = "grenade",
+  [ "bezoar"        ] = "mutant_part",
+  [ "matras"        ] = "",
+  [ "player"        ] = "",
+  [ "repair_item_outfit" ] = "",
+  [ "repair_item_weapon" ] = "",
+  [ "suvorotka"     ] = "medkit",
+  [ "teleportator"  ] = "",
+  [ "treasure_item" ] = "",
+  [ "wpn_fot"       ] = "",
+  [ "zamok"         ] = "",
 }
 
 function attach( sm )
@@ -54,6 +69,18 @@ end
 function override_game_type( sect )
   if     string.find( sect, "^fake_wpn_" ) then
     return "knife"
+  elseif string.find( sect, "^mutant_" ) then
+    return "mutant_part"
+  elseif string.find( sect, "^arc_art_box_" ) then
+    return "artefact"
+  elseif string.find( sect, "bomba" ) then
+    return ""
+  elseif string.find( sect, "detonator" ) then
+    return ""
+  elseif spawn_level_changer.teleports[ sect ] then
+    return ""
+  elseif string.find( sect, "teleporter" ) then
+    return ""
   elseif string.find( sect, "^wpn_binoc" ) then
     return ""
   end
@@ -333,6 +360,40 @@ function rukzak_item:__init( name, cond, cnt ) super()
 end
 
 
+class "ui_rukzak_other" ( CUIWindow )
+function ui_rukzak_other:__init() super() end
+function ui_rukzak_other:__finalize()     end
+
+
+function ui_rukzak_other:InitControls( x, y, xml, handler )
+  self:Init( x, y, 485, 500 )
+  self:SetAutoDelete( true )
+
+  self.bk = xml:InitFrame( "list_frame", self )
+
+  handler.ui_list_other = xml:InitList( "tab_other:list", self )
+  handler.ui_list_other:ShowSelectedItem( true )
+  handler:Register( handler.ui_list_other, "list_other" )
+end
+
+
+class "ui_rukzak_our" ( CUIWindow )
+function ui_rukzak_our:__init() super() end
+function ui_rukzak_our:__finalize()     end
+
+
+function ui_rukzak_our:InitControls( x, y, xml, handler )
+  self:Init( x, y, 485, 500 )
+  self:SetAutoDelete( true )
+
+  self.bk = xml:InitFrame( "list_frame", self )
+
+  handler.ui_list_our = xml:InitList( "tab_our:list", self )
+  handler.ui_list_our:ShowSelectedItem( true )
+  handler:Register( handler.ui_list_our, "list_our" )
+end
+
+
 class "ui_rukzak" ( CUIScriptWnd )
 function ui_rukzak:__init( owner_id ) super()
   self.changed   = false
@@ -387,7 +448,7 @@ function ui_rukzak:InitControls()
 
   xml:InitStatic( "main_dialog:label_filter", self.dialog )
   self.edit_filter = xml:InitEditBox( "main_dialog:edit_filter", self.dialog )
-  self:Register( self.edit_filter, "edit_amount" )
+  self:Register( self.edit_filter, "edit_filter" )
 
   xml:InitStatic( "main_dialog:label_show", self.dialog )
   self.radio_show = xml:InitTab( "main_dialog:radio_show", self.dialog )
@@ -421,9 +482,14 @@ function ui_rukzak:InitCallBacks()
     "edit_amount", ui_events.EDIT_TEXT_COMMIT, self.rep_btn, self
   )
   self:AddCallback(
-    "edit_filter", ui_events.EDIT_TEXT_COMMIT, self.search_items, self
+    "edit_filter", ui_events.EDIT_TEXT_COMMIT, self.OnSearchEnter, self
   )
-  self:AddCallback( "radio_show", ui_events.TAB_CHANGED, self.OnShowChange, self )
+  self:AddCallback(
+    "radio_show", ui_events.TAB_CHANGED, self.OnShowChange, self
+  )
+  self:AddCallback(
+    "radio_sort", ui_events.TAB_CHANGED, self.OnSortChange, self
+  )
 end
 
 
@@ -852,29 +918,19 @@ function ui_rukzak:reset_edit_amount()
 end
 
 
-function ui_rukzak:search_items()
-  local items_other = self.filtered_items_other or self.items_other
-  local items_our   = self.filtered_items_our   or self.items_our
-  self:clear_all_lists()
-  local term = self.edit_search:GetText():lower()
-  if term == "" then
-    self:FillList( items_other, self.ui_list_other, self.index_other )
-    self:FillList( items_our,   self.ui_list_our,   self.index_our   )
-  else
-    local by_name = function( item )
-      return string.find( item.name:lower(), term )
-    end
-    self:FillList(
-      self:grep_items_by( items_other, by_name ),
-      self.ui_list_other,
-      self.index_other
-    )
-    self:FillList(
-      self:grep_items_by( items_our,   by_name ),
-      self.ui_list_our,
-      self.index_our
-    )
+function ui_rukzak:OnSearchEnter()
+  self:show_filtered_items( true )
+end
+
+
+function ui_rukzak:search_items( items )
+  local term = self.edit_filter:GetText():lower()
+  if term ~= "" then
+    items = self:grep_items_by( items, function( item )
+      return string.find( item.name:lower(), term, 1, true )
+    end )
   end
+  return items
 end
 
 
@@ -890,21 +946,66 @@ function ui_rukzak:grep_items_by( items, f )
     local filtered = {}
     for _, item in pairs( items ) do
       if f( item ) then
-        table.insert( filterd, item )
+        table.insert( filtered, item )
       end
     end
     return filtered
 end
 
 
+function ui_rukzak:sort_items( items )
+  local sort_idx = self.radio_sort:GetActiveIndex()
+  local sort_func
+  if     sort_idx == 1 then
+    sort_func = function( a, b )
+      return a.name:lower() < b.name:lower()
+    end
+  elseif sort_idx == 2 then
+    sort_func = function( a, b )
+      return a.name:lower() > b.name:lower()
+    end
+  elseif sort_idx == 3 then
+    sort_func = function( a, b )
+      return a.condition < b.condition
+    end
+  elseif sort_idx == 4 then
+    sort_func = function( a, b )
+      return a.condition > b.condition
+    end
+  elseif sort_idx == 5 then
+    sort_func = function( a, b )
+      local cnt_a = a.count or table.getn( a.game_objs )
+      local cnt_b = b.count or table.getn( b.game_objs )
+      return cnt_a < cnt_b
+    end
+  elseif sort_idx == 6 then
+    sort_func = function( a, b )
+      local cnt_a = a.count or table.getn( a.game_objs )
+      local cnt_b = b.count or table.getn( b.game_objs )
+      return cnt_a > cnt_b
+    end
+  end
+  if sort_func then
+    items = table.clone_simple( items )
+    table.sort( items, sort_func )
+  end
+  return items
+end
+
+
 function ui_rukzak:OnShowChange()
-  self.edit_search:SetText( "" )
+  self.filtered_other = nil
+  self.filtered_our   = nil
+  self:show_filtered_items()
+end
+
+
+function ui_rukzak:show_filtered_items( keep_search )
   self:clear_all_lists()
   local show_idx = self.radio_show:GetActiveIndex()
-  if show_idx == 0 then
-    self.filtered_items_other = nil
-    self.filtered_items_our   = nil
-  else
+  local filtered_other = self.filtered_other
+  local filtered_our   = self.filtered_our
+  if not ( filtered_other and filtered_our ) then
     local by_type;
     if     show_idx == 1 then   -- оружие
       by_type = function( item )
@@ -952,56 +1053,34 @@ function ui_rukzak:OnShowChange()
       by_type = function( item )
         return item.game_type == "mutant_part"
       end
-    else
+    elseif show_idx > 0 then
       by_type = function( item )
         return item.game_type == ""
       end
     end
-    self.filtered_items_other = self:grep_items_by( self.items_other, by_type )
-    self.filtered_items_our   = self:grep_items_by( self.items_our,   by_type )
+    if by_type then
+      filtered_other = self:grep_items_by( self.items_other, by_type )
+      filtered_our   = self:grep_items_by( self.items_our,   by_type )
+    else
+      filtered_other = self.items_other
+      filtered_our   = self.items_our
+    end
+    self.filtered_other = filtered_other
+    self.filtered_our   = filtered_our
   end
-  self:FillList(
-    ( self.filtered_items_other or self.items_other ),
-    self.ui_list_other,
-    self.index_other
-  )
-  self:FillList(
-    ( self.filtered_items_our   or self.items_our   ),
-    self.ui_list_our,
-    self.index_our
-  )
+  if keep_search then
+    filtered_other = self:search_items( filtered_other )
+    filtered_our   = self:search_items( filtered_our   )
+  else
+    self.edit_filter:SetText( "" )
+  end
+  filtered_other = self:sort_items( filtered_other )
+  filtered_our   = self:sort_items( filtered_our   )
+  self:FillList( filtered_other, self.ui_list_other, self.index_other )
+  self:FillList( filtered_our,   self.ui_list_our,   self.index_our   )
 end
 
 
-class "ui_rukzak_other" ( CUIWindow )
-function ui_rukzak_other:__init() super() end
-function ui_rukzak_other:__finalize()     end
-
-
-function ui_rukzak_other:InitControls( x, y, xml, handler )
-  self:Init( x, y, 485, 500 )
-  self:SetAutoDelete( true )
-
-  self.bk = xml:InitFrame( "list_frame", self )
-
-  handler.ui_list_other = xml:InitList( "tab_other:list", self )
-  handler.ui_list_other:ShowSelectedItem( true )
-  handler:Register( handler.ui_list_other, "list_other" )
-end
-
-
-class "ui_rukzak_our" ( CUIWindow )
-function ui_rukzak_our:__init() super() end
-function ui_rukzak_our:__finalize()     end
-
-
-function ui_rukzak_our:InitControls( x, y, xml, handler )
-  self:Init( x, y, 485, 500 )
-  self:SetAutoDelete( true )
-
-  self.bk = xml:InitFrame( "list_frame", self )
-
-  handler.ui_list_our = xml:InitList( "tab_our:list", self )
-  handler.ui_list_our:ShowSelectedItem( true )
-  handler:Register( handler.ui_list_our, "list_our" )
+function ui_rukzak:OnSortChange()
+  self:show_filtered_items( true )
 end
