@@ -11,13 +11,47 @@ function on_key_down( key, bind )
   local wpn = db.actor:active_item()
   if not wpn then return end
   if not ogse_wpn_utils.get_scope_status( wpn ) == 2 then return end
-  local sect = wpn:section()
+
+  local sect         = wpn:section()
+  local scope_status = ogse_wpn_utils.get_scope_flag( wpn )
+  local scope_sect   = sys_ini:r_string_wq( sect, "scope_name" )
+  local snd_fname
+  if scope_status then
+    if db.actor:belt_count() < sys_ini:r_u32( "inventory", "max_belt" ) then
+      local sobj = ogse.spawn_item_in_inv( scope_sect )
+      level.client_spawn_manager():add(
+        sobj.id, -1, function( id, obj )
+          db.actor:move_to_belt( obj )
+          inventory.forced_inventory_update( false )
+        end
+      )
+    else
+      return
+    end
+    snd_fname = "interface\\inv_detach_addon"
+  else
+    local scope_obj = inventory.on_belt_obj( scope_sect )
+    if scope_obj then
+      ogse.remove_item_from_inventory( scope_obj[ 1 ] )
+      inventory.forced_inventory_update( false )
+    else
+      return
+    end
+    snd_fname = "interface\\inv_attach_addon"
+  end
+
   local swpn = alife():object( wpn:id() )
   local modified_params = m_net_utils.get_weapon_data( swpn )
   modified_params.addon_flags = bit_xor( modified_params.addon_flags, 1 )
   db.actor:move_to_ruck( wpn )
   alife():release( swpn, true )
-  se_item.modified_params = modified_params
-  ogse.spawn_item_in_inv( sect )
+  local snd = sound_object( snd_fname )
+  snd:play( db.actor, 0, sound_object.s2d )
+  dsh.timeout(
+    snd:length() * 1.15, function()
+      se_item.modified_params = modified_params
+      ogse.spawn_item_in_inv( sect )
+    end
+  )
 end
 
