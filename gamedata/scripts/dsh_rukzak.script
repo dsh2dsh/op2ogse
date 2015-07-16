@@ -25,9 +25,15 @@ local override_game_types = {
 }
 
 function attach( sm )
+  sm:subscribe({ signal = "on_before_spawn", fun = this.on_before_spawn })
   sm:subscribe({ signal = "on_drop", fun = this.on_drop })
   sm:subscribe({ signal = "on_use",  fun = this.on_use })
   sm:subscribe({ signal = "on_rukzak_use", fun = this.on_rukzak_use })
+end
+
+
+function on_before_spawn()
+  zamok_restore()
 end
 
 
@@ -153,6 +159,7 @@ function save_rukzak( id, data )
     ogse.delete_var( prefix .. ".types"    )
     ogse.delete_var( prefix .. ".counts"   )
     ogse.delete_var( prefix .. ".infos"    )
+    ogse.delete_var( prefix .. ".zamok"    )
   end
 end
 
@@ -350,6 +357,16 @@ function blowout_modif_arts()
         end
         save_rukzak( id, items )
       end
+    end
+  end
+end
+
+
+function zamok_restore()
+  for _, k in ipairs( ogse_unist.get_all_names() ) do
+    local id = string.match( k, "^dsh_rukzak%.([^.]+)%.zamok$" )
+    if id and ogse.load_var( k, false ) then
+      amk_offline_alife.protected.ids[ id ] = 1
     end
   end
 end
@@ -737,10 +754,14 @@ function ui_rukzak:move_from_other( ui_item )
     local pos = self.ui_list_other:GetItemPos( ui_item )
     self.ui_list_other:RemoveItem( pos )
     self.index_other[ item.key ] = nil
-    if item.section == "amk_metka" then
+    if     item.section == "amk_metka" then
       if level.map_has_object_spot( self.owner_id, "habar_location" ) == 1 then
         level.map_remove_object_spot( self.owner_id, "habar_location" )
       end
+    elseif item.section == "zamok" then
+      ogse.save_var( ( "dsh_rukzak." .. self.owner_id .. ".zamok" ), false )
+      amk_offline_alife.protected.ids[ self.owner_id ] = nil
+      amk.send_tip( "С тайника убрали замок.", nil, nil, 5 )
     end
     size = 0
   end
@@ -795,15 +816,32 @@ function ui_rukzak:move_from_our( ui_item )
     size = 0
   end
   ogse.remove_item_from_inventory( obj )
-  if other.count == 1 and other.section == "amk_metka" then
-    local spwn = ui_dots.dots(
-      get_hud(), "gps_metka", "Рюкзак", function( text )
-        level.map_add_object_spot_ser(
-          self.owner_id, "habar_location", text
-        )
+  if other.count == 1 then
+    if     other.section == "amk_metka" then
+      local spwn = ui_dots.dots(
+        get_hud(), "gps_metka", "Рюкзак", function( text )
+          level.map_add_object_spot_ser(
+            self.owner_id, "habar_location", text
+          )
+        end
+      )
+      level.start_stop_menu( spwn, true )
+    elseif other.section == "zamok" then
+      ogse.save_var( ( "dsh_rukzak." .. self.owner_id .. ".zamok" ), true )
+      amk_offline_alife.protected.ids[ self.owner_id ] = 1
+      local lname    = level.name()
+      local off_npcs = amk_offline_alife.off_npcs
+      if off_npcs[ lname ] then
+        local inv_boxes = {}
+        for _, box in ipairs( off_npcs[ lname ].inv_boxes ) do
+          if box.id ~= self.owner_id then
+            table.insert( inv_boxes, box )
+          end
+        end
+        off_npcs[ lname ].inv_boxes = inv_boxes
       end
-    )
-    level.start_stop_menu( spwn, true )
+      amk.send_tip( "Заперли тайник на замок.", nil, nil, 5 )
+    end
   end
   return size
 end
