@@ -66,6 +66,8 @@ function spawn_magic_rukzak( sect )
     local new  = alife():create(
       real, pos, db.actor:level_vertex_id(), db.actor:game_vertex_id()
     )
+    local zamok = "dsh_rukzak." .. new.id .. ".zamok"
+    ogse.save_var( zamok, false )
   else
     news_main.create_treasurebox()
   end
@@ -182,19 +184,21 @@ end
 
 function get_wpn_info( wpn )
   local info = {}
-  local gl_status = 0
-  if
-    ogse_wpn_utils.get_grenade_launcher_status( wpn ) == 2
-    and
-    ogse_wpn_utils.get_grenade_launcher_flag( wpn )
-  then
-    gl_status = 1
+  local gl_status, has_gl = 0, false
+  if wpn:is_weapon_gl() then
+    if
+      ogse_wpn_utils.get_grenade_launcher_status( wpn ) == 2
+      and
+      ogse_wpn_utils.get_grenade_launcher_flag( wpn )
+    then
+      gl_status = 1
+    end
+    has_gl = (
+      ogse_wpn_utils.get_grenade_launcher_status( wpn ) == 1
+      or
+      gl_status == 1
+    )
   end
-  local has_gl = (
-    ogse_wpn_utils.get_grenade_launcher_status( wpn ) == 1
-    or
-    gl_status == 1
-  )
   if has_gl and ogse_wpn_utils.get_gl_mode( wpn ) then
     local hidden_t = ogse_wpn_utils.get_hidden_ammo_type( wpn )
     local hidden_n = ogse_wpn_utils.get_ammo_elapsed2( wpn )
@@ -242,15 +246,43 @@ function get_wpn_info( wpn )
 end
 
 
-function spawn_ammo_in_inv( sect, box_size )
-  return alife():create_ammo(
-    sect,
-    db.actor:position(),
-    db.actor:level_vertex_id(),
-    db.actor:game_vertex_id(),
-    db.actor:id(),
-    box_size
-  )
+function spawn_ammo_in_inv( sect, box_size, who )
+  if not who then who = db.actor end
+  local pos, lvid, gvid, id
+  if type( who.id ) == "function" then
+    pos, lvid, gvid, id = 
+      who:position(),
+      who:level_vertex_id(),
+      who:game_vertex_id(),
+      who:id()
+  else
+    pos, lvid, gvid, id = 
+      who.position,
+      who.m_level_vertex_id,
+      who.m_game_vertex_id,
+      who.id
+  end
+  return alife():create_ammo( sect, pos, lvid, gvid, id, box_size )
+end
+
+
+function spawn_item_in_inv( sect, who )
+  if not who then who = db.actor end
+  local pos, lvid, gvid, id
+  if type( who.id ) == "function" then
+    pos, lvid, gvid, id = 
+      who:position(),
+      who:level_vertex_id(),
+      who:game_vertex_id(),
+      who:id()
+  else
+    pos, lvid, gvid, id = 
+      who.position,
+      who.m_level_vertex_id,
+      who.m_game_vertex_id,
+      who.id
+  end
+  return alife():create( sect, pos, lvid, gvid, id )
 end
 
 
@@ -274,9 +306,12 @@ local addons_flags = {
   silencer = 4,
 }
 
-function spawn_weapon_in_inv( sect, info_str )
+function spawn_weapon_in_inv( sect, info_str, who )
+  if not who then who = db.actor end
   local ammo1_t, ammo1_n, ammo2_t, ammo2_n, scope, gl, silencer =
     parse_weapon_info_str( info_str )
+  if ammo1_t > 10   then ammo1_t = 0 end
+  if ammo1_n > 1000 then ammo1_n = 0 end
   local addons = 0
   if scope    then addons = addons + addons_flags.scope    end
   if gl       then addons = addons + addons_flags.gl       end
@@ -287,11 +322,11 @@ function spawn_weapon_in_inv( sect, info_str )
     ammo_elapsed = ammo1_n,
   }
   se_item.modified_params = modified_params
-  local s_new_weapon = ogse.spawn_item_in_inv( sect )
+  local s_new_weapon = spawn_item_in_inv( sect, who )
   if ammo2_n > 0 then
     local ammo_sections = get_names( sect, "grenade_class" )
     local ammo_sect     = ammo_sections[ ammo2_t + 1 ]
-    spawn_ammo_in_inv( ammo_sect, ammo2_n )
+    spawn_ammo_in_inv( ammo_sect, ammo2_n, who )
   end
   return s_new_weapon
 end
@@ -313,6 +348,7 @@ function blowout_modif_arts()
   for _, k in ipairs( ogse_unist.get_all_names() ) do
     local id = string.match( k, "^dsh_rukzak%.([^.]+)%.sections$" )
     if id then
+      id = tonumber( id )
       local modified = 0
       local items    = load_rukzak( id )
       local af_buliz
@@ -364,9 +400,28 @@ end
 
 function zamok_restore()
   for _, k in ipairs( ogse_unist.get_all_names() ) do
-    local id = string.match( k, "^dsh_rukzak%.([^.]+)%.zamok$" )
-    if id and ogse.load_var( k, false ) then
-      amk_offline_alife.protected.ids[ id ] = 1
+    local id = string.match( k, "^dsh_rukzak%.([^.]+)%.sections$" )
+    if id then
+      id = tonumber( id )
+      local zamok = "dsh_rukzak." .. id .. ".zamok"
+      if ogse.var_exists( zamok ) then
+        if ogse.load_var( zamok ) then
+          amk_offline_alife.protected.ids[ id ] = 1
+        end
+      else
+        local items = load_rukzak( id )
+        local found = false
+        for _, item in ipairs( items ) do
+          if item.section == "zamok" then
+            found = true
+            break
+          end
+        end
+        if found then
+          amk_offline_alife.protected.ids[ id ] = 1
+        end
+        ogse.save_var( zamok, found )
+      end
     end
   end
 end
@@ -379,16 +434,33 @@ function on_inv_box_found( id, who )
     game_graph():vertex( who.m_game_vertex_id ):level_id()
   )
   for _, item in ipairs( items ) do
-    if is_item_valuable( item ) then
-      for i = 1, item.count do
-        local sobj = alife():create(
-          item.section,
-          who.position, who.m_level_vertex_id, who.m_game_vertex_id,
-          who.id
-        )
-        if item.condition < 1 then
+    if is_item_valuable( item ) and math.random() < 0.5 then
+      local count = item.count
+      local box_size
+      if item.game_type == "ammo" then
+        box_size = get_ammo_box_size( item.section )
+      end
+      while count > 0 do
+        local sobj
+        if item.game_type == "ammo" then
+          if count > box_size then
+            sobj  = spawn_ammo_in_inv( item.section, box_size, who )
+            count = count - box_size
+          else
+            sobj  = spawn_ammo_in_inv( item.section, count,    who )
+            count = 0
+          end
+        else
+          if item.game_type == "weapon" then
+            sobj = spawn_weapon_in_inv( item.section, item.info, who )
+          else
+            sobj = spawn_item_in_inv( item.section, who )
+          end
+          count = count - 1
+        end
+        if item.condition < 100 then
           local params = m_net_utils.get_item_data( sobj )
-          params.condition = item.condition
+          params.condition = item.condition / 100
           m_net_utils.set_item_data( params, sobj )
         end
         if not amk_offline_alife.items[ who.id ] then
@@ -416,10 +488,10 @@ end
 function is_item_valuable( item )
   if
     ( not amk_offline_alife.always_keep_item[ item.section ] )
-    and
-    amk_offline_alife.sell_table[ item.section ]
+--    and
+--    amk_offline_alife.sell_table[ item.section ]
   then
-    local cost = get_float( item.section, "cost", 0 ) * item.condition
+    local cost = get_float( item.section, "cost", 0 ) * ( item.condition / 100 )
     if item.game_type == "weapon" and cost >= 1000 then
       return true
     elseif cost >= 800 then
@@ -709,7 +781,7 @@ function ui_rukzak:move_items( amount )
       amount
     )
     if self:is_rukzak_empty( self.items_other ) then
-      ogse.spawn_item_in_inv( "treasure_item" )
+      spawn_item_in_inv( "treasure_item" )
       local obj = level.object_by_id( self.owner_id )
       ogse.remove_item( obj )
       return self:on_quit()
@@ -772,7 +844,7 @@ function ui_rukzak:move_from_other( ui_item )
     if our.game_type == "weapon" then
       sobj = spawn_weapon_in_inv( item.section, item.info )
     else
-      sobj = ogse.spawn_item_in_inv( item.section )
+      sobj = spawn_item_in_inv( item.section )
     end
     if string.find( item.section, "arc_art_box_" ) then
       local data  = m_net_utils.get_item_data( sobj )
