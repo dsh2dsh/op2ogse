@@ -67,6 +67,7 @@ function attach( sm )
   if not ui_mm_opt_main.GetOption( "art_degradation" ) then return end
   sm_attached = {
     { signal = "on_actor_before_hit",  fun = this.before_hit },
+    { signal = "on_hit",               fun = this.on_hit },
     { signal = "on_update",            fun = this.on_update, queued = true  },
     { signal = "on_use",               fun = this.on_use  },
   }
@@ -85,12 +86,13 @@ end
 
 local got_hits = {}
 local has_hit  = false
-local psy_block_t
+local before_hit_outfit_cond, psy_block_t
 
 function before_hit( hit_data, p_s_hit, p_ignore_flags )
   local hit_type = hit_data.hit_type
   local our_hit  = our_hits[ hit_type ]
-  if our_hit and hit_data.power > 0 then
+  local power    = hit_data.power
+  if our_hit and power > 0 then
     local real_power = calc_real_hit_power( our_hit, hit_data )
     if real_power > 0 then
       if got_hits[ hit_type ] then
@@ -107,8 +109,13 @@ function before_hit( hit_data, p_s_hit, p_ignore_flags )
       and
       psy_block_t and time_global() < psy_block_t
     then
-      write_memory_float( 0, p_s_hit, hit_offset.power )
+      power = 0
+      write_memory_float( power, p_s_hit, hit_offset.power )
     end
+  end
+  local outfit = db.actor:get_current_outfit()
+  if outfit then
+    before_hit_outfit_cond = outfit:condition()
   end
 end
 
@@ -256,6 +263,34 @@ function on_use( obj, sobj )
       psy_block_t = psy_block_t   + 30000
     else
       psy_block_t = time_global() + 30000
+    end
+  end
+end
+
+
+function on_hit( obj, amount, local_direction, who, bone_index )
+  local outfit = db.actor:get_current_outfit()
+  if outfit and before_hit_outfit_cond then
+    local armor = inventory.on_belt_obj( "af_armor_3" )
+    if armor then
+      local diff = ( before_hit_outfit_cond - outfit:condition() ) * 2
+      if diff > 0 then
+        for _, af in ipairs( armor ) do
+          local cond = af:condition()
+          if cond > diff then
+            dsh.set_condition( af, cond - diff )
+            dsh.set_condition( outfit, before_hit_outfit_cond )
+            break
+          elseif cond > 0 then
+            dsh.set_condition( outfit, before_hit_outfit_cond )
+            ogse.remove_item_from_inventory( af )
+            inventory.forced_inventory_update( false )
+            ogse.spawn_item_in_inv( "af_buliz" )
+            break
+          end
+        end
+      end
+      before_hit_outfit_cond = nil
     end
   end
 end
