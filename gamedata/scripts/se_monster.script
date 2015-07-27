@@ -1,0 +1,394 @@
+--[[
+Изменения script_version:
+	4 - сохранение поля job_online
+	5 - сохранение поля was_in_smart_terrain
+	
+	modyfied by xStream
+]]
+
+need_be_online={}
+
+local levels_types={
+  l01_escape=0,
+  l02_garbage=0,
+  l03_agroprom=0,
+	l03u_agr_underground=1,
+  l04_darkvalley=0,
+	l04u_labx18=1,
+  l05_bar=1,
+  l06_rostok=0,
+  l07_military=0,
+  l08_yantar=0,
+	l08u_brainlab=1,
+  l10_radar=0,
+	l10u_bunker=1,
+  l11_pripyat=0,
+  l12_stancia=0,
+	l12_stancia_2=0,
+	l12u_control_monolith=1,
+	l12u_sarcofag=1,
+  atp_for_test22=0,
+	peshera=1,
+  puzir=0,
+  av_peshera=1,
+  aver=0,
+  hospital=0,
+  limansk=0,
+  marsh=0,
+  warlab=1,
+  lost_village=0,
+  generators=0,
+  dead_city=0,
+  jupiter=0,
+  zaton=0,
+  pripyat=0,
+  jupiter_underground=0,
+  labx8=1
+}
+
+class "se_monster" (cse_alife_monster_base)
+--------------------
+function se_monster:__init (section) super (section)
+	self.ini = nil
+	self.ini_initialized = false
+
+	self.spawner_present = false
+
+	self.smart_terrain_conditions = nil
+	self.smart_terrain_conditions_initialized = false
+
+	self.check_distance = 	nil
+	self.min_distance = 	nil
+	self.day_night_switch = nil
+
+	-- этот флаг берётся из работы смарта
+	-- true     = всегда в онлайне
+	-- false    = всегда в офлайне
+	-- condlist = условие, которое отпределяет true или false
+	-- nil      = смарту всё равно
+	self.job_online          = nil
+	self.job_online_condlist = nil
+
+	-- посещал ли сталкер хоть один smart_terrain
+	self.was_in_smart_terrain = false
+
+	self.day_begin=-1
+	self.day_end=-1
+	
+	self.state = nil
+end
+--------------------
+function se_monster:get_ini()
+	if not self.ini_initialized then
+		self.ini             = self:spawn_ini ()
+		self.ini_initialized = true
+		
+		self.spawner_present = self.ini:section_exist ("spawner")
+
+		if self.ini ~= nil and self.spawner_present == true then
+		  if self.ini:line_exist ("spawner", "check_distance") == true then
+				self.check_distance = 	utils.cfg_get_bool(self.ini, "spawner", "check_distance", 	self, false, false)
+			end
+			if self.ini:line_exist ("spawner", "min_distance") == true then
+				self.min_distance = 	utils.cfg_get_number(self.ini, "spawner", "min_distance", 		self, false, 150)
+			end
+			if self.ini:line_exist ("spawner", "day_night_switch") == true then
+				self.day_night_switch = utils.cfg_get_bool(self.ini, "spawner", "day_night_switch", self, false, false)
+			end
+		end
+		
+		self.day_begin = utils.cfg_get_number(system_ini(), self:section_name(), "DayTime_Begin", self, false, -1)
+		self.day_end = utils.cfg_get_number(system_ini(), self:section_name(), "DayTime_End", self, false, -1)
+		
+		if self.min_distance==nil then 
+			local sys = system_ini()
+			if sys ~= nil and sys:line_exist ("alife", "switch_distance") == true then
+				self.min_distance = sys:r_u32 ("alife", "switch_distance") - 1.5
+				if self.min_distance<1.5 then
+					self.min_distance=1.5
+				elseif self.min_distance>1.5 then
+					self.min_distance=1.5
+				end
+			else
+				 self.min_distance = 1.5
+			end
+		end
+		
+	end
+end
+--------------------
+function se_monster:get_job_online()
+	if self.job_online_condlist == nil then
+		return self.job_online
+	else
+		return xr_logic.pick_section_from_condlist(db.actor_proxy, self, self.job_online) ~= nil
+	end
+end
+--------------------
+function se_monster:can_switch_offline ()
+	if self:get_job_online() ~= nil then
+		return not self:get_job_online()
+	else
+		return cse_alife_monster_base.can_switch_offline (self)
+	end
+end
+--------------------
+function se_monster:can_switch_online ()
+--	if true then return true end
+	local rpt=false
+--	if string.find(self:name(),"factory_m_snork") then rpt=true end
+	
+	if need_be_online[self.id]~=nil then
+		local r=need_be_online[self.id]
+		need_be_online[self.id]=nil
+		if rpt then amk.mylog(self:name().." need_be_online "..tostring(r)) end
+		return save_state(self, r)
+	end
+
+	local r=self:get_job_online()
+	if r ~= nil then
+		if rpt then amk.mylog(self:name().." get_job_online "..tostring(r)) end
+		return save_state(self, r)
+	end
+
+--'	self:get_ini()
+	local day_night_switch,check_distance = select_logic(self)
+
+	if self.online == false then
+	-- если игрока нет, то в оффлайн
+        if db.actor == nil or db.actor:alive () == false then
+					if rpt then amk.mylog(self:name().." off no actor false ") end
+					return save_state(self, false) 
+				end
+				
+				-- Если в custom_data зверушки есть cond в секции [spawner], то это условие должно иметь приоритет.
+				local chk_spawner=xr_spawner.check_spawn(self)
+				if chk_spawner~=nil then
+					if rpt then amk.mylog(self:name().." off check spawn "..tostring(chk_spawner)) end
+					return save_state(self, chk_spawner)
+				end
+				
+				--если "ночь"  - остаемся в офф
+				if not is_creature_day(self, day_night_switch) then
+					if rpt then amk.mylog(self:name().." off not creature's day false") end
+					return save_state(self, false)
+				end
+				
+        --если задана дистанция проверки, то проверим.
+				if check_distance == true then
+					-- проверим дистанцию до игрока. если меньше требуемой, то офф
+					if not amk_offline_alife.sobj_is_far(self, self.min_distance) then
+						if rpt then amk.mylog(self:name().." off distance false") end
+						return save_state(self, false)
+					end
+				end
+				
+        --все проверки прошли - финал
+			if rpt then amk.mylog(self:name().." off standard") end
+	    return save_state( self, cse_alife_monster_base.can_switch_online (self) )
+    else
+        if db.actor == nil or db.actor:alive () == false then
+					if rpt then amk.mylog(self:name().." on no actor true") end
+					return save_state(self, true)
+				end
+								
+				-- Если в custom_data зверушки есть cond в секции [spawner], то это условие должно иметь приоритет.
+				local chk_spawner=xr_spawner.check_spawn(self)
+				if chk_spawner~=nil then
+					if rpt then amk.mylog(self:name().." off check spawn "..tostring(chk_spawner)) end
+					return save_state(self, chk_spawner)
+				end
+
+				if check_distance == true then
+           -- проверим дистанцию до игрока. если больше требуемой, то от винта
+					if not amk_offline_alife.sobj_is_far(self, self.min_distance)  then
+						local obj = level.object_by_id(self.id)
+						--если "ночь" и ГГ не видит - уходим в офф, иначе остаемся в онлайне
+						local r=is_creature_day(self, day_night_switch) or (obj~=nil and db.actor:see(obj))
+						if rpt then amk.mylog(self:name().." on day see "..tostring(r)) end
+						return save_state(self, r)
+					end
+        end
+				
+				if rpt then amk.mylog(self:name().." on standard") end
+        return save_state(self, cse_alife_monster_base.can_switch_online (self))
+    end
+end
+--------------------
+function se_monster:STATE_Write(packet)
+	cse_alife_monster_base.STATE_Write (self, packet)
+	
+	local st = 0
+	if self.state == true then
+		st=4
+	end
+	
+	if self.job_online == true then
+		packet:w_u8(0+st)
+	elseif self.job_online == false then
+		packet:w_u8(1+st)
+	elseif self.job_online == nil then
+		packet:w_u8(2+st)
+	else
+		packet:w_u8(3+st)
+		packet:w_stringZ(self.job_online_condlist)
+	end
+	
+	--amk.mylog("writen "..self.id.." state "..st)
+
+	packet:w_bool(self.was_in_smart_terrain)
+end
+--------------------
+function se_monster:STATE_Read(packet, size)
+	cse_alife_monster_base.STATE_Read (self, packet, size)
+
+	if self.script_version >= 4 then
+		local t = packet:r_u8()
+		
+		local st = math.floor(t/4)*4
+		t=t-st
+		if st==4 then need_be_online[self.id]=true end
+		
+		if t == 0 then
+			self.job_online = true
+		elseif t == 1 then
+			self.job_online = false
+		elseif t == 2 then
+			self.job_online = nil
+		else
+			self.job_online_condlist = packet:r_stringZ()
+
+			self.job_online = xr_logic.parse_condlist(nil, "se_monster:STATE_Read", "job_online", self.job_online_condlist)
+		end
+		--amk.mylog("readed "..self.id.." state "..st)
+	end
+
+	if self.script_version >= 5 then
+		self.was_in_smart_terrain = packet:r_bool()
+	end
+	
+end
+--------------------
+function se_monster:on_before_register()
+	self:fill_exclusives()
+end
+--------------------
+function se_monster:on_register()
+	-- Чистим рестрикторы
+	local tbl=amk.read_monster_params(self)
+	tbl.crvu32u16u2={}
+	amk.write_monster_params(tbl,self)
+
+	cse_alife_monster_base.on_register( self )
+
+	--'self:fill_exclusives()
+
+	--' Нарисовать мапспот с собой
+	--[[ квесты Доцента на установки меток на монстров убраны - это больше не нужно
+	if self:alive() and sim_statistic.show_monster_spot == true then
+		local community, rank = sim_statistic.getNpcType(self)
+--                level.map_add_object_spot_ser(self.id, "alife_presentation_monstr", self:name().." "..community)
+		if community=="controller" and has_alife_info("have_kontroler_spot")  then
+		level.map_add_object_spot(self.id, "kontroler_spot", "контроллер")
+		elseif community=="bloodsucker" and has_alife_info("have_bloodsucker_spot")  then
+		level.map_add_object_spot(self.id, "bloodsucker_spot", "кровосос")
+		elseif community=="pseudo_gigant" and has_alife_info("have_pseudo_gigant_spot")  then
+		level.map_add_object_spot(self.id, "pseudo_gigant_spot", "псевдогигант")
+		end
+	end
+	]]
+end
+--------------------
+function se_monster:on_unregister()
+	cse_alife_monster_base.on_unregister( self )
+
+	--' Убрать мапспот с собой
+	--[[ квесты Доцента на установки меток на монстров убраны - это больше не нужно
+	if sim_statistic.show_monster_spot == true then
+		local community, rank = sim_statistic.getNpcType(self)
+--                level.map_remove_object_spot(self.id, "alife_presentation_monstr")
+		if community=="controller" then
+		level.map_remove_object_spot(self.id, "kontroler_spot")
+		elseif community=="bloodsucker" then
+		level.map_remove_object_spot(self.id, "bloodsucker_spot")
+		elseif community=="pseudo_gigant" then
+		level.map_remove_object_spot(self.id, "pseudo_gigant_spot")
+		end
+	end
+	]]
+	
+	smart_terrain.unregister_npc(self)
+end
+--------------------
+function se_monster:on_death(killer)
+	cse_alife_monster_base.on_death(self, killer)
+
+	--' Убрать мапспот с собой
+	--[[ квесты Доцента на установки меток на монстров убраны - это больше не нужно
+	if sim_statistic.show_monster_spot == true then
+		local community, rank = sim_statistic.getNpcType(self)
+		if community=="controller" then
+		level.map_remove_object_spot(self.id, "kontroler_spot")
+		elseif community=="bloodsucker" then
+		level.map_remove_object_spot(self.id, "bloodsucker_spot")
+		elseif community=="pseudo_gigant" then
+		level.map_remove_object_spot(self.id, "pseudo_gigant_spot")
+		end
+	end
+	]]
+end
+--------------------
+function se_monster:fill_exclusives()
+	self:get_ini()
+	self.smart_terrain_conditions             = smart_terrain.read_smart_terrain_conditions( self )
+
+	if self.smart_terrain_conditions then
+		for name, condlist in pairs(self.smart_terrain_conditions) do
+			smart_terrain.exclusives[name] = (smart_terrain.exclusives[name] or 0) + 1
+		end
+	end
+end
+
+--------------------
+function is_creature_day(obj, day_night_switch)
+	--проверка на дневной/ночной режим
+	if day_night_switch == true then
+		if obj.day_begin~=-1 and obj.day_end~=-1 then
+			local hrs = level.get_time_hours()
+			local de = obj.day_end
+			if obj.day_begin>obj.day_end then
+				hrs = hrs+24
+				de=de+24
+			end
+			if not (hrs >= obj.day_begin and hrs < de) then
+				return false
+			end
+		end
+	end
+	return true
+end
+--------------------
+function select_logic(obj)
+	local is_underground = 1
+	if game_graph():valid_vertex_id(obj.m_game_vertex_id) then
+		is_underground = levels_types[alife():level_name(game_graph():vertex(obj.m_game_vertex_id):level_id())]
+	end
+	local day_night_switch,check_distance
+	if is_underground==0 then
+		day_night_switch = true
+		check_distance = true
+	else
+		day_night_switch = false
+		check_distance = false
+	end
+	if obj.day_night_switch~=nil then day_night_switch = obj.day_night_switch end
+	if obj.check_distance~=nil then check_distance = obj.check_distance end
+	return day_night_switch,check_distance
+end
+
+function save_state(obj, state)
+	if state~=obj.state then
+		obj.state = state
+	end
+	return state
+end
