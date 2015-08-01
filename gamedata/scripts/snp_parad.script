@@ -1,0 +1,833 @@
+-- Парад Монолита на Юпитере
+
+tm = nil
+local tm_id = nil
+local box_parad = nil
+
+-- начало парада
+function parad_start()
+	db.actor:give_info_portion("no_teleport_near_heli_btr")
+	remove_spot()
+	box_parad = alife():create("m_inventory_box_parad",vector():set(163.03491210938,27.185247421265,-184.96360778809),990519,3735)
+
+	-- Запускаем логику
+	local se_obj = alife():create("space_restrictor", db.actor:position(), db.actor:level_vertex_id(), db.actor:game_vertex_id())
+	local custom = "[logic]\ncfg = scripts\\snp\\parad.ltx"
+	spawn_restrictor.rewrite_restrictor(se_obj, custom, 1)
+end
+
+-- конец парада
+function parad_end()
+	amk.remove_item_from_inventory_by_name("ballast",db.actor)
+	db.actor:give_info_portion("snp_parad_done")
+	db.actor:disable_info_portion("no_teleport_near_heli_btr")
+	news_manager.send_tip(db.actor, "%c[255,160,160,160]".."ТЕНЬ МОНОЛИТА:".."\\n".."%c[255,255,128,128]Вот и все, Стрелок - ты свободен. Вещи свои найдёшь в рюкзаке под кустом неподалёку.".."\n", nil, nil, 15000)
+end
+
+-- готовимся к параду
+function prepare()
+	local timeout = 5
+	news_manager.send_tip(db.actor, "%c[255,160,160,160]".."ТЕНЬ МОНОЛИТА:".."\\n".."%c[255,255,128,128]Стрелок, спасибо, что пришёл. Чтобы ты ничего не испортил, я обездвижу тебя, а также заберу у тебя всё лишнее. Не бойся - так надо. Доверься мне - с тобой ничего не случится.".."\n", timeout, nil, 15000)
+	timeout = timeout+20
+	news_manager.send_tip(db.actor, "%c[255,160,160,160]".."ТЕНЬ МОНОЛИТА:".."\\n".."%c[255,255,128,128]Итак, ты, Стрелок, присутствуешь на одном мероприятии, которое проводится в честь тебя. Да, ты не ослышался. Все, что ты сейчас увидишь, посвящается тебе. Поэтому ничего не предпринимай, ничего не бойся, не сохраняй и не перезагружай игру - просто стань, стой, и смотри. Можешь пользоваться биноклем.".."\n", timeout, nil, 20000)
+
+	-- убираем всё, обездвиживаем гг и ставим его на точку
+	box_parad = level.object_by_id(box_parad.id)
+	
+	db.actor:give_info_portion("biznes_remove_special_item")
+	db.actor:iterate_inventory(
+		function(dummy,item)
+			section = item:section()
+			if not protected_items.is_grab_body_item_keep(item:section()) then
+				db.actor:transfer_item(level.object_by_id(item:id()), box_parad)
+			end
+		end
+	,db.actor)
+	db.actor:disable_info_portion("biznes_remove_special_item")
+	
+	alife():create("ballast",vector():set(0,0,0),0,0,0)
+
+	db.actor:give_info_portion("teleport_started")
+	db.actor:set_actor_position(vector():set(173,27.353050231934,-192),1010186,3735)
+	db.actor:set_actor_direction(3.14)
+	db.actor:give_info_portion("teleport_finished")
+end
+
+-- пошли верты
+function spawn_vert()
+	create_vert(vector():set(175,130,-881),1014341,3734, vert_row_logic())
+	create_vert(vector():set(175,130,-601),1014341,3734, vert_btr_logic(3))
+	create_vert(vector():set(175,120,-601),1014341,3734, vert_btr_logic(4))
+	create_vert(vector():set(175,110,-601),1014341,3734, vert_btr_logic(1))
+	create_vert(vector():set(175,100,-601),1014341,3734, vert_btr_logic(2))
+	create_vert(vector():set(175,90,-601),1014341,3734, vert_btr_logic(5))
+	create_vert(vector():set(175,80,-601),1014341,3734, vert_btr_logic(6))
+	create_vert(vector():set(175,70,-601),1014341,3734, vert_logic(7))
+	create_vert(vector():set(175,60,-601),1014341,3734, vert_logic(8))
+end
+
+-- пошли БТР
+function spawn_btr()
+	create_btr(vector():set(147,41,-284),966660,3735)
+	create_btr(vector():set(219,41,-296),1090745,3734)
+	create_btr(vector():set(119,41,-276),918397,3727)
+	create_btr(vector():set(226,41,-262),1102862,3735)
+	create_btr(vector():set(130,41,-307),937839,3734)
+	create_btr(vector():set(215,41,-347),1083296,3734)
+end
+
+-- Монолит перед БТР
+local mono_btr={
+	{{1,vector():set(147,16.3684425354,-290),966652,3735},
+	{1,vector():set(147,16.3684425354,-289),966653,3735}},
+
+	{{1,vector():set(219,16.368389129639,-302),1090737,3734},
+	{1,vector():set(219,16.368389129639,-301),1090738,3734}},
+
+	{{2,vector():set(119,16.368053436279,-282),918388,3727},
+	{2,vector():set(119,16.368053436279,-281),918390,3727}},
+
+	{{2,vector():set(226,16.3684425354,-268),1102853,3735},
+	{2,vector():set(226,16.3684425354,-267),1102855,3735}}
+}
+local timeout_next_npc_before_btr = 5	-- интервал спавна Монолита у БТР, сек
+local total_cols_npc_before_btr = 5		-- количество строев Монолита у БТР
+
+function spawn_npc_before_btr()
+    local timeout = 0
+	local side = 1
+	local timer_off = timeout_next_npc_before_btr*(total_cols_npc_before_btr-1)
+	
+	for col = 1,total_cols_npc_before_btr do
+		amk.start_timer("run", timeout, "snp_parad.spawn_npc_before_btr_chunk("..tostring(col)..","..tostring(side)..","..tostring(timer_off*1000)..")")
+		timeout = timeout+timeout_next_npc_before_btr
+		side = 3-side
+		timer_off = timer_off-timeout_next_npc_before_btr
+	end
+end
+function spawn_npc_before_btr_chunk(col,side,timer_off)
+	local a
+	for point = 1,#mono_btr do
+		for row = 1,#mono_btr[point] do
+			a = mono_btr[point][row]
+			create_npc_before_btr("snp_tank_parad"..tostring(a[1]), a[2], a[3], a[4], point, row, col, side, timer_off)
+		end
+	end
+end
+
+-- Спавн неписей возле БТР и их логика
+function create_npc_before_btr(section,pos,lv,gv,point,row,col,side,timer_off)
+	local obj = alife():create(section,pos,lv,gv)
+	local params = amk.read_stalker_params(obj)
+	params.custom = 
+		"[smart_terrains]\n"..
+		"none = true\n"..
+
+		"[logic]\n"..
+		"active = walker@on\n"..
+		"combat_ignore = combat_ignore\n"..
+
+		"[walker@on]\n"..
+		"path_walk = parad_p_on_"..tostring(point).."_"..tostring(row).."_"..tostring(side).."\n"..
+		"def_state_moving1 = raid\n"..
+		"def_state_moving2 = raid\n"..
+		"def_state_moving3 = raid\n"..
+		"def_state_standing = raid\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_signal = here | walker@stand\n"..
+
+		"[walker@stand]\n"..
+		"path_walk = parad_p"..tostring(point).."_"..tostring(row).."_"..tostring(col).."\n"..
+		"path_look = parad_p"..tostring(point).."_"..tostring(row+1).."_"..tostring(col).."\n"..
+		"def_state_moving1 = raid\n"..
+		"def_state_moving2 = raid\n"..
+		"def_state_moving3 = raid\n"..
+		"def_state_standing = raid\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_info = {+snp_parad_npc_before_btr_off} walker@get_off\n"..
+
+		"[walker@get_off]\n"..
+		"path_walk = parad_p"..tostring(point).."_"..tostring(row).."_"..tostring(col).."\n"..
+		"path_look = parad_p"..tostring(point).."_"..tostring(row+1).."_"..tostring(col).."\n"..
+		"def_state_standing = raid\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_timer = "..tostring(timer_off).." | walker@off\n"..
+
+		"[walker@off]\n"..
+		"path_walk = parad_p_off_"..tostring(point).."_"..tostring(row).."_"..tostring(side).."\n"..
+		"def_state_moving1 = raid\n"..
+		"def_state_moving2 = raid\n"..
+		"def_state_moving3 = raid\n"..
+		"def_state_standing = raid\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_signal = del | nil %=release%\n"..
+
+		"[danger_ignore]\n"..
+		"ignore_distance = 0\n"..
+
+		"[combat_ignore]\n"..
+		"combat_ignore_cond = always\n"
+	amk.write_stalker_params(params,obj)
+end
+
+-- логика вертолетов, которые высаживают БТР
+function vert_btr_logic(point)
+	return "[logic]\n"..
+		"active = heli_move@on\n"..
+
+		"[heli_move@on]\n"..
+		"path_move = parad_vert"..tostring(point).."_walk\n"..
+		"path_look = parad_vert"..tostring(point).."_look\n"..
+		"default_velocity = 200\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_info = {+snp_parad_slava_start} heli_move@quiet\n"..
+
+		"[heli_move@quiet]\n"..
+		"path_move = parad_vert"..tostring(point).."_walk\n"..
+		"path_look = parad_vert"..tostring(point).."_look\n"..
+		"engine_sound = false\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_info = {+snp_parad_slava_done} heli_move@wait\n"..
+
+		"[heli_move@wait]\n"..
+		"path_move = parad_vert"..tostring(point).."_walk\n"..
+		"path_look = parad_vert"..tostring(point).."_look\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_info = {+snp_parad_vert_down} heli_move@down\n"..
+
+		"[heli_move@down]\n"..
+		"path_move = parad_vert_down"..tostring(point).."_walk\n"..
+		"path_look = parad_vert_down"..tostring(point).."_look\n"..
+		"default_velocity = "..tostring(patrol("parad_vert"..tostring(point).."_walk"):point(0):distance_to(patrol("parad_vert_down"..tostring(point).."_walk"):point(0))/4).."\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_info = {+snp_parad_vert_off} heli_move@off\n"..
+
+		"[heli_move@off]\n"..
+		"path_move = parad_vert"..tostring(point).."_die\n"..
+		"default_velocity = "..tostring(patrol("parad_vert_down"..tostring(point).."_walk"):point(0):distance_to(patrol("parad_vert"..tostring(point).."_die"):point(0))/4).."\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_signal = die | nil %=release%\n"
+end
+
+-- логика фоновых вертолетов
+function vert_logic(point)
+	return "[logic]\n"..
+		"active = heli_move@on\n"..
+
+		"[heli_move@on]\n"..
+		"path_move = parad_vert"..tostring(point).."_walk\n"..
+		"path_look = parad_vert"..tostring(point).."_look\n"..
+		"default_velocity = 200\n"..
+		"engine_sound = false\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_info = {+snp_parad_vert_down} heli_move@down\n"..
+
+		"[heli_move@down]\n"..
+		"path_move = parad_vert_down"..tostring(point).."_walk\n"..
+		"path_look = parad_vert_down"..tostring(point).."_look\n"..
+		"default_velocity = "..tostring(patrol("parad_vert"..tostring(point).."_walk"):point(0):distance_to(patrol("parad_vert_down"..tostring(point).."_walk"):point(0))/4).."\n"..
+		"engine_sound = false\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_info = {+snp_parad_vert_off} heli_move@off\n"..
+
+		"[heli_move@off]\n"..
+		"path_move = parad_vert"..tostring(point).."_die\n"..
+		"default_velocity = "..tostring(patrol("parad_vert_down"..tostring(point).."_walk"):point(0):distance_to(patrol("parad_vert"..tostring(point).."_die"):point(0))/4).."\n"..
+		"engine_sound = false\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_signal = die | nil %=release%\n"
+end
+
+-- строй Монолита БТР на мосту, также спавн верта с ТМ
+function spawn_btr_row()
+	create_btr(vector():set(181,51,-278),1024570,3735)
+	spawn_parad_tm_vert()
+end
+
+-- строй Монолита на мосту
+local mono_row={
+	{vector():set(180.5,23.962818145752,-283),1023302,3735},
+	{vector():set(181.5,23.962839126587,-283),1024563,3735}
+}
+local timeout_next_npc_row = 4			-- интервал спавна Монолита на мосту, сек
+local total_npc_row_sectors = 5			-- количество секторов Монолита на мосту
+local total_npc_row_cols_in_sector = 8	-- количество строев в секторе
+
+function spawn_npc_row()
+    local timeout = 0
+	local timer_off = 0
+	
+	for col = total_npc_row_cols_in_sector,1,-1 do
+		for sector = total_npc_row_sectors,1,-1 do
+			amk.start_timer("run", timeout, "snp_parad.spawn_npc_row_chunk("..tostring(total_npc_row_cols_in_sector*(sector-1)+col)..","..tostring(sector)..","..tostring(timer_off*1000)..")")
+			timeout = timeout+timeout_next_npc_row
+			timer_off = timer_off+timeout_next_npc_row
+		end
+	end
+end
+function spawn_npc_row_chunk(col,sector,timer_off)
+	local a
+	for row = 1,#mono_row do
+		a = mono_row[row]
+		create_npc_row("snp_tank_parad"..tostring(row), a[1], a[2], a[3], row, col, sector, timer_off)
+	end
+end
+
+-- Спавн неписей на мосту и их логика
+function create_npc_row(section,pos,lv,gv,row,col,sector,timer_off)
+	local obj = alife():create(section,pos,lv,gv)
+	local params = amk.read_stalker_params(obj)
+	params.custom = 
+		"[smart_terrains]\n"..
+		"none = true\n"..
+		"[logic]\n"..
+		"active = walker@on\n"..
+		"combat_ignore = combat_ignore\n"..
+
+		"[walker@on]\n"..
+		"path_walk = parad_r_on_"..tostring(row).."_"..tostring(sector).."\n"..
+		"def_state_moving1 = raid\n"..
+		"def_state_moving2 = raid\n"..
+		"def_state_moving3 = raid\n"..
+		"def_state_standing = patrol\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_signal = here | walker@stand\n"..
+
+		"[walker@stand]\n"..
+		"path_walk = parad_r"..tostring(row).."_"..tostring(col).."\n"..
+		"path_look = parad_r"..tostring(3-row).."_"..tostring(col).."\n"..
+		"def_state_moving1 = raid\n"..
+		"def_state_moving2 = raid\n"..
+		"def_state_moving3 = raid\n"..
+		"def_state_standing = patrol\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_info = {=parad_distance_to_tm_le("..tostring(iif(row==1,7,11))..")} walker@tm_salut\n"..
+
+		"[walker@tm_salut]\n"..
+		"path_walk = parad_r"..tostring(row).."_"..tostring(col).."\n"..
+		"path_look = parad_r"..tostring(3-row).."_"..tostring(col).."\n"..
+		"def_state_standing = salut_free\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_timer = 6000 | walker@tm\n"..
+
+		"[walker@tm]\n"..
+		"path_walk = parad_r"..tostring(row).."_"..tostring(col).."\n"..
+		"path_look = parad_r"..tostring(3-row).."_"..tostring(col).."\n"..
+		"def_state_standing = wait_na\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_info = {+snp_parad_slava_start} walker@salut\n"..
+
+		"[walker@salut]\n"..
+		"path_walk = parad_r"..tostring(row).."_"..tostring(col).."\n"..
+		"path_look = parad_actor_look\n"..
+		"def_state_standing = salut\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_info = {+snp_parad_slava_salut2} walker@salut2\n"..
+
+		"[walker@salut2]\n"..
+		"path_walk = parad_r"..tostring(row).."_"..tostring(col).."\n"..
+		"path_look = parad_actor_look\n"..
+		"def_state_standing = salut_free\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_info = {+snp_parad_slava_done} walker@wait_to_off\n"..
+
+		"[walker@wait_to_off]\n"..
+		"path_walk = parad_r"..tostring(row).."_"..tostring(col).."\n"..
+		"path_look = parad_r"..tostring(3-row).."_"..tostring(col).."\n"..
+		"def_state_standing = wait_na\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_info = {+snp_parad_npc_row_off} walker@get_off\n"..
+
+		"[walker@get_off]\n"..
+		"path_walk = parad_r"..tostring(row).."_"..tostring(col).."\n"..
+		"path_look = parad_r"..tostring(3-row).."_"..tostring(col).."\n"..
+		"def_state_standing = wait_na\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_timer = "..tostring(timer_off/2).." | walker@bye\n"..
+
+		"[walker@bye]\n"..
+		"path_walk = parad_r"..tostring(row).."_"..tostring(col).."\n"..
+		"path_look = parad_actor_look\n"..
+		"def_state_standing = hello\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_timer = 4000 | walker@off\n"..
+
+		"[walker@off]\n"..
+		"path_walk = parad_r_off_"..tostring(row).."_"..tostring(sector).."\n"..
+		"def_state_moving1 = raid_free\n"..
+		"def_state_moving2 = raid_free\n"..
+		"def_state_moving3 = raid_free\n"..
+		"def_state_standing = raid_free\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_signal = del | nil %=release%\n"..
+
+		"[danger_ignore]\n"..
+		"ignore_distance = 0\n"..
+
+		"[combat_ignore]\n"..
+		"combat_ignore_cond = always\n"
+	amk.write_stalker_params(params,obj)
+end
+
+-- логика вертолета, который высаживает БТР на мосту
+function vert_row_logic()
+	return "[logic]\n"..
+		"active = heli_move@fly1\n"..
+
+		"[heli_move@fly1]\n"..
+		"path_move = parad_vert_row_walk\n"..
+		"path_look = parad_vert_row_look\n"..
+		"default_velocity = 10\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_signal = here | heli_move@fly2\n"..
+
+		"[heli_move@fly2]\n"..
+		"path_move = parad_vert_row_walk\n"..
+		"path_look = parad_vert_row_look\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_timer = 5000 | heli_move@fly3 %=snp_parad.spawn_btr_row%\n"..
+		
+		"[heli_move@fly3]\n"..
+		"path_move = parad_vert_row_walk\n"..
+		"path_look = parad_vert_row_look\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_timer = 6000 | heli_move@fly4 %=snp_parad.spawn_npc_row%\n"..
+
+		"[heli_move@fly4]\n"..
+		"path_move = parad_vert_row_walk\n"..
+		"path_look = parad_vert_row_look\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_info = {+snp_parad_slava_start} heli_move@quiet\n"..
+
+		"[heli_move@quiet]\n"..
+		"path_move = parad_vert_row_walk\n"..
+		"path_look = parad_vert_row_look\n"..
+		"engine_sound = false\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_info = {+snp_parad_slava_done} heli_move@wait\n"..
+
+		"[heli_move@wait]\n"..
+		"path_move = parad_vert_row_walk\n"..
+		"path_look = parad_vert_row_look\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_info = {+snp_parad_vert_down} heli_move@down\n"..
+
+		"[heli_move@down]\n"..
+		"path_move = parad_vert_down_row_walk\n"..
+		"path_look = parad_vert_down_row_look\n"..
+		"default_velocity = "..tostring(patrol("parad_vert_row_walk"):point(0):distance_to(patrol("parad_vert_down_row_walk"):point(0))/4).."\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_info = {+snp_parad_vert_off} heli_move@off\n"..
+
+		"[heli_move@off]\n"..
+		"path_move = parad_vert_row_die\n"..
+		"default_velocity = "..tostring(patrol("parad_vert_down_row_walk"):point(0):distance_to(patrol("parad_vert_row_die"):point(0))/4).."\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_signal = die | nil %=release%\n"
+end
+
+-- Тень Монолита на мосту, спавн верта
+function spawn_parad_tm_vert()
+	create_vert_btr("helicopter_mi6", vector():set(175,130,-881),1014341,3734, tm_vert_logic())
+end
+
+-- Тень Монолита на мосту, спавн БТР
+function spawn_parad_tm_btr()
+	create_vert_btr("vehicle_btr_parad_tm", vector():set(173,86,-296),1010000,3734, tm_btr_logic())
+end
+
+-- Тень Монолита на мосту, его спавн и логика
+function parad_tm()
+	local obj = alife():create("parad_tm",vector():set(173,23.962846755981,-291),1010007,3735)
+	tm_id = obj.id
+	amk.start_timer("run2", 1, "snp_parad.get_parad_tm_obj()")
+	local params = amk.read_stalker_params(obj)
+	params.custom = 
+		"[smart_terrains]\n"..
+		"none = true\n"..
+
+		"[logic]\n"..
+		"active = walker@talk\n"..
+		"combat_ignore = combat_ignore\n"..
+
+		"[walker@talk]\n"..
+		"path_walk = parad_tm_talk\n"..
+		"path_look = parad_actor_look\n"..
+		"def_state_moving1 = walk\n"..
+		"def_state_moving2 = walk\n"..
+		"def_state_moving3 = walk\n"..
+		"def_state_standing = wait_na\n"..
+		"meet = meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_info = {+snp_parad_tm_talk_done} walker@salut_start\n"..
+
+		"[walker@salut_start]\n"..
+		"path_walk = parad_tm_salut\n"..
+		"path_look = parad_actor_look\n"..
+		"def_state_moving1 = walk\n"..
+		"def_state_moving2 = walk\n"..
+		"def_state_moving3 = walk\n"..
+		"def_state_standing = walk\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_signal = actor_look | walker@pre_salut\n"..
+
+		"[walker@pre_salut]\n"..
+		"path_walk = parad_tm_salut\n"..
+		"path_look = parad_actor_look\n"..
+		"def_state_standing = walk\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_timer = 1000 | walker@salut %+snp_parad_slava_start%\n"..
+
+		"[walker@salut]\n"..
+		"path_walk = parad_tm_salut\n"..
+		"path_look = parad_actor_look\n"..
+		"def_state_standing = salut\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_info = {+snp_parad_slava_salut2} walker@salut2\n"..
+
+		"[walker@salut2]\n"..
+		"path_walk = parad_tm_salut\n"..
+		"path_look = parad_actor_look\n"..
+		"def_state_standing = salut_free\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_info = {+snp_parad_slava_done} walker@salut_end\n"..
+
+		"[walker@salut_end]\n"..
+		"path_walk = parad_tm_salut\n"..
+		"path_look = parad_actor_look\n"..
+		"def_state_standing = wait_na\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_info = {+snp_parad_tm_get_off} walker@off\n"..
+
+		"[walker@off]\n"..
+		"path_walk = parad_tm_salut\n"..
+		"path_look = parad_tm_btr_come\n"..
+		"def_state_standing = wait_na\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_signal = here | walker@release\n"..
+
+		"[walker@release]\n"..
+		"path_walk = parad_tm_salut\n"..
+		"path_look = parad_tm_btr_come\n"..
+		"def_state_standing = wait_na\n"..
+		"meet = no_meet\n"..
+		"danger = danger_ignore\n"..
+		"combat_ignore_cond = always\n"..
+		"on_timer = 2000 | nil %+snp_parad_tm_off =release%\n"..
+
+		"[meet]\n"..
+		"meet_state = wait_na\n"..
+		"meet_state_wpn = wait_na\n"..
+		"victim = actor\n"..
+		"victim_wpn = actor\n"..
+		"use = {-snp_parad_tm_talk_done =dist_to_actor_le(2.1)} self, true\n"..
+		"use_wpn = {-snp_parad_tm_talk_done =dist_to_actor_le(2.1)} self, false\n"..
+		"meet_dialog = snp_monolith3\n"..
+		
+		"[danger_ignore]\n"..
+		"ignore_distance = 0\n"..
+
+		"[combat_ignore]\n"..
+		"combat_ignore_cond = always\n"
+	amk.write_stalker_params(params,obj)
+end
+
+-- Тень Монолита на мосту, логика вертолета
+function tm_vert_logic()
+	return "[logic]\n"..
+		"active = heli_move@fly1\n"..
+
+		"[heli_move@fly1]\n"..
+		"path_move = parad_tm_vert_walk\n"..
+		"path_look = parad_tm_vert_look\n"..
+		"default_velocity = 2.9\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_signal = here | heli_move@fly2\n"..
+
+		"[heli_move@fly2]\n"..
+		"path_move = parad_tm_vert_walk\n"..
+		"path_look = parad_tm_vert_look\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_timer = 5000 | heli_move@fly3 %=snp_parad.spawn_parad_tm_btr%\n"..
+		
+		"[heli_move@fly3]\n"..
+		"path_move = parad_tm_vert_walk\n"..
+		"path_look = parad_tm_vert_look\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_timer = 6000 | heli_move@fly4 %=snp_parad.parad_tm%\n"..
+
+		"[heli_move@fly4]\n"..
+		"path_move = parad_tm_vert_come_walk\n"..
+		"path_look = parad_tm_vert_come_look\n"..
+		"default_velocity = 1\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_info = {+snp_parad_slava_start} heli_move@quiet\n"..
+
+		"[heli_move@quiet]\n"..
+		"path_move = parad_tm_vert_come_walk\n"..
+		"path_look = parad_tm_vert_come_look\n"..
+		"engine_sound = false\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_info = {+snp_parad_slava_done} heli_move@wait\n"..
+
+		"[heli_move@wait]\n"..
+		"path_move = parad_tm_vert_come_walk\n"..
+		"path_look = parad_tm_vert_come_look\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_info = {+snp_parad_tm_off} heli_move@down\n"..
+
+		"[heli_move@down]\n"..
+		"path_move = parad_tm_vert_down_walk\n"..
+		"path_look = parad_tm_vert_down_look\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_signal = here | heli_move@wait2\n"..
+
+		"[heli_move@wait2]\n"..
+		"path_move = parad_tm_vert_down_walk\n"..
+		"path_look = parad_tm_vert_down_look\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_timer = 7000 | heli_move@wait3 %=snp_parad.release_tm_btr%\n"..
+		
+		"[heli_move@wait3]\n"..
+		"path_move = parad_tm_vert_down_walk\n"..
+		"path_look = parad_tm_vert_down_look\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_timer = 2000 | heli_move@up\n"..
+
+		"[heli_move@up]\n"..
+		"path_move = parad_tm_vert_come_walk\n"..
+		"path_look = parad_tm_vert_come_look\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_signal = here | heli_move@wait4 %+snp_parad_npc_row_off%\n"..
+
+		"[heli_move@wait4]\n"..
+		"path_move = parad_tm_vert_come_walk\n"..
+		"path_look = parad_tm_vert_come_look\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_info = {+snp_parad_tm_vert_off} heli_move@off\n"..
+
+		"[heli_move@off]\n"..
+		"path_move = parad_tm_vert_die\n"..
+		"default_velocity = 200\n"..
+		"invulnerable = true\n"..
+		"combat_enemy = nil\n"..
+		"on_signal = die | nil %=release%\n"
+end
+
+-- Тень Монолита на мосту, логика БТР
+function tm_btr_logic()
+	return "[logic]\n"..
+		"active = ph_car@stand\n"..
+		
+		"[ph_car@stand]\n"..
+		"target=nil\n"..
+		"invulnerable=true\n"..
+		"on_info = {+snp_parad_btr_come} ph_car@come\n"..
+
+		"[ph_car@come]\n"..
+		"path_walk = parad_tm_btr_come\n"..
+		"target=nil\n"..
+		"invulnerable=true\n"..
+		"on_signal = here | ph_car@wait %+snp_parad_tm_get_off%\n"..
+		
+		"[ph_car@wait]\n"..
+		"target=nil\n"..
+		"invulnerable=true\n"
+end
+
+------------------- Служебные функции ---------------------------
+
+-- спавн вертолета
+function create_vert(pos, lv, gv, spawn_item_logic)
+	return create_vert_btr("helicopter", pos, lv, gv, spawn_item_logic)
+end
+
+-- спавн бтр. если логика не задана, то подставляется логика игнорящего всё БТР
+function create_btr(pos, lv, gv, spawn_item_logic)
+	if not spawn_item_logic then
+		spawn_item_logic = "[logic]\ncfg = scripts\\snp\\btr_idle.ltx"
+	end
+	return create_vert_btr("vehicle_btr", pos, lv, gv, spawn_item_logic)
+end
+
+-- собственно спавн вертолета и бтр с присвоением логики
+function create_vert_btr(spawn_item, pos, lv, gv, spawn_item_logic)
+	local obj = alife():create(spawn_item, pos, lv, gv)
+	local packet = net_packet()
+	obj:STATE_Write(packet)
+
+	-- свойства cse_alife_object
+	local game_vertex_id = packet:r_u16()
+	local cse_alife_object__unk1_f32 = packet:r_float()
+	local cse_alife_object__unk2_s32 = packet:r_s32()
+	local level_vertex_id = packet:r_s32()
+	local object_flags = packet:r_s32()
+	local custom_data = packet:r_stringZ()
+	local story_id = packet:r_s32()
+	local cse_alife_object__unk3_s32 = packet:r_s32()
+
+	-- свойства cse_visual
+	local model_visual = packet:r_stringZ()
+	local cse_visual__unk1_u8 = packet:r_u8()
+	local motion_name
+	if string.find(spawn_item, "helicopter") then
+		-- свойства cse_motion
+		motion_name = packet:r_stringZ()
+	end
+
+	-- свойства cse_ph_skeleton
+	local skeleton_name = packet:r_stringZ()
+	local cse_ph_skeleton__unk1_u8 = packet:r_u8()
+	local cse_ph_skeleton__unk2_u16 = packet:r_u16()
+	local health 
+	local cse_alife_helicopter__unk1_sz 
+	local engine_sound 
+		
+	if string.find(spawn_item, "helicopter") then
+		-- свойства cse_alife_helicopter
+		cse_alife_helicopter__unk1_sz = packet:r_stringZ()
+		engine_sound = packet:r_stringZ()
+	elseif string.find(spawn_item, "vehicle_btr") then
+		health = packet:r_float()
+	end
+	
+	-- теперь заполняем нужные параметры
+	-- свойства cse_alife_object
+	packet:w_begin(game_vertex_id)
+	packet:w_float(cse_alife_object__unk1_f32)
+	packet:w_s32(cse_alife_object__unk2_s32)
+	packet:w_s32(level_vertex_id)
+	object_flags = bit_not(5)	-- ~5 = 0xfffffffa
+	packet:w_s32(object_flags)
+	
+	packet:w_stringZ(spawn_item_logic)	-- custom_data
+	packet:w_s32(-1)
+	packet:w_s32(cse_alife_object__unk3_s32)
+
+	-- свойства cse_visual
+	packet:w_stringZ(model_visual)
+	packet:w_u8(cse_visual__unk1_u8)
+	
+	if string.find(spawn_item, "helicopter") then
+		packet:w_stringZ(motion_name)		
+	end 
+	
+	-- свойства cse_ph_skeleton
+	skeleton_name = "idle"
+	packet:w_stringZ(skeleton_name)
+	packet:w_u8(cse_ph_skeleton__unk1_u8)
+	packet:w_u16(cse_ph_skeleton__unk2_u16)
+
+	if string.find(spawn_item, "helicopter") then
+		-- свойства cse_alife_helicopter
+		cse_alife_helicopter__unk1_sz = "idle"
+		engine_sound = "alexmx\\helicopter"
+		packet:w_stringZ(cse_alife_helicopter__unk1_sz)
+		packet:w_stringZ(engine_sound)
+	elseif string.find(spawn_item, "vehicle_btr") then
+		health = 1
+		packet:w_float(health)
+	end	
+	-- считываем скорректированные параметры
+	packet:r_seek(0)
+	obj:STATE_Read(packet, packet:w_tell())
+	
+	return obj
+end
+
+-- Удаление всех БТР
+function release_all_btr()
+	snp.release_all_online("vehicle_btr")
+end
+
+-- Удаление БТР Тени Монолита
+function release_tm_btr()
+	local obj = snp.object_by_section("vehicle_btr_parad_tm")
+	if obj then
+		alife():release(alife():object(obj:id()))
+	end
+end
+
+-- Монолит нейтрал
+function monolit_neytral()
+	relation_registry.set_community_goodwill("monolith", db.actor:id(), 1250)
+end
+
+-- получение клиентского объекта Тени Монолита
+function get_parad_tm_obj()
+	tm = level.object_by_id(tm_id)
+end
+
+-- удаление метки с карты
+function remove_spot()
+	amk.remove_spot_from_map(amk.load_variable("snp_spot_id",nil),"crlc_mdl")
+	amk.del_variable("snp_spot_id")
+end
