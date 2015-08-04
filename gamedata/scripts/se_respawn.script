@@ -5,7 +5,6 @@ by Stohe (Диденко Руслан)
 ------------------------------------------------------------------------------]]
 
 local section_name = "respawn"
-local i,k,v = 0,0,0
 
 local idle_spawn_preset = {
   seldom = 60 * 60 * 96,
@@ -14,11 +13,18 @@ local idle_spawn_preset = {
   once   = -100000
 }
 
-local fast_respawn = ui_mm_opt_main.GetOption("fast_respawn")
-
 -- Список респавнеров, для сбора статистики
 local respawners = {}
 local respawners_by_parent = {}
+
+-- Хэш id всех созданных объектов. В качестве значения будет id респаунера.
+local all_spawned_obj = {}
+
+
+function attach( sm )
+  sm:subscribe({ signal = "on_monster_death", fun = this.on_npc_death })
+  sm:subscribe({ signal = "on_npc_death", fun = this.on_npc_death })
+end
 
 
 --------------------------------------------------------------------------------
@@ -191,7 +197,9 @@ function se_respawn:STATE_Read( packet, size )
   if editor() then return end
   local table_size = packet:r_u8()
   for i = 1, table_size do
-    table.insert( self.spawned_obj, packet:r_u16() )
+    local obj_id = packet:r_u16()
+    table.insert( self.spawned_obj, obj_id )
+    all_spawned_obj[ obj_id ] = self.id
   end
   if not packet:r_eof() then
     self.respawn_time = utils.r_CTime( packet )
@@ -391,11 +399,10 @@ end
 function se_respawn:remove_spawned( id )
   local filtered = {}
   for _, v in ipairs( self.spawned_obj ) do
-    if id ~= v then
-      table.insert( filtered, v )
-    end
+    if id ~= v then table.insert( filtered, v ) end
   end
   self.spawned_obj = filtered
+  all_spawned_obj[ id ] = nil
 end
 
 
@@ -410,7 +417,7 @@ function se_respawn:execute()
   if self.respawn_time < game.get_game_time() then
     local idle_time = game.CTime()
     local now       = game.get_game_time()
-    if fast_respawn then
+    if ui_mm_opt_main.GetOption( "fast_respawn" ) then
       -- частый респаун
       idle_time:setHMSms( math.random( 10, 12 ), 0, 0, 0 )
     else
@@ -575,5 +582,30 @@ end
 function get_respawner_by_name( name )
   if amk_named_respawner_control[ name ] then
     return alife():object( amk_named_respawner_control[ name ].id )
+  end
+end
+
+
+function cleanup_spawned_obj( respawner )
+  for _, k in ipairs( respawner.spawned_obj ) do
+    sobj = alife():object( k )
+    if sobj and ( IsMonster( sobj ) or IsStalker( sobj ) ) then
+      alife():release( sobj )
+    end
+  end
+end
+
+
+-- Удалить id моба как можно скорее, что бы не успел создасться какой-нибудь
+-- объект с этим же id. А то после такого можно наблюдать, что в респаунере
+-- с крысами, в подземке Агропрома, зарегестрирована Гроза. Как пример.
+-- Потому, что ей был присвоен id убиенной крысы.
+function on_npc_death( victim, who )
+  local id = victim:id()
+  if all_spawned_obj[ id ] then
+    local respawner = alife():object( all_spawned_obj[ id ] )
+    if respawner then
+      respawner:remove_spawned( id )
+    end
   end
 end
