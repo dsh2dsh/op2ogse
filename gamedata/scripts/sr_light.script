@@ -1,0 +1,154 @@
+local light_zones = {}
+
+class "action_light"
+function action_light:__init (obj, storage)
+	self.object = obj
+	self.st = storage
+	self.active = false
+	self.id = obj:id()
+end
+function action_light:reset_scheme()
+    light_zones[self.id] = self
+end
+function action_light:update(delta)
+	local actor = db.actor
+
+	if xr_logic.try_switch_to_another_section(self.object, self.st, actor) then
+	   self.active = false     
+	   self.stalkers = {}
+	   light_zones[self.id] = nil
+	   return
+	end	
+	self.active = true
+end
+function action_light:check_stalker(stalker)
+    if self.active == false then 
+       return false, false
+    end
+    
+	if stalker and self.object:inside(stalker:position()) then
+		return self.st.light, true
+	end
+
+	return false, false
+end
+
+---------------------------------------------------------------------------------------------------------------------
+function add_to_binder(npc, ini, scheme, section, storage)
+	-- printf("DEBUG: add_to_binder: scheme='%s', section='%s'", scheme, section)
+	local new_action = action_light (npc, storage)
+	xr_logic.subscribe_action_for_events(npc, storage, new_action)
+end
+
+function set_scheme(npc, ini, scheme, section, gulag_name)
+	local st = xr_logic.assign_storage_and_bind(npc, ini, scheme, section)
+	st.logic = xr_logic.cfg_get_switch_conditions(ini, section, npc)
+	st.light = utils.cfg_get_bool (ini, section, "light_on", npc, false, false)
+end
+
+local engage_after = 20
+local engaged = {}
+
+---------------------------------------------------------------------------------------------------------------------
+function check_light(stalker)
+	--'printf("[check_light %s] start", stalker:name())
+    if not stalker then 
+       return 
+    end
+	
+	if not engaged[stalker:id()] then
+		engaged[stalker:id()] = 0
+	else	
+		if engaged[stalker:id()] < engage_after then
+			engaged[stalker:id()] = engaged[stalker:id()] + 1
+			return
+		end		
+	end
+
+	--'printf("[check_light %s] start_passed", stalker:name())
+    local torch = stalker:object("device_torch")
+    if not torch then
+       return
+    end
+
+	--'printf("[check_light %s] torch_passed", stalker:name())
+	local light = false
+	local forced = false
+
+	if stalker:alive() == false then
+		if torch then
+			torch:enable_attachable_item(false)	
+		end
+		return
+	end
+	
+	if xr_companion.is_companion(stalker:id()) then
+		if xr_combat_companion.in_ambush(stalker) or ogse_night_vision.is_nv_working() then
+			if torch then
+				torch:enable_attachable_item(false)	
+			end
+			return
+		end
+	end
+
+	--'printf("[check_light %s] alive_passed: light=%s, forced=%s", stalker:name(), tostring(light), tostring(forced))
+    --' Проверка по лайтзонам
+    if not forced then
+	    for k,v in pairs(light_zones) do
+			light, forced = v:check_stalker(stalker)
+			if forced == true then
+				break
+			end
+	    end
+    end
+
+	local weather = ogse_weather_mgr.monitoring_weather_sect
+	--'printf("[check_light %s] lightzone_passed: light=%s, forced=%s", stalker:name(), tostring(light), tostring(forced))
+	if not forced then
+		--' Проверка по времени суток (ночью всегда включено)
+		local htime = level.get_time_hours()
+		if htime then
+			if (htime <= 5 or htime >= 20) or (weather and string.find(weather, "storm")) then
+				light = true
+			else
+				light = false
+			end
+		end
+	
+		--' Проверка на индор-аутдор (внутри всегда включено)
+		if light == false then
+			if isIndoor(level.name()) then
+				light = true
+			end
+		end
+	end			
+
+	--'printf("[check_light %s] timezone_passed: light=%s, forced=%s", stalker:name(), tostring(light), tostring(forced))
+	--' Проверка по активному действию
+	if not forced and light == true then
+		--' Фонарики должны быть выключены у костра
+		if stalker then
+			local scheme = db.storage[stalker:id()].active_scheme
+			if scheme and (scheme == "kamp" or scheme == "camper") then
+				light = false
+				forced = true
+			end
+		end
+	end
+
+	--'printf("[check_light %s] scheme_passed: light=%s, forced=%s", stalker:name(), tostring(light), tostring(forced))	
+	if not forced and light == true then
+		--' Фонарики должны быть выключены в бою. Но если в бою идет поиск врага - то включены.
+		if stalker and stalker:alive() and stalker:best_enemy() then
+			light = false
+		end				
+	end
+	
+	if light ~= nil and torch then
+		torch:enable_attachable_item(light)
+	end
+end
+
+function clean_up ()
+   light_zones = {} 
+end
