@@ -105,11 +105,6 @@ local forbidden_profiles = {		-- запретные профили и имена
 	["major_wounded"]				=	true,
 }
 
-local exclude_gulag = {
-  -- костёр на Кордоне, где Шустрый сидит, недалеко от насыпи
-  -- [ "esc2_bandit_les" ] = true,
-}
-
 function init()
 	event("npc_hit"):register(hit_callback)
 	event("npc_death"):register(death_place)
@@ -181,6 +176,13 @@ local times_to_aim_by_diff = {
 }
 
 local time_to_aim = times_to_aim_by_diff[diff_level]
+
+local fire_queue_size = {
+  [ "novice"      ] = 5,
+  [ "experienced" ] = 3,
+  [ "veteran"     ] = 3,
+  [ "master"      ] = 3,
+}
 
 --- отклонение прицела
 
@@ -432,7 +434,6 @@ end
 
 function check_is_enemy(npc, enemy)
 	if not npc or not enemy then return false end
---	if IsMonster(enemy) then return true end
 	local is_engine_enemy = npc:relation(enemy) == game_object.enemy
 	if is_engine_enemy then
 		return true
@@ -492,11 +493,6 @@ function evaluator_check_altcombat:evaluate()
 	local lname = level.name()
 	local comm = self.object:character_community()
 	local forbidden_by_comm = community_forbidden_locations[comm]
-	local gulag = xr_gulag.get_npc_gulag( self.object )
-	local forbidden_by_gulag = false
-	if gulag and exclude_gulag[ gulag.name ] then
-	  forbidden_by_gulag = true
-	end
 	if not self.object:alive() 
 	or ui_mm_opt_main.GetOption( "no_ogse_combat" )
 	or xr_wounded.is_wounded(self.object) 
@@ -506,7 +502,6 @@ function evaluator_check_altcombat:evaluate()
 	or (db.storage[self.object:id()].active_scheme and forbidden_schemes[db.storage[self.object:id()].active_scheme])
 	or forbidden_profiles[self.object:name()]
 	or forbidden_profiles[self.object:profile_name()]
-	or forbidden_by_gulag
 	or (
 		comm == "monolith" and
 		string.find(self.object:name(), "pri_") and
@@ -857,7 +852,7 @@ function action_altcombat:execute()
 			xr_sound.set_sound(npc, nil)
 			set_combat_sight(npc, be, bw)
 			set_escape_state(npc, be)
-			set_weapons_fire(npc, be, bw)
+			set_weapons_fire( npc, be, bw, false, npc_rank )
 			if npc:level_vertex_id() == assist_point then
 				-- self.object:movement_enabled(false)
 			else
@@ -926,12 +921,12 @@ function action_altcombat:execute()
 				local enemy_cover = enemy_covered_value(npc, be)
 				if enemy_cover < 0.5 then
 					write_log("--XRS_BATTLE_AI: VARIANT_1_CC_FIRE "..npc:name().." : "..tostring(primary_target[npc:id()]))
-					set_weapons_fire(npc, be, bw)
+					set_weapons_fire( npc, be, bw, false, npc_rank )
 				else	
 					write_log("--XRS_BATTLE_AI: VARIANT_1_CC _NOFIRE"..npc:name().." : "..tostring(primary_target[npc:id()]))
 				end			
 			else
-				set_weapons_fire(npc, be, bw)
+				set_weapons_fire( npc, be, bw, false, npc_rank )
 			end			
 		else	
 			set_transfer_state(npc, be)
@@ -990,12 +985,12 @@ function action_altcombat:execute()
 				local enemy_cover = enemy_covered_value(npc, be)
 				if enemy_cover < 0.5 then
 					write_log("--XRS_BATTLE_AI: VARIANT_2_CC_FIRE "..npc:name().." : "..tostring(primary_target[npc:id()]))
-					set_weapons_fire(npc, be, bw)
+					set_weapons_fire( npc, be, bw, false, npc_rank )
 				else	
 					write_log("--XRS_BATTLE_AI: VARIANT_2_CC_NOFIRE "..npc:name().." : "..tostring(primary_target[npc:id()]))
 				end			
 			else
-				set_weapons_fire(npc, be, bw)
+				set_weapons_fire( npc, be, bw, false, npc_rank )
 			end				
 		else	
 			set_transfer_state(npc, be)
@@ -1015,7 +1010,7 @@ function action_altcombat:execute()
 			last_algorythm = "select_pos_be"
 			if can_fire[npc:id()] then
 				set_combat_state(npc, be, bw)
-				set_weapons_fire(npc, be, bw, true)
+				set_weapons_fire( npc, be, bw, true, npc_rank )
 			else	
 				set_transfer_state(npc, be)
 			end			
@@ -1024,7 +1019,7 @@ function action_altcombat:execute()
 				write_log("--XRS_BATTLE_AI: VARIANT_3_ENEMY_AT_HEIGHT "..npc:name())
 				assist_point = find_cover(npc, be, 2)
 				if can_fire[npc:id()] then
-					set_weapons_fire(npc, be, bw, true)
+					set_weapons_fire( npc, be, bw, true, npc_rank )
 					set_combat_state(npc, be, bw)
 				else	
 					set_transfer_state(npc, be)
@@ -1044,7 +1039,7 @@ function action_altcombat:execute()
 					last_algorythm = "find_cover_0"
 					if can_fire[npc:id()] then
 						set_combat_state(npc, be, bw)
-						set_weapons_fire(npc, be, bw, true)
+						set_weapons_fire( npc, be, bw, true, npc_rank )
 					else	
 						set_transfer_state(npc, be)
 					end
@@ -1053,7 +1048,7 @@ function action_altcombat:execute()
 					last_algorythm = "find_cover_2"
 					if can_fire[npc:id()] then
 						set_combat_state(npc, be, bw)
-						set_weapons_fire(npc, be, bw, true)
+						set_weapons_fire( npc, be, bw, true, npc_rank )
 					else	
 						set_transfer_state(npc, be)
 					end
@@ -1768,7 +1763,7 @@ function process_enemy(npc, may_be_enemy)
 			if IsStalker(enemy) and check_is_enemy(npc, enemy) then
 				write_log("!!XRS_BATTLE_AI REG_TARG_3 NPC ["..npc:name().."] ENEMY ["..enemy:name().."]")
 				register_as_target(npc, enemy)
-			elseif IsMonster(enemy) then
+			elseif IsMonster(enemy) and check_is_enemy(npc, enemy) then
 				write_log("!!XRS_BATTLE_AI REG_TARG_MON NPC ["..npc:name().."] ENEMY ["..enemy:name().."]")
 				register_as_target(npc, enemy)
 			end
@@ -2869,9 +2864,8 @@ function in_transit(npc)
 	return false
 end
 
-function set_weapons_fire(npc, enemy, weapon, override_vis)
+function set_weapons_fire( npc, enemy, weapon, override_vis, npc_rank )
 	if enemy and (enemy:alive() or (is_armor(enemy) and armor_alive(enemy))) and weapon and not (IsStalker(enemy) and xr_wounded.is_wounded(enemy)) then
-		local npc_rank = ranks.get_obj_rank_name(npc)
 		local time_aim = time_to_aim[npc_rank]
 		local type_of_fire = object.aim1
 		
@@ -2945,15 +2939,30 @@ function set_weapons_fire(npc, enemy, weapon, override_vis)
 				end
 			else	
 				write_log("--XRS_BATTLE_AI: RAYTRACE CHECK DOESN RETURN RESULT! "..npc:name().." : "..tostring(enemy:id()))
-				type_of_fire = object.fire1
+				if npc_rank == "novice" then
+					type_of_fire = object.fire1
+				elseif npc:see(enemy) and not in_hideout(npc) then
+					write_log("--XRS_BATTLE_AI: RAYTRACE CHECK DOESN RETURN RESULT BUT SEE "..npc:name().." : "..tostring(enemy:id()))
+					type_of_fire = object.fire1
+				end
 			end
 			
-		elseif use_raytrace and fps_check < raytrace_fps_limit then	
-			write_log("--XRS_BATTLE_AI: RAYTRACE FPS TOO LOW - FIRING AT WILL "..npc:name().." : "..tostring(enemy:id()))
-			type_of_fire = object.fire1
+		elseif use_raytrace and fps_check <= raytrace_fps_limit then	
+			if npc_rank == "novice" then
+				write_log("--XRS_BATTLE_AI: RAYTRACE FPS TOO LOW - FIRING AT WILL "..npc:name().." : "..tostring(enemy:id()))
+				type_of_fire = object.fire1
+			elseif npc:see(enemy) and not in_hideout(npc) then
+				write_log("--XRS_BATTLE_AI: RAYTRACE FPS TOO LOW BUT SEE - FIRING AT WILL "..npc:name().." : "..tostring(enemy:id()))
+				type_of_fire = object.fire1
+			end
 		else	
-			write_log("--XRS_BATTLE_AI: RAYTRACE SWITCHED OFF - FIRING AT WILL "..npc:name().." : "..tostring(enemy:id()))
-			type_of_fire = object.fire1			
+			if npc_rank == "novice" then
+				write_log("--XRS_BATTLE_AI: RAYTRACE SWITCHED OFF - FIRING AT WILL "..npc:name().." : "..tostring(enemy:id()))
+				type_of_fire = object.fire1			
+			elseif npc:see(enemy) and not in_hideout(npc) then
+				write_log("--XRS_BATTLE_AI: RAYTRACE SWITCHED OFF BUT SEE - FIRING AT WILL "..npc:name().." : "..tostring(enemy:id()))
+				type_of_fire = object.fire1			
+			end
 		end
 		
 		write_log("--XRS_BATTLE_AI: WPNS_FIRE_3 "..npc:name().." : "..tostring(enemy:id()))
@@ -2992,7 +3001,8 @@ function set_weapons_fire(npc, enemy, weapon, override_vis)
 		elseif IsRPG(weapon) then
 			npc:set_item(type_of_fire, weapon, 1, time_aim.rpg)			
 		else
-			npc:set_item(type_of_fire, weapon, 5, time_aim.other)
+			local q_size = fire_queue_size[ npc_rank ]
+			npc:set_item(type_of_fire, weapon, q_size, time_aim.other)
 		end
 		
 		write_log("--XRS_BATTLE_AI: WPNS_FIRE_END "..npc:name().." : "..tostring(enemy:id()))
