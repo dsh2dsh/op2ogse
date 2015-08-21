@@ -409,6 +409,14 @@ end
 3) если объект согласен идти только в этот смарт, то принимаем даже если нету места (он вытеснит кого-то), проверить,
    подходит ли он гулагу, подходит ли он хоть на одну работу
 ]]
+
+-- таблица level_groups задаёт что-то вроде карты, где локации сгруппированы в области.
+-- Неписи пойдут в смарт с другого уровня, только если этот уровень находится в одной группе со смартом.
+-- Вероятно, надо глянуть на карту и убедиться, что эти группы заданы осмысленно.
+-- как минимум, группы должны обеспечивать связность графа в пределах локаций одной группы, и также
+-- надо согласовывать место спавна неписей и группы, иначе заспавненные неписи не смогут 
+-- попасть в свой смарт. 
+-- если локация не прописана в этой таблице, то она будет автоматически изолирована.
 local level_groups = {
     marsh = "group1",
     l01_escape = "group1",
@@ -432,165 +440,153 @@ local level_groups = {
     zaton = "groups1",
 }
 
+
+--[[ Подходит ли объект гулагу.
+Второй аргумент - результат работы функии obj_accepts_smart_terrain - тип согласия объекта на
+вступление в этот смарт
+]]
+--вызывается как часть enabled
 function se_smart_terrain:smart_terrain_accepts_obj( obj, obj_agreement )
-  if obj_agreement == disagreed then
---    printf("[%s] disagreed", obj:name())
+  if obj_agreement == disagreed then -- объект в этот смарт идти не хочет
     return false
   end
 
---' if obj:name() == "esc_wolf" then
---'   printf("before checking: pop = %s, cap = %s", tostring(self.gulag:get_non_exclusive_population()), tostring(self.gulag.capacity_non_exclusive))
---' end
+  --[=[
+        if xr_companion.is_companion(obj.id) then -- это компаньон, нечего ему в смарте делать
+                return false
+        end     
+  --]=]
 
+  -- в любом случае, если хочет идти только в этот, или если готов без
+  -- условий и при этом гулаг не заполнен полностью
   if obj_agreement == agreed_exclusive or
-     self.gulag:get_non_exclusive_population() < self.gulag.capacity_non_exclusive
+    self.gulag:get_non_exclusive_population() < self.gulag.capacity_non_exclusive
   then
     local community, is_stalker = self:get_obj_community( obj )
 
-        --' Проверка что смарттеррейн и НПС находятся в одном кластере уровней (чтобы не ходили через БАР)
-        local smart_level_group = self:get_level_name()
-        local npc_level_group = ""
-        if game_graph():valid_vertex_id(obj.m_game_vertex_id) then
-            npc_level_group = alife():level_name(game_graph():vertex(obj.m_game_vertex_id):level_id())
-        end
-
---'   if obj:name() == "esc_wolf" then
---'     printf("smart=%s stalker=%s", tostring(smart_level_group), tostring(npc_level_group))
---'   end
-
-        if level_groups[smart_level_group] ~= level_groups[npc_level_group] then
-            return false
-        end
-    
-
---' if obj:name() == "esc_wolf" then
---'   printf( "comm=%s is_stalker=%s", community, tostring( is_stalker ) )
---' end
-
-    if self.accepted_communities and not self.accepted_communities[community] then
-      return false
+    --' Проверка что смарттеррейн и НПС находятся в одном кластере
+    --уровней (чтобы не ходили через БАР)
+    local smart_level_group = self:get_level_name()
+    local npc_level_group = ""
+    if game_graph():valid_vertex_id( obj.m_game_vertex_id ) then
+      npc_level_group = alife():level_name(
+        game_graph():vertex( obj.m_game_vertex_id ):level_id()
+      )
     end
 
---'   if obj:name() == "esc_wolf" then
---'     printf( "community=%s rank=%d reputation=%d", community, obj:rank(), obj:reputation() )
---'   end
-  
+    if level_groups[ smart_level_group ] ~= level_groups[ npc_level_group ] then
+      return false -- с этого уровня в этот смарт идти нельзя
+    end
+    -- если в кастомдате смарта есть перечень допустимых группировок и
+    -- непись не попадает в эту группировку
+    if self.accepted_communities and not self.accepted_communities[ community ] then
+      return false -- то не подходит
+    end
     if not self:check_preset( community, obj:rank(), self.gparams.preset_name ) then
       return false
     end
-
---'   if obj:name() == "esc_wolf" then
---'     printf( "check_preset ok" )
---'   end
-
-    if not xr_gulag.checkNpc( community, is_stalker, self.gparams.type, obj:rank(), obj ) then
+    -- выполнить проверку, заданную скриптом для конкретного уровня
+    -- (обычно соответствие типа гулага и параметров непися)
+    if not xr_gulag.checkNpc(
+      community, is_stalker, self.gparams.type, obj:rank(), obj
+    ) then
       return false
     end
-
---' if obj:name() == "esc_wolf" then
---'   printf( "checkNpc ok" )
---' end
-
-    return self.gulag:is_there_any_suitable_job( self:fill_npc_info( obj ), obj_agreement == agreed_exclusive )
+    -- если есть работа
+    return self.gulag:is_there_any_suitable_job(
+      self:fill_npc_info( obj ), obj_agreement == agreed_exclusive
+    )
   else
-    return false
+    return false -- если не эксклюзив для этого смарта и места нет, то не подходит
   end
 end
 
+
 --[[ подходит ли гулаг объекту?
 у объекта в custom data прописаны условия для некоторых smart_terrains:
-  <smart_terrain_name1> = <condlist1>
-  <smart_terrain_name2> = <condlist2>
-  ...
+        <smart_terrain_name1> = <condlist1>
+        <smart_terrain_name2> = <condlist2>
+        ...
 Если для какого-то smart_terrain условие выполнилось, он называется эксклюзивным.
 Если у объекта появился хоть один эксклюзивный smart terrain, то он будет согласен идти только в него.
 Если не появилось ни одного эксклюзивного, то он согласен идти в любой.
+Функция возвращает одно из трёх значений:
+disagreed        - в этот не идёт
+agreed_exclusive - идёт только в этот
+agreed           - согласен идти в этот на неэкслюзивной основе
 ]]
 -- TODO а если в начале эксклюзивный, а потом в любой?
 -- вариант: any=condlist
 function se_smart_terrain:obj_accepts_smart_terrain( obj )
-  if obj.smart_terrain_conditions then
-    local any_exclusive = false
-    local s
+--[=[
+	if xr_companion.is_companion(obj.id) then -- это компаньон, нечего ему в смарте делать
+		return disagreed
+	end	
+--]=]
 
-    for name, condlist in pairs(obj.smart_terrain_conditions) do
-      s = xr_logic.pick_section_from_condlist( db.actor_proxy, obj, condlist )
-
-      if s ~= nil then
-        if name == "none" then        
-          return disagreed
-        elseif name == self:name() then
---'         if obj:name() == "esc_wolf" then
---'           printf("[%s] obj_accepts_smart_terrain[%s] = agreed_exclusive", self:name(), obj:name())
---'         end
-          return agreed_exclusive
-        end
-      else
-        --' Если текущий смарттеррейн эксклюзивный и недоступен
-        if name == self:name() then
-          return disagreed
+  if obj.smart_terrain_conditions then -- если вообще есть какие-то специальные условия насчёт смартов
+    -- перебираем все варианты условий из секции непися
+    -- TODO: зачем перебирать условия для всех смартов, если можно по ключу выбрать только
+    -- условие для этого?
+    if xr_logic.pick_section_from_condlist(
+      db.actor_proxy, obj, obj.smart_terrain_conditions[ "none" ]
+    ) then
+      return disagreed -- явно прописано, что не идёт ни в какой смарт
+    else
+      local condlist = obj.smart_terrain_conditions[ self:name() ]
+      if condlist then -- есть условие для этого смарта
+        if xr_logic.pick_section_from_condlist(
+          db.actor_proxy, obj, condlist
+        ) then
+          return agreed_exclusive -- идёт только в этот смарт
+        else
+          return disagreed -- в этот не идёт
         end
       end
     end
+    -- здесь имеем: эксклюзивов нет, явного запрета тоже нет
 
-		--' Если объекту запрещено переходить в online и эксклюзивные
-		--' смарты недоступны, то не пускаем его никуда. Это исключает
-		--' переброску отключенных до (или после) определённого события
-		--' людей и мутантов в другой неэксклюзивный смарт.
-		if obj:can_switch_online() == false then
-			return disagreed
-		end
-
-    --' Надо убедиться что эксклюзивный смарттеррейн доступен, прежде чем запрещать все остальные
---'   if any_exclusive then
---'     if obj:name() == "gar_bandit_agr_10" then
---'       printf("[%s] obj_accepts_smart_terrain[%s] = disagreed. excl=%s", self:name(), obj:name(), tostring(any_exclusive))
---'     end
---'     return disagreed
---'   end
+    --' Если объекту запрещено переходить в online и эксклюзивные
+    --' смарты недоступны, то не пускаем его никуда. Это исключает
+    --' переброску отключенных до (или после) определённого события
+    --' людей и мутантов в другой неэксклюзивный смарт.
+    if not obj:can_switch_online() then
+      return disagreed
+    end
   end
-
---' if obj:name() == "esc_wolf" then
---'   printf("[%s] obj_accepts_smart_terrain[%s] = agreed", self:name(), obj:name())
---' end
 
   return agreed
 end
 
+
 -- может ли объект быть добавлен в smart terrain?
 -- вызывается симулятором при поиске задания для объекта/группы.
 -- если объект - группа, то вернёт true только если все объекты в группе вернут true
-function se_smart_terrain:enabled(obj)
-  -- DEBUG
+function se_smart_terrain:enabled( obj )
   if self.disabled then
---    printf("[smart_terrain %s] DISABLED obj=%s (self.disabled)", self:name(), obj:name())
     return false
   end
+--[=[
+    --// xr_companion
+    if xr_companion.is_companion(obj.id) then
+      return false
+    end	
+    --// xr_companion	
+--]=]
   --------
-  self:register_if_needed()
-  self:initialize_if_needed()
-
+  -- если всё это делаем в первый раз
+  self:register_if_needed() -- проинитим ...вообще-то это должно с гарантией происходить при создании смарта движком,
+  self:initialize_if_needed() -- но на всякий случай...
+  -- если гулаг активен (по cond_list из кастомдаты смарта) и не заблокировано добавление персонажей
   if self:is_gulag_available() and not self.population_locked then
-    local b = self:obj_accepts_smart_terrain( obj )
-    local a = self:smart_terrain_accepts_obj( obj, b )
-
---'   if obj:name() == "esc_wolf" then
---'     if a == true then
---'       printf("[smart_terrain %s] ENABLED obj=%s exclusive=%s", self:name(), obj:name(), tostring(b))
---'     else
---'       printf("[smart_terrain %s] DISABLED obj=%s  accept_obj = %s", self:name(), obj:name(), tostring(b))
---'     end
---'   end
-
+    local b = self:obj_accepts_smart_terrain( obj ) -- если смарт подходит неписю
+    local a = self:smart_terrain_accepts_obj( obj, b ) -- и непись подходит смарту
     return a
   else
-
---'   if obj:name() == "esc_wolf" then
---'     printf("[smart_terrain %s] DISABLED not_enabled", self:name())
---'   end
     return false
   end
 end
+
 
 -- возвращает меру подходящести персонажа смарттерейну.
 -- вызывается для всех смарттерейнов, которые вернули true из enabled
@@ -599,35 +595,38 @@ end
 --   1) если объект уже бывал в других смартах, то чем больше свободных работ на уровне этого смарта, тем лучше
 --   2) иначе ближе - лучше
 -- TODO Оптимизировать
-function se_smart_terrain:suitable( obj )
---' if obj:name() == "esc_wolf" then
---'   printf("[%s] suitable [%s]", self:name(), obj:name())
---' end
+-- на основе это функции принимается решение для непися (не смарта), т.е. здесь непись выбирает себе смарт
+-- для какого смарта число больше, туда и пойдёт
 
-  local v = 0
-  
+function se_smart_terrain:suitable( obj )
+--[=[if xr_companion.is_companion(obj.id) then -- по идее не надо, поскольку напарник и так заблокирован
+                return 0
+        end--]=]
+--[=[
+        if xr_companion.is_companion(obj.id) then -- это компаньон, нечего ему в смарте делать
+                return 0
+        end
+--]=]
   --' Повысить подходящесть эксклюзивного смарттеррейна
-  if self:obj_accepts_smart_terrain(obj) == agreed_exclusive then
-    v = 100000 --'Так чтобы все эксклюзивные были заведомо лучше
+  if self:obj_accepts_smart_terrain(obj) == agreed_exclusive then -- некрасиво, уже ведь проверяли, а фунция некислая
+    -- TODO: оптимизировать
+    --v = 100000 --'Так чтобы все эксклюзивные были заведомо лучше
+    return 100000 -- сразу возвращаем, зачем ещё что-то проверять, если это заведомо больше всех
   end
 
-  for id, strn in pairs( smart_terrains[self:get_level_name()] ) do
-
-    if strn:is_gulag_available() then
-      v = v + strn.gulag.capacity - strn.gulag:get_population()
+  local v = 0 -- посчитаем доступное на уровне количество работ
+  for id, strn in pairs( smart_terrains[self:get_level_name()] ) do -- перебираем все гулаги на одном уровне с этим
+    if strn:is_gulag_available() then -- если они доступны
+      v = v + strn.gulag.capacity - strn.gulag:get_population() -- то суммируем их вакансии
     end
   end
-
---' if obj:name() == "esc_wolf" then
---'   printf( "[smart_terrain %s] obj=%s suitable=%d was_in_smart_terrain=%s",
---'           self:name(),
---'           obj:name(),
---'       v,
---'           tostring(obj.was_in_smart_terrain) )
---' end
-
-  return v
+  -- непонятен критерий! Получается, неэксклюзивный непись почти всегда пойдёт на уровень с тупо большим числом смартов,
+  -- а уровни с небольшим количеством смартов заселятся в последнюю очередь.
+  -- надо подумать над критерием. 
+  -- Кроме того, непонятно, где прописывается ограничение по рангу/силе монстров. Может это сделать здесь?
+  return v -- возвращаем фактически число вакансий на уровне
 end
+
 
 -- добавить npc в smart terrain.
 -- если места нету или нету свободных подходящих работ, то
