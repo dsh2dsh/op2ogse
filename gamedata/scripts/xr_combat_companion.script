@@ -1,0 +1,1651 @@
+----------------------------------------------------------------------------------------------------
+-- Боевая схема напарника
+----------------------------------------------------------------------------------------------------
+-- Разработчик: KamikaZze kamikazze-ru@yandex.ru
+----------------------------------------------------------------------------------------------------
+-- Версия 1.95 (09/02/2015)
+----------------------------------------------------------------------------------------------------
+local debug_flag = false		-- включить отладочный вывод
+local hud = get_hud()
+
+function printf(fmt, ...)
+	if debug_flag then
+		-- ogse.send_tip(fmt)
+		local info = hud:GetCustomStatic("companion_hud")
+		if not info then
+			hud:AddCustomStatic("companion_hud", true)
+			info = hud:GetCustomStatic("companion_hud"):wnd()
+			info:SetText(fmt)
+		else
+			info = hud:GetCustomStatic("companion_hud"):wnd()
+			info:SetText(fmt)
+		end
+		log1("**XR_COMBAT_COMP: "..fmt)
+		-- get_console():execute("flush")	
+	end
+end
+
+function prints(fmt, ...)
+	if debug_flag then
+		-- ogse.send_tip(fmt)
+		local info = hud:GetCustomStatic("companion_hud")
+		if not info then
+			hud:AddCustomStatic("companion_hud", true)
+			info = hud:GetCustomStatic("companion_hud"):wnd()
+			info:SetText(fmt)
+		else
+			info = hud:GetCustomStatic("companion_hud"):wnd()
+			info:SetText(fmt)
+		end
+		-- log1("**XR_COMBAT_COMP: "..fmt)
+		-- get_console():execute("flush")	
+	end
+end
+
+function write_log(str)
+	if debug_flag then
+		log1(str)
+	end
+end
+----------------------------------------------------------------------------------------------------
+-- Настройки схемы
+----------------------------------------------------------------------------------------------------
+local desired_combat_distance = 35	-- максимальный радиус отхода от ГГ
+local close_combat_distance = 25	-- дистанция ближнего боя
+local desired_offence_distance = 15 -- дистанция рассчетного расстояния поиска укрытия при атаке
+local desired_defence_distance = 5	-- дистанция рассчетного расстояния поиска укрытия при обороне
+local evade_distance = 10			-- радиус поиска точки для уклонения от выстрелов
+local help_actor = 10				-- радиус следования за ГГ
+local reprioritize_timeout = 1500 	-- интервал реприоретизации, мсек - нельзя делать слишком низким - будет судорожно метаться между целями
+local time_to_change = 500			-- время переключения между врагами, мсек - нельзя делать слишком низким - будет проворачиваться через себя
+local sound_prob = 0.03				-- вероятность сказать фразу
+local time_to_hide = 7000			-- время, сколько примерно сидеть в укрытии, миллиссекунд
+local time_to_maneuver = 2000		-- время, сколько бежать к точке маневрирования, миллиссекунд
+local memory_timeout = 60000		-- время, сколько помнить о появлении врага, миллиссекунд
+local remember_enemy = 6000			-- сколько помнить о последнем основном враге (нужно для предотвращения выхода из боя слишком рано), для неписей умножается на 3
+
+local combat_mult_npc = 0.5			-- множитель веса ближней цели неписей
+local combat_mult_monster = 0.3		-- множитель веса ближней цели неписей
+
+local low_range_npc_aggr = 30
+local far_range_mon_aggr = 25
+local low_range_mon_aggr = 5
+
+local far_range_npc_lowaggr = 60
+local low_range_npc_lowaggr = 20
+local far_range_mon_lowaggr = 25
+local low_range_mon_lowaggr = 5
+
+local far_range_npc_noaggr = 1
+local low_range_npc_noaggr = 1
+local far_range_mon_noaggr = 15
+local low_range_mon_noaggr = 5
+
+local max_invisible_range_npc = 12
+local max_invisible_range_mon = 5
+
+local use_raytrace = true
+local raytrace_fps_limit = 25
+----------------------------------------------------------------------------------------------------
+-- Служебные переменные
+----------------------------------------------------------------------------------------------------
+current_companion = nil
+local last_reprioritize = nil 		-- время последней реприоретизации
+local primary_target = nil 			-- кого окучивать будем, id
+local last_target = {}				-- последняя цель, [id] = last_time 
+local last_enemy_id = nil			-- ид последнего врага
+local change_time = time_global()	-- последнее время смены целей
+local last_time_send = nil			-- когда последний раз меняли точку
+local last_enemy = nil				-- имя последнего врага, чисто для отладочных сообщений
+local last_mode = 0					-- имя последнего режима, чисто для отладочных сообщений
+local assist_point = nil			-- последняя точка маневрирования
+local last_hideout = nil			-- последнее укрытие
+dont_touch_us = true				-- флаг для неагрессивной схемы поведения, если выставлен в тру и схема неагрессивная - не трогаем никого... по хит коллбэку непися или актора выставляется в фалсе, взводится обратно основной схемой
+local hit_memory 		= {}
+local fighting_wounded 	= {}
+local locked_actor_vertex = nil		-- занятые вертексы
+
+--------------------------------------------------------------------------------------------------------------
+-- Служебные таблички
+--------------------------------------------------------------------------------------------------------------
+local disabled_objects = {	-- заблокированные постоянно или временно объекты
+
+}
+local targets_list = {		-- список целей
+
+}
+------- структура записи таблицы
+-- targets_list[npc_id] = {
+	-- npc = непись или нет
+	-- range = расстояние
+	-- vis = видим или нет
+-- }
+----------------------------------------------------------------------------------------------------
+-- Служебные функции для ведения реестра врагов
+----------------------------------------------------------------------------------------------------
+function disable_object(companion, enemy) -- забыть объект
+	if companion and enemy then
+		local id = enemy:id()
+		if not disabled_objects[id] then
+			companion:enable_memory_object( enemy, false )
+			disabled_objects[id] = id
+			hit_memory[id] = nil
+		end
+	end
+end
+
+function enable_object(companion, enemy) -- вспомнить объект
+	if companion and enemy then
+		local id = enemy:id()
+		if disabled_objects[id] then
+			companion:enable_memory_object( enemy, true )
+			disabled_objects[id] = nil
+		end
+	end
+end
+
+function get_target(npc)
+	local target_id = primary_target
+	local target = nil
+	if target_id then
+		target = level.object_by_id(target_id)
+	end
+	return target
+end
+
+function hit_callback(companion, enemy, amount)
+	-- если объект был ранее забыт - очухиваем его, если нету в табличке - записываем в табличку
+	-- данная функция помещается в xr_motivator.hit_callback
+	if amount and amount > 0.02 and not enemy:id() == db.actor:id() then
+		xr_companion.being_attacked = true
+		dont_touch_us = false
+		enable_object(companion, enemy)
+		process_enemy(companion, enemy)
+		companion:make_object_visible_somewhen(enemy)
+		if IsStalker(enemy) then
+			primary_target = enemy:id()
+			hit_memory[enemy:id()] = enemy
+		end
+		if xr_wounded.is_wounded(enemy) then
+			fighting_wounded[enemy:id()] = true
+		end
+	end
+end
+
+function process_enemy(npc, enemy)
+	-- проверка выбора врагом напарника или ГГ
+	-- данная функция помещается в апдейты монстров и неписей 
+	if enemy and enemy.clsid and (IsStalker(enemy) or IsMonster(enemy)) and enemy:alive() and enemy:id() ~= db.actor:id() and not xr_companion.is_companion(enemy:id()) then
+		write_log("!!!PROCESSING_"..enemy:name().." RESULT IS_STK ["..tostring(IsStalker(enemy)).."] IS_MNSTR ["..tostring(IsMonster(enemy)).."] CHK ["..tostring(we_are_under_attack(enemy)).."]")
+		if ((IsStalker(enemy) or IsMonster(enemy)) and we_are_under_attack(enemy)) then
+			-- человек ты иль монструшка
+			register_as_target(enemy)
+		else
+			return
+		end
+	end
+end
+
+local chk_comp = {}
+
+function we_are_under_attack(enemy)
+	local target 		= enemy:best_enemy()
+	chk_comp = {}
+	if target then
+		local actor_id		= db.actor:id()
+		local companion_id	= 0
+		for id, comm in pairs(xr_companion.companions) do
+			if comm == "companion" then
+				local companion = level.object_by_id(id)
+				if companion then
+					chk_comp[id] = true
+				end
+			end
+		end
+		if chk_comp == {} then
+			return false
+		else
+			for k, v in pairs(chk_comp) do
+				local npc = level.object_by_id(k)
+				if npc then
+					local enemy_status = check_is_enemy_of_me_or_actor(npc, enemy)
+					local enemy_target = xrs_battle_ai.primary_target[enemy:id()]
+					if (target:id() == actor_id or (enemy_target and enemy_target == actor_id)) and not must_stay(npc) then
+						write_log("!!**XR_COMBAT_COMP: ACTOR BEST ENEMY OF "..enemy:name().." ENEMY_STAT ["..tostring(enemy_status).."]")
+						if enemy_status then
+							return true
+						end						
+					end
+					if target:id() == npc:id() or (enemy_target and enemy_target == npc:id()) then
+						write_log("!!**XR_COMBAT_COMP: COMPANION BEST ENEMY OF "..enemy:name().." ENEMY_STAT ["..tostring(enemy_status).."]")
+						if enemy_status then
+							return true
+						end				
+					end					
+				end			
+			end
+			return false
+		end
+	else	
+		return false
+	end
+end
+
+function register_as_target(enemy)
+	write_log("!!XR_COMBAT_COMP: REG_TARGET "..enemy:name())
+	chk_comp = {}
+	local id = enemy:id()
+	if not targets_list[id] then
+		for ids, comm in pairs(xr_companion.companions) do
+			if comm == "companion" then
+				local companion = level.object_by_id(ids)
+				if companion then
+					chk_comp[ids] = true
+				end
+			end
+		end
+		write_log("!!XR_COMBAT_COMP: REG_TARGET "..enemy:name())
+		if chk_comp ~= {} then
+			for companion_id, v in pairs(chk_comp) do
+				if companion_id == id or db.actor:id() == id or enemy:name() == "single_player" then
+					return
+				end
+				local companion = level.object_by_id(companion_id)
+				if companion and companion:alive() and not xr_wounded.is_wounded(companion) then
+					local dist = companion:position():distance_to(enemy:position())
+					local dist_2 = db.actor:position():distance_to(enemy:position())
+					if dist_2 < dist and must_stay(companion) then
+						dist = dist_2
+					end
+					local enemy_record = {
+						npc = false,
+						range = 0,
+						vis = false		
+					}
+					enemy_record.npc = IsStalker(enemy)
+					enemy_record.range = dist
+					enemy_record.vis = enemy:see(companion) or (enemy:see(db.actor) and not must_stay(companion))
+					enemy_record.weight = 1000
+					if enemy_record.vis == true and enemy_record.npc == true then
+						enemy_record.last_time_seen = time_global()
+						enemy_record.vertex = enemy:level_vertex_id()
+					end
+					targets_list[id] = enemy_record			
+				else
+					return
+				end			
+			end
+		else
+			return
+		end
+	end
+end
+
+function get_targets_from_memory(npc)
+	-- сбор врагов, вызывается из reprioritize_targets
+	for o in npc:memory_visible_objects() do
+		process_enemy(npc, o:object())
+	end	
+	for o in npc:memory_sound_objects() do
+		process_enemy(npc, o:object())
+	end
+	if hit_memory then
+		for k, v in pairs(hit_memory) do
+			process_enemy(npc, v)
+		end	
+	end
+end
+
+function reprioritize_targets(companion)
+	-- обновление основной цели, вызывается из апдейта напарника
+	-- обновим предварительно реестр целей
+	if db.actor then 
+		locked_actor_vertex = db.actor:level_vertex_id()
+	end
+	
+	if last_reprioritize and time_global() < (last_reprioritize+reprioritize_timeout) and primary_target then
+		return
+	end
+
+	get_targets_from_memory(companion)
+	refresh_targets(companion)
+	
+	--
+	if debug_flag then
+		print_table_inlog_v2(targets_list, "TARGS>>")
+	end
+	-- На дистанциях выше 10 метров приоритет неписям, ближе 10 метров приоритет монстрам. При дистанции ниже пары метров объект сразу становится примари_таргет без вариантов. 
+	-- При варианте далее 10 метров проверяем видимость, приоритет видимому.
+	local last_weight 	= 1000
+	
+	for k, v in pairs(targets_list) do
+		if v.vis == true then -- если цель видит нас
+			local close_combat, far_combat = combat_ranges(companion, v.npc)
+			local mult = combat_multiplier(v.npc)
+			if v.npc == false then -- если она монстр
+				if v.range >= close_combat and v.range < far_combat then -- и цель на средней дистанции
+					v.weight = v.range * combat_multiplier(v.npc)
+				elseif v.range < close_combat then -- а если вплотную
+					v.weight = 0
+				end
+			else -- а если непись
+				if v.range >= close_combat and v.range < far_combat then -- если не ближний бой
+					v.weight = v.range
+				elseif v.range < close_combat then -- а если ближний
+					v.weight = v.range * combat_multiplier(v.npc)
+				end
+			end
+		else -- если невидима
+			if primary_target == k then
+				last_target[primary_target] = time_global()
+				primary_target = nil
+			end
+			if v.npc == false then -- если она монстр
+				if v.range < max_invisible_range_mon then 
+					v.weight = v.range * 2
+				else
+					v.weight = 1000
+				end
+			else -- а если непись
+				if v.range < max_invisible_range_npc then -- если в радиусе "слуха"
+					v.weight = v.range * 3
+				elseif v.range < desired_combat_distance then -- если в радиусе максимального отхода от ГГ
+					if v.last_time_seen and (v.last_time_seen + memory_timeout) > time_global() then -- если видели её не менее минуты назад
+						v.weight = v.range * 4
+					else	
+						v.weight = 1000
+					end					
+				else
+					v.weight = 1000
+				end
+			end
+		end
+	end
+
+	for k, v in pairs(targets_list) do
+		if v.weight < last_weight then
+			last_weight = v.weight
+			primary_target = k
+			last_target = {}
+		end	
+	end
+	
+	if primary_target ~= nil then
+		last_reprioritize = time_global()
+		xr_companion.being_attacked = true
+		if debug_flag then
+			write_log("--XR_COMBAT_COMP: Выбрана цель: "..tostring(primary_target))
+		end
+		return
+	else
+		local deadman = have_fresh_deadman()
+		if deadman == false then
+			prints("Напарник: активные угрозы не обнаружены")
+			last_time_send = nil
+			last_enemy = nil
+			last_enemy_id = nil
+			primary_target = nil
+			assist_point = nil
+			last_target = {}
+			-- НЕ ЗАКОММЕНТИРОВАТЬ НИ В КОЕМ СЛУЧАЕ!
+			xr_companion.being_attacked = false
+		end
+	end
+
+end
+
+function refresh_targets(companion)
+	-- обновление реестра врагов, вызывается из апдейта напарника
+	local enemy_by_engine = companion:best_enemy()
+	if enemy_by_engine and enemy_by_engine:alive() and not (xr_wounded.is_wounded(enemy_by_engine) and not fighting_wounded[enemy_by_engine:id()]) then
+		if not targets_list[enemy_by_engine:id()] and (check_is_enemy_of_me_or_actor(companion, enemy_by_engine) or 
+		(xrs_battle_ai and (xrs_battle_ai.primary_target[enemy_by_engine:id()] and (xrs_battle_ai.primary_target[enemy_by_engine:id()] == companion_id or xrs_battle_ai.primary_target[enemy_by_engine:id()] == actor_id))))
+		then
+			write_log("!!**XR_COMBAT_COMP: WE'RE ENGINE ENEMY OF "..enemy_by_engine:name())
+			register_as_target(enemy_by_engine)
+		end
+	end
+	-- 
+	for k, v in pairs(targets_list) do
+		local check_target = level.object_by_id(k)
+		if check_target and check_target:alive() and not (xr_wounded.is_wounded(check_target) and not fighting_wounded[check_target:id()]) then
+			local dist	= companion:position():distance_to(check_target:position())
+			local vis_1	= check_target:see(companion)
+			local vis_2 = (check_target:see(db.actor) and not must_stay(companion))
+			v.range	= dist
+			if vis_1 or vis_2 then
+				v.vis	= true
+			else	
+				v.vis	= false
+			end
+			if v.vis == false then
+				if v.npc == false then
+					if dist > 50 then
+						disable_object(companion, check_target)
+						if primary_target == k then
+							last_target[primary_target] = time_global()
+							primary_target = nil
+						end
+						targets_list[k] = nil
+					end
+				else
+					if dist > 150 then
+						disable_object(companion, check_target)
+						if primary_target == k then
+							last_target[primary_target] = time_global()
+							primary_target = nil
+						end	
+						targets_list[k] = nil
+					else
+						if companion:see(check_target) then
+							v.last_time_seen = time_global()
+							v.vertex = check_target:level_vertex_id()
+						end						
+					end
+				end
+			else
+				if v.npc == true then
+					v.last_time_seen = time_global()
+					v.vertex = check_target:level_vertex_id()
+				end
+			end
+		elseif check_target then
+			disable_object(companion, check_target)
+			if primary_target == k then
+				last_target[primary_target] = time_global()
+				primary_target = nil
+			end
+			targets_list[k] = nil			
+		else	
+			if primary_target == k then
+				primary_target = nil
+				local self_hit = hit()
+				self_hit.type = hit.strike
+				self_hit.power = 0
+				self_hit.impulse = 0.01
+				self_hit.draftsman = companion
+				self_hit.direction = vector():set(0,0,0)	
+				companion:hit(self_hit)				
+			end
+			targets_list[k] = nil			
+		end
+	end
+	table.sort(targets_list,function(a,b) return a.range < b.range end)
+end
+
+function get_max_weapon_range(companion)
+	-- служебная для проверки достанет ли оружие
+	if companion then
+		local act_item = companion:item_in_slot(companion:active_slot())
+		local ini = system_ini()
+		if act_item then
+			local sect = act_item:section()
+			if ini:section_exist(sect) and ini:line_exist(sect, "max_radius") then
+				return ini:r_float(sect, "max_radius")
+			elseif not ini:section_exist(sect) then	
+				write_log("!!XR_COMBAT_COMP: WEAPON SECTION NOT EXIST ["..tostring(sect).."]")
+				return 36.0
+			elseif not ini:line_exist(sect, "max_radius") then	
+				write_log("!!XR_COMBAT_COMP: WEAPON RADIUS NOT EXIST ["..tostring(sect).."]")
+				return 36.0
+			end
+		else
+			return 36.0
+		end
+	else
+		return 36.0
+	end
+end
+
+local shotguns = {
+
+["wpn_bm16"]			= true,
+["wpn_toz34_short"]		= true,
+["wpn_bm16_full"]		= true,
+["wpn_toz34"]			= true,
+["wpn_wincheaster1300"]	= true,
+["wpn_spas12"]			= true,
+["wpn_saiga12c"]		= true,
+["wpn_saiga12c_m1"]		= true,
+["wpn_sayga12k_sk1"]	= true
+
+}
+
+local sniper_rifles = {
+
+["wpn_svu"]				= true,
+["wpn_zastava"]			= true,
+["wpn_svd"]				= true,
+["wpn_awm"]				= true,
+["wpn_v94"]				= true,
+["wpn_gauss"]			= true
+
+}
+
+local high_recoil_rapid_weapon = {
+
+["wpn_mg3"]				= true,
+["wpn_m_134"]				= true,
+
+}
+
+function IsShotgun(object)
+	if object then
+		local id = object:section()
+		if shotguns[id] then
+			return true
+		end
+	end
+	return false
+end
+
+function IsSniperRifle(object)
+	if object then
+		local id = object:section()
+		if sniper_rifles[id] then
+			return true
+		end
+	end
+	return false
+end
+
+function IsHighRecoilRapidFire(object)
+	if object then
+		local id = object:section()
+		if high_recoil_rapid_weapon[id] then
+			return true
+		end
+	end
+	return false
+end
+
+function combat_ranges(npc, enemy_is_npc)
+	if npc then
+		local wpn_check_max_range = get_max_weapon_range(npc)
+		if no_aggression(npc) then
+			if debug_flag then
+				write_log("##XR_COMBAT_COMP:: NO_AGGR_MODE")
+			end
+			if dont_touch_us then
+				-- не воюем пока не стукнули
+				if enemy_is_npc then
+					return low_range_npc_noaggr, far_range_npc_noaggr
+				else
+					return low_range_mon_noaggr, far_range_mon_noaggr
+				end
+			else
+					-- берем всех
+				if enemy_is_npc then
+					return low_range_npc_aggr, wpn_check_max_range
+				else
+					return low_range_mon_aggr, far_range_mon_aggr
+				end
+			end		
+		elseif low_aggression(npc) then
+			if debug_flag then
+				write_log("##XR_COMBAT_COMP:: LOW_AGGR_MODE")
+			end		
+			if dont_touch_us then
+				-- берем ближние цели
+				if enemy_is_npc then
+					return low_range_npc_lowaggr, far_range_npc_lowaggr
+				else
+					return low_range_mon_lowaggr, far_range_mon_lowaggr
+				end
+			else
+				-- берем всех
+				if enemy_is_npc then
+					return low_range_npc_aggr, wpn_check_max_range
+				else
+					return low_range_mon_aggr, far_range_mon_aggr
+				end
+			end
+		else
+		-- берем всех
+			if debug_flag then
+				write_log("##XR_COMBAT_COMP: NORMAL_MODE")
+			end		
+			if enemy_is_npc then
+				return low_range_npc_aggr, wpn_check_max_range
+			else
+				return low_range_mon_aggr, far_range_mon_aggr
+			end
+		end
+	else
+		write_log("!!XR_COMBAT_COMP: Функция рассчета расстояний не получила параметр npc!")
+		return 30, 150
+	end
+end
+
+function combat_multiplier(enemy_is_npc)
+	if enemy_is_npc then
+		return combat_mult_npc
+	else
+		return combat_mult_monster
+	end
+end
+
+function check_is_enemy_of_me_or_actor(npc, enemy)
+	if not npc or not enemy then return false end
+	if IsMonster(enemy) then return true end
+	if IsStalker(enemy) then
+		if enemy:id() == db.actor:id() then return false end
+		local is_engine_enemy = enemy:relation(npc) == game_object.enemy
+		local is_engine_enemy_actor = enemy:relation(db.actor) == game_object.enemy
+		if is_engine_enemy or is_engine_enemy_actor then
+			return true
+		end
+	end
+	return false
+end
+
+function set_weapons_fire(npc, enemy, weapon)
+	if enemy:alive() and not (xr_wounded.is_wounded(enemy) and not fighting_wounded[enemy:id()]) then
+	
+		local type_of_fire = object.aim1
+		local fps_check = ogse_benchmark.get_fps()
+		
+		if use_raytrace and fps_check > raytrace_fps_limit then
+		
+			if debug_flag then
+				write_log("!!XR_COMBAT_COMP: COMPANION_COMBAT_CHECK_RAYTRACE: "..tostring(enemy:id()))
+			end
+		
+			local be_pos = enemy:position()
+			local npc_pos = weapon:position()
+			local distance = npc_pos:distance_to(be_pos)
+			
+			if xrs_battle_ai and xrs_battle_ai.is_armor(enemy) then
+				if string.find(enemy:name(),"btr") then
+					be_pos = enemy:bone_position("mashine_gun_tower")
+				else
+					be_pos = enemy:bone_position("korpus1")
+				end			
+			else
+				be_pos = enemy:bone_position("bip01_head")
+			end	
+
+			local dir_enemy = utils.vector_copy_by_val(be_pos):sub(npc_pos)
+			local aim_point = npc_pos:add(dir_enemy:normalize())
+			
+			ray_pick.init(aim_point, dir_enemy, (distance+1), rq_target.rqtBoth, npc)
+			
+			local res = ray_pick.check()
+			
+			if debug_flag then
+				write_log("!!XR_COMBAT_COMP: COMPANION_COMBAT_CHECK_RAYTRACE_PREPARED: "..tostring(enemy:id()))
+			end			
+			
+			if res then
+			
+				if debug_flag then
+					write_log("!!XR_COMBAT_COMP: COMPANION_COMBAT_CHECK_RAYTRACE_PHASE_1: "..tostring(enemy:id()))
+				end			
+			
+				local dist = ray_pick.get_dist()
+				local obj = ray_pick.get_obj()
+				
+				if debug_flag then
+					write_log("!!XR_COMBAT_COMP: COMPANION_COMBAT_CHECK_RAYTRACE_PHASE_2: "..tostring(enemy:id()))
+				end					
+				
+				if obj and obj:id() == enemy:id() then
+					type_of_fire = object.fire1
+					if debug_flag then
+						write_log("!!XR_COMBAT_COMP: COMPANION_COMBAT_CHECK_RAYTRACE_SUCCESS: "..tostring(enemy:id()))
+					end
+				else
+					if obj then
+						if check_is_enemy_of_me_or_actor(npc, obj) and not obj:id() == db.actor:id() then
+							type_of_fire = object.fire1
+							if debug_flag then
+								write_log("!!XR_COMBAT_COMP: COMPANION_COMBAT_CHECK_RAYTRACE_FAIL_BUT_VALID_TARGET: "..tostring(obj:id()))
+							end
+						else
+							type_of_fire = object.aim1
+							if debug_flag then
+								write_log("!!XR_COMBAT_COMP: COMPANION_COMBAT_CHECK_RAYTRACE_FAIL_ACTOR_OR_FRIENDLY: "..tostring(obj:id()))
+							end
+						end
+					else
+						if npc:see(enemy) then
+							type_of_fire = object.fire1
+							if debug_flag then
+								write_log("!!XR_COMBAT_COMP: COMPANION_COMBAT_CHECK_RAYTRACE_FAIL_TRY_TO_SEE: "..tostring(enemy:id()))
+							end
+						end
+					end
+				end
+				
+			else	
+				-- если рейтрейс не вернул результат
+				type_of_fire = object.fire1
+				if debug_flag then
+					write_log("!!XR_COMBAT_COMP: COMPANION_COMBAT_CHECK_RAYTRACE_ERROR: "..tostring(enemy:id()))
+				end				
+			end			
+	
+		else
+			if debug_flag then
+				write_log("!!XR_COMBAT_COMP: COMPANION_COMBAT_CHECK_RAYTRACE_OFF: "..tostring(enemy:id()))
+			end		
+			type_of_fire = object.fire1
+		end
+	
+		if IsShotgun(weapon) then
+			npc:set_item(type_of_fire, weapon, 1, 800)
+		elseif IsSniperRifle(weapon) then
+			npc:set_item(type_of_fire, weapon, 1, 500)
+		elseif IsHighRecoilRapidFire(weapon) then	
+			npc:set_item(type_of_fire, weapon, 5, 50)
+		else
+			npc:set_item(type_of_fire, weapon, 5, 250)
+		end
+	end
+end
+
+function set_combat_state(npc, enemy, transfer_flag, speed_flag, sneak_flag)
+
+	-- transfer_flag:
+	-- false - normal
+	-- true - transfer
+	
+	-- speed_flag:
+	-- false - normal
+	-- true - fast
+	
+	-- sneak_flag:
+	-- false - normal
+	-- true - sneak
+	
+	local look = nil
+	if enemy then
+		look = {look_object = enemy}
+	end	
+	
+	if transfer_flag then
+		if speed_flag then
+			if sneak_flag then
+			-- быстрый, трансфер, ползком
+				state_mgr.set_state( script_name(),  npc, "sneak_run_fire", nil, nil, look, {animation = true} )			
+			else
+			-- быстрый, трансфер, пешком
+				state_mgr.set_state( script_name(),  npc, "raid_fire", nil, nil, look, {animation = true} )
+			end		
+		else
+			if sneak_flag then
+			-- медленный, трансфер, ползком
+				state_mgr.set_state( script_name(),  npc, "sneak_fire", nil, nil, look, {animation = true} )
+			else
+			-- медленный, трансфер, пешком
+				state_mgr.set_state( script_name(),  npc, "raid_fire", nil, nil, look, {animation = true} )
+			end			
+		end
+	else
+		if npc:animation_count() > 0 then
+			state_mgr.set_state( script_name(),  npc, "idle", nil, nil, nil, {animation = true})
+			return 
+		end
+		if speed_flag then
+			if sneak_flag then
+			-- быстрый, нормально, ползком
+				state_mgr.set_state( script_name(),  npc, "sneak_run_fire", nil, nil, look )
+			else
+			-- быстрый, нормально, пешком
+				if in_hideout(npc) then
+					state_mgr.set_state( script_name(),  npc, "sneak_run_fire", nil, nil, look )
+				else
+					state_mgr.set_state( script_name(),  npc, "raid_fire", nil, nil, look )
+				end
+			end			
+		else
+			if sneak_flag then
+			-- медленный, нормально, ползком
+				state_mgr.set_state( script_name(),  npc, "sneak_fire", nil, nil, look )
+			else
+			-- медленный, нормально, пешком
+				if in_hideout(npc) then
+					state_mgr.set_state( script_name(),  npc, "sneak_fire", nil, nil, look )
+				else
+					state_mgr.set_state( script_name(),  npc, "raid_fire", nil, nil, look )
+				end
+			end		
+		end
+	end
+
+end
+
+function set_combat_sight(npc, enemy, weapon)
+	
+	local look_pos = nil
+	local enemy_pos = enemy:position()
+	local npc_pos = npc:position()
+	local direction = npc_pos:sub(enemy_pos)
+	local bodystate = enemy:body_state()
+	local distance = npc_pos:distance_to(enemy_pos)
+
+	if IsStalker(enemy) then
+		if IsShotgun(weapon) then
+			if enemy_pos.y < (npc_pos.y - 1) then
+				look_pos = enemy:bone_position("bip01_head")
+			else
+				look_pos = enemy:bone_position("bip01_neck")
+			end
+		elseif IsSniperRifle(weapon) then
+			look_pos = enemy:bone_position("eyelid_1")
+		elseif not IsHighRecoilRapidFire(weapon) then
+			if distance < 25 then
+				if bodystate == move.crouch then
+					look_pos = enemy:bone_position("bip01_pelvis")
+				else
+					if enemy_pos.y < (npc_pos.y - 1) then
+						look_pos = enemy:bone_position("bip01_head")
+					else
+						look_pos = enemy:bone_position("bip01_neck")
+					end
+				end
+			elseif distance >= 25 and distance < 50 then
+				if bodystate == move.crouch then
+					look_pos = enemy:bone_position("bip01_pelvis")
+				else
+					look_pos = enemy:bone_position("bip01_head")
+				end
+			else	
+				look_pos = enemy:bone_position("bip01_spine")
+			end
+		else	
+			look_pos = enemy:bone_position("bip01_pelvis")
+		end
+	else	
+		if IsSniperRifle(weapon) then
+			if enemy_pos.y < (npc_pos.y - 1) then
+				look_pos = enemy:bone_position("bip01_head")
+			else
+				look_pos = enemy:bone_position("bip01_neck")
+			end
+		elseif not IsHighRecoilRapidFire(weapon) then
+			look_pos = enemy:bone_position("bip01_spine")
+		else	
+			look_pos = enemy:bone_position("bip01_pelvis")
+		end
+	end
+	
+	if npc:see(enemy) and enemy:alive() then
+		npc:set_desired_direction()
+		if weapon then
+			npc:set_sight(look.fire_point,look_pos)
+		end
+	end
+end
+----------------------------------------------------------------------------------------------------
+-- Служебные функции для маневрирования
+----------------------------------------------------------------------------------------------------
+function select_position(npc, target, stay_flag)
+
+	-- по умолчанию (ничего не указано) пляшем от актора
+	-- если указан stay_flag, и не указан target то от себя
+	-- если указан target то от target
+	
+	if last_time_send and last_time_send > time_global() then
+		return
+	end	
+
+	local around_object = npc
+	
+	if stay_flag == false then
+		around_object = db.actor
+	end
+	
+	if target then
+		around_object = target
+	end	
+
+	local node_1_vertex_id = nil
+	local node_1_distance = nil
+	local node_2_vertex_id = nil
+	local node_2_distance = nil
+
+	-- проверяем точку слева
+	desired_direction = vector_rotate_y(around_object:direction(), math.random(50,60) )
+	node_1_vertex_id = level.vertex_in_direction(around_object:level_vertex_id(),
+		desired_direction,
+		close_combat_distance)
+	if npc:accessible(node_1_vertex_id) ~= true or node_1_vertex_id == around_object:level_vertex_id() or (locked_actor_vertex and node_1_vertex_id == locked_actor_vertex) then			
+		node_1_vertex_id = nil
+	end
+	-- проверяем точку справа
+	desired_direction = vector_rotate_y(around_object:direction(), -math.random(50,60) )
+	node_2_vertex_id = level.vertex_in_direction (  around_object:level_vertex_id(),
+		desired_direction,
+		close_combat_distance )
+	if npc:accessible(node_2_vertex_id) ~= true or node_2_vertex_id == around_object:level_vertex_id() or (locked_actor_vertex and node_2_vertex_id == locked_actor_vertex) then			
+		node_2_vertex_id = nil
+	end
+	
+	-- Проверяем растояния до точек
+	if node_1_vertex_id ~= nil then
+		node_1_distance = npc:position():distance_to_sqr(level.vertex_position(node_1_vertex_id))
+	else
+		node_1_distance = -1
+	end
+	if node_2_vertex_id ~= nil then
+		node_2_distance = npc:position():distance_to_sqr(level.vertex_position(node_2_vertex_id))
+	else
+		node_2_distance = -1
+	end
+	
+	-- Выбираем ближайшую из существующих
+	if node_1_distance == -1 and node_2_distance == -1 then
+		--' Не смогли найти точку, ругаться
+		return nil
+	end
+	if node_1_distance == -1 then
+		last_time_send = time_global() + time_to_maneuver
+		return node_2_vertex_id
+	end
+	if node_2_distance == -1 then
+		last_time_send = time_global() + time_to_maneuver
+		return node_1_vertex_id
+	end
+	if node_1_distance < node_2_distance then
+		last_time_send = time_global() + time_to_maneuver
+		return node_1_vertex_id
+	else
+		last_time_send = time_global() + time_to_maneuver
+		return node_2_vertex_id
+	end
+end
+
+function find_cover(npc, enemy, mode)
+
+	-- список режимов:
+	
+	-- mode = 1 - атака
+	-- mode = 0 - оборона (удержание позиции)
+	
+	-- cover_point* best_cover(vector self_position, vector enemy_position, float radius, float min_enemy_distance, float max_enemy_distance) – возвращает лучшую точку прикрытия от врага в заданном радиусе от своей позиции и на нужном расстояниии от врага
+	-- cover_point* safe_cover(const vector& self_position, float radius, float min_distance) – возвращает лучшую точку прикрытия в заданном радиусе от своей позиции и не ближе min_distance. Прикрытость учитывается со всех направлений.	
+	
+	-- C++ class cover_point {
+		-- function level_vertex_id() const;
+		-- function position() const;
+	-- };
+	
+	-- если НЕТ точки или НЕТ последнего времени посыла, либо время есть но меньше чем time_global - ИЩЕМ укрытие
+	-- если ЕСТЬ точка И ЕСТЬ последнее время посыла И оно больше чем time_global - не ищем
+
+	if last_time_send and last_time_send > time_global() then
+		return
+	end
+	
+	if must_stay(npc) then -- оставленный непись всегда обороняется
+		mode = 0
+	end	
+
+	local dist_to_actor = npc:position():distance_to(db.actor:position())
+	if not must_stay(npc) and dist_to_actor > 50 then
+		return select_position(npc, nil, false)
+	end		
+
+	local best_cover = nil
+	if npc and enemy then
+	
+		local npc_pos = npc:position()
+		local enemy_pos = enemy:position()
+		local distance_to_enemy = npc_pos:distance_to(enemy_pos)
+		local min_enemy_distance = distance_to_enemy / 3
+		local max_enemy_distance = distance_to_enemy / 2
+		local radius = distance_to_enemy - (distance_to_enemy / 3)
+		local cover = nil
+		local hide_flag = in_ambush(npc)
+		
+		if mode == 1 then
+			cover = npc:best_cover(npc_pos, enemy_pos, radius, min_enemy_distance, max_enemy_distance)
+		elseif mode == 0 then
+			cover = npc:safe_cover(npc_pos, 5, 0)
+		end
+		
+		if cover then
+			local cover_vertex = cover:level_vertex_id()
+			local dist_to_cover = cover:position():distance_to(npc_pos)
+			local move_speed = 1.8
+			if hide_flag then
+				move_speed = 2.5
+			end
+			local move_time = dist_to_cover / move_speed
+			if debug_flag then
+				write_log("--!!XR_COMBAT_COMP: УКРЫТИЕ "..tostring(cover_vertex).." ДИСТАНЦИЯ: "..tostring(dist_to_cover).." ВРЕМЯ НА ПУТЬ: "..tostring(move_time))
+			end
+			if locked_actor_vertex and cover_vertex == locked_actor_vertex then
+				if debug_flag then
+					write_log("!!XR_COMBAT_COMP: Напарник не нашёл подходящего укрытия, оно занято ГГ")
+				end	
+				return select_position(npc, nil, true)
+			end
+			last_time_send = time_global() + move_time + time_to_hide
+			last_hideout = cover_vertex
+			return cover_vertex
+		else	
+			if debug_flag then
+				write_log("!!XR_COMBAT_COMP: Напарник не нашёл подходящего укрытия")
+			end	
+			return select_position(npc, nil, true)
+		end
+		
+	else
+		write_log("!!XR_COMBAT_COMP: find_cover не найден параметр npc или enemy")
+		return nil
+	end
+	
+end
+
+
+function combat_send(npc, assist_point)
+	if assist_point then
+		utils.send_to_nearest_accessible_vertex(npc, assist_point)
+		if debug_flag then
+			write_log("!!XR_COMBAT_COMP: Напарник ОТПРАВЛЕН К МЕСТУ")
+		end
+	end
+end
+
+function defensive_send(npc, enemy, stay)
+	local assist_point = select_position(npc, nil, stay)
+	if assist_point then
+		utils.send_to_nearest_accessible_vertex(npc, assist_point)
+	else
+		assist_point =  select_position(npc, nil, true)
+		if assist_point then
+			utils.send_to_nearest_accessible_vertex(npc, assist_point)
+		else	
+			assist_point = find_cover(npc, enemy, 0)
+			if assist_point then
+				utils.send_to_nearest_accessible_vertex(npc, assist_point)
+			end
+		end
+	end
+end
+
+function must_stay(npc)
+	if npc then
+		local st = db.storage[npc:id()]
+		local behavior = 0
+		if st and st.companion then
+			behavior = st.companion.behavior
+		end
+		local dist_to_actor = npc:position():distance_to(db.actor:position())
+		if (behavior == 3 or
+		behavior == 5 or
+		behavior == 6 or
+		behavior == 7 or
+		behavior == 10 or
+		behavior == 11) and 
+		(dist_to_actor > 100 or
+		(dist_to_actor <= 100 and dist_to_actor > 50 and not npc:see(db.actor))) 
+		then
+			return true
+		end
+	end
+	return false
+end
+
+function in_ambush(npc)
+	if npc then
+		local st = db.storage[npc:id()]
+		local behavior = 0
+		if st and st.companion then
+			behavior = st.companion.behavior
+		end
+		if behavior == 1 or
+		behavior == 4 or
+		behavior == 6 or
+		behavior == 7 or
+		behavior == 9 or
+		behavior == 11 then
+			return true
+		end
+	end
+	return false
+end
+
+function low_aggression(npc)
+	if npc then
+		local st = db.storage[npc:id()]
+		local behavior = 0
+		if st and st.companion then
+			behavior = st.companion.behavior
+		end
+		if behavior == 8 or
+		behavior == 9 or
+		behavior == 10 or
+		behavior == 11 then
+			return true
+		end
+	end
+	return false
+end
+
+function no_aggression(npc)
+	if npc then
+		local st = db.storage[npc:id()]
+		local behavior = 0
+		if st and st.companion then
+			behavior = st.companion.behavior
+		end
+		if behavior == 2 or
+		behavior == 4 or
+		behavior == 5 or
+		behavior == 7 then
+			return true
+		end
+	end
+	return false
+end
+
+function in_hideout(npc)
+	if last_hideout and npc then
+		local npc_pos = npc:position()
+		local npc_vert = npc:level_vertex_id()
+		local hideout_pos = level.vertex_position(last_hideout)
+		local distance_to_cover = npc_pos:distance_to(hideout_pos)
+		if distance_to_cover < 3 or npc_vert == last_hideout then
+			if debug_flag then
+				prints("Напарник сидит в укрытии")
+			end
+			return true
+		end
+	end
+	return false
+end
+
+
+function have_fresh_deadman()
+	local target = false
+	for k, v in pairs(last_target) do
+		local obj = level.object_by_id(k)
+		local timeout = remember_enemy
+		if obj and IsStalker(obj) then
+			timeout = timeout*3
+		end
+		local time_check = time_global() - remember_enemy
+		if v and v > time_check then
+			target = k
+		else
+			last_target[k] = nil
+		end
+	end
+	return target
+end
+----------------------------------------------------------------------------------------------------
+-- Эвалуаторы и свойства
+----------------------------------------------------------------------------------------------------
+-- evaluator_combat_activity	- продолжаем вооруженное общение до умиротворения объекта
+----------------------------------------------------------------------------------------------------
+-- Экшены и свойства
+----------------------------------------------------------------------------------------------------
+-- action_combat_activity		- выставляем стрельбу по врагу - точку, состояние зависимо от режима поведения. Маневрируем.
+----------------------------------------------------------------------------------------------------
+local count_update 			= 0	-- Счетчик апдейтов. Нельзя чтобы схема стартовала включенной сразу же, иначе 
+local engage_after_update 	= 3 -- будут глюки на переключении схем и выборе оружия
+--------------------------------------------------------------------------------------------------------------
+class "evaluator_combat_activity" ( property_evaluator ) -- продолжаем вооруженное общение до умиротворения объекта
+
+function evaluator_combat_activity:__init( name, storage ) super ( nil, name )
+	self.st = storage
+end
+
+function evaluator_combat_activity:evaluate()
+	if not self.object:alive() or xr_wounded.is_wounded(self.object) or not xr_companion.is_companion(self.object:id()) then
+		return false
+	end
+	if count_update <= engage_after_update then
+		count_update = count_update + 1
+		return false
+	end
+	if no_aggression(self.object) and dont_touch_us	then
+		return false
+	end
+	local targ = have_fresh_deadman()
+	if primary_target ~= nil then
+		local best_enemy = level.object_by_id(primary_target)
+		if best_enemy 
+		and best_enemy:alive() 
+		and not (xr_wounded.is_wounded(best_enemy) and not fighting_wounded[best_enemy:id()])
+		then
+			ogse_debug.add_active_eval( self.object, script_name(), "combat_activity" )
+			xr_companion.being_attacked = true
+			self.object:set_mental_state(anim.danger)
+			return true
+		else
+			if targ ~= false then
+				ogse_debug.add_active_eval( self.object, script_name(), "combat_activity_2" )
+				xr_companion.being_attacked = true
+				return true
+			end
+			return false
+		end
+	else
+		if targ ~= false then
+			ogse_debug.add_active_eval( self.object, script_name(), "combat_activity_3" )
+			xr_companion.being_attacked = true
+			self.object:set_mental_state(anim.danger)
+			return true
+		end
+		return false
+	end
+end
+--------------------------------------------------------------------------------------------------------------
+class "action_combat_activity" ( action_base ) -- выставляем стрельбу по врагу - точку, состояние зависимо от режима поведения. Маневрируем.
+
+function action_combat_activity:__init( name, storage )  super ( nil, name )
+	self.st = storage
+end
+
+function action_combat_activity:initialize()
+	action_base.initialize( self )
+	if not xr_wounded.is_wounded(self.object) then
+		self.object.health = 1
+	end
+end
+
+function action_combat_activity:execute()
+	action_base.execute( self )
+	
+	if xr_wounded.is_wounded(self.object) then -- если ранен, то обнулим все переменные для перезапуска схемы
+		last_time_send = nil
+		last_enemy = nil
+		last_enemy_id = nil
+		assist_point = nil
+		xr_sound.set_sound(self.object, nil)
+		return
+	end
+	
+	if xrs_battle_ai and xrs_battle_ai.hit_timeout then
+		if xrs_battle_ai.hit_timeout[self.object:id()] and xrs_battle_ai.hit_timeout[self.object:id()] > time_global() then
+			self.object:movement_enabled(false)
+		elseif xrs_battle_ai.hit_timeout[self.object:id()] then	
+			xrs_battle_ai.hit_timeout[self.object:id()] = nil
+			self.object:movement_enabled(true)
+		end	
+	else
+		self.object:movement_enabled(true)
+	end
+	
+	self.object:set_desired_direction()
+	self.object:set_desired_position ()
+	self.object:set_detail_path_type ( move.curve )
+	self.object:set_path_type        ( game_object.level_path )	
+	
+	local enemy = nil 				-- текущий враг
+	local change_flag = false		-- флаг смены цели
+	
+	local deadman = have_fresh_deadman()
+	
+	if primary_target ~= nil then	-- если есть целеуказание от селектора
+		enemy = level.object_by_id(primary_target)	-- получим объект цели
+	end
+	if not enemy and deadman == false then
+		if debug_flag then
+			write_log("!!XR_COMBAT_COMP: COMPANION_COMBAT_NO_TARGET: "..tostring(primary_target))
+		end
+		last_time_send = nil
+		last_enemy = nil
+		last_enemy_id = nil
+		primary_target = nil
+		assist_point = nil
+		last_reprioritize = nil
+		xr_companion.being_attacked = false
+		return
+	end
+	
+	-- получим текущее оружие
+	local weap_lost, vtx, lost_id = xr_companion.check_lost_weapon(self.object)
+	if weap_lost then
+		printf("Напарник выронил оружие, попробует подобрать")
+		assist_point = vtx
+		local last_weapon_obj = level.object_by_id(lost_id)
+		if last_weapon_obj and self.object:position():distance_to(last_weapon_obj:position()) > 1.3 then
+			set_combat_state(self.object, nil, true, true, true)
+			combat_send(self.object, assist_point)
+		elseif last_weapon_obj then
+			last_weapon_obj:transfer_item(last_weapon_obj,self.object)
+		end
+		return
+	end	
+	
+	local act_item = self.object:item_in_slot(self.object:active_slot())
+	local bw = nil
+	
+	if not act_item or isKnife(act_item) then
+		local wm = rx_wmgr and rx_wmgr.get_wm(self.object)
+		bw = (wm and wm:get_weapon()) or self.object:best_weapon()
+	else
+		bw = act_item
+	end
+	
+	if not bw then bw = self.object:best_weapon() end
+	
+	if not bw and enemy then 
+		printf("Напарник совсем без оружия "..enemy:name())
+		set_combat_state(self.object, enemy, true, true, true)
+		if IsStalker(enemy) then
+			assist_point = find_cover(self.object, enemy, 0)
+		else
+			assist_point = select_position(self.object, nil, true)
+		end
+		defensive_send(self.object, enemy, stay)
+		return	
+	end		
+	
+	local stay = must_stay(self.object)
+	
+	-- если ещё свежий труп
+	if primary_target == nil and deadman ~= false then
+		local deadman_target = level.object_by_id(deadman)
+		if deadman_target then
+			set_combat_state(self.object, deadman_target, false, false, in_ambush(self.object))
+			set_combat_sight(self.object, deadman_target, bw)
+			self.object:set_item(object.aim1, bw)
+			defensive_send(self.object, deadman_target, stay)
+			if debug_flag and last_mode ~= 4 then
+				printf("РЕЖИМ5 = Напарник завершает схему боевки, таймаут 6 секунд")
+				last_enemy = nil
+				last_enemy_id = nil
+				last_mode = 4
+			end
+			return			
+		else
+			printf("Работа боевки напарника завершена. Код выхода 1")
+			last_target[deadman] = nil
+			last_time_send = nil
+			last_enemy = nil
+			last_enemy_id = nil
+			primary_target = nil
+			assist_point = nil
+			last_reprioritize = nil
+			xr_companion.being_attacked = false
+			return
+		end
+	end
+	
+	-- инициализация боя
+	
+	if enemy and (not last_enemy_id or enemy:id() ~= last_enemy_id) then
+	
+		last_enemy_id = enemy:id()
+		change_flag = true
+		change_time = time_global() + time_to_change
+		xr_sound.set_sound(self.object, nil)
+		self.object:clear_animations()
+		self.object.health = 1
+		
+		state_mgr.set_state( script_name(),  self.object, "idle", nil, nil, nil, {animation = true})
+		
+		enable_object(self.object, enemy)
+		local h = hit()
+		h.power = 0
+		h.direction = self.object:direction()
+		h.bone = "bip01_spine"
+		h.draftsman = enemy
+		h.impulse = 0
+		h.type = hit.wound
+		self.object:hit(h)
+		
+		self.object:set_relation(game_object.enemy, enemy)		
+		self.object:set_item(object.aim2, bw)
+		
+		if debug_flag then
+			printf("Напарник избрал целью "..enemy:name())
+		end
+		
+	end
+	
+	-- переключение между целями
+	
+	if change_flag or change_time > time_global() then
+	
+		printf("Напарник переключается на врага "..enemy:name())
+		set_combat_state(self.object, enemy, true, true, in_ambush(self.object))
+		set_combat_sight(self.object, enemy, bw)
+		-- set_weapons_fire(self.object, enemy, bw)
+		if IsStalker(enemy) then
+			assist_point = find_cover(self.object, enemy, 0)
+		else
+			assist_point = select_position(self.object, nil, true)
+		end
+		combat_send(self.object, assist_point)
+		
+		return
+	end
+	
+	-- если бой инициализирован, продолжаем
+	local see_enemy = self.object:see(enemy)	-- видим ли цель
+	local have_seen = enemy:see(self.object)	-- видит ли нас цель	
+	
+	-- боевка
+	if see_enemy then
+		-- если видим врага
+		if have_seen then
+			local mode = 0
+			if debug_flag and last_mode ~= mode then
+				printf("РЕЖИМ1 = Напарник видит цель и цель видит его")
+				last_mode = mode
+			end
+			if math.random() < sound_prob and not in_ambush(self.object) then
+				xr_sound.set_sound(self.object, "fight_enemy")
+			end
+			-- и он нас видит - мочим и отходим
+			set_combat_state(self.object, enemy, false, true, in_ambush(self.object))
+			if IsStalker(enemy) and math.random() > 0.5 then
+				assist_point = find_cover(self.object, enemy, 1)
+			else
+				assist_point = select_position(self.object, nil, stay)
+			end
+			set_combat_sight(self.object, enemy, bw)
+			set_weapons_fire(self.object, enemy, bw)
+			combat_send(self.object, assist_point)
+		else
+			local mode = 1
+			if debug_flag and last_mode ~= mode then
+				printf("РЕЖИМ2 = Напарник видит цель и цель НЕ видит его")
+				last_mode = mode
+			end
+			if math.random() < sound_prob and not in_ambush(self.object) then
+				xr_sound.set_sound(self.object, "fight_attack")
+			end		
+			-- и он нас не видит - мочим гада
+			set_combat_state(self.object, enemy, false, false, in_ambush(self.object))
+			if IsStalker(enemy) then
+				assist_point = self.object:level_vertex_id()
+			else
+				assist_point = select_position(self.object, nil, stay)
+			end			
+			last_time_send = time_global() + time_to_hide
+			set_combat_sight(self.object, enemy, bw)
+			set_weapons_fire(self.object, enemy, bw)	
+			combat_send(self.object, assist_point)
+		end	
+	else
+		-- если не видим врага
+		if have_seen then
+			local mode = 2
+			if debug_flag and last_mode ~= mode then
+				printf("РЕЖИМ3 = Напарник НЕ видит цель и цель видит его")
+				last_mode = mode
+			end
+			if math.random() < sound_prob and not in_ambush(self.object) then
+				xr_sound.set_sound(self.object, "fight_enemy")
+			end			
+			-- и он нас видит - пугающе постреливаем и уходим
+			set_combat_state(self.object, enemy, false, false, in_ambush(self.object))
+			if IsStalker(enemy) and math.random() > 0.5 then
+				assist_point = find_cover(self.object, enemy, 0)
+			else
+				assist_point = select_position(self.object, nil, stay)
+			end			
+			set_combat_sight(self.object, enemy, bw)
+			set_weapons_fire(self.object, enemy, bw)
+			combat_send(self.object, assist_point)
+		else
+			local mode = 3
+			if debug_flag and last_mode ~= mode then
+				printf("РЕЖИМ4 = Напарник НЕ видит цель и цель НЕ видит его")
+				last_mode = mode
+			end
+			if math.random() < sound_prob and not in_ambush(self.object) then
+				xr_sound.set_sound(self.object, "fight_search")
+			end			
+			-- и он нас не видит - поступаем по настройкам агрессивности
+			set_combat_state(self.object, enemy, false, true, in_ambush(self.object))
+			set_combat_sight(self.object, enemy, bw)
+			self.object:set_item(object.aim1,bw)
+			assist_point = select_position(self.object, nil, stay)
+			if IsStalker(enemy) then
+				defensive_send(self.object, enemy, stay)
+			else
+				combat_send(self.object, assist_point)
+			end
+			
+		end	
+	end
+	
+	if debug_flag and (not last_enemy or (last_enemy and last_enemy ~= enemy:name())) then
+		printf("Напарник ведёт огонь по "..enemy:name())
+		last_enemy = enemy:name()
+	end
+end
+
+function action_combat_activity:finalize()
+	action_base.finalize( self )
+	xr_sound.set_sound(self.object, nil)
+end
+--------------------------------------------------------------------------------------------------------------
+class "action_join_actor" ( action_base ) -- направляем поближе к ГГ если чего-то далековато
+
+function action_join_actor:__init( name, storage )  super ( nil, name )
+	self.st = storage
+end
+
+function action_join_actor:initialize()
+	action_base.initialize( self )
+	if xr_wounded.is_wounded(self.object) then
+		return
+	end
+	self.object:set_desired_direction()
+	self.object:set_desired_position ()
+	self.object:clear_animations()
+	self.object:set_detail_path_type ( move.curve )
+	self.object:set_path_type        ( game_object.level_path )
+	if in_ambush(self.object) then
+		state_mgr.set_state( script_name(),  self.object, "sneak_run_fire" )
+	else
+		state_mgr.set_state( script_name(),  self.object, "raid_fire" )
+	end
+end
+
+function action_join_actor:execute()
+	action_base.execute( self )
+	if xr_wounded.is_wounded(self.object) then
+		return
+	end
+	assist_point = select_position(self.object, nil, false)
+	if not assist_point then
+		return
+	end
+	self.object:movement_enabled(true)
+	self.object:set_desired_direction()
+	self.object:set_desired_position ()
+	self.object:set_detail_path_type ( move.curve )
+	self.object:set_path_type        ( game_object.level_path )		
+	utils.send_to_nearest_accessible_vertex(self.object, assist_point)
+end
+
+function action_join_actor:finalize()
+	action_base.finalize( self )
+end
+
+--------------------------------------------------------------------------------------------------------------
+-- Идентификаторы эвалуаторов схемы
+--------------------------------------------------------------------------------------------------------------
+local base = 87450
+prop_enable 		= base + 0
+prop_combat	  		= base + 2
+prop_join		  	= base + 3
+
+local base_act = 87490
+act_combat			= base_act + 1
+act_join			= base_act + 2
+--------------------------------------------------------------------------------------------------------------
+-- Многострадальный биндер
+--------------------------------------------------------------------------------------------------------------
+function add_to_binder( object, char_ini, scheme, section, st )
+
+	local manager = object:motivation_action_manager()
+
+	local property_wounded 			= xr_evaluators_id.sidor_wounded_base
+	local state_mgr_to_idle_combat 	= xr_actions_id.state_mgr + 1
+	local state_mgr_to_idle_alife 	= xr_actions_id.state_mgr + 2
+	
+	manager:remove_evaluator( prop_combat )
+
+	manager:add_evaluator( prop_combat,		evaluator_combat_activity	( "evaluator_combat_activity",        st ) )
+	
+	local action = action_combat_activity( "action_combat_activity", st )
+	action:add_precondition( world_property( stalker_ids.property_alive,     true  ) )
+	action:add_precondition( world_property( property_wounded,				 false ) )
+	if xrs_grenade then
+		action:add_precondition( world_property( xrs_grenade.prop_fire,          		     false  ) )
+		action:add_precondition( world_property( xrs_grenade.prop_grenade,          	     false  ) )
+	end
+	if rx_bandage then
+		action:add_precondition( world_property( rx_bandage.evid_bandage,			false ) )
+	end	
+	if rx_facer then
+		action:add_precondition( world_property( rx_facer.evid_facer,				false ) )
+	end
+	if rx_gl then
+		action:add_precondition( world_property( rx_gl.evid_gl_fire,				false ) )
+		action:add_precondition( world_property( rx_gl.evid_gl_reload,				false ) )
+	end
+	action:add_precondition( world_property( prop_combat,          	         true  ) )
+	action:add_effect      ( world_property( prop_combat,   				 false ) )
+	action:add_effect(world_property( stalker_ids.property_enemy, false ))	
+	manager:add_action( act_combat, action )
+	
+	action = manager:action(stalker_ids.action_combat_planner)	
+	action:add_precondition(world_property(prop_combat, false))
+
+	action = manager:action(state_mgr_to_idle_alife)
+	action:add_precondition(world_property(prop_combat, false))
+
+	action = manager:action(state_mgr_to_idle_combat)
+	action:add_precondition(world_property(prop_combat, false))
+
+	action = manager:action(stalker_ids.action_alife_planner)
+	action:add_precondition(world_property(prop_combat, false))
+
+	action = manager:action(stalker_ids.action_retreat_from_enemy)
+	action:add_precondition(world_property(prop_combat, false))
+	
+end
+
+-- Функции включения/выключения схемы
+function enable_scheme(npc, ini)
+	local st = xr_logic.assign_storage_and_bind(npc, ini, "companion_combat")
+	local flag = xr_companion.load_var_companion(npc:id(), "is_companion", 0)
+	if st then
+		if tostring(flag) == "1" then
+			st.enabled = true
+			current_companion = npc:id()
+			write_log("--XR_COMBAT_COMP: Схема боёвки напарника включена для "..npc:name())
+		else
+			st.enabled = false
+		end
+	end
+end
+function disable_scheme(npc, scheme)
+	local st = db.storage[npc:id()][scheme]
+	if st then
+		st.enabled = false
+	end
+end
