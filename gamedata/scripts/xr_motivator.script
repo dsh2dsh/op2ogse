@@ -266,11 +266,9 @@ function check_sound(self, who, sound_type, sound_position, sound_power)
 				self:set_mental_state(anim.danger)
 				self:set_sight(look.point,sound_position)
 				self:make_object_visible_somewhen(who)	
---[[
 				if xr_companion.is_companion(self:id()) then
 					xr_combat_companion.process_enemy(self, who)				
 				end			
-]]
 			end
 		elseif IsStalker(who) and (self:relation(who) ~= game_object.enemy) then
 			if snd_t == "ATTCK" or
@@ -503,6 +501,9 @@ function motivator_binder:net_spawn(sobject)
 	end
 
 	if not self.object:alive() then
+		if xr_companion.is_companion(self.object:id()) then
+			xr_companion.save_var_companion(self.object:id(), "is_companion", 0)
+		end
 		self.treasure_processed = true
 		--' Наносим небольшой импульс вперед.
 		local h = hit()
@@ -597,10 +598,20 @@ function motivator_binder:net_spawn(sobject)
     manager:add_evaluator   (stalker_ids.property_anomaly, property_evaluator_const(false))
   end
 	
+	if xr_combat_companion then
+		local manager = self.object:motivation_action_manager()
+		manager:add_evaluator(xr_combat_companion.prop_combat, property_evaluator_const(false))
+	end	
+	
 	if xrs_battle_ai then
 		local manager = self.object:motivation_action_manager()
 		manager:add_evaluator(xrs_battle_ai.evid_altcombat, property_evaluator_const(false))	
 	end
+	
+	if xr_companion then
+		local manager = self.object:motivation_action_manager()
+		manager:add_evaluator(xr_companion.property_need_companion, property_evaluator_const(false))
+	end	
 	
 	if xrs_grenade then
 		local manager = self.object:motivation_action_manager()
@@ -622,11 +633,25 @@ function motivator_binder:net_spawn(sobject)
     xr_sound.load_sound(self.object)
     --memusage.collect_info(self.object, "after_soundmgr_netspawn_end")
 
-  xr_gulag.setup_gulag_and_logic_on_spawn( self.object, self.st, sobject, modules.stype_stalker, self.loaded )
-
+  --// xr_companion
+  if xr_companion.is_companion(self.object:id()) then
+    local gulag = xr_gulag.get_npc_gulag(self.object)
+    if gulag then
+      gulag:free_obj(self.object:id())
+    end		
+    if db.actor then
+      db.actor:give_game_news("Обнаружен сигнал КПК вашего напарника. "..self.object:character_name() .. " находится поблизости!", "ui\\ui_iconsTotal", Frect():set(0,235,83,47), 0, 15000)
+    end
+    sobject:smart_terrain_task_deactivate()
+    xr_gulag.setup_gulag_and_logic_on_spawn( self.object, self.st, sobject, modules.stype_stalker, false )	-- сделано, чтобы сбросить активную секцию у напарника
+  else
+    xr_gulag.setup_gulag_and_logic_on_spawn( self.object, self.st, sobject, modules.stype_stalker, self.loaded )
+  end
+  --// xr_companion	
+  
   -- added by xStream for AMK miniSDK
   amk.on_npc_spawn(self.object)
-
+  
         amk.on_net_spawn(self.object)
   -- end of addition
 
@@ -737,8 +762,8 @@ function motivator_binder:before_hit_callback(p_s_hit, p_ignore_flags)
 				-- проверяем условия игнорирования урона от дружественного огня
 				if  obj_id ~= self.object:id() and -- если не сам себя
 					obj:general_goodwill(self.object) >= -100 and -- если друг
-					(self.object:relation(obj) ~= game_object.enemy or self.object:character_community() == obj:character_community()) -- and 
---					not xr_companion.is_companion(obj_id)
+					(self.object:relation(obj) ~= game_object.enemy or self.object:character_community() == obj:character_community()) and 
+					not xr_companion.is_companion(obj_id)
 				then
 					-- подстрелил друг, игнорируем
 					write_memory_int(1, p_ignore_flags)
@@ -757,6 +782,11 @@ end
 function motivator_binder:hit_callback(obj, amount, local_direction, who, bone_index)
 	if not self.object then
 		self.object = obj
+	end
+
+	if xr_companion.is_companion(self.object:id()) and amount < 0.3 then
+		xr_sound.set_sound(self.object, nil)
+		stop_play_sound(self.object)
 	end
 	
 	if amount > 0.01 then
@@ -811,7 +841,7 @@ function motivator_binder:hit_callback(obj, amount, local_direction, who, bone_i
 	
 	local warn_timer = time_global()
 	
-	if not ogse.is_quest_npc(obj) then -- and not xr_companion.is_companion(obj:id()) then
+	if not ogse.is_quest_npc(obj) and not xr_companion.is_companion(obj:id()) then
 		if not warn_check_timer[obj:id()] then
 			warn_check_timer[obj:id()] = warn_timer + math.random(1000, 2000) 
 		else
@@ -842,6 +872,14 @@ function motivator_binder:hit_callback(obj, amount, local_direction, who, bone_i
 -- added by xStream for AMK miniSDK
   amk.on_npc_hit(obj, amount, local_direction, who, bone_index)
   -- end of addition
+	
+	if xr_companion.is_companion(self.object:id()) then
+		if xr_combat_companion then
+			xr_combat_companion.hit_callback(self.object, who, amount)
+		else	
+			log1("--xr_combat_companion cannot be loaded!")
+		end
+	end
   	
 	if amount > 0.05 then
 		local hit_info = {
@@ -935,6 +973,9 @@ function motivator_binder:death_callback(victim, who)
 		end		
 	end
   end
+	
+	--// xr_companion
+	xr_companion.companion_death(self.object)
 
 	if table.getn(self.particles)>0 then
 		for kk,vv in pairs(self.particles) do
@@ -1069,13 +1110,18 @@ function motivator_binder:update(delta)
 	end
 	self.object:info_add('name -- ' .. self.object:name())
 
---[[	
 	if xr_combat_companion then
 		xr_combat_companion.process_enemy(db.actor, self.object)
 	else	
 		log1("--xr_combat_companion cannot be loaded!")
 	end
-]]
+	if xr_companion.is_companion(self.object:id()) then
+		if xr_combat_companion then
+			xr_combat_companion.reprioritize_targets(self.object)
+		else	
+			log1("--xr_combat_companion cannot be loaded!")
+		end	
+	end
 
 	if particles[self.object:id()] and table.getn(particles[self.object:id()])>0 then
 		for kk,vv in pairs(particles[self.object:id()]) do
@@ -1300,17 +1346,15 @@ function motivator_binder:hear_callback(self, who, sound_type, sound_position, s
 
 --	ogse_debug.process_npc(self, "hr", 1)
 	
---[[
 	--// xr_companion
 	if xr_companion.is_companion(self:id()) then
-		ogse_debug.process_npc(self, "hr", 0)
+--		ogse_debug.process_npc(self, "hr", 0)
 		return
 	end	
 	
 	if who and string.find(who:name(), "vehicle_btr") then
 		who = db.actor
 	end		
-]]
 
 --	ogse_debug.process_npc(self, "hr", 2)	
 	
@@ -1439,12 +1483,10 @@ function addCommonPrecondition(action)
 	action:add_precondition (world_property(xr_evaluators_id.chugai_heli_hunter_base, false))
 	action:add_precondition (world_property(xr_evaluators_id.abuse_base, false))
 
---[[	
 	if xr_combat_companion and xr_companion then
 		action:add_precondition (world_property(xr_combat_companion.prop_combat, false))
 		action:add_precondition (world_property(xr_companion.property_need_companion, false))
 	end
-]]
 	
 	if xrs_battle_ai then
 		action:add_precondition (world_property(xrs_battle_ai.evid_altcombat, false))
