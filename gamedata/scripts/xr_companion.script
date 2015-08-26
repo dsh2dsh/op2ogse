@@ -1,0 +1,1724 @@
+----------------------------------------------------------------------------------------------------
+-- Companion
+----------------------------------------------------------------------------------------------------
+-- Разработчик: Serhiy Vynnychenko (narrator@gsc-game.kiev.ua)
+-- Доработки: Andrey Fidrya (Zmey) af@svitonline.com
+----------------------------------------------------------------------------------------------------
+-- Реанимация схемы для применения в релизной версии, доработка: KamikaZze kamikazze-ru@yandex.ru
+-- Идея системы телепортации: Malandrinus
+----------------------------------------------------------------------------------------------------
+-- Версия 2.25 -- боевка сделана отдельной схемой и вынесена полностью в отдельный скрипт
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+-- Возможные коммунити актора:
+-- actor			- одиночка
+-- actor_dolg		- долговец
+-- actor_freedom	- свободовец
+-- actor_zombied	- зомбированный
+-- actor_prebandit	- помощник бандитов
+-- bandit			- бандит
+-- mil_stalker		- военсталкер
+----------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------  
+number_of_companions = 0
+companions = {}
+
+local prohibit_rpg_7 = true
+
+local desired_distance = 3
+local min_distance = 1.5
+local max_distance = 25 -- дальше этого расстояния напарник будет бежать к вам забыв про врагов
+
+local keep_state_min_time = 1000 -- переключившись в состояние (бег, ходьба, спринт), не переключаться в другое N ms
+
+local dist_walk = 5 -- < dist_run
+local dist_run = 15
+-- otherwise - sprint
+
+local sound_wait = {
+	"weather,state",
+	-- если когда-то появятся ещё звуковые темы, их можно поставить сюда
+}
+local sound_prob = 0.2
+local testing_sound = false
+local timeout
+
+local scared = false
+local scared_timer = nil
+local disabled_objects = {}
+local calm_down_timer = nil
+
+-- Модели поведения:
+beh_walk_simple = 0
+beh_walk_low_aggr = 8
+beh_walk_ignore = 2
+
+beh_crouch_simple = 1
+beh_crouch_low_aggr = 9
+beh_crouch_ignore = 4
+
+beh_wait_simple = 3
+beh_wait_low_aggr = 10
+beh_wait_ignore = 5
+
+beh_hide_simple = 6
+beh_hide_low_aggr = 11
+beh_hide_ignore = 7
+
+--beh_wait_near = 4
+--beh_walk_near = 1
+
+local range_normal = 150
+local fov_normal = 360
+
+local mt_stand = 0
+local mt_walk = 1
+local mt_run = 2
+local mt_sprint = 3
+
+local keep_state_until = time_global()
+local last_state = {}
+local assist_point = {}
+local locked_vertexes 		= {}		-- занятые вертексы
+local talking_time = 5000
+local talking_npc = {}
+
+being_attacked = false
+actor_attacked = false
+
+-----------------------------------------------------
+--- каких групп бывают напарники
+-----------------------------------------------------
+local suitable_communities = {
+	["stalker"] = true,
+	["quest_stalker"] = true,
+	["dolg"] = true,
+	["freedom"] = true,
+	["zombied"] = true,
+	["bandit"] = true,
+	["actor_prebandit"] = true,
+	["mil_stalker"] = true,
+}
+
+-----------------------------------------------------
+-- Типы боеприпасов
+-- 1 - пистолетный
+-- 2 - дробовой
+-- 3 - промежуточный
+-- 4 - винтовочный
+-- 5 - тяжелое оружие
+-----------------------------------------------------
+local ammo_types = {
+[1]						= {
+	[1] = "9x18",
+	[2] = "9x19",
+	[3] = "7.62x25",
+	[4] = "11.43x23",
+	[5] = "arbolt"
+},
+[2]						= {
+	[1] = "12x7",
+	[2] = "10x7"
+},
+[3]						= {
+	[1] = "5.45x39",
+	[2] = "5.56x45",
+	[3] = "7.62x39",
+	[4] = "9x39"
+},
+[4]						= {
+	[1] = "7.62x51",
+	[2] = "7.62x54",
+	[3] = "gauss",
+	[4] = "12.7x108"
+},
+[5] 					= {
+	[1] = "vog",
+	[2] = "m20",
+	[3] = "og-7",
+	[4] = "flame"
+}
+}
+-----------------------------------------------------
+-- Классы оружия
+-- первая цифра тип патрона
+-- вторая цифра флаг наличия авт. режима огня
+-----------------------------------------------------
+weapon_class = {
+[10] = "pistol",
+[11] = "submashinegun",
+[20] = "shotgun",
+[21] = "assault_shotgun",
+[30] = "carbine",
+[31] = "assault_rifle",
+[40] = "sniper_rifle",
+[41] = "mashinegun",
+[50] = "grenade_launcher",
+[51] = "flamethrower"
+
+}
+-----------------------------------------------------
+-- список оружия по классам - пришлось сделать потому,
+-- что функции чтения ini не могу считывать родительские
+-- параметры, как это ни странно
+-----------------------------------------------------
+local weapons_list = {
+-- пистолеты
+["wpn_crossbow"]			= 10,
+["wpn_pm"]					= 10,
+["wpn_fort"]				= 10,
+["wpn_pb"]					= 10,
+["wpn_walther"]				= 10,
+["wpn_hpsa"]				= 10,
+["wpn_beretta"]				= 10,
+["wpn_usp"]					= 10,
+["wpn_colt1911"]			= 10,
+["wpn_desert_eagle"]		= 10,
+["wpn_tt"]					= 10,
+--Дробовики
+["wpn_bm16"]				= 20,
+["wpn_toz34_short"]			= 20,
+["wpn_bm16_full"]			= 20,
+["wpn_toz34"]				= 20,
+["wpn_wincheaster1300"]		= 20,
+["wpn_spas12"]				= 20,
+["wpn_spas12_m1"]			= 20,
+["wpn_saiga12c"]			= 20,
+["wpn_saiga12c_m1"]			= 20,
+["wpn_sayga12k_sk1"]		= 20,
+--ПП
+["wpn_mac10"]				= 11,
+["wpn_mac10_m1"]			= 11,
+["wpn_mp40"]				= 11,
+["wpn_mp5"]					= 11,
+["wpn_ppsh41"]				= 11,
+["wpn_mp5_m1"]				= 11,
+["wpn_mp5_m2"]				= 11,
+--Штурмовые
+["wpn_ak74u"]				= 31,
+["wpn_aks74u_m1_camo1"]		= 31,
+["wpn_ak74"]				= 31,
+["wpn_ak74_m1"]				= 31,
+["wpn_aks74_m1_camo1"]		= 31,
+["wpn_ak47_sk1"]			= 31,
+["wpn_m16a1_sk1"]			= 31,
+["wpn_groza"]				= 31,
+["wpn_val"]					= 31,
+["wpn_sig550"]				= 31,
+["wpn_ak107"]				= 31,
+["wpn_ak108"]				= 31,
+["wpn_g36"]					= 31,
+["wpn_ak47_sk1_m1"]			= 31,
+["wpn_ak47_sk2_m1"]			= 31,
+["wpn_groza_m1"]			= 31,
+["wpn_sig_m1"]				= 31,
+["wpn_sig_m2"]				= 31,
+["wpn_fn2000"]				= 31,
+--Снайперки
+["wpn_sg550sr_sk1"]			= 40,
+["wpn_vintorez"]			= 40,
+["wpn_svu"]					= 40,
+["wpn_zastava"]				= 40,
+["wpn_svd"]					= 40,
+["wpn_svd_m1"]				= 40,
+["wpn_vintorez_m1"]			= 40,
+["wpn_gauss"]				= 40,
+["wpn_v94"]					= 40,
+["wpn_svu_m1"]				= 40,
+--Пулеметы
+["wpn_rpk74_sk1"]			= 41,
+["wpn_m249"]				= 41,
+["wpn_pkm"]					= 41,
+["wpn_pkm_digger"]			= 41,
+["wpn_m_134"]				= 41,
+["wpn_mg3"]					= 41,
+--Тяжелое
+["wpn_rpg7"]				= 50,
+--Огнемет
+["wpn_flame"]				= 51
+}
+-----------------------------------------------------
+-- Получение оружия по параметрам из таблицы
+-----------------------------------------------------
+function get_parameters_from_table(weapon_sect)
+	if weapons_list[weapon_sect] then
+		return weapons_list[weapon_sect]
+	else	
+		return 0
+	end
+end
+-----------------------------------------------------
+-- в этой табличке хранится выбранный тип оружия для напарника в виде companion_weapon[npc:id()] = "выбранный_тип"
+-- разрешение использовать любое оружие == "anything"
+-----------------------------------------------------
+companion_weapon = {}
+-----------------------------------------------------
+-- в этой табличке хранится список типов оружия которые есть у напарника
+-- структура:
+-- companion_has = {
+	-- [ид_компаньона] = {
+		-- pistol = true,
+		-- submashinegun = true,
+		-- shotgun = true,
+		-- assault_shotgun = false,
+		-- carbine = false,
+		-- assault_rifle = false,
+		-- sniper_rifle = false,
+		-- mashinegun = false,
+		-- grenade_launcher = false,
+		-- flamethrower = false		
+	-- }
+-- }
+-----------------------------------------------------
+local companion_has = {}
+-----------------------------------------------------
+-- Селектор вооружения (будет работать только с менеджером вооружений)
+-----------------------------------------------------
+function check_weapon(weapon_section, npc_id)
+	if weapon_section and npc_id then
+		if not companion_weapon[npc_id] or (companion_weapon[npc_id] and companion_weapon[npc_id] == "anything") then
+			return true
+		end
+		if string.find(weapon_section, "grenade") or string.find(weapon_section, "knife") then
+			return true
+		end		
+		local ammo_type = 0
+		local fire_mode = 5
+		local stop_flag = 0
+		local w_cl = 0
+		w_cl = get_parameters_from_table(weapon_section)
+		if w_cl == 0 then
+			log1("!!!ERROR - Companion weapon selector cannot find ammo class or mode for "..weapon_section.."!!! Will use configs instead!")
+			if system_ini():line_exist(weapon_section, "ammo_class") then
+				local ammo = system_ini():r_string(weapon_section, "ammo_class")
+				for k, v in pairs(ammo_types) do
+					local search_patterns = v
+					if search_patterns then
+						for kk, vv in pairs(search_patterns) do
+							if string.find(ammo, vv) then
+								ammo_type = k
+								stop_flag = 1
+								break
+							end
+						end
+					end
+					if stop_flag == 1 then
+						break
+					end
+				end
+			end			
+			if system_ini():line_exist(weapon_section, "fire_modes") then
+				local fm = system_ini():r_string(weapon_section, "fire_modes")
+				if string.find(fm,"-1") then
+					fire_mode = 1 -- автоматическое оружие
+				else	
+					fire_mode = 0
+				end
+			end			
+			w_cl = tonumber(tostring(ammo_type)..tostring(fire_mode))
+		end
+		-- get_parameters_from_table
+		local current_weapon_class = weapon_class[w_cl]
+		if current_weapon_class then
+			local comp_weap = companion_weapon[npc_id]
+			if comp_weap ~= current_weapon_class then
+				return false
+			else
+				return true
+			end
+		else
+			log1("!!!ERROR - Companion weapon selector cannot find weapon_class for WPN "..weapon_section.." ammo "..tostring(ammo_type).." and fire_mode "..tostring(fire_mode).."!!!")
+			return false
+		end
+	end
+	return false
+end
+
+-----------------------------------------------------
+-- Заполнение типов оружия которые есть в наличии
+-----------------------------------------------------
+function no_best_enemy(actor, npc)
+	-- local enemy = npc:best_enemy()
+	-- if not enemy then return true else return false end
+	return true
+end
+
+function search_for_weapons(actor, npc)
+	companion_has = {}
+	companion_has[npc:id()] = {
+		pistol = false,
+		submashinegun = false,
+		shotgun = false,
+		assault_shotgun = false,
+		carbine = false,
+		assault_rifle = false,
+		sniper_rifle = false,
+		mashinegun = false,
+		grenade_launcher = false,
+		flamethrower = false		
+	}
+	npc:iterate_inventory(search_weapon,npc)
+	local item_in_slot_1 = npc:item_in_slot(1)
+	local item_in_slot_2 = npc:item_in_slot(2)
+	if item_in_slot_1 then
+		search_weapon(npc, item_in_slot_1)
+	end
+	if item_in_slot_2 then
+		search_weapon(npc, item_in_slot_2)
+	end
+
+	-- print_table_inlog_v2(companion_has,"WEAP >>")
+end
+-----------------------------------------------------
+-- Итератор поиска
+-----------------------------------------------------
+function search_weapon(npc, item)
+	local ammo = 0
+	local mode = 5
+	local stop_flag = 0
+	if npc and item and (isWeapon(item)) then
+		local weapon_section = item:section()
+		if string.find(weapon_section, "grenade") then
+			return
+		end
+		local w_cl = 0
+		w_cl = get_parameters_from_table(weapon_section)
+		if w_cl == 0 then
+			log1("!!!ERROR - Companion weapon selector cannot find ammo class or mode for "..weapon_section.."!!!")
+			if system_ini():line_exist(weapon_section, "ammo_class") then
+				local ammo_string = system_ini():r_string(weapon_section, "ammo_class")
+				for k, v in pairs(ammo_types) do
+					local search_patterns = v
+					if search_patterns then
+						for kk, vv in pairs(search_patterns) do
+							if string.find(ammo_string, vv) then
+								ammo = k
+								stop_flag = 1
+								break
+							end
+						end
+					end
+					if stop_flag == 1 then
+						break
+					end
+				end
+			end		
+			if system_ini():line_exist(weapon_section, "fire_modes") then
+				local fm = system_ini():r_string(weapon_section, "fire_modes")
+				if string.find(fm,"-1") then
+					mode = 1
+				else	
+					mode = 0
+				end		
+			end
+			w_cl = tonumber(tostring(ammo)..tostring(mode))
+		end
+		log1("FOUND "..weapon_section.." CLASS "..w_cl)
+		if weapon_class[w_cl] then
+			if not companion_has[npc:id()] then
+				companion_has[npc:id()] = {
+					pistol = false,
+					submashinegun = false,
+					shotgun = false,
+					assault_shotgun = false,
+					carbine = false,
+					assault_rifle = false,
+					sniper_rifle = false,
+					mashinegun = false,
+					grenade_launcher = false,
+					flamethrower = false		
+				}
+			end
+			if weapon_class[w_cl] == "pistol" then
+				companion_has[npc:id()].pistol = true
+			elseif weapon_class[w_cl] == "submashinegun" then
+				companion_has[npc:id()].submashinegun = true
+			elseif weapon_class[w_cl] == "shotgun" then
+				companion_has[npc:id()].shotgun = true
+			elseif weapon_class[w_cl] == "assault_shotgun" then
+				companion_has[npc:id()].assault_shotgun = true
+			elseif weapon_class[w_cl] == "carbine" then
+				companion_has[npc:id()].carbine = true
+			elseif weapon_class[w_cl] == "assault_rifle" then
+				companion_has[npc:id()].assault_rifle = true
+			elseif weapon_class[w_cl] == "sniper_rifle" then
+				companion_has[npc:id()].sniper_rifle = true
+			elseif weapon_class[w_cl] == "mashinegun" then
+				companion_has[npc:id()].mashinegun = true
+			elseif weapon_class[w_cl] == "grenade_launcher" then
+				companion_has[npc:id()].grenade_launcher = true
+			elseif weapon_class[w_cl] == "flamethrower" then
+				companion_has[npc:id()].flamethrower = true
+			end
+		else
+			log1("!!!ERROR - Companion weapon selector cannot find weapon_class for WPN "..weapon_section.." ammo "..tostring(ammo).." and fire_mode "..tostring(mode).."!!!")
+		end
+	end
+end
+-----------------------------------------------------
+-- Приказы на смену оружия
+-----------------------------------------------------
+function set_weapon_anyting(actor, npc)
+	if npc then
+		companion_weapon[npc:id()] = "anything"
+		save_var_companion(npc:id(),"weapon_behavior",companion_weapon[npc:id()])
+	end
+end
+function set_weapon_pistol(actor, npc)
+	if npc then
+		companion_weapon[npc:id()] = "pistol"
+		save_var_companion(npc:id(),"weapon_behavior",companion_weapon[npc:id()])
+	end
+end
+function set_weapon_submashinegun(actor, npc)
+	if npc then
+		companion_weapon[npc:id()] = "submashinegun"
+		save_var_companion(npc:id(),"weapon_behavior",companion_weapon[npc:id()])
+	end
+end
+function set_weapon_shotgun(actor, npc)
+	if npc then
+		companion_weapon[npc:id()] = "shotgun"
+		save_var_companion(npc:id(),"weapon_behavior",companion_weapon[npc:id()])
+	end
+end
+function set_weapon_assault_shotgun(actor, npc)
+	if npc then
+		companion_weapon[npc:id()] = "assault_shotgun"
+		save_var_companion(npc:id(),"weapon_behavior",companion_weapon[npc:id()])
+	end
+end
+function set_weapon_carbine(actor, npc)
+	if npc then
+		companion_weapon[npc:id()] = "carbine"
+		save_var_companion(npc:id(),"weapon_behavior",companion_weapon[npc:id()])
+	end
+end
+function set_weapon_assault_rifle(actor, npc)
+	if npc then
+		companion_weapon[npc:id()] = "assault_rifle"
+		save_var_companion(npc:id(),"weapon_behavior",companion_weapon[npc:id()])
+	end
+end
+function set_weapon_sniper_rifle(actor, npc)
+	if npc then
+		companion_weapon[npc:id()] = "sniper_rifle"
+		save_var_companion(npc:id(),"weapon_behavior",companion_weapon[npc:id()])
+	end
+end
+function set_weapon_mashinegun(actor, npc)
+	if npc then
+		companion_weapon[npc:id()] = "mashinegun"
+		save_var_companion(npc:id(),"weapon_behavior",companion_weapon[npc:id()])
+	end
+end
+function set_weapon_grenade_launcher(actor, npc)
+	if npc then
+		companion_weapon[npc:id()] = "grenade_launcher"
+		save_var_companion(npc:id(),"weapon_behavior",companion_weapon[npc:id()])
+	end
+end
+function set_weapon_flamethrower(actor, npc)
+	if npc then
+		companion_weapon[npc:id()] = "flamethrower"
+		save_var_companion(npc:id(),"weapon_behavior",companion_weapon[npc:id()])
+	end
+end
+-----------------------------------------------------
+-- Прекондишены оружейных фраз
+-----------------------------------------------------
+function has_pistol(actor, npc)
+	if companion_has[npc:id()] and companion_has[npc:id()].pistol == true then
+		return true
+	elseif companion_has[npc:id()].pistol == false then
+		return false
+	else
+		log1("!!!ERROR - Companion weapon selector wasn't fill table companion_has !!!")
+		return false
+	end
+end
+function has_submashinegun(actor, npc)
+	if companion_has[npc:id()] and companion_has[npc:id()].submashinegun == true then
+		return true
+	elseif companion_has[npc:id()].submashinegun == false then
+		return false
+	else
+		log1("!!!ERROR - Companion weapon selector wasn't fill table companion_has !!!")
+		return false
+	end
+end
+function has_shotgun(actor, npc)
+	if companion_has[npc:id()] and companion_has[npc:id()].shotgun == true then
+		return true
+	elseif companion_has[npc:id()].shotgun == false then
+		return false
+	else
+		log1("!!!ERROR - Companion weapon selector wasn't fill table companion_has !!!")
+		return false
+	end
+end
+function has_assault_shotgun(actor, npc)
+	if companion_has[npc:id()] and companion_has[npc:id()].assault_shotgun == true then
+		return true
+	elseif companion_has[npc:id()].assault_shotgun == false then
+		return false
+	else
+		log1("!!!ERROR - Companion weapon selector wasn't fill table companion_has !!!")
+		return false
+	end
+end
+function has_carbine(actor, npc)
+	if companion_has[npc:id()] and companion_has[npc:id()].carbine == true then
+		return true
+	elseif companion_has[npc:id()].carbine == false then
+		return false
+	else
+		log1("!!!ERROR - Companion weapon selector wasn't fill table companion_has !!!")
+		return false
+	end
+end
+function has_assault_rifle(actor, npc)
+	if companion_has[npc:id()] and companion_has[npc:id()].assault_rifle == true then
+		return true
+	elseif companion_has[npc:id()].assault_rifle == false then
+		return false
+	else
+		log1("!!!ERROR - Companion weapon selector wasn't fill table companion_has !!!")
+		return false
+	end
+end
+function has_sniper_rifle(actor, npc)
+	if companion_has[npc:id()] and companion_has[npc:id()].sniper_rifle == true then
+		return true
+	elseif companion_has[npc:id()].sniper_rifle == false then
+		return false
+	else
+		log1("!!!ERROR - Companion weapon selector wasn't fill table companion_has !!!")
+		return false
+	end
+end
+function has_mashinegun(actor, npc)
+	if companion_has[npc:id()] and companion_has[npc:id()].mashinegun == true then
+		return true
+	elseif companion_has[npc:id()].mashinegun == false then
+		return false
+	else
+		log1("!!!ERROR - Companion weapon selector wasn't fill table companion_has !!!")
+		return false
+	end
+end
+function has_grenade_launcher(actor, npc)
+	if companion_has[npc:id()] and companion_has[npc:id()].grenade_launcher == true and not prohibit_rpg_7 then
+		return true
+	elseif companion_has[npc:id()].grenade_launcher == false then
+		return false
+	else
+		log1("!!!ERROR - Companion weapon selector wasn't fill table companion_has !!!")
+		return false
+	end
+end
+function has_flamethrower(actor, npc)
+	if companion_has[npc:id()] and companion_has[npc:id()].flamethrower == true then
+		return true
+	elseif companion_has[npc:id()].flamethrower == false then
+		return false
+	else
+		log1("!!!ERROR - Companion weapon selector wasn't fill table companion_has !!!")
+		return false
+	end
+end
+
+-----------------------------------------------------
+-- Система телепортации
+-----------------------------------------------------
+-- Принцип работы:
+-- 1) Актор на уровне, схема "следуй за мной" -- запретить уход в оффлайн
+-- 2) Актор на уровне, схема "жди тут" -- не принимать задания алайфа, стоять на месте
+-- 3) Актор на уровне, в машине, схема "следуй за мной" -- выводим в офф и телепортируем за актором
+-- 4) Актор на другом уровне, схема "следуй за мной" -- телепортируем за актором
+-- 5) Актор на другом уровне, схема "жди тут" -- не принимать задания алайфа, стоять на месте
+-----------------------------------------------------
+-- check_teleport - проверка нужно ли телепортироваться на другую локацию, использует добавленную в движок teleport_object (точнее она там была, и её восстановили)
+-- для оригинальной игры НЕ подходит, в ней нужно использовать примерно такую конструкцию:
+-- local changer = {pos = nil, lv = nil, gv = nil}
+
+-- function on_actor_save(npc_id)
+	-- if utils.level_changing() then
+		-- local actor = alife():actor()
+		-- local s_npc = alife():object(npc_id)
+		-- if actor and s_npc then
+			-- local new_gamevertex = actor.m_game_vertex_id
+			-- local npc_vid 	= game_graph():vertex(s_npc.m_game_vertex_id):level_id()
+			-- local actor_vid = game_graph():vertex(new_gamevertex):level_id()
+			-- -- Проверим, нужно ли ждать на другом уровне
+			-- local w_level = load_var_companion(npc_id,"w_lvl",nil)
+			-- if (not w_level or w_level == "" or w_level == "nil") and actor_vid ~= npc_vid and actor then
+				-- -- недурно бы телепортнуться
+				-- changer = {pos = actor.position, lv = actor.m_level_vertex_id, gv = new_gamevertex}
+			-- end		
+		-- end
+	-- end
+-- end
+
+-- function on_companion_save(npc)
+	-- if npc and changer and changer.gv then
+		-- local s_npc = alife():object(npc:id())
+		-- local t = m_net_utils.get_stalker_full_data(s_npc)
+		-- t.gvid = changer.gv
+		-- t.lvid = changer.lv
+		-- m_net_utils.set_stalker_full_data(t,s_npc)
+		-- local pos = changer.pos
+		-- pos.x = pos.x + 5
+		-- pos.z = pos.z + 5
+		-- s_npc.position = pos
+		-- changer = {pos = nil, lv = nil, gv = nil}
+	-- end
+-- end
+-----------------------------------------------------
+-- check_in_car - проверка в машине ли ГГ
+-----------------------------------------------------
+-- Функция для перехода с локации на локацию
+-----------------------------------------------------
+function check_teleport(npc_id)
+	local actor = db.actor
+	local cur_level_name = load_var_companion(npc_id,"c_lvl","none")
+	-- если локация всё та же, нет никакой надобности насиловать постоянно хранилище
+	if cur_level_name ~= level.name() then
+		save_var_companion(npc_id,"c_lvl",level.name())
+	else
+		return
+	end	  
+	-- Проверим, нужно ли ждать на другом уровне
+	local s_npc = alife():object(npc_id)
+	local actor_vid = game_graph():vertex(alife():actor().m_game_vertex_id):level_id()
+	local npc_vid 	= game_graph():vertex(s_npc.m_game_vertex_id):level_id()
+	local w_level = load_var_companion(npc_id,"w_lvl",nil)
+	if (not w_level or w_level == "" or w_level == "nil") and actor_vid ~= npc_vid and actor then
+		-- недурно бы телепортнуться
+		local gvid = alife():actor().m_game_vertex_id 
+		local lvid = alife():actor().m_level_vertex_id
+		local pos = alife():actor().position
+		pos.x = pos.x + 6
+		pos.z = pos.z -- + 2
+		alife():teleport_object("_", pos, lvid, gvid, npc_id)
+	end
+end
+-----------------------------------------------------
+-- Проверка на сидение в машине
+-----------------------------------------------------
+function is_inside_my_car()
+	local car = ogse_car_control.current_car
+	if car then -- если ГГ уже в машине
+		local is_inside = 0
+		for id, comm in pairs(companions) do
+			if comm == "companion" then
+				local inside = load_var_companion(id,"in_car","false")
+				local last_car = tonumber(load_var_companion(id,"last_car",0))
+				if inside == "true" and tonumber(car:id()) == tonumber(last_car) then
+					is_inside = 1
+				end			
+			end
+		end
+		if is_inside == 1 then
+			return true
+		else
+			return false
+		end
+	else	
+		return false
+	end
+	return false
+end
+
+function check_in_car()
+	local car = ogse_car_control.current_car
+	if car then
+		-- выводим в оффлайн
+		for id, comm in pairs(companions) do
+			if comm == "companion" then
+				local w_level = load_var_companion(id,"w_lvl",nil)
+				local icon = load_var_companion(id,"last_car",nil)
+				if not w_level or w_level == "" or w_level == "nil" then
+					local npc = level.object_by_id(id)
+					if npc and car then
+						local distance = npc:position():distance_to(car:position())  
+						local s_npc = alife():object(id)
+						local inside = load_var_companion(id,"in_car","false")
+						if s_npc then
+							if distance > 7 and inside == "false" then
+								return
+							end
+							-- вывели
+							s_npc.force_offline = true
+							if not icon then
+								level.map_remove_object_spot(id, "alife_presentation_companion")
+								level.map_add_object_spot_ser(car:id(), "alife_presentation_companion", "Ваш компаньон")
+								save_var_companion(id,"last_car",car:id())
+								save_var_companion(id,"in_car","true")
+							end
+						else	
+							log1("ERROR! Cannot get companion s_obj!")
+						end
+					end	
+				end
+			end
+		end
+	else
+		-- обратно в онлайн
+		for id, comm in pairs(companions) do
+			if comm == "companion" and not level.object_by_id(id) then
+				local w_level = load_var_companion(id,"w_lvl",nil)
+				local s_npc = alife():object(id)
+				if s_npc and (not w_level or w_level == "" or w_level == "nil") then
+					local pos = alife():actor().position
+					local last_car = tonumber(load_var_companion(id,"last_car",0))
+					pos.x = pos.x + 4
+					pos.z = pos.z + 4
+					s_npc.m_game_vertex_id = alife():actor().m_game_vertex_id
+					s_npc.m_level_vertex_id = alife():actor().m_level_vertex_id
+					s_npc.position = pos					
+					s_npc.force_offline = nil
+					if last_car ~= 0 then
+						level.map_remove_object_spot(last_car, "alife_presentation_companion")
+						level.map_add_object_spot_ser(id, "alife_presentation_companion", "Ваш компаньон")
+						save_var_companion(id,"in_car","false")
+					end
+					save_var_companion(id,"last_car",nil)
+				end
+			end
+		end
+	end
+end
+-----------------------------------------------------
+-- Функции сохранения и выгрузки из хранилища
+-----------------------------------------------------
+-- Переменные напарника в хранилища
+-----------------------------------------------------
+-- is_companion - компаньон ли сейчас
+-- companion_behavior - номер модели поведения
+-- actor_level - текущий уровень актора
+-- orig_community - родное коммунити
+-- friendship_status - родное отношение к ГГ
+-- actor_rep - репа актора (на будущее)
+-- actor_debt - долг актора (на будущее)
+-----------------------------------------------------
+
+function community_by_actor(actor_comm)
+
+	local return_community = "stalker"
+
+	if actor_comm then
+		if actor_comm == "actor" then
+			return_community = "stalker"
+		elseif actor_comm == "actor_dolg" then
+			return_community = "dolg"
+		elseif actor_comm == "actor_freedom" then
+			return_community = "freedom"	
+		elseif actor_comm == "bandit" then
+			return_community = "bandit"		
+		elseif actor_comm == "actor_prebandit" then
+			return_community = "actor_prebandit"	
+		elseif actor_comm == "actor_zombied" then
+			return_community = "zombied"	
+		elseif actor_comm == "mil_stalker" then
+			return_community = "mil_stalker"			
+		end
+	
+	end
+	
+	return return_community
+end
+
+
+class "change_community_by_actor" (ogse_st_mgr.savable_timer)
+function change_community_by_actor:__init(npc_id) super()
+	-- обязательная строка с именем класса таймера
+	self._class = script_name()..".change_community_by_actor"
+	self.npc_id = npc_id
+end
+
+function change_community_by_actor:condition()
+	return level.object_by_id(self.npc_id)
+end
+
+function change_community_by_actor:load(packet)
+	self.npc_id = packet:r_u16()
+end
+
+function change_community_by_actor:save(packet)
+	packet:w_u16(self.npc_id)
+end
+
+function change_community_by_actor:action()
+	if companions[self.npc_id] and companions[self.npc_id] == "companion" then
+		local obj = level.object_by_id(self.npc_id)
+		if obj:alive() then
+			local actor_comm = db.actor:character_community()
+			local new_comm = community_by_actor(actor_comm)
+			obj:set_character_community(new_comm, 0, 0)	
+		end		
+	end	
+end
+
+function set_community_by_actor()
+	local actor_comm = db.actor:character_community()
+	local new_comm = community_by_actor(actor_comm)
+	for id, comm in pairs(companions) do
+		if comm == "companion" then
+			local obj = level.object_by_id(id)
+			local s_npc = alife():object(id)
+			if s_npc and obj and obj:alive() then
+				obj:set_character_community(new_comm, 0, 0)	
+			elseif not obj and s_npc then
+				change_community_by_actor(id):start()
+			end			
+		end	
+	end
+end
+
+function save_var_companion(npc, var_name, var_value)
+
+	if not npc or not var_name then return end
+	local sobj = alife():object(npc)
+	
+	if sobj then
+		
+		if sobj.s_storage and sobj.s_storage ~= "_" then
+			local npc_data = m_net_utils.parse_custom_data(sobj.s_storage)
+			
+			if not npc_data.companion_data then
+				npc_data.companion_data = {}
+			end
+			
+			npc_data.companion_data[var_name] = var_value
+			local data_parsed = m_net_utils.gen_custom_data(npc_data)
+			sobj.s_storage = data_parsed
+			-- log1("V2 COMP VAR SAVED: "..tostring(var_name).." value "..tostring(var_value))
+		else
+			local npc_data = {}
+			npc_data.companion_data = {}
+			npc_data.companion_data[var_name] = var_value
+			local data_parsed = m_net_utils.gen_custom_data(npc_data)
+			sobj.s_storage = data_parsed
+			-- log1("V1 COMP VAR SAVED: "..tostring(var_name).." value "..tostring(var_value))
+		end
+
+		-- log1("COMP SYNCHRONIZED!")
+	
+	end
+
+end
+
+function load_var_companion(npc, var_name, def_value)
+
+	if not npc or not var_name then return end
+	local sobj = alife():object(npc)
+	
+	if sobj and sobj.s_storage and sobj.s_storage ~= "_" then
+
+		local npc_data = m_net_utils.parse_custom_data(sobj.s_storage)
+		
+		if npc_data.companion_data and npc_data.companion_data[var_name] then
+			-- log1("COMP VAR RET: "..tostring(var_name).." value "..tostring(npc_data.companion_data[var_name]))
+			return npc_data.companion_data[var_name]
+		else	
+			return def_value or nil
+		end
+		
+	else	
+		return def_value or nil
+	end	
+
+end
+
+function init_danger_settings(npc)
+
+	local storage = db.storage[npc:id()]
+	local danger_settings = storage.danger
+	
+	storage.ignore_types = nil
+	storage.ignore_types = {}
+	storage.ignore_types["corpse"] = true 
+	storage.ignore_types["sound"] = true
+	
+	npc:set_custom_panic_threshold(0.0)	
+	
+	if not danger_settings then
+		storage.danger = {}
+		danger_settings = storage.danger
+	end
+	
+	danger_settings.ignore_distance			= 50
+	danger_settings.ignore_distance_grenade	= 15
+	danger_settings.ignore_distance_corpse	= 10
+	danger_settings.ignore_distance_hit		= 80
+	danger_settings.ignore_distance_sound		= 50
+
+	danger_settings.danger_inertion_time_grenade	= 10000
+	danger_settings.danger_inertion_time_corpse	= 5000
+	danger_settings.danger_inertion_time_hit		= 10000
+	danger_settings.danger_inertion_time_sound	= 5000
+	danger_settings.danger_inertion_time_ricochet	= 10000	
+	
+end
+
+----------------------------------------------------------------------------------------------------------------------
+
+function companion_death(npc)
+	if npc and is_companion(npc:id()) then
+	
+		local storage = db.storage[npc:id()]
+		if storage then
+			local scheme = storage.companion
+			if scheme then
+				scheme.enabled = false
+			end
+		end	
+		
+		number_of_companions = number_of_companions - 1
+		xr_companion.companions[npc:id()] = nil
+		
+		level.map_remove_object_spot(npc:id(), "alife_presentation_companion")
+		
+		local dead_friends = tonumber(ogse.load_variable("dead_fr", 0))
+		dead_friends = dead_friends + 1
+		ogse.save_variable("dead_fr", dead_friends)		
+		
+		if dead_friends < 4 then
+			db.actor:give_game_news("Ваш напарник "..npc:character_name() .. " погиб!", "ui\\ui_iconsTotal", Frect():set(0,235,83,47), 0, 15000)
+		else
+			db.actor:give_game_news("Ваш напарник "..npc:character_name() .. " погиб в очередной раз! Вы приобрели дурную славу среди сталкеров!", "ui\\ui_iconsTotal", Frect():set(0,235,83,47), 0, 15000)
+		end	
+	end
+end
+
+function get_max_weapon_range(npc)
+	if npc then
+		local act_item = npc:active_item()
+		if act_item and isWeapon(act_item) then
+			local sect = act_item:section()
+			if system_ini():line_exist(sect, "max_radius") then
+				local radius = system_ini():r_s32(sect, "max_radius")
+				return radius
+			end
+		else	
+			return 0
+		end
+	else	
+		return 0
+	end
+end
+
+local last_weapon = {}
+
+function check_lost_weapon(npc)
+	local act_item = npc:active_item()
+	if act_item and isWeapon(act_item) then
+		if not last_weapon[npc:id()] then
+			-- запуск - ещё нет никакого оружия
+			last_weapon[npc:id()] = act_item:id()
+		else
+			-- уже сохранено значение оружия
+			local last_weapon_obj = level.object_by_id(last_weapon[npc:id()])
+			if last_weapon_obj then
+				-- последнее оружие существует
+				if act_item:id() == last_weapon[npc:id()] then
+					-- и оно у нас в руках
+					return false, nil, nil
+				end				
+				local parent = last_weapon_obj:parent()
+				if parent then
+					if parent:id() == npc:id() then
+						-- оружие наше, просто не в руках банально
+						last_weapon[npc:id()] = act_item:id()
+						return false, nil, nil
+					else
+						-- кто-то забрал его уже, бесполезно трепыхаться
+						last_weapon[npc:id()] = nil
+						return false, nil, nil					
+					end
+				else
+					-- проебали, надо подобрать
+					-- log1("!!XR_COMP_LOST_WEAPON_1")
+					return true, last_weapon_obj:level_vertex_id(), last_weapon_obj:id()
+				end			
+			else
+				-- последнее оружие уже НЕ существует
+				last_weapon[npc:id()] = nil
+				return false, nil, nil
+			end		
+		end
+	elseif not act_item then	
+		if last_weapon[npc:id()] then
+			local last_weapon_obj = level.object_by_id(last_weapon[npc:id()])
+			if last_weapon_obj then
+				local parent = last_weapon_obj:parent()
+				if parent then
+					if parent:id() == npc:id() then
+						-- оружие наше, просто не в руках банально
+						return false, nil, nil
+					else
+						-- кто-то забрал его уже, бесполезно трепыхаться
+						last_weapon[npc:id()] = nil
+						return false, nil, nil					
+					end
+				else
+					-- проебали, надо подобрать
+					-- log1("!!XR_COMP_LOST_WEAPON_2")
+					return true, last_weapon_obj:level_vertex_id(), last_weapon_obj:id()
+				end	
+			else
+				-- последнее оружие уже НЕ существует
+				last_weapon[npc:id()] = nil
+				return false, nil, nil
+			end		
+		end		
+	end
+	return false, nil, nil
+end
+
+----------------------------------------------------------------------------------------------------------------------
+
+function beh_walk(mode, npc)
+
+	--log1("COMP_EXEC_GO "..tostring(npc:name()).." ACT "..tostring(mode))
+
+	if not npc:alive() or xr_wounded.is_wounded(npc) then
+		return
+	end
+
+	local stor = db.storage[npc:id()].companion
+
+	local actor = db.actor
+	local select_new_pt = false
+	
+	locked_vertexes[db.actor:id()] = db.actor:level_vertex_id()
+	
+	if (mode == "ignore" or mode == "ignore_c") then
+		xr_combat_companion.dont_touch_us = true
+	end
+	
+	local range = npc:range()
+	local fov = npc:fov()	
+	if range ~= range_normal or fov ~= fov_normal then
+		npc:set_range(range_normal)
+		npc:set_fov(fov_normal)
+	end	
+	
+	local dist_from_self_to_actor = npc:position():distance_to(actor:position())
+	local dist_from_assist_pt_to_actor
+	
+	local flag_actor_behind = false
+	local dangerang = 1
+	local ang = horz_angle(device().cam_dir, npc:position():sub(device().cam_pos))
+	local tgt = ang > -dangerang and ang < dangerang
+	if tgt then
+		-- ГГ смотрит на напарника
+		flag_actor_behind = true
+	end	
+	
+	if assist_point[npc:id()] then
+		dist_from_assist_pt_to_actor = level.vertex_position(assist_point[npc:id()]):distance_to(actor:position())
+	else
+		dist_from_assist_pt_to_actor = nil
+	end
+	
+	if (dist_from_self_to_actor >= desired_distance and
+	   (not dist_from_assist_pt_to_actor or
+	    dist_from_assist_pt_to_actor >= desired_distance * 2)) then
+		assist_point[npc:id()] = select_position(npc, stor)
+		if not assist_point[npc:id()] then
+			select_new_pt = true
+		end
+	elseif dist_from_self_to_actor <= 2 and flag_actor_behind then	
+		assist_point[npc:id()] = select_position_get_away(npc, stor)
+		if not assist_point[npc:id()] then
+			select_new_pt = true
+		end		
+	end
+	
+	local weap_lost, vtx, lost_id = check_lost_weapon(npc)
+	if weap_lost then
+		select_new_pt = false
+		assist_point[npc:id()] = vtx
+		local last_weapon_obj = level.object_by_id(lost_id)
+		if last_weapon_obj and npc:position():distance_to(last_weapon_obj:position()) <= 1.3 then
+			last_weapon_obj:transfer_item(last_weapon_obj,npc)
+		end
+	end		
+	
+	-- 1. Если мы находимся за большим радиусом - необходимо выбрать новую точку
+	if select_new_pt then
+		assist_point[npc:id()] = select_position(npc, stor)
+		if not assist_point[npc:id()] then
+			return
+		end
+	elseif not assist_point[npc:id()] then
+		return
+	end
+	
+	if assist_point[npc:id()] then
+		locked_vertexes[npc:id()] = assist_point[npc:id()]
+	end
+
+	-- 2. Двигаемся на точку: если точка далеко - бежим, иначе идем
+
+	npc:set_detail_path_type(move.curve)
+	npc:set_path_type(game_object.level_path)
+	utils.send_to_nearest_accessible_vertex(npc, assist_point[npc:id()])
+	
+	local dist_to_assist_pt = level.vertex_position(assist_point[npc:id()]):distance_to(npc:position())
+
+	local new_state
+
+	if npc:level_vertex_id() == assist_point[npc:id()] then
+		-- Уже пришли на точку отхода, разрешить еще раз начать отход
+		-- (случай, когда игрок подошел слишком близко к ассистенту)
+		if (mode == "simple" or mode == "simple_la") then
+			new_state = "guard"
+		elseif mode == "ignore" then
+			new_state = "wait"			
+		elseif (mode == "simple_c" or mode == "simple_c_la") then	
+			new_state = "hide"
+		elseif mode == "ignore_c" then
+			new_state = "hide_no_wpn"
+		end
+	else
+		local t = time_global()
+		if t >= keep_state_until then
+			keep_state_until = t + keep_state_min_time
+
+			if dist_to_assist_pt <= dist_walk then
+				if (mode == "simple" or mode == "simple_la") then
+					new_state = "patrol"
+				elseif mode == "ignore" then
+					new_state = "walk"
+				elseif (mode == "simple_c" or mode == "simple_c_la") then
+					new_state = "sneak"
+				elseif mode == "ignore_c" then
+					new_state = "sneak_no_wpn"
+				end				
+			elseif dist_to_assist_pt <= dist_run then
+				if (mode == "simple" or mode == "simple_la") then
+					new_state = "rush"
+				elseif mode == "ignore" then
+					new_state = "run"		
+				elseif (mode == "simple_c" or mode == "simple_c_la") then	
+					new_state = "sneak_run"
+				elseif mode == "ignore_c" then
+					new_state = "sneak_run_no_wpn"
+				end				
+			else
+				if (mode == "simple" or mode == "simple_la") then
+					new_state = "sprint_p"
+				elseif mode == "ignore" then
+					new_state = "run_p"		
+				elseif (mode == "simple_c" or mode == "simple_c_la") then
+					new_state = "sneak_run"
+				elseif mode == "ignore_c" then
+					new_state = "sneak_run_no_wpn"
+				end						
+			end
+		end
+	end
+	
+	if new_state then
+		state_mgr.set_state( script_name(), npc, new_state)
+		last_state[npc:id()] = new_state
+	elseif last_state[npc:id()] then
+		state_mgr.set_state( script_name(), npc, last_state[npc:id()])
+	end 
+
+	-- 4. Если стоим на точке - петь песенки и прочую херню
+	if (mode == "simple" or mode == "ignore" or mode == "simple_la") then
+		local silence_interval = math.random(30000,55000)
+		if testing_sound then
+			silence_interval = 6000
+		end
+		if math.random() < sound_prob then
+			if not talking_npc[npc:id()] then
+				xr_sound.set_sound(npc, sound_wait[math.random(1,#sound_wait)])
+				talking_npc[npc:id()] = time_global()
+			elseif talking_npc[npc:id()] then	
+				local period = time_global() - talking_npc[npc:id()]
+				if period < 5000 then
+					xr_sound.set_sound(npc, sound_wait[math.random(1,#sound_wait)])
+				elseif period >= 5000 and period < silence_interval then
+					xr_sound.set_sound(npc, nil)
+				elseif period >= silence_interval then	
+					xr_sound.set_sound(npc, sound_wait[math.random(1,#sound_wait)])
+					talking_npc[npc:id()] = time_global()
+				end				
+			end
+		end
+	elseif (mode == "simple_c" or mode == "ignore_c" or mode == "simple_c_la") then	
+		xr_sound.set_sound(npc, nil) 
+	end							
+end
+
+function beh_wait(mode, npc)
+
+	--log1("COMP_EXEC_WAIT "..tostring(npc:name()).." ACT "..tostring(mode))
+
+	if not npc:alive() or xr_wounded.is_wounded(npc) then
+		return
+	end
+
+	local actor = db.actor
+
+	if (mode == "ignore" or mode == "ignore_c") then
+		xr_combat_companion.dont_touch_us = true
+	end
+	
+	local new_state 
+	
+	if (mode == "simple" or mode == "simple_la") then
+		new_state = "guard"
+	elseif mode == "ignore" then
+		new_state = "wait"		
+	elseif (mode == "simple_c" or mode == "simple_c_la") then
+		new_state = "hide"
+	elseif mode == "ignore_c" then
+		new_state =	"hide_no_wpn"
+	end			
+
+	if new_state then
+		state_mgr.set_state( script_name(), npc, new_state)
+		last_state[npc:id()] = new_state
+	elseif last_state[npc:id()] then
+		state_mgr.set_state( script_name(), npc, last_state[npc:id()])
+	end 
+
+	-- 4. Если стоим на точке - петь песенки и прочую херню
+	if (mode == "simple" or mode == "ignore" or mode == "simple_la") then
+		if math.random() < sound_prob then
+			local silence_interval = math.random(30000,65000)
+			if testing_sound then
+				silence_interval = 6000
+			end
+			if math.random() < sound_prob then
+				if not talking_npc[npc:id()] then
+					xr_sound.set_sound(npc, sound_wait[math.random(1,#sound_wait)])
+					talking_npc[npc:id()] = time_global()
+				elseif talking_npc[npc:id()] then	
+					local period = time_global() - talking_npc[npc:id()]
+					if period < 5000 then
+						xr_sound.set_sound(npc, sound_wait[math.random(1,#sound_wait)])
+					elseif period >= 5000 and period < silence_interval then
+						xr_sound.set_sound(npc, nil)
+					elseif period >= silence_interval then	
+						xr_sound.set_sound(npc, sound_wait[math.random(1,#sound_wait)])
+						talking_npc[npc:id()] = time_global()
+					end				
+				end
+			end
+		end
+	elseif (mode == "simple_c" or mode == "ignore_c" or mode == "simple_c_la") then	
+		xr_sound.set_sound(npc, nil) 
+	end	
+end
+----------------------------------------------------------------------------------------------------------------------
+local count_update 			= 0	-- Счетчик апдейтов. Нельзя чтобы схема стартовала включенной сразу же, иначе 
+local engage_after_update 	= 3 -- будут глюки на переключении схем и выборе оружия
+post_work					= {}
+local post_timer			= nil
+----------------------------------------------------------------------------------------------------------------------
+class "evaluator_need_companion" (property_evaluator)
+
+function evaluator_need_companion:__init(name, storage) super (nil, name)
+	self.st = storage
+end
+
+function evaluator_need_companion:evaluate()
+	if count_update <= engage_after_update then
+		count_update = count_update + 1
+		return false
+	end	
+	if not self.object:alive() or xr_wounded.is_wounded(self.object) then
+		return false
+	end
+	if being_attacked == true then 
+		return false
+	end
+	if post_work[self.object:id()] then
+		return true
+	end
+	if self.st.enabled == true then
+		ogse_debug.add_active_eval( self.object, script_name(), "need_companion" )
+		return true
+	else
+		return false
+	end
+end
+----------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------
+class "action_companion_activity" (action_base)
+
+function action_companion_activity:__init(name, storage) super (nil, name)
+	self.st = storage
+end
+
+function action_companion_activity:initialize()
+
+	action_base.initialize(self)
+	
+	if not self.object:alive() then
+		return false
+	end
+	
+	if being_attacked == true then return false end	
+	
+	self.object:remove_all_restrictions()
+	self.object:enable_talk()	
+	assist_point[self.object:id()] = nil
+
+	last_state[self.object:id()] = "guard"
+	state_mgr.set_state( script_name(), self.object, last_state[self.object:id()])
+	
+	keep_state_until = time_global()
+end
+
+local beh = {
+	[beh_walk_simple]       = {beh_walk, "simple"},
+	[beh_walk_low_aggr]     = {beh_walk, "simple_la"},
+	[beh_walk_ignore]       = {beh_walk, "ignore"},
+	[beh_crouch_simple]     = {beh_walk, "simple_c"},
+	[beh_crouch_low_aggr]   = {beh_walk, "simple_c_la"},
+	[beh_crouch_ignore]     = {beh_walk, "ignore_c"},
+	[beh_wait_simple]       = {beh_wait, "simple"},
+	[beh_wait_low_aggr]     = {beh_wait, "simple_la"},
+	[beh_wait_ignore]       = {beh_wait, "ignore"},
+	[beh_hide_simple]       = {beh_wait, "simple_c"},
+	[beh_hide_low_aggr]     = {beh_wait, "simple_c_la"},
+	[beh_hide_ignore]       = {beh_wait, "ignore_c"},
+}
+
+function action_companion_activity:execute()
+
+	action_base.execute(self)
+	
+	if not self.object:alive() then
+		return false
+	end	
+	
+	if being_attacked == true then return false end
+	
+	if post_work[self.object:id()] then
+		if post_timer == nil then
+			post_timer = time_global() + 10000
+		end
+		if post_timer and post_timer > time_global() then
+			state_mgr.set_state( script_name(), self.object, "guard")
+			return
+		elseif post_timer <= time_global() then
+			post_timer = nil
+			post_work[self.object:id()] = nil
+			return
+		end
+	end	
+	
+	self.object:set_desired_position()
+	self.object:set_desired_direction()
+	
+	local range = self.object:range()
+	local fov = self.object:fov()	
+	local npc = self.object
+	
+	--log1("COMP R "..range.." FOV "..fov)
+	
+	local beh_model = db.storage[npc:id()].companion.behavior
+	local act = beh[beh_model]
+	--log1("COMP_MDL "..tostring(npc:name()).." ACT "..tostring(beh_model))
+	if act then act[1](act[2], npc) end
+	--  Проверка на враждебность
+	if self.object:relation(db.actor) == game_object.enemy then
+		db.actor:give_game_news(self.object:character_name() .. " стал вашим врагом!", "ui\\ui_iconsTotal", Frect():set(0,235,83,47), 0, 15000)
+		db.storage[self.object:id()].companion.enabled = false
+		xr_companion.number_of_companions = xr_companion.number_of_companions - 1
+		xr_companion.save_var_companion(self.object:id(), "is_companion", 0)
+		level.map_remove_object_spot(self.object:id(), "alife_presentation_companion")
+		local dead_friends = tonumber(ogse.load_variable("dead_fr", 0))
+		dead_friends = dead_friends + 1
+		ogse.save_variable("dead_fr", dead_friends)		
+		local comm = xr_companion.load_var_companion(self.object:id(), "orig_community", nil)
+		self.object:set_character_community(comm, 0, 0)
+		trade_manager.trade_init(self.object, "misc\\trade_generic.ltx")	
+		xr_companion.companions[self.object:id()] = nil
+	end	
+	
+end
+
+function action_companion_activity:finalize()
+	self.object:set_mental_state(anim.free)
+	action_base.finalize(self)
+end
+
+-- Возвращает угол между проекциями векторов vec1 и vec2 на горизонтальную плоскость
+-- положительный угол - доворот vec1 до vec2 по часовой.
+function horz_angle(vec1,vec2)
+  local x=vec2.x*vec1.x+vec2.z*vec1.z
+  local y=-vec2.z*vec1.x+vec2.x*vec1.z -- повернули систему координат     
+  return math.atan2(y,x) -- угол доворота от -pi до pi
+end
+
+--' Выбор новой позиции
+function select_position(npc, st)
+	local node_1_vertex_id = nil
+	local node_1_distance = nil
+	local node_2_vertex_id = nil
+	local node_2_distance = nil
+
+	local actor = db.actor
+	local forbidden = {}
+	
+	for k, v in pairs(locked_vertexes) do
+		if k ~= npc:id() then
+			forbidden[v] = true
+		end
+	end
+
+	-- проверяем точку слева от актера
+	desired_direction = vector_rotate_y(actor:direction(), math.random(40,90) )
+	node_1_vertex_id = level.vertex_in_direction(actor:level_vertex_id(),
+		desired_direction,
+		math.random(desired_distance, desired_distance+3))
+	if npc:accessible(node_1_vertex_id) ~= true or node_1_vertex_id == actor:level_vertex_id() or forbidden[node_1_vertex_id] then			
+		node_1_vertex_id = nil
+	end
+	-- проверяем точку справа от актера
+	desired_direction = vector_rotate_y(actor:direction(), -math.random(40,90) )
+	node_2_vertex_id = level.vertex_in_direction (  actor:level_vertex_id(),
+		desired_direction,
+		math.random(desired_distance, desired_distance+3) )
+	if npc:accessible(node_2_vertex_id) ~= true or node_2_vertex_id == actor:level_vertex_id() or forbidden[node_2_vertex_id] then			
+		node_2_vertex_id = nil
+	end
+	
+	-- Проверяем растояния до точек
+	if node_1_vertex_id ~= nil then
+		node_1_distance = npc:position():distance_to_sqr(level.vertex_position(node_1_vertex_id))
+	else
+		node_1_distance = -1
+	end
+	if node_2_vertex_id ~= nil then
+		node_2_distance = npc:position():distance_to_sqr(level.vertex_position(node_2_vertex_id))
+	else
+		node_2_distance = -1
+	end
+	
+	-- Выбираем ближайшую из существующих
+	if node_1_distance == -1 and node_2_distance == -1 then
+		--' Не смогли найти точку, ругаться
+		return db.actor:level_vertex_id()
+	end
+	if node_1_distance == -1 then
+		return node_2_vertex_id
+	end
+	if node_2_distance == -1 then
+		return node_1_vertex_id
+	end
+	if node_1_distance < node_2_distance then
+		return node_1_vertex_id
+	else
+		return node_2_vertex_id
+	end
+end
+
+function select_position_get_away(npc, st)
+	local node_1_vertex_id = nil
+	local node_1_distance = nil
+	local node_2_vertex_id = nil
+	local node_2_distance = nil
+
+	local actor = db.actor
+	
+	local forbidden = {}
+	
+	for k, v in pairs(locked_vertexes) do
+		if k ~= npc:id() then
+			forbidden[v] = true
+		end
+	end	
+
+	-- проверяем точку слева от актера
+	desired_direction = actor:direction()
+	node_1_vertex_id = level.vertex_in_direction(actor:level_vertex_id(),
+		desired_direction,
+		desired_distance)
+	if npc:accessible(node_1_vertex_id) ~= true or node_1_vertex_id == actor:level_vertex_id() or forbidden[node_1_vertex_id] then			
+		node_1_vertex_id = nil
+	end
+	-- проверяем точку справа от актера
+	desired_direction = actor:direction()
+	node_2_vertex_id = level.vertex_in_direction (  actor:level_vertex_id(),
+		desired_direction,
+		5 )
+	if npc:accessible(node_2_vertex_id) ~= true or node_2_vertex_id == actor:level_vertex_id() or forbidden[node_2_vertex_id] then			
+		node_2_vertex_id = nil
+	end
+	
+	-- Проверяем растояния до точек
+	if node_1_vertex_id ~= nil then
+		node_1_distance = npc:position():distance_to_sqr(level.vertex_position(node_1_vertex_id))
+	else
+		node_1_distance = -1
+	end
+	if node_2_vertex_id ~= nil then
+		node_2_distance = npc:position():distance_to_sqr(level.vertex_position(node_2_vertex_id))
+	else
+		node_2_distance = -1
+	end
+	
+	-- Выбираем ближайшую из существующих
+	if node_1_distance == -1 and node_2_distance == -1 then
+		--' Не смогли найти точку, ругаться
+		return db.actor:level_vertex_id()
+	end
+	if node_1_distance == -1 then
+		return node_2_vertex_id
+	end
+	if node_2_distance == -1 then
+		return node_1_vertex_id
+	end
+	if node_1_distance < node_2_distance then
+		return node_1_vertex_id
+	else
+		return node_2_vertex_id
+	end
+end
+
+function vector_rotate_y (v, angle)
+    angle = angle * 0.017453292519943295769236907684886
+    local c = math.cos (angle)
+    local s = math.sin (angle)
+    return vector ():set (v.x * c - v.z * s, v.y, v.x * s + v.z * c)
+end
+
+property_base = 79945
+property_need_companion = property_base + 1
+property_need_run = property_base + 2
+---
+act_base = 79950
+act_companion_activity = act_base + 1
+act_companion_run = act_base + 2
+
+-- Добавляем в планировщик нашу схему
+function add_to_binder(object, char_ini, scheme, section, st)
+
+	local manager = object:motivation_action_manager()
+	
+	local property_wounded = xr_evaluators_id.sidor_wounded_base
+	local state_mgr_to_idle_combat 	= xr_actions_id.state_mgr + 1
+	local state_mgr_to_idle_alife = xr_actions_id.state_mgr + 2
+
+	manager:remove_evaluator(property_need_companion)
+	manager:add_evaluator(property_need_companion, evaluator_need_companion("evaluator_need_companion", st))	
+	
+
+	local action = action_companion_activity("action_companion_activity", st)
+	action:add_precondition(world_property(stalker_ids.property_alive, true))
+	action:add_precondition(world_property(xr_evaluators_id.abuse_base, false))
+	action:add_precondition(world_property(xr_combat_companion.prop_combat, false))
+	if xrs_grenade then
+		action:add_precondition( world_property( xrs_grenade.prop_fire,          		     false  ) )
+		action:add_precondition( world_property( xrs_grenade.prop_grenade,          	     false  ) )
+	end
+	if rx_bandage then
+		action:add_precondition(world_property(rx_bandage.evid_bandage,false))
+	end	
+	if rx_facer then
+		action:add_precondition(world_property(rx_facer.evid_facer,false))
+	end
+	if rx_gl then
+		action:add_precondition(world_property(rx_gl.evid_gl_fire,false))
+		action:add_precondition(world_property(rx_gl.evid_gl_reload,false))
+	end	
+	action:add_precondition(world_property(property_wounded, false))
+	action:add_precondition(world_property(property_need_companion, true))
+	action:add_effect(world_property(property_need_companion, false))
+	action:add_effect(world_property( stalker_ids.property_enemy, false ))	
+	manager:add_action(act_companion_activity, action)	
+	
+	action = manager:action(state_mgr_to_idle_combat)
+	action:add_precondition(world_property(property_need_companion, false))
+	
+	action = manager:action(state_mgr_to_idle_alife)
+	action:add_precondition(world_property(property_need_companion, false))
+
+	action = manager:action(stalker_ids.action_alife_planner)
+	action:add_precondition(world_property(property_need_companion, false))
+
+	action = manager:action(stalker_ids.action_danger_planner)
+	action:add_precondition(world_property(property_need_companion, false))
+	
+	action = manager:action(stalker_ids.action_combat_planner)	
+	action:add_precondition(world_property(property_need_companion, false))
+
+	action = manager:action(stalker_ids.action_retreat_from_enemy)
+	action:add_precondition(world_property(property_need_companion, false))
+end
+
+-- Функции включения/выключения схемы
+function enable_scheme(npc, ini)
+
+	reset_npc_logic(npc)
+
+	local st = xr_logic.assign_storage_and_bind(npc, ini, "companion")
+	local flag = load_var_companion(npc:id(), "is_companion", 0)
+
+	if st then
+		if tostring(flag) == "1" then
+			npc:remove_all_restrictions()
+			log1("xr_companion scheme online "..tostring(npc:id()))
+			companions[npc:id()] = "companion"
+			companion_weapon[npc:id()] = load_var_companion(npc:id(), "weapon_behavior", "anything")			
+			local behavior = load_var_companion(npc:id(), "companion_behavior", beh_walk_simple)
+			init_danger_settings(npc)
+			st.enabled = true		
+			st.behavior = tonumber(behavior)
+		else
+			st.enabled = false
+		end
+	end
+end
+function disable_scheme(npc, scheme)
+	local st = db.storage[npc:id()][scheme]
+	if st then
+		st.enabled = false
+	end
+end
+
+function is_companion(npc_id)
+	if npc_id then
+		if companions[npc_id] and companions[npc_id] == "companion" then
+			return true
+		end
+	end
+	return false
+end
+
+function is_companion_se(obj)
+	local community = obj:community()
+		if suitable_communities[community] then
+		if not string.find(obj:profile_name(), "bar_arena_stalker") and obj:health() > 0 then
+			xr_companion.companions[obj.id] = community
+			local flag = load_var_companion(obj.id, "is_companion", 0)
+			if tostring(flag) == "1" then
+				--log1("!!COMP FND OFFLINE! "..obj:profile_name())
+				xr_companion.companions[obj.id] = "companion"
+				xr_companion.number_of_companions = xr_companion.number_of_companions + 1
+			end
+		end
+	end
+end
+
+function reset_npc_logic(obj)
+	if obj then
+		local npc_id = obj:id()
+		db.storage[npc_id].overrides = nil
+		xr_logic.reset_generic_schemes_on_scheme_switch(obj, "nil", "nil")
+		db.storage[npc_id].active_section = nil
+		db.storage[npc_id].active_scheme = nil		
+	end
+end
