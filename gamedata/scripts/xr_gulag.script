@@ -906,21 +906,26 @@ function gulag:setup_squad_and_group( obj_id, job )
 	end
 end
 
+
 -- установить npc работу, к ней рестрикторы, настроить логику, поменять squad, group
-function gulag:setJob(obj_id, job)
-  --amk.mylog("set job for "..obj_id.." in "..self.name)
-	printf( "[smart_terrain %s] gulag: setJob: obj=%s job=%d %s", self.name, self.npc_info[obj_id].name, job.num, job.section )
+function gulag:setJob( obj_id, job )
+  --log2( "[smart_terrain %s] gulag: setJob: obj=%s job=%d %s", self.name, self.npc_info[obj_id].name, job.num, job.section )
+  job.object = obj_id
+  job.idle_after_death_end = nil
 
-	job.object = obj_id
+  if not (
+    self:dsh_is_free_logic()
+    and
+    self.Object_begin_job[ obj_id ]
+  ) then
+    self.Object_begin_job[ obj_id ] = false
+  end
+  self.ObjectJob        [ obj_id ] = job.num
+  self.ObjectJobPathName[ obj_id ] = job.path_name
 
-	job.idle_after_death_end = nil
-
-	self.Object_begin_job [obj_id] = false
-	self.ObjectJob        [obj_id] = job.num
-	self.ObjectJobPathName[obj_id] = job.path_name
-
-	self:setup_squad_and_group( obj_id, job )
+  self:setup_squad_and_group( obj_id, job )
 end
+
 
 -- заступить на работу.
 -- вызывается когда персонаж достиг места работы.
@@ -928,43 +933,47 @@ end
 -- если в онлайне, то настройка логики и рестрикторов.
 -- вызвать спавнер.
 function gulag:beginJob( obj_id )
-	local job = self.Job[self.ObjectJob[obj_id]]
-	--log2( "[smart_terrain %s] gulag: beginJob: obj=%s job=%d %s", self.name, self.npc_info[obj_id].name, job.num, job.section )
+  local job = self.Job[ self.ObjectJob[ obj_id ] ]
+  --log2( "[smart_terrain %s] gulag: beginJob: obj=%s job=%d %s", self.name, self.npc_info[obj_id].name, job.num, job.section )
+  self.Object_begin_job[ obj_id ] = true
+  job.begin = amk.game_milliseconds()
+  if job.fill_idle == idle_once then
+    job.fill_idle = idle_none
+  end
 
-	self.Object_begin_job[obj_id] = true
+  local se_obj = self.npc_info[ obj_id ].se_obj
+  self:setup_job_online( se_obj, job )
+  if self:get_stype( obj_id ) == modules.stype_mobile then
+    se_obj:smart_terrain_task_activate()
+  end
 
-	job.begin = amk.game_milliseconds()
+  if self.Object[ obj_id ] ~= true then
+    local obj = self.Object[ obj_id ]
+    self:set_restrictions( obj, job.out_rest, job.in_rest, job.info_rest )
+    if not self:dsh_is_free_logic() then
+      self:dsh_fix_gulags_relation( obj )
+      self:setup_logic( obj, job.section )
+    end
+  end
 
-	if job.fill_idle == idle_once then
-		job.fill_idle = idle_none
-	end
+  if self.Object_didnt_begin_job[ obj_id ] then
+    self.smrttrn:call_respawn()
+    self.Object_didnt_begin_job[ obj_id ] = false
+  end
 
-	local se_obj = self.npc_info[obj_id].se_obj
+  --' Увеличиваем счетчик пришедших персонажей
+  self.population_comed = self.population_comed + 1
 
-	self:setup_job_online( se_obj, job )
-
-	if self:get_stype( obj_id ) == modules.stype_mobile then
-		se_obj:smart_terrain_task_activate()
-	end
-
-	if self.Object[obj_id] ~= true then
-		local obj = self.Object[obj_id]
-
-		self:set_restrictions( obj, job.out_rest, job.in_rest, job.info_rest )
-		if not self:dsh_is_free_logic() then
-		  self:dsh_fix_gulags_relation( obj )
-		  self:setup_logic( obj, job.section )
-		end
-	end
-
-	if self.Object_didnt_begin_job[obj_id] then
-		self.smrttrn:call_respawn()
-
-		self.Object_didnt_begin_job[obj_id] = false
-	end
-	
-	self.population_comed = self.population_comed + 1 --' Увеличиваем счетчик пришедших персонажей
+  if
+    ui_mm_opt_main.GetOption( "dsh_live_zone" )
+    and
+    self:dsh_is_free_logic()
+  then
+    se_obj:clear_smart_terrain()
+    se_obj:brain():can_choose_alife_tasks( false )
+  end
 end
+
 
 -- установить серверному объекту персонажа упраление переключения онлайн/офлайн
 function gulag:setup_job_online( se_obj, job )
@@ -1251,7 +1260,7 @@ function setup_gulag_and_logic_on_spawn( obj, st, sobject, stype, loaded )
 			
 			if not strn or strn:clsid() ~= clsid.smart_terrain then
 				local se_obj = alife():object(obj:id())
-				log2("load ~~~ xr_gulag.script: Обнаружена привязка к несуществующему smart_terrain: "..se_obj:name()..", smart_terrain_id: "..tostring(strn_id)..". Привязка удалена.")
+				--log2("load ~~~ xr_gulag.script: Обнаружена привязка к несуществующему smart_terrain: "..se_obj:name()..", smart_terrain_id: "..tostring(strn_id)..". Привязка удалена.")
 				se_obj:clear_smart_terrain()
 				-- sim_statistic.remove(se_obj) -- эта статистка не нужна
 				strn_id = 65535
