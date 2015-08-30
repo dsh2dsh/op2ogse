@@ -179,7 +179,7 @@ function se_smart_terrain:STATE_Read( packet, size )
     for i = 1, n do
       o_id = packet:r_u16()
       self.npc_info[o_id] = {}
-      dsh.remember_free_logic_mob( o_id, self, true )
+      dsh.remember_mobs_smart_terrain( o_id, self, true )
       o = self.npc_info[o_id]
 
       o.o_group   = packet:r_u8()
@@ -193,7 +193,7 @@ function se_smart_terrain:STATE_Read( packet, size )
     self.population_locked = packet:r_bool()
   end
 
---  printf( "after read [%s]", self:name())
+--  log2( "smart_terrain[%s] after read", self:name() )
 --  self:print()
 end
 
@@ -238,18 +238,19 @@ end
 -- получить серверные объекты персонажей
 function se_smart_terrain:get_se_objs()
   local sim = alife()
-  local obj
-
+  local del = {}
   for id, v in pairs( self.npc_info ) do
-    obj = sim:object( id )
-
-    if not obj then
-      abort( "[smart_terrain %s] can't get server object id=%d", self:name(), id )
+    local obj = sim:object( id )
+    if obj then
+      self:fill_npc_info( obj, v )
+    else
+      log2( "[smart_terrain %s] can't get server object id=%d", self:name(), id )
+      table.insert( del, id )
     end
-
---    sim_statistic.add( obj ) -- эта статистка не нужна
-
-    self:fill_npc_info( obj, v )
+  end
+  for _, id in ipairs( del ) do
+    self.npc_info[ id ] = nil
+    self.gulag:removeObject( id )
   end
 end
 
@@ -419,7 +420,6 @@ end
 -- попасть в свой смарт. 
 -- если локация не прописана в этой таблице, то она будет автоматически изолирована.
 local level_groups = {
-    atp_for_test22 = "group1",
     marsh = "group1",
     l01_escape = "group1",
     l02_garbage = "group1",
@@ -439,7 +439,6 @@ local level_groups = {
     l12u_sarcofag = "group3",
     l12u_control_monolith = "group3",
     l12_stancia_2 = "group3",
-    zaton = "groups1",
 }
 
 
@@ -467,14 +466,18 @@ function se_smart_terrain:smart_terrain_accepts_obj( obj, obj_agreement )
     --' Проверка что смарттеррейн и НПС находятся в одном кластере
     --уровней (чтобы не ходили через БАР)
     local smart_level_group = self:get_level_name()
+    if level_groups[ smart_level_group ] then
+      smart_level_group = level_groups[ smart_level_group ]
+    end
     local npc_level_group = ""
     if game_graph():valid_vertex_id( obj.m_game_vertex_id ) then
-      npc_level_group = alife():level_name(
-        game_graph():vertex( obj.m_game_vertex_id ):level_id()
-      )
+      npc_level_group = object_level_name( obj )
+    end
+    if level_groups[ npc_level_group ] then
+      npc_level_group = level_groups[ npc_level_group ]
     end
 
-    if level_groups[ smart_level_group ] ~= level_groups[ npc_level_group ] then
+    if smart_level_group ~= npc_level_group then
       return false -- с этого уровня в этот смарт идти нельзя
     end
     -- если в кастомдате смарта есть перечень допустимых группировок и
@@ -725,7 +728,7 @@ function se_smart_terrain:unregister_npc( obj )
   self.npc_info[obj.id] = nil
 
   obj:clear_smart_terrain()
-  dsh.remember_free_logic_mob( obj.id, self, false )
+  dsh.remember_mobs_smart_terrain( obj.id, self, false )
 
 --  sim_statistic.remove( obj ) -- эта статистка не нужна
 
@@ -942,39 +945,7 @@ end
 
 -- возвращает название уровня, на котором находится smart terrain
 function se_smart_terrain:get_level_name()
---  return "chugai_test"
-
---  printf( "[smart_terrain %s] is on level %s", self:name(), alife():level_name( game_graph():vertex( self.m_game_vertex_id ):level_id() ) )
-    local ln = ""
-    if game_graph():valid_vertex_id(self.m_game_vertex_id) then
-        ln = alife():level_name( game_graph():vertex( self.m_game_vertex_id ):level_id() )
-    end
-  return ln
-
---[[  local gvid = self.m_game_vertex_id
-  printf( "self.m_game_vertex_id=%s", tostring( gvid ) )
-
-  local gg = game_graph()
-  if gg == nil then
-    printf( "game_graph() == nil" )
-  else
-    printf( "game_graph() ok" )
-  end
-
-  local v = gg:vertex( gvid )
-  if v == nil then
-    printf( "game_graph():vertex( gvid ) == nil" )
-  else
-    printf( "game_graph():vertex( gvid ) ok" )
-  end
-
-  local lid = v:level_id()
-  printf( "v:level_id()=%s", tostring( lid ) )
-
-  local ln = alife():level_name( lid )
-  printf( "alife():level_name( ln )=%s", tostring( ln ) )
-
-  return ln]]
+  return object_level_name( self )
 end
 
 -- регистрация объекта в симуляторе.
