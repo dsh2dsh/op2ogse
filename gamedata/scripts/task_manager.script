@@ -261,162 +261,132 @@ function CRandomTask:read_info_reward_section(ini,sect,container)
 end
 --------------------------------------
 
--- Что-то совершенно не нравится мне эта функция. Переделаю её. Тратить 5КБ из 7-ми на всякую ерунду - многовато
---[[
---' Сохранение
-function CRandomTask:save(p)
-  printf("^^^ SAVE")
-  --' Считаем количество записей
-  local i = 0
-  for k,v in pairs(self.task_info) do
-    i = i + 1
-  end
-  p:w_u8(i)
-  for k,v in pairs(self.task_info) do
-    p:w_stringZ(k) 
-    p:w_bool(v.enabled) 
-    p:w_bool(v.enabled_props)
-    p:w_stringZ(v.status)
-    p:w_u32(v.selected_target or -1)
-    utils.w_CTime(p, v.last_task_time)
-  end
 
-  --' Та же самая процедура с активными тасками
-  i = 0
-  for k,v in pairs(self.active_task_by_type) do
-    i = i + 1
-  end
-  p:w_u8(i)
-  for k,v in pairs(self.active_task_by_type) do
-    p:w_stringZ(k) 
-    p:w_stringZ(v)
-  end
-end
-]]
-
-    --' Статус квеста, может быть: "normal", "selected", "completed", "refused", "failed", "rewarded"
--- Ну и замечательно. Запишем его числом. - семикратная экономия.
-local status_to_num={normal=0, selected=1, completed=2, refused=3, 
-  failed=4, rewarded=5}
-local num_to_status={[0]="normal", [1]="selected", [2]="completed", [3]="refused", 
-  [4]="failed", [5]="rewarded"}
+--' Статус квеста, может быть: "normal", "selected", "completed",
+-- "refused", "failed", "rewarded". Ну и замечательно. Запишем его
+-- числом. - семикратная экономия.
+local status_to_num = {
+  normal    = 0,
+  selected  = 1,
+  completed = 2,
+  refused   = 3,
+  failed    = 4,
+  rewarded  = 5
+}
+local num_to_status = {
+  [ 0 ] = "normal",
+  [ 1 ] = "selected",
+  [ 2 ] = "completed",
+  [ 3 ] = "refused",
+  [ 4 ] = "failed",
+  [ 5 ] = "rewarded"
+}
 
 -- Будем записывать не id задания а его хеш - семикратная экономия.
-function CRandomTask:save(p)
-  printf("^^^ SAVE")
+function CRandomTask:save( p )
   -- Отметка того, что это новая версия формата.
-  p:w_u8(255)
+  p:w_u8( 255 )
   --' Считаем количество записей
   local i = 0
-  for k,v in pairs(self.task_info) do
+  for k, v in pairs( self.task_info ) do
     i = i + 1
   end
-  p:w_u8(i)
-  for k,v in pairs(self.task_info) do
-    if not id_to_hash[k] then
-      abort("Cannot find hash for id %s!",k)
-    end
-    p:w_u16(id_to_hash[k]) 
-    p:w_bool(v.enabled) 
-    p:w_bool(v.enabled_props)
-    if not status_to_num[v.status] then
-      abort("Wrong status '%s' for task %s!",v.status,k)
-    end
-    p:w_u8(status_to_num[v.status])
-    p:w_u32(v.selected_target or -1)
-    p:w_u32(v.defend_target or -1)
-    utils.w_CTime(p, v.last_task_time)
+  p:w_u8( i )
+  for k, v in pairs( self.task_info ) do
+    ASSERT( id_to_hash[ k ], "Cannot find hash for id %s!", k )
+    p:w_u16( id_to_hash[ k ] )
+    p:w_bool( v.enabled )
+    p:w_bool( v.enabled_props )
+    ASSERT( status_to_num[ v.status ], "Wrong status '%s' for task %s!", v.status, k )
+    p:w_u8( status_to_num[ v.status ] )
+    p:w_u32( v.selected_target or -1 )
+    p:w_u32( v.defend_target   or -1 )
+    utils.w_CTime( p, v.last_task_time )
   end
 
   --' Та же самая процедура с активными тасками
   i = 0
-  for k,v in pairs(self.active_task_by_type) do
+  for k, v in pairs( self.active_task_by_type ) do
     i = i + 1
   end
-  p:w_u8(i)
-  for k,v in pairs(self.active_task_by_type) do
-    if not ct_to_hash[k] then
-      abort("Cannot find hash for complex type %s!",k)
-    end
-    p:w_u16(ct_to_hash[k]) 
-    if not id_to_hash[v] then
-      abort("Cannot find hash for task id %s!",v)
-    end
-    p:w_u16(id_to_hash[v])
+  p:w_u8( i )
+  for k, v in pairs( self.active_task_by_type ) do
+    ASSERT( ct_to_hash[ k ], "Cannot find hash for complex type %s!", k )
+    p:w_u16( ct_to_hash[ k ] )
+    ASSERT( id_to_hash[ v ], "Cannot find hash for task id %s!", v )
+    p:w_u16( id_to_hash[ v ] )
   end
 end
 
---' Загрузка
-function CRandomTask:load(p)
-  printf("^^^ LOAD")
-  --' Считаем количество записей
-  local rt0=p:r_tell()
-  local i = p:r_u8()
-  amk.mylog("tasks "..i)
-  if i~=255 then
-    for k = 1,i do
-      local id = p:r_stringZ()
-      if id ~= nil and self.task_info[id] ~= nil then
-            self.task_info[id].enabled = p:r_bool()
-            self.task_info[id].enabled_props = p:r_bool()
-            self.task_info[id].status = p:r_stringZ()
 
-            local selected_target = p:r_u32()
-            if selected_target ~= -1 then
-              self.task_info[id].selected_target = selected_target
-            end
-			local defend_target = p:r_u32()
-			if defend_target ~= -1 then
-			  self.task_info[id].defend_target = defend_target
-			end
-            self.task_info[id].last_task_time = utils.r_CTime(p)
+--' Загрузка
+function CRandomTask:load( p )
+  --' Считаем количество записей
+  local i = p:r_u8()
+  if i ~= 255 then
+
+    for k = 1, i do
+      local id = p:r_stringZ()
+      if id and self.task_info[ id ] then
+        self.task_info[ id ].enabled       = p:r_bool()
+        self.task_info[ id ].enabled_props = p:r_bool()
+        self.task_info[ id ].status        = p:r_stringZ()
+        local selected_target = p:r_u32()
+        if selected_target ~= -1 then
+          self.task_info[ id ].selected_target = selected_target
+        end
+        local defend_target = p:r_u32()
+        if defend_target ~= -1 then
+          self.task_info[ id ].defend_target = defend_target
+        end
+        self.task_info[ id ].last_task_time = utils.r_CTime( p )
       end
     end
     --' Та же самая процедура с активными тасками
-    local i = p:r_u8()  
-    amk.mylog("active "..i)
-    for k = 1,i do
+    local i = p:r_u8()
+    for k = 1, i do
       local id = p:r_stringZ()
-      self.active_task_by_type[id] = p:r_stringZ()  
+      self.active_task_by_type[ id ] = p:r_stringZ()
     end
+
   else
+
     i = p:r_u8()
     for k = 1, i do
-      local hash = p:r_u16() 
+      local hash = p:r_u16()
       local id   = hash_to_id[ hash ]
       ASSERT( id, "Cannot find id for hash %d!", hash )
-      local task_info = self.task_info[ id ]
-      task_info.enabled       = p:r_bool()
-      task_info.enabled_props = p:r_bool()
-      task_info.status        = num_to_status[ p:r_u8() ]
-
+      local info = self.task_info[ id ]
+      info.enabled       = p:r_bool()
+      info.enabled_props = p:r_bool()
+      info.status        = num_to_status[ p:r_u8() ]
       local selected_target = p:r_u32()
       if selected_target ~= -1 then
-        task_info.selected_target = selected_target
+        info.selected_target = selected_target
       end
       local defend_target = p:r_u32()
       if defend_target ~= -1 then
-        task_info.defend_target = defend_target
+        info.defend_target = defend_target
       end
-      task_info.last_task_time = utils.r_CTime( p )
+      info.last_task_time = utils.r_CTime( p )
     end
     --' Та же самая процедура с активными тасками
-    i = p:r_u8()  
-    amk.mylog("active "..i)
+    i = p:r_u8()
     for k = 1, i do
       local cthash = p:r_u16()
       local id     = hash_to_ct[ cthash ]
       ASSERT( id, "Cannot find complex type for hash %d", cthash )
       local hash   = p:r_u16()
       self.active_task_by_type[ id ] = hash_to_id[ hash ]
-      if not self.active_task_by_type[id] then
-        abort( "Cannot find task id for hash %d!", hash )
-      end
+      ASSERT(
+        self.active_task_by_type[ id ], "Cannot find task id for hash %d!", hash
+      )
     end
-    amk.mylog("Feel the difference.")
+
   end
-  amk.mylog("size "..p:r_tell()-rt0)
 end
+
+
 --' Генератор уникальных ID для фраз
 function CRandomTask:gen_phrase_id()
 	self.task_phrase_id = self.task_phrase_id + 1
