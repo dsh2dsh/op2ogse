@@ -1,0 +1,70 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+local bad_infos = {
+  "first_blowout",
+  "ogse_DEBUG_relations_cleared",
+}
+
+local incompat_slots = { 8, 11, 12 }
+
+local incompat_belt_items = {
+  [ "acumm" ] = true,
+}
+
+
+function op2quicksave()
+  db.op2_save_compat = true
+
+  local restore_infos = {}
+  for _, info in ipairs( bad_infos ) do
+    if db.actor:has_info( info ) then
+      table.insert( restore_infos, info )
+      db.actor:disable_info_portion( info )
+    end
+  end
+
+  for _, slot in ipairs( incompat_slots ) do
+    local s_item = db.actor:item_in_slot( slot )
+    if s_item then
+      db.actor:move_to_ruck( s_item )
+    end
+  end
+
+  local remove_from_belt = {}
+  for i = 0, db.actor:belt_count() - 1 do
+    local item = db.actor:item_on_belt( i )
+    if incompat_belt_items[ item:section() ] or item:is_scope() then
+      table.insert( remove_from_belt, item )
+    end
+  end
+  for _, k in ipairs( remove_from_belt ) do
+    db.actor:move_to_ruck( k )
+  end
+
+  amk.del_variable( "blow_started" )
+  amk_mod.spawn_unspawned_respawners( true )
+
+  smart_terrain.iterate_smart_terrains( function( strn )
+    for id, _ in pairs( strn.npc_info ) do
+      local sobj = alife():object( id )
+      if sobj and dsh.is_free_logic_mob( sobj ) then
+        log2(
+          "op2quicksave: fixing free logic mob %s from %s",
+          sobj:name(), strn:name()
+        )
+        sobj:clear_smart_terrain()
+        sobj:brain():can_choose_alife_tasks( true )
+        strn:unregister_npc( sobj )
+        dsh.remember_mobs_smart_terrain( sobj.id, strn, false )
+      end
+    end
+  end )
+
+  cmd( "save", "op2quicksave" )
+
+  for _, info in ipairs( restore_infos ) do
+    db.actor:give_info_portion( info )
+  end
+
+  db.op2_save_compat = false
+end
