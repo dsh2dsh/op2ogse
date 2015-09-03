@@ -2069,168 +2069,193 @@ function on_heli_retreat(obj)
 	end
 end
 
+
 -- Видели монстров. Будем спавнить.
 function do_seen_monster()
-	local sim = alife()
-	local rnd = math.random
-	local avail = {}
-	local name, sname = amk_names_lists.get_strings()
-	local s_author = name.." "..sname
-	local o_author = ""
-	local icon = "gen_info"
-	local author_id = nil
-	local where = ""
-	for k,v in pairs(news_data.do_seen_monster_templates) do
-		if (v.enabled == true) then
-			-- Проверим, как там с режимом день\ночь
-			local bDayOk = true
-			for idx, cls in pairs(v.spawn) do
-				local class = cls.class
-				if (news_data.class_templates[class] and #news_data.class_templates[class] >0 ) then
-					class = news_data.class_templates[class][rnd(#news_data.class_templates[class])]
-				end
-				if (is_creature_day(class) == false) then
-					bDayOk = false
-					break
-				end
-			end
-			if v.alive then
-				local alive = tonumber(v.alive)
-				if (alive and isAlive(alive) == false) then
-					bDayOk = false
-				end
-			end
-			if bDayOk == true then
-				table.insert(avail, k)
-			else
-				--trace("Not day for "..v.text.." at "..level.get_time_hours())
-			end
-		end
-	end
+  local rnd         = math.random
+  local avail       = {}
+  local name, sname = amk_names_lists.get_strings()
+  local s_author    = name .. " " .. sname
+  local o_author    = ""
+  local icon        = "gen_info"
+  local author_id
+  local where       = ""
+  for k, v in pairs( news_data.do_seen_monster_templates ) do
+    if v.enabled then
+      -- Проверим, как там с режимом день\ночь
+      local bDayOk = true
+      for idx, cls in pairs( v.spawn ) do
+        local class = cls.class
+        if
+          news_data.class_templates[ class ]
+          and
+          #news_data.class_templates[ class ] > 0
+        then
+          class = news_data.class_templates[ class ][ rnd( #news_data.class_templates[ class ] ) ]
+        end
+        if is_creature_day(class) == false then
+          bDayOk = false
+          break
+        end
+      end
+      if v.alive then
+        local alive = tonumber( v.alive )
+        if alive and isAlive( alive ) == false then
+          bDayOk = false
+        end
+      end
+      if bDayOk == true then
+        table.insert( avail, k )
+      end
+    end
+  end
 
-	if #avail > 0 then
-		local t = avail[rnd(#avail)]
-		local z = news_data.do_seen_monster_templates[t]
-		local obj
-		if (z) then
-			-- Вытягиваем что надо.
-			local spawn = z.spawn
-			local text = z.text
-			if (z.author) then 
-				o_author = z.author
-				s_author = z.author
-			end
-			if (z.icon) then icon = z.icon end
-			local bInfo = true
-			local info = z.has_info
-			if (info) then				
-				local tbl = amk.str_explode(",", amk.trim(info), true)
-				if (tbl and #tbl) then
-					bInfo = false
-					for ki, vi in pairs(tbl) do
-						if has_alife_info(vi) then
-							bInfo = true
-						end
-					end
-				end
-			end
-			if (bInfo == false) then
-				if _debug == true then mylog("do_seen_monster skip - "..text)	end
-				return
-			end
-			if (text and spawn and (#spawn > 0)) then
-				local b_ok = false
-				for l,m in pairs(spawn) do
-					local class = m.class
-					local count = m.count
-					local point = m.point
-					local lv = m.lv
-					local gv = m.gv
-					if (class and count and point and lv and gv) then
-						local index
-						local new_pos, x_offset, z_offset
-						for index=1, count do
-							x_offset = rnd(5)
-							z_offset = rnd(5)
-							new_pos = vector():set( point[1], point[2], point[3])
-							new_pos.x = new_pos.x + x_offset
-							new_pos.z = new_pos.z + z_offset
-							if (point_is_far(new_pos, lv, gv, dist_far) == false) then
-								-- Слишком близко.
-								return
-							end
-							obj = sim:create(class, new_pos, lv, gv)
-							if (obj) then
-								if (o_author == "") then
-									local author = get_nearest_stalker(get_object_levelname(obj), get_object_position(obj), dist_seen, 0)
-									if (author and get_npc_name(author) ~= "") then
-										s_author = get_npc_name(author)
-										o_author = s_author
-										author_id = author.id
-									end
-								end
-								if (where == "" and string_find(text,"$where")) then
-									local m_where = get_point_description(get_object_levelname(obj), get_object_position(obj))
-									if m_where then
-										text = string_gsub(text, "$where", m_where)
-										where = m_where
-									end
-								end
-								if IAmAMonster[obj:clsid()] then
-									local tbl = amk.read_monster_params(obj)
-									local cd = amk.parse_custom_data(tbl.custom)
-									if not cd.smart_terrains then cd.smart_terrains={} end
-									cd.smart_terrains.none = "true"
-									-- Микроквест
-									if (z.reward and z.reward.c_min and z.reward.c_max and index == 1 and l == 1) then
-										if not cd.microquest then cd.microquest={} end
-										cd.microquest.reward_money = rnd(z.reward.c_min, z.reward.c_max) * 100
-										cd.microquest.reward_items = ""
-										local rank = get_npc_rank(db.actor)
-										if (rank and news_data.miniquest_rewards and news_data.miniquest_rewards[rank]) then
-											for i=1, 3 do
-												local section = news_data.miniquest_rewards[rank][rnd(#news_data.miniquest_rewards[rank])]
-												if (section) then
-													if (cd.microquest.reward_items == "") then
-														cd.microquest.reward_items = section
-													else
-														cd.microquest.reward_items = cd.microquest.reward_items..","..section
-													end
-												end
-											end
-										end
-										s_from = string_gsub(s_author, " ", "_")
-										cd.microquest.reward_from = s_from
-										if (_debug == true) then amk.add_spot_on_map(obj.id, "red_location", text) end
-									end
-									tbl.custom = amk.gen_custom_data(cd)
-									amk.write_monster_params(tbl, obj)
-								end
-								b_ok = true
-							end
-						end					
-					end
-				end
-				if (b_ok == true) then
-					if (s_author ~= "") then
-						if author_id then
-							do_news(text, s_author, rnd(timer_spawn, timer_spawn * 3), 15, icon, author_id, 1)
-						else
-							show_news(text, s_author, rnd(timer_spawn, timer_spawn * 3), 15, icon)
-						end
-					end					
-					news_data.do_seen_monster_templates[t].enabled = false				
-					timer_def_spawn = amk.game_minutes()					
-				end
-			end
-		end
-	else
-		if _debug == true then mylog("do_seen_monster - no free news left.") end
-		for k,v in pairs(news_data.do_seen_monster_templates) do
-			v.enabled = true
-		end
-	end
+  if table.getn( avail ) > 0 then
+    local t = avail[ rnd( table.getn( avail ) ) ]
+    local z = news_data.do_seen_monster_templates[ t ]
+    if z then
+      -- Вытягиваем что надо.
+      local spawn = z.spawn
+      local text  = z.text
+      if z.author then
+        o_author = z.author
+        s_author = z.author
+      end
+      if z.icon then icon = z.icon end
+      local bInfo = true
+      local info  = z.has_info
+      if info then
+        local tbl = amk.str_explode( ",", amk.trim( info ), true )
+        if tbl and table.getn( tbl ) then
+          bInfo = false
+          for ki, vi in pairs( tbl ) do
+            if has_alife_info( vi ) then
+              bInfo = true
+            end
+          end
+        end
+      end
+      if bInfo == false then
+        if _debug == true then mylog( "do_seen_monster skip - " .. text ) end
+        return
+      end
+      if text and spawn and table.getn( spawn ) > 0 then
+        local b_ok = false
+        for l, m in pairs( spawn ) do
+          local class = m.class
+          local count = m.count
+          local point = m.point
+          local lv    = m.lv
+          local gv    = m.gv
+          if class and count and point and lv and gv then
+            for index = 1, count do
+              local x_offset = rnd( 5 )
+              local z_offset = rnd( 5 )
+              local new_pos = vector():set( point[ 1 ], point[ 2 ], point[ 3 ] )
+              new_pos.x = new_pos.x + x_offset
+              new_pos.z = new_pos.z + z_offset
+              if point_is_far( new_pos, lv, gv, dist_far ) == false then
+                -- Слишком близко.
+                return
+              end
+              local obj = dsh.create_free_monster( class, new_pos, lv, gv )
+              if obj then
+                if o_author == "" then
+                  local author = get_nearest_stalker(
+                    get_object_levelname( obj ), get_object_position( obj ),
+                    dist_seen, 0
+                  )
+                  if author and get_npc_name( author ) ~= "" then
+                    s_author  = get_npc_name( author )
+                    o_author  = s_author
+                    author_id = author.id
+                  end
+                end
+                if where == "" and string.find( text, "%$where" ) then
+                  local m_where = get_point_description(
+                    get_object_levelname( obj ), get_object_position( obj )
+                  )
+                  if m_where then
+                    text  = string.gsub( text, "%$where", m_where )
+                    where = m_where
+                  end
+                end
+                if IAmAMonster[ obj:clsid() ] then
+                  local tbl = amk.read_monster_params( obj )
+                  local cd  = amk.parse_custom_data( tbl.custom )
+                  if not cd.smart_terrains then cd.smart_terrains = {} end
+                  cd.smart_terrains.none = "true"
+                  -- Микроквест
+                  if
+                    z.reward
+                    and
+                    z.reward.c_min and z.reward.c_max
+                    and
+                    index == 1 and l == 1
+                  then
+                    if not cd.microquest then cd.microquest = {} end
+                    cd.microquest.reward_money = rnd( z.reward.c_min, z.reward.c_max ) * 100
+                    cd.microquest.reward_items = ""
+                    local rank = get_npc_rank( db.actor )
+                    if
+                      rank
+                      and
+                      news_data.miniquest_rewards
+                      and
+                      news_data.miniquest_rewards[ rank ]
+                    then
+                      for i = 1, 3 do
+                        local section = news_data.miniquest_rewards[ rank ][ rnd( #news_data.miniquest_rewards[ rank ] ) ]
+                        if section then
+                          if cd.microquest.reward_items == "" then
+                            cd.microquest.reward_items = section
+                          else
+                            cd.microquest.reward_items = cd.microquest.reward_items .. "," .. section
+                          end
+                        end
+                      end
+                    end
+                    s_from = string.gsub( s_author, " ", "_" )
+                    cd.microquest.reward_from = s_from
+                    if _debug == true then
+                      amk.add_spot_on_map( obj.id, "red_location", text )
+                    end
+                  end
+                  tbl.custom = amk.gen_custom_data( cd )
+                  amk.write_monster_params( tbl, obj )
+                end
+                b_ok = true
+              end
+            end
+          end
+        end
+        if b_ok == true then
+          if s_author ~= "" then
+            if author_id then
+              do_news(
+                text, s_author,
+                rnd( timer_spawn, timer_spawn * 3 ),
+                15, icon, author_id, 1
+              )
+            else
+              show_news(
+                text, s_author, rnd( timer_spawn, timer_spawn * 3 ), 15, icon
+              )
+            end
+          end
+          news_data.do_seen_monster_templates[ t ].enabled = false
+          timer_def_spawn = amk.game_minutes()
+        end
+      end
+    end
+  else
+    if _debug == true then mylog( "do_seen_monster - no free news left." ) end
+    for k,v in pairs( news_data.do_seen_monster_templates ) do
+      v.enabled = true
+    end
+  end
 end
+
 
 function on_wound(obj)
 	local rnd = math.random
