@@ -438,20 +438,23 @@ function CTreasure:__init()
     result, id, value = self.ini:r_line( "treasure_manager.list", i, "", "" )
     local info    = {}
     local id_sect = "treasure_manager." .. id
-    info[ id ].target = utils.cfg_get_number( self.ini, id_sect, "target", nil, true )
-    info[ id ].named  = utils.cfg_get_bool( self.ini, id_sect, "named", nil, false )
-    info[ id ].name   = utils.cfg_get_string( self.ini, id_sect, "name", nil, true, "" )
+    info.target = utils.cfg_get_number( self.ini, id_sect, "target", nil, true )
+    info.named  = utils.cfg_get_bool( self.ini, id_sect, "named", nil, false )
+    info.name   = utils.cfg_get_string( self.ini, id_sect, "name", nil, true, "" )
     --' Отметим тайник как новый
-    info[ id ].active = false
-    info[ id ].done   = false
+    info.active = false
+    info.done   = false
     self.treasure_info[ id ] = info
   end
 
   --' Вспомогательные таблицы для облегчения поиска
   self.treasure_by_target = {}
+  local cnt = 0
   for k, v in pairs( self.treasure_info ) do
     self.treasure_by_target[ v.target ] = k
+    cnt = cnt + 1
   end
+  ASSERT( n == cnt, "wrong num of loaded items: %s ~= %s", n, cnt )
 end
 
 
@@ -634,34 +637,51 @@ function CTreasure:treasure_empty(box, box_story_id)
 	
   level.map_remove_object_spot(box:id(), "treasure")
 end
+
+
 --' Сохранение
-function CTreasure:save(p)
-	--' Сохраняем размер таблицы
-	local size = 0
-	for k,v in pairs(self.treasure_info) do
-		-- пишем состояние только активных тайников
-		if v.active or v.done then
-			size = size + 1
-		end
-	end
-	p:w_u16(size)
-	for k,v in pairs(self.treasure_info) do
-		if v.active or v.done then
-			p:w_u16(v.target)
-			p:w_bool(v.active)
-			p:w_bool(v.done)
-		end
-	end
+local dsh_save_var_name = "treasure_manager.treasure_info"
+function CTreasure:save( p )
+  if not db.op2_save_compat then
+    p = net_packet()
+    p:w_begin( 123 )
+    p:r_seek( 2 )
+  end
+  --' Сохраняем размер таблицы
+  local size = 0
+  for k, v in pairs( self.treasure_info ) do
+    -- пишем состояние только активных тайников
+    if v.active or v.done then
+      size = size + 1
+    end
+  end
+  p:w_u16( size )
+  for k, v in pairs( self.treasure_info ) do
+    if v.active or v.done then
+      p:w_u16( v.target )
+      p:w_bool( v.active )
+      p:w_bool( v.done )
+    end
+  end
+  if not db.op2_save_compat then
+    ogse.save_var( dsh_save_var_name, p, "chunk")
+  end
 end
+
+
 --' Загрузка
-function CTreasure:load(p)
-	local t = p:r_u16()
-	for i = 1,t do
-		local k = self.treasure_by_target[p:r_u16()]
-		self.treasure_info[k].active = p:r_bool()
-		self.treasure_info[k].done = p:r_bool()
-	end
+function CTreasure:load( p )
+  if ogse.var_exists( dsh_save_var_name ) then
+    p = ogse.load_var( dsh_save_var_name )
+  end
+  local t = p:r_u16()
+  for i = 1, t do
+    local k = self.treasure_by_target[ p:r_u16() ]
+    self.treasure_info[ k ].active = p:r_bool()
+    self.treasure_info[ k ].done   = p:r_bool()
+  end
 end
+
 
 function CTreasure:give_item_list()
 
