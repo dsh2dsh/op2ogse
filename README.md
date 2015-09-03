@@ -1,11 +1,15 @@
 # op2ogse
 dsh mod для ОП-2
 
-Форум мода и ссылки на скачивание для игроков находятся здесь:
+Форум мода тут:
 
 - http://stalker-worlds.ru/forum/topic/3355-kovyriaemsia-v-ogse/?p=174181
-
 - http://www.amk-team.ru/forum/index.php?showtopic=13176
+
+Ссылки для скачивания:
+
+- https://yadi.sk/d/iUH0DbfuipSkz
+- https://drive.google.com/open?id=0B0h2HnCBW9H1Rk9uRUtsTlltTm8
 
 Не продавайте журналы "Playboy", они вам пригодятся.
 
