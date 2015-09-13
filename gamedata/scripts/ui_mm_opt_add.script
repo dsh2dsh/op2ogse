@@ -1,0 +1,164 @@
+-- дополнительные функци для Главного Меню
+
+-- чтение текста опций
+function GetUserText(handler, option)
+	local flist = getFS():file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*."..option)
+	
+	if flist:Size() > 0 then
+		handler:SetText(string.sub(flist:GetAt(0):NameFull(), 0, string.len(flist:GetAt(0):NameFull())-4))
+	else
+		handler:SetText("")
+	end
+	
+	return handler:GetText()
+end
+
+-- сохранение текста опций
+function SetUserText(previous, new, option)
+	local f = getFS()
+	local f1 = f:update_path("$game_saves$", "game_setup.ltx")
+	local f2
+
+	if previous ~= "" then
+		f2 = f:update_path("$game_saves$", previous.."."..option)
+		f:file_delete(f2)
+	end
+	
+	-- чистим все лишнее
+	if new ~= "" then
+		new = rx_utils.trim_space(new)
+        new = string.gsub(new, ",", " ")
+        new = string.gsub(new, "[><|?*\/:\"]", "")
+		while string.find(new, "  ") do
+			new = string.gsub(new, "  ", " ")
+		end
+		f2 = f:update_path("$game_saves$", new.."."..option)
+		f:file_copy(f1, f2)
+	end
+end
+
+-- покупка квестовых предметов
+function buy_quest_item()
+	local f = getFS()
+	local flist = f:file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*.buy")
+	if flist:Size() == 0 then return end
+
+	fname = flist:GetAt(0):NameFull()
+	local buy_item = string.sub(fname, 0, string.len(fname)-4)
+	local ini = system_ini()
+	
+	if not ini:section_exist(buy_item) then
+		news_manager.send_tip(db.actor, "Предмет \""..buy_item.."\" не найден.", nil, "nano", 30000)
+		return
+	elseif db.actor:money() < 200000 then
+		news_manager.send_tip(db.actor, "Для покупки недостаточно денег.", nil, "nano", 30000)
+	elseif is_excluded_item(buy_item) then
+		news_manager.send_tip(db.actor, "Через меню игры можно покупать только квестовые предметы.", nil, "nano", 30000)
+	else
+		db.actor:disable_info_portion("mm_opt")
+		aem_manager.manage_money(200000, "out")
+		sak.create_items_actor(buy_item, 1)
+		
+		local info
+		for i =1,3 do
+			info = "acv_halavshic"..tostring(i)
+			if not has_alife_info(info) then 
+				db.actor:give_info_portion(info)
+				break
+			end
+		end
+	end
+
+	local f1 = f:update_path("$game_saves$", fname)
+	f:file_delete(f1)
+end
+
+function is_excluded_item(item)
+	local unique_items = {"wpn_fot", "fake_wpn_kuvalda"}
+	for i, se_name in ipairs(unique_items) do
+		if se_name == item then
+			return false
+		end
+	end
+	
+	local excluded_items = {"amk_transmutator", "teleportator", "anom_egg", "arhara_obman", "bioradar", "amulet", "detector_", "^nv_", "af_", "wpn_", "ammo_", "grenade_", "_tele", "zone_", "zone_docs", "zonedocs"}
+
+	for i, se_name in ipairs(excluded_items) do
+		if string.find(item, se_name) then
+			return true
+		end
+	end
+
+	local ini = system_ini()
+	return
+		ini:line_exist(item, "teleport") or
+		(ini:line_exist(item, "class") and ini:r_string(item, "class") == "O_INVBOX") or
+		(ini:line_exist(item, "class") and ini:r_string(item, "class") == "E_STLK") or
+		(ini:line_exist(item, "script_binding") and string.find(ini:r_string(item, "script_binding"), "bind_monster")) or
+		(ini:line_exist(item, "script_binding") and string.find(ini:r_string(item, "script_binding"), "bind_stalker"))
+end
+
+local bad_objects = {}
+local fname = ""
+local not_found_name = nil
+
+-- удаление проблемных объектов
+function del_bad_objects()
+	local f = getFS()
+	local flist = f:file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*.del")
+	if flist:Size() == 0 then return end
+	fname = flist:GetAt(0):NameFull()
+	bad_objects = rx_utils.str_explode(" ", string.sub(fname, 0, string.len(fname)-4), true)
+	local se_obj
+
+	-- сначала проверим наличие всех секций
+	for i, se_name in ipairs(bad_objects) do
+		if not alife():object(se_name) then
+			not_found_name = se_name
+			return
+		end
+	end
+	
+	-- теперь удаляем
+	for i, se_name in ipairs(bad_objects) do
+		se_obj = alife():object(se_name)
+		alife():release(se_obj, true)
+	end
+	
+	return
+end
+
+-- вывод информации об удаленных объектах
+function send_bad_objects_info()
+	-- есть ненайденный объект
+	if not_found_name then
+		send_info("Не найден проблемный объект: "..not_found_name)
+		not_found_name = nil
+		return
+	end
+	
+	for i, se_name in ipairs(bad_objects) do
+		send_info("Удален проблемный объект: "..se_name)
+		archievements.acv_count_event("acv_neud", 20, "Неудачник")
+	end
+
+	local f = getFS()
+	local f1 = f:update_path("$game_saves$", fname)
+	f:file_delete(f1)
+	bad_objects = {}
+end
+
+function send_info(text)
+	news_manager.send_tip(db.actor, text, nil, "nano", 30000)
+	get_console():execute("load ~~~ "..text)
+end
+
+-- проверка допопций
+function check_options()
+	local console = get_console()
+
+	local value = console:get_float("cam_inert")
+	if value > 0.9 then
+		console:execute("cam_inert 0.9")
+	end
+end
