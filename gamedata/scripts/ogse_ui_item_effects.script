@@ -8,8 +8,6 @@ function attach(sm)
 	sm:subscribe({signal = "on_spawn",          fun = this.on_spawn})
 	sm:subscribe({signal = "on_inventory_open", fun = this.on_inventory_open})
 	sm:subscribe({signal = "on_inventory_hide", fun = this.on_inventory_hide})
-	sm:subscribe({signal = "on_use",            fun = this.on_use})
-	sm:subscribe({signal = "on_drop",           fun = this.on_drop})
 	sm:subscribe({signal = "on_item_to_ruck",   fun = this.on_item_to_ruck})
 end
 
@@ -19,7 +17,6 @@ local slots_wnd
 
 function on_spawn() -- при появлении актора проинитить используемые в будущем глобальные переменные
 	sim = alife()
-	slots_wnd = this.script_slots()
 end
 
 -- Открытие/закрытие инвентаря
@@ -36,44 +33,7 @@ function on_inventory_open()
       level.disable_input()
       wait_for_deleted_objects_to_disappear(ids):start()
    end
-   -- инициализация скриптовых слотов
-   local inventory_wnd = level.main_input_receiver()
-   if not inventory_wnd then
-      wait_for_inventory_interface():start()
-	  --db.actor:give_game_news("Проблема с интерфейсом софтверных слотов: попытка обхода!", "ui\\ui_iconsTotal", Frect():set(0,235,83,47), 0, 15000)
-      return
-   end
-   -- ASSERT(inventory_wnd, "on_inventory_open: no input receiver")
-   inventory_wnd:AttachChild(slots_wnd)
-   local slot0 = db.actor:item_in_slot(0)
-   local slot4 = db.actor:item_in_slot(4)
-   slots_wnd:update_slot(0, slot0 and slot0:section())
-   slots_wnd:update_slot(4, slot4 and slot4:section())
 end
-
-class "wait_for_inventory_interface" (ogse_qt.quick_timer)
-function wait_for_inventory_interface:__init() super()
-   
-end
-function wait_for_inventory_interface:condition()
-   local inventory_wnd = level.main_input_receiver()
-   if inventory_wnd then
-      return true
-   else
-      return false
-   end
-end
-function wait_for_inventory_interface:action()
-   local inventory_wnd = level.main_input_receiver()
-   inventory_wnd:AttachChild(slots_wnd)
-   local slot0 = db.actor:item_in_slot(0)
-   local slot4 = db.actor:item_in_slot(4)
-   slots_wnd:update_slot(0, slot0 and slot0:section())
-   slots_wnd:update_slot(4, slot4 and slot4:section())
-  -- db.actor:give_game_news("Проблема с интерфейсом софтверных слотов: успешная попытка обхода!", "ui\\ui_iconsTotal", Frect():set(0,235,83,47), 0, 15000)
-end
-
-
 
 class "wait_for_deleted_objects_to_disappear" (ogse_qt.quick_timer)
 function wait_for_deleted_objects_to_disappear:__init(ids) super()
@@ -106,33 +66,42 @@ function on_inventory_hide()
 		level.disable_input()
 		wait_for_deleted_objects_to_disappear(ids):start()
 	end
-	slots_wnd:DetachFromParent()
 end
 
 function convert_item_to_fake_in_inventory(item)
-	if item == nil or alife():object(item:id()) == nil then return false end
-	local fake_obj_section = get_string(item:section(), "fake_item_section")
-	if fake_obj_section then
+	if item == nil or sim:object(item:id()) == nil then return false end
+	local sect = item:section()
+	local fake_obj_section = get_string(sect, "fake_item_section")
+	if fake_obj_section and fake_obj_section ~= sect then
 		return recreate_transfer_data(item, fake_obj_section)
 	end
 	return false
 end
 
 function convert_fake_to_item_in_inventory(item)
-	if item == nil or alife():object(item:id()) == nil then return false end
-	local real_obj_section = get_string(item:section(), "real_item_section")
-	if real_obj_section then
+	if item == nil or sim:object(item:id()) == nil then return false end
+	local sect = item:section()
+	local real_obj_section = get_string(sect, "real_item_section")
+	if real_obj_section and real_obj_section ~= sect then
 		return recreate_transfer_data(item, real_obj_section)
 	end
 	return false
 end
 
 function recreate_transfer_data(obj_to_del, sec_to_create)
-	local sobj = alife():object(obj_to_del:id())
+	local sobj = sim:object(obj_to_del:id())
 	if not sobj then return false end
 	-- не совсем верно проверять по секции создаваемого, 
 	-- но при правильной настройке оба (и удаляемый и создаваемый) должны иметь параметр "is_shotgun" или оба не иметь
 	if get_u32(sec_to_create, "is_shotgun") == 1 then
+		-- заменяем на систему xStream
+		--local pk1 = xs_netpk.net_alife_item(sobj)
+		--ASSERT(pk1:isOk(), "[recreate_transfer_data] cannot get netpacket for the object '%s'", sobj:get_name())
+		--local data = pk1:get()
+		--data.health = health
+		--data.updhealth = health
+		--pk:set(data)
+
 		local t1 = m_net_utils.get_item_data(sobj)
 		local s_fake_item = ogse.spawn_item_in_inv(sec_to_create)
 		local t2 = m_net_utils.get_item_data(s_fake_item)
@@ -141,142 +110,18 @@ function recreate_transfer_data(obj_to_del, sec_to_create)
 	else
 		ogse.spawn_item_in_inv(sec_to_create)
 	end
-	alife():release(sobj, true)
+	sim:release(sobj, true)
 	return true
-end
-
-local class_to_slot = {
-	[clsid.wpn_knife_s]     = 0,
-	[clsid.wpn_knife]       = 0,
-	[clsid.wpn_binocular_s] = 4,
-	[clsid.wpn_binocular]   = 4,
-}
-function on_use(obj, sobj)
-	if sobj == nil then return end
-	local real_obj_section = get_string(obj:section(), "real_item_section")
-	if not real_obj_section then return end-- если предмет - фейковый
-	local slot = class_to_slot[get_class(real_obj_section)] -- входит ли слот в число управляемых
-	if not slot then return end -- если входит
-	local s_item = db.actor:item_in_slot(slot) -- есть ли в этом слоте что-то
-	if s_item then -- если есть
-		db.actor:move_to_ruck(s_item) -- освобождаем слот, будет сам сконвертирован в фейк в колбеке на попадание в рюкзак
-	end
-	local real_item = ogse.spawn_item_in_inv(real_obj_section) -- создаём в инвентаре реальный объект взамен использованного
-	--db.actor:activate_slot(slot)
-	wpn_spawn_watcher(real_item.id, slot):start()
-	-- обновляем скриптовые слоты
-	slots_wnd:update_slot(slot, real_obj_section)
-	return true
-end
-class "wpn_spawn_watcher" (ogse_qt.quick_timer)
-function wpn_spawn_watcher:__init(id, slot_to_activate) super()
-	self.id = id
-	self.slot = slot_to_activate
-end
-function wpn_spawn_watcher:condition()
-	return (level.object_by_id(self.id) ~= nil)
-end
-function wpn_spawn_watcher:action()
-	db.actor:activate_slot(self.slot)
-end
-
---!!!!!!!!!!!!!!!!!!!!!!!!!!!!! проверить в случае не просто выкидывения, а передачи
-function on_drop(obj, sobj)	-- обработка всех выброшенных фейк-предметов
-	if sobj == nil then return end
-	ASSERT(obj, "ogse_ui_item_effects.on_drop: obj is a nil reference")
-	ASSERT(sobj, "ogse_ui_item_effects.on_drop: sobj is a nil reference, name="..obj:name())
-	local real_obj_section = get_string(sobj:section_name(), "real_item_section")
-	if not real_obj_section then return end-- если предмет - фейковый
-	local slot = class_to_slot[get_class(real_obj_section)] -- входит ли слот в число управляемых
-	if not slot then return end -- если входит
-	--log1("ogse_ui_item_effects.on_drop: "..obj:section())
-	convert_fake_to_item_on_world(obj, real_obj_section)
-	return true
-end
-
-function convert_fake_to_item_on_world(obj, real_obj_section)
-	local sobj = sim:object(obj:id())
-	local pos = obj:position()
-	local lvid = obj:level_vertex_id()
-	local gvid = obj:game_vertex_id()
-	-------------------------------------------
-	if get_u32(real_obj_section, "is_shotgun") == 1 then
-		local t1 = m_net_utils.get_item_data(sobj)
-		sim:release(sobj, true)
-		local s_new_item = sim:create(real_obj_section, pos, lvid, gvid)
-		local t2 = m_net_utils.get_item_data(s_new_item)
-		t2.custom = t1.custom
-		m_net_utils.set_item_data(t2,s_new_item)
-	else
-		sim:release(sobj, true)
-		sim:create(real_obj_section, pos, lvid, gvid)
-	end
 end
 
 function on_item_to_ruck(obj, sobj)	-- обработка всех полученных фейк-предметов при открытом инвентаре
 	if db.actor:dont_has_info("ui_inventory") then return end
-	if sobj == nil then return end
+	if not sobj then return end
 	ASSERT(obj, "ogse_ui_item_effects.on_item_to_ruck: obj is a nil reference")
 	ASSERT(sobj, "ogse_ui_item_effects.on_item_to_ruck: sobj is a nil reference, name="..obj:name())
 	local sec = obj:section()
 	local fake_item_section = get_string(sec, "fake_item_section")
 	if not fake_item_section then return end
-	--local slot = class_to_slot[get_class(sec)] -- входит ли слот в число управляемых
-	--if not slot then return end -- если входит
 	convert_item_to_fake_in_inventory(obj)
 	return true
-end
-
----------------------------------------------------------------------
-class "script_slots" (CUIScriptWnd)
-function script_slots:__init() super()
-	local xml = CScriptXmlInit()
-	xml:ParseFile("ui_ogse_fake_slots.xml")
-	xml:InitWindow("main", 0, self)
-	
-	self.knife_slot = xml:InitStatic("main:knife_slot", self)
-	--self:Register(self.knife_slot,"knife_slot")
-	--self:AddCallback("knife_slot", ui_events.WINDOW_LBUTTON_DB_CLICK, self.knife_slot_action, self)
-
-	self.bin_slot = xml:InitStatic("main:bin_slot", self)
-	--self:Register(self.bin_slot,"bin_slot")
-	--self:AddCallback("bin_slot", ui_events.WINDOW_LBUTTON_DB_CLICK, self.bin_slot_action, self)
-	self:Show(true)
-end
-local function setup_slot_by_section(wnd, sect)
-	if sect then
-		local tx,ty,tw,th = get_inventory_icon_rect(sect)
-		wnd:SetOriginalRect(tx,ty,tw,th)
-		wnd:SetWidth(tw/1.5)
-		wnd:SetHeight(th/1.3)
-	end
-	wnd:Enable(sect ~= nil)
-	wnd:Show(sect ~= nil)
-end
-function script_slots:update_slot(slot, item_sec)
-	if slot == 0 then
-		setup_slot_by_section(self.knife_slot, item_sec)
-	elseif slot == 4 then
-		setup_slot_by_section(self.bin_slot, item_sec)
-	else
-		abort("script_slots:update_slot: unknown slot")
-	end
-end
-
-function script_slots:knife_slot_action()
-	local item = db.actor:item_in_slot(0)
-	if item then -- если есть
-		db.actor:move_to_ruck(item) -- освобождаем слот, будет сам сконвертирован в фейк в колбеке на попадание в рюкзак
-		self:update_slot(0, nil)
-	end
-end
-function script_slots:bin_slot_action()
-	local item = db.actor:item_in_slot(4)
-	if item then -- если есть
-		db.actor:move_to_ruck(item) -- освобождаем слот, будет сам сконвертирован в фейк в колбеке на попадание в рюкзак
-		self:update_slot(4, nil)
-	end
-end
-
-function script_slots:__finalize()
 end
