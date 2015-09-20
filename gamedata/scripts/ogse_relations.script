@@ -1,0 +1,146 @@
+-------------------------------------------------------------------------------
+--| ogse_relations.script                                                   |--
+--| Скриптовая обвязка для очистки отношений                                |--
+--| K.D., OGS Evolution Team, 2015                                          |--
+--| Ревизия: 14/03/2015                                                     |--
+-------------------------------------------------------------------------------
+
+function attach(sm) -- для менеджера сигналов
+	sm:subscribe({signal = "on_init", fun = this.on_actor_init})
+--	sm:subscribe({signal = "on_storyline_start", fun = this.on_storyline_start})
+end
+
+local rrr
+function on_actor_init()
+	log1("RRR INITING")
+	rrr = reverse_relation_register() -- создание
+end
+
+-- хак для работы скрипта при начале новой игры. УДАЛИТЬ В РЕЛИЗЕ
+--[[local allow_to_work = false
+function on_storyline_start()
+	allow_to_work = true
+end]]
+
+class "reverse_relation_register"
+function reverse_relation_register:__init()
+	self.sm = ogse_signals.get_mgr()
+	
+	self._on_goodwill_change = {signal = "on_goodwill_change", self = self, fun = self.on_goodwill_change}
+	self.sm:subscribe(self._on_goodwill_change)
+	
+	self._on_release = {signal = "on_release_npc", self = self, fun = self.on_release}
+	self.sm:subscribe(self._on_release)
+
+	self._on_save = {signal = "on_save", self = self, fun = self.save}
+	self.sm:subscribe(self._on_save)
+	
+	self._on_load = {signal = "on_load", self = self, fun = self.load}
+	self.sm:subscribe(self._on_load)
+	
+	self.relation_table = {}
+end
+
+function reverse_relation_register:on_goodwill_change(from, to)
+--	if allow_to_work then
+		local to_table
+		local to_id = to
+		if to == 0 then
+			to_id = "actor"
+		end
+		if self.relation_table then
+			to_table = self.relation_table[to_id]
+			if not to_table then
+				to_table = {}
+			end
+		else
+			self.relation_table = {}
+			to_table = {}
+		end
+		table.insert(to_table, from)
+		self.relation_table[to_id] = to_table
+	--	log1("GOODWILL CHANGED FROM "..alife():object(from):name().." TO "..alife():object(to):name())
+--	end
+end
+
+function reverse_relation_register:on_release(npc_id)
+--	if allow_to_work then
+		if npc_id == 0 then return end
+	--	log1("NPC "..tostring(npc_id).." RELEASED")
+		if self.relation_table then
+			local from_table = self.relation_table[npc_id]
+			if from_table then
+				local t_size = table.getn(from_table)
+				for i = 1, t_size do
+					db.actor:clear_personal_record(from_table[i], npc_id)
+	--				log1("	RELATION RECORD CLEARED FOR OBJECT "..alife():object(from_table[i]):name())
+				end
+				self.relation_table[npc_id] = nil
+			end
+		end
+--	end
+end
+
+function reverse_relation_register:save()
+--	if allow_to_work then
+		local pk = net_packet()
+		pk:w_begin(123) -- двухбайтовая заглушка
+		pk:r_seek(2) -- чтобы пропустить эти два байта при чтении
+		local rel_table_size = 0
+		for k,v in pairs(self.relation_table) do
+			if v then
+				rel_table_size = rel_table_size + 1
+			end
+		end
+		pk:w_u16(rel_table_size)
+	--	log1("RELATION TABLE SIZE IS "..tostring(rel_table_size))
+		for k,v in pairs(self.relation_table) do
+			if v then
+				local table_size = table.getn(v)
+	--			log1("	SAVING RELATION TABLE RECORD "..tostring(k).." WITH SIZE "..tostring(table_size))
+				if k == "actor" then
+					pk:w_u16(0)
+				else
+					pk:w_u16(k)
+				end
+				pk:w_u16(table_size)
+				for i = 1,table_size do
+					pk:w_u16(v[i])
+	--				log1("	SAVING RELATION TO "..tostring(k).." FROM "..tostring(v[i]))
+				end
+			end
+		end
+	--	log1("RELATION TABLE SAVED!")
+		ogse.save_var("ogse_relation_reverse_table", pk, "chunk")
+--	end
+end
+
+function reverse_relation_register:load()
+	self.relation_table = {}
+	local pk = ogse.load_var_safe("ogse_relation_reverse_table")
+	if pk then
+--[[		if not allow_to_work then
+			allow_to_work = true
+		end]]
+		local table_size = pk:r_u16()
+--		log1("RELATION TABLE SIZE IS "..tostring(table_size))
+		for i = 1, table_size do
+			local to_id = pk:r_u16()
+			local to_id_size = pk:r_u16()
+--			log1("	LOADING RELATION TABLE RECORD "..tostring(to_id).." WITH SIZE "..tostring(to_id_size))
+			local to_table = {}
+			for j = 1, to_id_size do
+				local curr_id = pk:r_u16()
+				table.insert(to_table, curr_id)
+--				log1("LOADING RELATION TO "..tostring(to_id).." FROM "..tostring(curr_id))
+			end
+			if to_id == 0 then
+				self.relation_table["actor"] = to_table
+			else
+				self.relation_table[to_id] = to_table
+			end
+		end
+		ogse.delete_var("ogse_relation_reverse_table")
+--		log1("RELATION TABLE LOADED!")
+	end
+end
