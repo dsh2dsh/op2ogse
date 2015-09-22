@@ -20,6 +20,9 @@ end
 
 class "reverse_relation_register"
 function reverse_relation_register:__init()
+  self.delayed_cleanup = {}
+  self.relation_seen   = {}
+  self.relation_table  = {}
   self.sm = ogse_signals.get_mgr()
 
   self._on_goodwill_change = {
@@ -42,8 +45,10 @@ function reverse_relation_register:__init()
   self._on_load = { signal = "on_load", self = self, fun = self.load }
   self.sm:subscribe( self._on_load )
 
-  self.relation_seen  = {}
-  self.relation_table = {}
+  self._on_update = {
+    signal = "on_first_update", self = self, fun = self.first_update
+  }
+  self.sm:subscribe( self._on_update )
 end
 
 
@@ -72,29 +77,35 @@ end
 function reverse_relation_register:on_release( npc_id )
   if npc_id == 0 then return end
   log2( "[RELATIONS] NPC %s RELEASED", tostring( npc_id ) )
-  if not db.actor then
-    log1( "[RELATIONS] db.actor not found" )
-  end
   local from_table = self.relation_table[ npc_id ]
   if from_table then
     if db.actor then
-      for _, id in ipairs( from_table ) do
-        db.actor:clear_personal_record( id, npc_id )
-        local sobj = alife():object( id )
-        if sobj then
-          log1(
-            "[RELATIONS] RELATION RECORD CLEARED FOR OBJECT " .. sobj:name()
-          )
-        else
-          log1(
-            "[RELATIONS] RELATION RECORD CLEARED FOR OBJECT WITH ID " .. id
-          )
-        end
-      end
+      self:clear_personal_records( npc_id )
+    else
+      log1( "[RELATIONS] db.actor not found" )
+      self.delayed_cleanup[ npc_id ] = true
     end
-    self.relation_seen[ npc_id ] = nil
-    self.relation_table[ npc_id ] = nil
   end
+end
+
+
+function reverse_relation_register:clear_personal_records( npc_id )
+  local from_table = self.relation_table[ npc_id ]
+  for _, id in ipairs( from_table ) do
+    db.actor:clear_personal_record( id, npc_id )
+    local sobj = alife():object( id )
+    if sobj then
+      log1(
+        "[RELATIONS] RELATION RECORD CLEARED FOR OBJECT " .. sobj:name()
+      )
+    else
+      log1(
+        "[RELATIONS] RELATION RECORD CLEARED FOR OBJECT WITH ID " .. id
+      )
+    end
+  end
+  self.relation_seen[ npc_id ] = nil
+  self.relation_table[ npc_id ] = nil
 end
 
 
@@ -170,4 +181,13 @@ function reverse_relation_register:load()
     end
     log1( "[RELATIONS] RELATION TABLE LOADED!" )
   end
+end
+
+
+function reverse_relation_register:first_update()
+  for npc_id, _ in pairs( self.delayed_cleanup ) do
+    log2( "[RELATIONS] DELAYED CLEANUP FOR NPC %s", tostring( npc_id ) )
+    self:clear_personal_records( npc_id )
+  end
+  self.delayed_cleanup = {}
 end
