@@ -462,10 +462,24 @@ function init_drop_settings()
         end
 end
 
+
 class "drop_manager"
-function drop_manager:__init(npc)
-	self.npc = npc
+function drop_manager:__init( npc, who )
+  self.npc = npc
+  self.who = who
 end
+
+
+function drop_manager:set_weapon_drop_condition( item )
+  local data = data_by_community.communities[ self.npc:character_community() ]
+  if not data then
+    data = data_by_community.default
+  end
+  local cond     = data.condition
+  local cond_add = 5 * ( 3 - level.get_game_difficulty() )
+  self:set_weapon_condition( item, cond, cond_add )
+end
+
 
 function drop_manager:create_release_item()
 	if self.npc == nil then return end
@@ -495,11 +509,10 @@ function drop_manager:create_release_item()
 --]=]
 	
     --' Запускаем итератор на удаление предметов
-    self.npc:iterate_inventory(keep_item, self.npc)
+    self.npc:iterate_inventory( keep_item, self.npc )
 
-	--' чистим стволы и задаем им состояние
-	self:set_weapon_condition(cond, cond_add)
-	amk.start_timer("npc_clear_spawn", 1, {self.npc:id(), cond.min, cond.max, cond_add})
+    --' чистим стволы и задаем им состояние
+    self:npc_clear_spawn( cond.min, cond.max, cond_add )
 
 	--' Проверка на отсутствие спауна лута
     local ini = self.npc:spawn_ini()
@@ -593,26 +606,20 @@ function drop_manager:create_release_item()
 	end
 end
 
-function drop_manager:set_weapon_condition(cond, cond_add)
-	local ini = self.npc:spawn_ini()
-	local item_in_slot
-	
-	for i = 1,2 do
-		item_in_slot = self.npc:item_in_slot(i)
-		if item_in_slot and not unique_wpn[item_in_slot:section()] then
-			if isMagazinedWeapon(item_in_slot) then
-				amk.start_timer("unload_wpn_time", 1, item_in_slot:id())
-			else
-				item_in_slot:unload_magazine()
-			end
-			if ini and ini:section_exist("totally_broken_weapon") then
-				-- нужен полностью убитый ствол
-				item_in_slot:set_condition(0.01)
-			else
-				item_in_slot:set_condition((math_random(cond.min, cond.max)+cond_add)/100)
-			end
-		end
-	end
+
+function drop_manager:set_weapon_condition( item_in_slot, cond, cond_add )
+  local ini = self.npc:spawn_ini()
+  if item_in_slot and not unique_wpn[ item_in_slot:section() ] then
+    item_in_slot:unload_magazine()
+    if ini and ini:section_exist( "totally_broken_weapon" ) then
+      -- нужен полностью убитый ствол
+      item_in_slot:set_condition( 0.01 )
+    else
+      item_in_slot:set_condition(
+        ( math_random( cond.min, cond.max ) + cond_add ) / 100
+      )
+    end
+  end
 end
 
 
@@ -625,18 +632,22 @@ function shedule_release(item)
 end
 
 
---' Функция вызывается для каждого предмета, если вернет false то предмет удалится.
--- Разве ? Удаление происходит прямо внутри функции, а внешнему итератору наплевать на результат (sapsan)
-function keep_item(npc, item)
-    if not npc or not item or not alife():object(item:id()) then return end
-    local section = item:section()
-	if always_offs_items[section] then
-		alife():release(alife():object(item:id()), true)
-        return false
-	elseif always_offs_items_prob[section] and math.random() > always_offs_items_prob[section] then
-		alife():release(alife():object(item:id()), true)
-        return false
-    end
+--' Функция вызывается для каждого предмета, если вернет false то
+-- предмет удалится.  Разве ? Удаление происходит прямо внутри
+-- функции, а внешнему итератору наплевать на результат (sapsan)
+function keep_item( npc, item )
+  if not npc or not item or not alife():object( item:id() ) then return end
+  local section = item:section()
+  if always_offs_items[ section ] then
+    alife():release( alife():object( item:id() ), true )
+    return false
+  elseif
+    always_offs_items_prob[ section ]
+    and math.random() > always_offs_items_prob[ section ]
+  then
+    alife():release( alife():object( item:id() ), true )
+    return false
+  end
 end
 
 
@@ -742,43 +753,45 @@ function check_item_dependence(npc, section)
     return d_flag
 end
 
--- чистка оружия и других предметов, которые спавнятся через секцию spawn в конфиге непися
-function npc_clear_spawn(npc_id, cond_min, cond_max, cond_add)
-	local npc = level.object_by_id(npc_id)
-	if not npc then return end
-	
-	local item, number, section
-	local ammos = {}
-	
-	for i=0,npc:object_count()-1 do
-        item = npc:object(i)
-		section = item:section()
-		
-		if isMagazinedWeapon(item) and not unique_wpn[section] then
-			item:unload_magazine()
-			item:set_condition((math_random(cond_min, cond_max)+cond_add)/100)
-			
-		elseif ammo_sections[section] == true then
-			-- чистим патроны
-			if count_by_level[section] then
-				number = math_ceil(math_random(count_by_level[section].min, count_by_level[section].max))
-				if number > 0 then
-					table.insert(ammos, {sect = section, cnt = number})
-				end
-			end
-			local sobj = alife():object( item:id() )
-			if sobj then
-			  alife():release( sobj )
-			end
-		end
-	end
-
-	-- доспавниваем взамен удаленных патронов
-	for k,v in pairs(ammos) do
-		create_items(npc, v.sect, v.cnt, 1000)
-	end
-
+-- чистка оружия и других предметов, которые спавнятся через секцию
+-- spawn в конфиге непися
+function drop_manager:npc_clear_spawn( cond_min, cond_max, cond_add )
+  local npc = self.npc
+  local item, number, section
+  local ammos = {}
+  for i = 0, npc:object_count() - 1 do
+    item    = npc:object( i )
+    section = item:section()
+    if item:is_weapon() and not unique_wpn[ section ] then
+      item:unload_magazine()
+      local rnd_cond = ( math_random( cond_min, cond_max ) + cond_add ) / 100
+      if item:condition() > rnd_cond then
+        item:set_condition( rnd_cond )
+      end
+    elseif ammo_sections[ section ] then
+      -- чистим патроны
+      if count_by_level[ section ] then
+        number = math.ceil(
+          math.random(
+            count_by_level[ section ].min, count_by_level[ section ].max
+          )
+        )
+        if number > 0 then
+          table.insert( ammos, { sect = section, cnt = number } )
+        end
+      end
+      local sobj = alife():object( item:id() )
+      if sobj then
+        alife():release( sobj )
+      end
+    end
+  end
+  -- доспавниваем взамен удаленных патронов
+  for k,v in pairs( ammos ) do
+    create_items( npc, v.sect, v.cnt, 1000 )
+  end
 end
+
 
 -- Письма
 local letters_ini = ini_file("misc\\letters.ltx")
