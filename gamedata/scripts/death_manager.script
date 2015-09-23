@@ -470,6 +470,18 @@ function drop_manager:__init( npc, who )
 end
 
 
+function drop_manager:get_recipient()
+  if self.who and self.who:id() ~= db.actor:id() then
+    if IsStalker( who ) then
+      return self.who
+    else
+      return nil
+    end
+  end
+  return self.npc
+end
+
+
 function drop_manager:set_weapon_drop_condition( item )
   local data = data_by_community.communities[ self.npc:character_community() ]
   if not data then
@@ -509,12 +521,17 @@ function drop_manager:create_release_item()
 --]=]
 	
     --' Запускаем итератор на удаление предметов
-    self.npc:iterate_inventory( keep_item, self.npc )
+    self.npc:iterate_inventory(
+      function( npc, item )
+        self:keep_item( item )
+      end,
+      self.npc
+    )
 
     --' чистим стволы и задаем им состояние
     self:npc_clear_spawn( cond.min, cond.max, cond_add )
 
-	--' Проверка на отсутствие спауна лута
+    --' Проверка на отсутствие спауна лута
     local ini = self.npc:spawn_ini()
     if ini and ini:section_exist("dont_spawn_loot") then
         return
@@ -522,18 +539,19 @@ function drop_manager:create_release_item()
 
     --' Доспавниваем необходимое количество итемов:
     --' Необходимо составить список объектов которые могут быть заспавнены для персонажа
-    local spawn_items = item_by_community[self.npc:character_community()]    
-    if spawn_items then
-		local number
-      for k,v in pairs(spawn_items) do
-          --' По каждому объекту необходимо получить зависимости		
-          if check_item_dependence(self.npc, k) == true then
-              --' По каждому объекту необходимо получить количество
-				number = math_ceil(math_random(count_by_level[k].min, count_by_level[k].max))
-              --' Необходимо заспавнить нужное количество.
-				--get_console():execute("load ~~~ create_items: "..k.." number: "..number.." prop: "..v.." min: "..count_by_level[k].min.." max: "..count_by_level[k].max)
-				create_items(self.npc, k, number, v) 
-		  end
+    local spawn_items = item_by_community[self.npc:character_community()]
+    local who         = self:get_recipient()
+    if spawn_items and who then
+      for k, v in pairs( spawn_items ) do
+        --' По каждому объекту необходимо получить зависимости
+        if check_item_dependence( self.npc, k ) == true then
+          --' По каждому объекту необходимо получить количество
+          local number = math.ceil(
+            math_random( count_by_level[ k ].min, count_by_level[ k ].max )
+          )
+          --' Необходимо заспавнить нужное количество.
+          create_items( who, k, number, v )
+        end
       end
     end
 	
@@ -584,12 +602,19 @@ function drop_manager:create_release_item()
 			end
 		end
 			
-		if sect then
-			--get_console():execute("load ~~~ sect: "..sect.." prob: "..data.probability_outfit.." cond: "..cond.min.." "..cond.max.." "..cond_add) 
-			otf = create_items(self.npc, sect, 1, data.probability_outfit * 10)
-			if otf then
-				amk.start_timer("outfit_cond",1,{otf.id, math_random(cond.min, cond.max)+cond_add})
-			end
+		if sect and who then
+                  otf = create_items(
+                    who, sect, 1, data.probability_outfit * 10
+                  )
+                  if otf then
+                    level.client_spawn_manager():add(
+                      otf.id, -1, function( id, obj )
+                        obj:set_condition(
+                          ( math.random( cond.min, cond.max ) + cond_add ) / 100
+                        )
+                      end
+                    )
+                  end
 		end
 	end
 
@@ -635,8 +660,8 @@ end
 --' Функция вызывается для каждого предмета, если вернет false то
 -- предмет удалится.  Разве ? Удаление происходит прямо внутри
 -- функции, а внешнему итератору наплевать на результат (sapsan)
-function keep_item( npc, item )
-  if not npc or not item or not alife():object( item:id() ) then return end
+function drop_manager:keep_item( item )
+  if not self.npc or not item or not alife():object( item:id() ) then return end
   local section = item:section()
   if always_offs_items[ section ] then
     alife():release( alife():object( item:id() ), true )
@@ -757,16 +782,26 @@ end
 -- spawn в конфиге непися
 function drop_manager:npc_clear_spawn( cond_min, cond_max, cond_add )
   local npc = self.npc
+  local who = self:get_recipient()
   local item, number, section
   local ammos = {}
+  local release_items  = {}
+  local transfer_items = {}
   for i = 0, npc:object_count() - 1 do
     item    = npc:object( i )
     section = item:section()
     if item:is_weapon() and not unique_wpn[ section ] then
-      item:unload_magazine()
-      local rnd_cond = ( math_random( cond_min, cond_max ) + cond_add ) / 100
-      if item:condition() > rnd_cond then
-        item:set_condition( rnd_cond )
+      if who then
+        item:unload_magazine()
+        local rnd_cond = ( math_random( cond_min, cond_max ) + cond_add ) / 100
+        if item:condition() > rnd_cond then
+          item:set_condition( rnd_cond )
+        end
+        if who:id() ~= npc:id() then
+          table.insert( transfer_items, item )
+        end
+      else
+        table.insert( release_items, item )
       end
     elseif ammo_sections[ section ] then
       -- чистим патроны
@@ -780,15 +815,30 @@ function drop_manager:npc_clear_spawn( cond_min, cond_max, cond_add )
           table.insert( ammos, { sect = section, cnt = number } )
         end
       end
-      local sobj = alife():object( item:id() )
-      if sobj then
-        alife():release( sobj )
+      table.insert( release_items, item )
+    else
+      if not watcher_act.do_not_touch( item ) then
+        if who then
+          if who:id() ~= npc:id() then
+            table.insert( transfer_items, item )
+          end
+        else
+          table.insert( release_items, item )
+        end
       end
     end
   end
+  for _, item in ipairs( release_items ) do
+    ogse.remove_item_from_inventory( item, npc )
+  end
+  for _, item in ipairs( transfer_items ) do
+    npc:transfer_item( item, who )
+  end
   -- доспавниваем взамен удаленных патронов
-  for k,v in pairs( ammos ) do
-    create_items( npc, v.sect, v.cnt, 1000 )
+  if who then
+    for k,v in pairs( ammos ) do
+      create_items( who, v.sect, v.cnt, 1000 )
+    end
   end
 end
 
