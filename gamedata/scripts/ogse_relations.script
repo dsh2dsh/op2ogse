@@ -2,12 +2,11 @@
 --| ogse_relations.script                                                   |--
 --| Скриптовая обвязка для очистки отношений                                |--
 --| K.D., OGS Evolution Team, 2015                                          |--
---| Ревизия: 14/03/2015                                                     |--
+--| Ревизия: 22/09/2015                                                     |--
 -------------------------------------------------------------------------------
 
 function attach(sm) -- для менеджера сигналов
 	sm:subscribe({signal = "on_init", fun = this.on_actor_init})
---	sm:subscribe({signal = "on_storyline_start", fun = this.on_storyline_start})
 end
 
 local rrr
@@ -15,12 +14,6 @@ function on_actor_init()
 	log1("RRR INITING")
 	rrr = reverse_relation_register() -- создание
 end
-
--- хак для работы скрипта при начале новой игры. УДАЛИТЬ В РЕЛИЗЕ
---[[local allow_to_work = false
-function on_storyline_start()
-	allow_to_work = true
-end]]
 
 class "reverse_relation_register"
 function reverse_relation_register:__init()
@@ -42,88 +35,80 @@ function reverse_relation_register:__init()
 end
 
 function reverse_relation_register:on_goodwill_change(from, to)
---	if allow_to_work then
-		local to_table
-		local to_id = to
-		if to == 0 then
-			return
-			--to_id = "actor"
-		end
-		if self.relation_table then
-			to_table = self.relation_table[to_id]
-			if not to_table then
-				to_table = {}
-			end
-		else
-			self.relation_table = {}
+	local to_table
+	local to_id = to
+	if to == 0 then
+		return
+	end
+	if self.relation_table then
+		to_table = self.relation_table[to_id]
+		if not to_table then
 			to_table = {}
 		end
-		local idx = 0
-		for i = 1, table.getn(to_table) do
-			if to_table[i] == from then
-				idx = idx + 1
-			end
+	else
+		self.relation_table = {}
+		to_table = {}
+	end
+	local idx = 0
+	for i = 1, table.getn(to_table) do
+		if to_table[i] == from then
+			idx = idx + 1
 		end
-		if idx == 0 then
-			table.insert(to_table, from)
-			self.relation_table[to_id] = to_table
-		end
-		log1("[RELATIONS] GOODWILL CHANGED FROM "..alife():object(from):name().." TO "..alife():object(to):name())
---	end
+	end
+	if idx == 0 then
+		table.insert(to_table, from)
+		self.relation_table[to_id] = to_table
+	end
+	log1("[RELATIONS] GOODWILL CHANGED FROM "..alife():object(from):name().." TO "..alife():object(to):name())
 end
 
 function reverse_relation_register:on_release(npc_id)
---	if allow_to_work then
-		if npc_id == 0 then return end
-		log1("[RELATIONS] NPC "..tostring(npc_id).." RELEASED")
-		if self.relation_table then
-			local from_table = self.relation_table[npc_id]
-			if from_table then
-				local t_size = table.getn(from_table)
-				for i = 1, t_size do
-					if db.actor then
-						db.actor:clear_personal_record(from_table[i], npc_id)
-						log1("[RELATIONS] 	RELATION RECORD CLEARED FOR OBJECT "..alife():object(from_table[i]):name())
-					end
-				end
-				self.relation_table[npc_id] = nil
+	if not db.actor then return end
+	if npc_id == 0 then return end
+	log1("[RELATIONS] NPC "..tostring(npc_id).." RELEASED")
+	if self.relation_table then
+		local from_table = self.relation_table[npc_id]
+		if from_table then
+			local t_size = table.getn(from_table)
+			for i = 1, t_size do
+				db.actor:clear_personal_record(from_table[i], npc_id)
+				log1("[RELATIONS] 	RELATION RECORD CLEARED FOR OBJECT "..tostring(from_table[i]))
 			end
+			self.relation_table[npc_id] = nil
 		end
---	end
+	end
 end
 
 function reverse_relation_register:save()
---	if allow_to_work then
-		local pk = net_packet()
-		pk:w_begin(123) -- двухбайтовая заглушка
-		pk:r_seek(2) -- чтобы пропустить эти два байта при чтении
-		local rel_table_size = 0
-		for k,v in pairs(self.relation_table) do
-			if v then
-				rel_table_size = rel_table_size + 1
+	local pk = net_packet()
+	pk:w_begin(123) -- двухбайтовая заглушка
+	pk:r_seek(2) -- чтобы пропустить эти два байта при чтении
+	local rel_table_size = 0
+	for k,v in pairs(self.relation_table) do
+		if v then
+			rel_table_size = rel_table_size + 1
+		end
+	end
+	pk:w_u16(rel_table_size)
+	log1("[RELATIONS] RELATION TABLE SIZE IS "..tostring(rel_table_size))
+	for k,v in pairs(self.relation_table) do
+		if v then
+			local table_size = table.getn(v)
+			log1("[RELATIONS] 	SAVING RELATION TABLE RECORD "..tostring(k).." WITH SIZE "..tostring(table_size))
+			if k == "actor" then
+				pk:w_u16(0)
+			else
+				pk:w_u16(k)
+			end
+			pk:w_u16(table_size)
+			for i = 1,table_size do
+				pk:w_u16(v[i])
+				log1("[RELATIONS] 	SAVING RELATION TO "..tostring(k).." FROM "..tostring(v[i]))
 			end
 		end
-		pk:w_u16(rel_table_size)
-		log1("[RELATIONS] RELATION TABLE SIZE IS "..tostring(rel_table_size))
-		for k,v in pairs(self.relation_table) do
-			if v then
-				local table_size = table.getn(v)
-				log1("[RELATIONS] 	SAVING RELATION TABLE RECORD "..tostring(k).." WITH SIZE "..tostring(table_size))
-				if k == "actor" then
-					pk:w_u16(0)
-				else
-					pk:w_u16(k)
-				end
-				pk:w_u16(table_size)
-				for i = 1,table_size do
-					pk:w_u16(v[i])
-					log1("[RELATIONS] 	SAVING RELATION TO "..tostring(k).." FROM "..tostring(v[i]))
-				end
-			end
-		end
-		log1("[RELATIONS] RELATION TABLE SAVED! Packet length = "..tostring(pk:w_tell()))
-		ogse.save_var("ogse_relation_reverse_table", pk, "chunk")
---	end
+	end
+	log1("[RELATIONS] RELATION TABLE SAVED! Packet length = "..tostring(pk:w_tell()))
+	ogse.save_var("ogse_relation_reverse_table", pk, "chunk")
 end
 
 function reverse_relation_register:load()
@@ -150,25 +135,5 @@ function reverse_relation_register:load()
 			end
 		end
 		log1("[RELATIONS] RELATION TABLE LOADED!")
-	end
-	
-	-- Очистка таблицы на случай дупликатов
-	for k,v in pairs(self.relation_table) do
-		if v then
-			local temp_table = {}
-			local to_remove = {}
-			for i = 1, table.getn(v) do
-				if temp_table[ v[i] ] then
-			--		log1("!!УДАЛЯЕМ "..tostring(v[i]).." для "..tostring(k))
-					table.insert(to_remove, i)
-				else
-					temp_table[ v[i] ] = 1
-				end
-			end
-			for i = 1, table.getn(to_remove) do
-			--	log1("!!УДАЛЯЕМ ИНДЕКС"..tostring(to_remove[i]).." для "..tostring(k))
-				table.remove(self.relation_table[k], to_remove[i] - i + 1)
-			end
-		end
 	end
 end
