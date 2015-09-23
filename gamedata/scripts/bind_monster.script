@@ -1,0 +1,565 @@
+-----------------------------------------------------------------------------------
+-- Monster binding
+-----------------------------------------------------------------------------------
+local particles={}
+local debug_flag = false
+
+function bind(obj)
+	printf("_bp: monster.bind: name='%s', id='%d'", obj:name(), obj:id())
+
+	-- Для спауна
+	--xr_spawner.spawn_client(obj)
+
+	local new_binder = generic_object_binder(obj)
+	obj:bind_object(new_binder)
+end
+
+------------------------------------------------------------------------------------
+class "generic_object_binder" (object_binder)
+
+function generic_object_binder:__init(obj) super(obj)
+	self.loaded = false
+	self.particles = {}
+	self.MutantManager = ogsm_mutants.MutantManager()
+	self.am = ogse_signals.get_mgr()
+end 
+
+function generic_object_binder:reload(section)
+	object_binder.reload(self, section)
+end
+
+function generic_object_binder:reinit()
+	object_binder.reinit(self)
+
+	-- У торговца нет поддержки перемещения
+	if self.object:clsid() ~= clsid.script_trader then
+		self.object:set_patrol_extrapolate_callback(generic_object_binder.extrapolate_callback, self)
+	end
+
+	db.storage[self.object:id()] = { }
+
+	self.st = db.storage[self.object:id()]
+
+	self.object:set_callback(callback.patrol_path_in_point, self.waypoint_callback, self)
+	self.object:set_callback(callback.hit,					self.hit_callback,		self)
+	self.object:set_callback(callback.death,				self.death_callback,	self)
+	if self.object:clsid() == clsid.script_trader then
+		self.object:set_callback(callback.use_object, self.use_callback, self)
+	end
+	self.object:set_callback(152,					self.before_hit_callback,		self)
+end
+function generic_object_binder:update(delta)
+	ogse_debug.check_npc()
+	ogse_debug.check_actor()
+	
+	ogse_debug.process_monster(self.object, "upd", 1)
+
+	if string.find(self.object:name(), "crow_") then
+		ogse_debug.process_monster(self.object, "upd", 0)
+		return false
+	end
+
+	object_binder.update(self, delta)
+	
+	ogse_debug.process_monster(self.object, "upd", 2)
+
+	if particles[self.object:id()] and table.getn(particles[self.object:id()])>0 then
+		for kk,vv in pairs(particles[self.object:id()]) do
+			if amk_particle then
+				table.insert(self.particles,amk_particle.amk_particle(vv))
+				table.remove(particles[self.object:id()],kk)
+			end
+		end
+	end
+	
+	ogse_debug.process_monster(self.object, "upd", 3)
+		
+	if table.getn(self.particles)>0 then
+		for kk,vv in pairs(self.particles) do
+			if vv:is_finished() then
+				self.particles[kk]=nil
+			else
+				vv:update(delta)
+			end
+		end
+	end
+	
+	ogse_debug.process_monster(self.object, "upd", 4)
+		
+	ogse_debug.process_monster(self.object, "upd", 5)
+
+     --' Суперконтролёр
+	if self.object:alive() and (string.find(self.object:section(), "m_controller_special")) then
+		local posit = self.object:position()
+		if posit:distance_to(db.actor:position()) < 85 then
+			jekan_update.controller_special_effect(p_obj)
+			jekan_update.actor_weapon_drop()
+		end
+	end
+
+     --' Слепые псы
+	if self.object:alive() and self:actor_targets_monster(self.object) and (string.find(self.object:section(), "dog_v_strong") or string.find(self.object:section(), "psy_dog") or string.find(self.object:section(), "psy_dog_radar")) then
+		--ogse_monster.psy_dog(self.object)
+		--ogse.send_tip("Вызвалось. Собака в прицеле.") 							
+		--log1("Вызвалось. Собака в прицеле.")
+	end
+	
+	ogse_debug.process_monster(self.object, "upd", 6)
+          
+--	printf("_bp: generic_object_binder: UPDATE [name='%s' time=%d]",
+--		self.object:name(), time_global())
+	if xr_combat_companion then
+		xr_combat_companion.process_enemy(db.actor, self.object)
+	else	
+		log1("--xr_combat_companion cannot be loaded!")
+	end
+	ogse_debug.process_monster(self.object, "upd", 7)
+
+	-- Апдейт торговли
+	if self.object:clsid() == clsid.script_trader then
+		trade_manager.update(self.object)
+	end
+	
+	ogse_debug.process_monster(self.object, "upd", 8)
+
+	if self.object:alive() then
+		if self.object:is_talk_enabled() then
+			self.object:set_tip_text("character_use")
+		else
+			self.object:set_tip_text("")
+		end
+	else
+		self.object:set_tip_text_default()
+	end
+	
+	ogse_debug.process_monster(self.object, "upd", 9)
+
+	if self.object:clsid() == clsid.bloodsucker_s and self.object:alive() then
+
+		local enemy = self.object:get_enemy()
+	  
+		if enemy and enemy:id() == db.actor:id() and self.object:see(enemy) then
+		--/ если у кровососа есть враг/цель и кровосос его видит то ...
+			local distance = self.object:position():distance_to(enemy:position())
+			if distance <= 2 then --/ дистанция для анимации 'засоса'
+				local timer = time_global()
+				if (self.timer_anim or 0) < timer then
+					self.timer_anim = timer + 2000 --/ таймер анимации ~ 2 сек
+					if self.object:animation_count() > 0 then
+						self.object:clear_animations()
+					end
+					self.object:add_animation("vampire_0", true) --/ варианты: "vampire_0" | "idle"
+					--/ озвучка 'засоса'
+					
+					if enemy:id() == db.actor:id() then
+						local sound = sound_object("monsters\\bloodsucker\\sucking_attack")
+						sound:play_at_pos(self.object, self.object:position())
+					end
+					
+				end
+				--/ хит жертве (притягиваем)
+				if (self.timer_hit or 0) < timer and (self.timer_anim and self.timer_anim + 2000 >= timer) then
+					self.timer_hit = timer + 800 --/ таймер хита ~ 0.5 сек
+					local h = hit()
+					local vDir = self.object:direction() --/ вектор кровососа
+					local vDirHit = vector_rotate_y(vDir,179.0)							
+					h.draftsman = self.object
+					h.direction = vDirHit --/ направление хита
+					h:bone("bip01_spine") --/ для учета 'брони'
+					h.power     = 0.10
+					h.impulse   = 120/distance --/ чем ближе - тем сильнее 'засос'
+					h.type      = hit.wound --hit.strike
+					if enemy:id() == db.actor:id() then --/ жертва == актор? (а нужно?)
+						level.add_pp_effector("fire_hit.ppe", 3000, false)
+						-- db.actor:set_actor_position(self.object:position())				
+						-- db.actor:set_actor_direction(vDirHit:getH())
+					end						
+					enemy:hit(h) --/ наносим хит жертве
+				end
+			else	
+				
+			end
+		end
+	end
+
+	ogse_debug.process_monster(self.object, "upd", 10)	
+
+	self.MutantManager:update(self.object)
+	
+	ogse_debug.process_monster(self.object, "upd", 11)
+
+	if self.st.active_section ~= nil then
+		xr_logic.issue_event(self.object, self.st[self.st.active_scheme], "update", delta)
+	end
+	
+	ogse_debug.process_monster(self.object, "upd", 12)
+	
+	event("monster_update"):trigger({obj = self.object})
+	
+	ogse_debug.process_monster(self.object, "upd", 0)
+end -- generic_object_binder:update
+
+function generic_object_binder:use_callback(obj, who)
+	event("npc_used"):trigger({obj = self.object, who = who})
+	self.am:call("npc_use", self.object, who)
+end
+
+function generic_object_binder:extrapolate_callback()
+	local cur_pt = self.object:get_current_point_index()
+
+    if self.object:get_script ()	== false then 
+       return false
+    end    
+    
+	if patrol(self.object:patrol()):flags(cur_pt):get() == 0 then
+		--printf("_bp: generic_object_binder: extrapolate_callback: cur_pt = %d: true", cur_pt)
+		return true
+	end
+	--printf("_bp: generic_object_binder: extrapolate_callback: cur_pt = %d: false", cur_pt)
+	return false
+end
+
+function generic_object_binder:waypoint_callback(obj, action_type, index)
+	if self.st.active_section ~= nil then
+		xr_logic.issue_event(self.object, self.st[self.st.active_scheme], "waypoint_callback", obj, action_type, index)
+	end
+end
+
+function generic_object_binder:death_callback(victim, who)
+
+	ogse_debug.process_monster(victim, "dth", 1)
+
+	if who and string.find(who:name(), "vehicle_btr") then
+		who = db.actor
+	end
+
+	local name = tostring(victim:name())
+	
+	if not self.object then
+		self.object = victim
+	end
+	
+	if name == "secret_villager" then
+		db.actor:give_info_portion("secret_villager_dead")
+	end
+	
+	ogse_debug.process_monster(victim, "dth", 2)
+	
+	if db.actor then -- добавлено KamikaZze  с целью отладки 25/02/2009
+	--	if who:id() == db.actor:id() then
+	-- добавление опыта за убийство
+			xr_statistic.addKillCount(who, self.object)
+	--	end
+	end
+	
+
+	ogse_debug.process_monster(victim, "dth", 3)
+	
+	if self.st and self.st.mob_death then
+		xr_logic.issue_event(self.object, self.st.mob_death, "death_callback", victim, who)
+	end
+	
+	ogse_debug.process_monster(victim, "dth", 4)
+	
+	if self.st and self.st.active_section then
+		xr_logic.issue_event(self.object, self.st[self.st.active_scheme], "death_callback", victim, who)
+	end
+	
+	ogse_debug.process_monster(victim, "dth", 5)
+	
+	smart_terrain.on_death( self.object:id() )
+	
+	ogse_debug.process_monster(victim, "dth", 6)
+	
+	--проверка на аномалии  
+	ogse_death_artefact.on_death(victim, who)
+	
+	ogse_debug.process_monster(victim, "dth", 7)
+	
+	if checker_minefield then checker_minefield.mine_hit(victim,who) end
+	
+	ogse_debug.process_monster(victim, "dth", 8)
+	
+	--' Наносим небольшой импульс вперед.
+	local h = hit()
+	h.draftsman = self.object
+	h.type = hit.fire_wound
+	if db.actor ~= nil then -- добавлено KamikaZze  с целью отладки 25/02/2009
+		h.direction = db.actor:position():sub(self.object:position())
+	end
+	h:bone("pelvis")
+	h.power = 1
+	h.impulse = 10
+	self.object:hit(h)
+	
+	ogse_debug.process_monster(victim, "dth", 9)
+	
+	if table.getn(self.particles)>0 then
+		for kk,vv in pairs(self.particles) do
+				vv:on_death()
+		end
+	end
+	
+	ogse_debug.process_monster(victim, "dth", 10)
+	
+	self.MutantManager:on_death(self.object)
+	
+	ogse_debug.process_monster(victim, "dth", 11)
+	
+	smart_monster_parts.death_spawn(victim)
+	
+	ogse_debug.process_monster(victim, "dth", 12)	
+	
+	ogse_car_control.unregister_target(self.object)
+	ogse_scripted_btr.unregister_target(self.object)
+	
+	ogse_debug.process_monster(victim, "dth", 13)	
+	
+	event("monster_death"):trigger({victim = self.object, who = who})
+
+	ogse_debug.process_monster(victim, "dth", 0)
+	
+end
+
+function generic_object_binder:before_hit_callback(p_s_hit, p_ignore_flags)
+end
+function generic_object_binder:hit_callback(obj, amount, local_direction, who, bone_index)
+--	printf("HIT_CALLBACK: [%s] amount[%s]", obj:name(), amount)
+
+	ogse_debug.process_monster(self.object, "hit", 1)
+
+	if who and obj and string.find(who:name(), "vehicle_btr") then
+		who = db.actor
+	end	
+	
+	ogse_debug.process_monster(self.object, "hit", 2)
+	
+	if self.st.hit then
+		xr_logic.issue_event(self.object, self.st.hit, "hit_callback", obj, amount, local_direction, who, bone_index)
+	end
+	
+	ogse_debug.process_monster(self.object, "hit", 3)
+	
+	if checker_minefield then checker_minefield.mine_hit(obj,who) end
+	
+	ogse_debug.process_monster(self.object, "hit", 4)
+		
+	smart_monster_parts.main_check(obj, amount, local_direction, who, bone_index)
+	
+	ogse_debug.process_monster(self.object, "hit", 5)
+	
+	_sdata.info_about_npc(obj)
+	
+	ogse_debug.process_monster(self.object, "hit", 6)
+	
+	event("monster_hit"):trigger({victim = self.object, amount = amount, dir = local_direction, who = who, bone = bone_index})	
+	
+	ogse_debug.process_monster(self.object, "hit", 0)
+
+end
+
+function generic_object_binder:net_spawn(sobject)
+
+	ogse_debug.process_monster(self.object, "m_spw", 1)
+	
+	if not object_binder.net_spawn(self, sobject) then
+		ogse_debug.process_monster(self.object, "m_spw", 0)
+		return false
+	end
+	
+	ogse_debug.process_monster(self.object, "m_spw", 2)
+	
+	news_main_spawn.on_spawn(self.object)
+	db.add_obj(self.object)
+	
+	ogse_debug.process_monster(self.object, "m_spw", 3)
+
+	xr_gulag.setup_gulag_and_logic_on_spawn( self.object, self.st, sobject, modules.stype_mobile, self.loaded )
+	
+	ogse_debug.process_monster(self.object, "m_spw", 4)
+
+	local particle_param = utils.cfg_get_string(system_ini(), self.object:section(), "bones_particles", null, false, false, nil)
+	
+	ogse_debug.process_monster(self.object, "m_spw", 5)
+	
+	if particle_param and system_ini():section_exist(particle_param) then
+		local tmp=ogse.parse_ini_section_to_array(system_ini(),particle_param)
+		
+		for k,v in pairs(tmp) do
+			local t = ogse.parse_ini_section_to_array(system_ini(), v)
+			t.obj = self.object
+			if not t.stop_on_death or self.object:alive() then
+				play_particle(self.object, t)
+			end
+		end
+	end
+	
+	ogse_debug.process_monster(self.object, "m_spw", 6)
+	
+	if not self.object:alive() then
+		--' Наносим небольшой импульс вперед.
+		local h = hit()
+		h.draftsman = self.object
+		h.type = hit.fire_wound
+		h.direction = db.actor:position():sub(self.object:position())
+		h:bone("bip01_spine")
+		h.power = 0.01
+		h.impulse = 1
+		self.object:hit(h)	
+		
+		ogse_debug.process_monster(self.object, "m_spw", 61)
+		
+		local s_obj = alife():object(self.object:id())
+
+		if s_obj.offline_dead == 1 then
+		
+			if debug_flag then
+				log1("--ВНИМАНИЕ! Обнаружен погибший в оффлайне! Объект: ИД: "..self.object:id().." ИМЯ:"..self.object:name().." Будет произведена обработка лута и постановка объекта на удаление!")		
+				db.actor:give_game_news("ВНИМАНИЕ! Обнаружен погибший в оффлайне! Объект: ИД: "..self.object:id().." ИМЯ:"..self.object:name().." Будет произведена обработка лута и постановка объекта на удаление!", "ui\\ui_iconsTotal", Frect():set(498,47,83,47),7000, 20000)
+			end
+		
+			s_obj.offline_dead = game.time()+(1*24*60*60*1000)
+			
+		elseif s_obj.offline_dead > 1 and s_obj.offline_dead <= game.time() then
+		
+			ogse_debug.process_monster(self.object, "m_spw", 62)
+			
+			if debug_flag then
+				log1("--ВНИМАНИЕ! Обнаружен уже обработанный погибший в оффлайне! Объект: ИД: "..self.object:id().." ИМЯ:"..self.object:name().." Будет произведено удаление объекта!")			
+				db.actor:give_game_news("ВНИМАНИЕ! Обнаружен уже обработанный погибший в оффлайне! Объект: ИД: "..self.object:id().." ИМЯ:"..self.object:name().." Будет произведено удаление объекта!", "ui\\ui_iconsTotal", Frect():set(498,47,83,47),7000, 20000)
+			end
+		
+			if checker_minefield.to_delete[self.object:id()] == nil and db.actor:position():distance_to(self.object:position()) >= 100 then
+				checker_minefield.to_delete[self.object:id()] = self.object:id()
+			end			
+		
+		end
+		
+	end	
+	
+	ogse_car_control.register_target(self.object)
+	ogse_scripted_btr.register_target(self.object)
+	
+	ogse_debug.process_monster(self.object, "m_spw", 0)
+
+	return true
+end
+
+function generic_object_binder:net_destroy()
+
+	if table.getn(self.particles)>0 then
+		for kk,vv in pairs(self.particles) do
+			if not vv:is_finished() then
+				vv:stop()
+				self.particles[kk]=nil
+			end
+		end
+	end
+
+	self.object:set_callback(callback.death,				nil)
+	self.object:set_callback(callback.patrol_path_in_point, nil)
+	self.object:set_callback(callback.hit,					nil)
+	if self.object:clsid() == clsid.script_trader then
+		self.object:set_callback(callback.use_object,		nil)
+	end
+
+	local st = db.storage[self.object:id()]
+	if st and st.active_scheme then
+		xr_logic.issue_event(self.object, st[st.active_scheme], "net_destroy")
+	end
+	
+	db.del_obj(self.object)
+	db.storage[self.object:id()] = nil
+
+	ogse_car_control.unregister_target(self.object)
+	ogse_scripted_btr.unregister_target(self.object)
+	
+	event("monster_net_destroy"):trigger({victim = self.object})
+
+	object_binder.net_destroy(self)
+end 
+
+function generic_object_binder:reload(section)
+	object_binder.reload(self, section)
+	--printf("generic_object_binder:reload(): self.object:name()='%s'", self.object:name())
+end
+
+function generic_object_binder:net_save_relevant()
+	--printf("generic_object_binder:net_save_relevant(): self.object:name()='%s'", self.object:name())
+	return true
+end
+
+function generic_object_binder:save(packet)
+
+	xr_logic.pstor_store(self.object, "is_invulnerable", self.object:invulnerable())
+	
+	if string.find(self.object:name(), "crow_") then
+		return false
+	end
+
+	printf("generic_object_binder:save(): self.object:name()='%s'", self.object:name())
+	object_binder.save(self, packet)
+
+	xr_logic.save_obj(self.object, packet)
+	if self.object:clsid() == clsid.script_trader then
+		trade_manager.save(self.object, packet)
+	end
+end
+
+-- применять так: if self:actor_targets_monster(self.object) then ...
+-- Проверяет в прицеле ли монстр
+function generic_object_binder:actor_targets_monster(npc)
+	if npc then
+	  local dangerang=1/npc:position():distance_to(db.actor:position())
+	  local ang = horz_angle(device().cam_dir,npc:position():sub(device().cam_pos))
+	  local tgt=ang>-dangerang and ang<dangerang
+	    if tgt then
+		  if self.tgt_time then
+		    	return self.tgt_time<time_global()
+		  else
+			  self.tgt_time=time_global()+600
+		  return false end
+	    else
+		   self.tgt_time=nil
+	   end
+	   return false
+   end
+end
+
+-- Возвращает угол между проекциями векторов vec1 и vec2 на горизонтальную плоскость
+-- положительный угол - доворот vec1 до vec2 по часовой.
+function horz_angle(vec1,vec2)
+  local x=vec2.x*vec1.x+vec2.z*vec1.z
+  local y=-vec2.z*vec1.x+vec2.x*vec1.z -- повернули систему координат     
+  return math.atan2(y,x) -- угол доворота от -pi до pi
+end
+
+function generic_object_binder:load(reader)
+
+	if string.find(self.object:name(), "crow_") then
+		return false
+	end
+
+	self.loaded = true
+
+	printf("generic_object_binder:load(): self.object:name()='%s'", self.object:name())
+	object_binder.load(self, reader)
+
+	if reader:r_eof() then
+		abort("SAVE FILE IS CORRUPT")
+	end
+
+	xr_logic.load_obj(self.object, reader)
+	if self.object:clsid() == clsid.script_trader then
+		trade_manager.load(self.object, reader)
+	end
+	local is_invulnerable = xr_logic.pstor_retrieve(self.object, "is_invulnerable", false)
+	self.object:invulnerable(is_invulnerable)
+end
+
+function play_particle(obj,params)
+	if not particles[obj:id()] then
+		particles[obj:id()]={}
+	end
+	table.insert(particles[obj:id()],params)
+end
