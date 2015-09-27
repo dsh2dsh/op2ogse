@@ -90,6 +90,15 @@ local always_offs_items = {
 	["gl_fake_missile_ammo_vog-25p"] = true,
 	["gl_fake_missile_ammo_m209"] = true,
 	["gl_fake_missile_ammo_m208a"] = true,
+	["fake_grenades_base"] = true,
+	["grenade_f1_fake"] = true,
+	["grenade_rgd5_fake"] = true,
+	["grenade_gd-05_fake"] = true,
+	["grenade_flash_fake"] = true,
+	["grenade_f1_test"] = true,
+	["grenade_rgd5_test"] = true,
+	["grenade_gd-05_test"] = true,
+	["grenade_flash_test"] = true,
 }
 
 -- эти вещи остаются с указанной вероятностью
@@ -474,7 +483,7 @@ function drop_manager:__init( npc, who )
     if math.random() < rnd then
       self.recipient = npc
     else
-      if IsStalker( who ) then
+      if IsStalker( who ) and who:id() ~= npc:id() then
         self.recipient = who
       end
     end
@@ -790,13 +799,19 @@ end
 function drop_manager:npc_clear_spawn( cond_min, cond_max, cond_add )
   local npc = self.npc
   local who = self:get_recipient()
-  local item, number, section
-  local ammos = {}
+  local items = {}
+  local active_item = npc:active_item()
+  for i = 0, npc:object_count() - 1 do
+    local item = npc:object( i )
+    if alife():object( item:id() ) then
+      table.insert( items, item )
+    end
+  end
+  local ammos          = {}
   local release_items  = {}
   local transfer_items = {}
-  for i = 0, npc:object_count() - 1 do
-    item    = npc:object( i )
-    section = item:section()
+  for _, item in ipairs( items ) do
+    local section = item:section()
     if item:is_weapon() and not unique_wpn[ section ] then
       if who then
         item:unload_magazine()
@@ -805,6 +820,9 @@ function drop_manager:npc_clear_spawn( cond_min, cond_max, cond_add )
           item:set_condition( rnd_cond )
         end
         if who:id() ~= npc:id() then
+          if active_item and item:id() == active_item:id() then
+            npc:move_to_ruck( item )
+          end
           table.insert( transfer_items, item )
         end
       else
@@ -813,7 +831,7 @@ function drop_manager:npc_clear_spawn( cond_min, cond_max, cond_add )
     elseif ammo_sections[ section ] then
       -- чистим патроны
       if count_by_level[ section ] then
-        number = math.ceil(
+        local number = math.ceil(
           math.random(
             count_by_level[ section ].min, count_by_level[ section ].max
           )
@@ -824,7 +842,10 @@ function drop_manager:npc_clear_spawn( cond_min, cond_max, cond_add )
       end
       table.insert( release_items, item )
     else
-      if not watcher_act.do_not_touch( item ) then
+      if
+        ( not watcher_act.do_not_touch( item ) )
+        and ( not unique_wpn[ section ] )
+      then
         if who then
           if who:id() ~= npc:id() then
             table.insert( transfer_items, item )
@@ -836,10 +857,16 @@ function drop_manager:npc_clear_spawn( cond_min, cond_max, cond_add )
     end
   end
   for _, item in ipairs( release_items ) do
-    ogse.remove_item_from_inventory( item, npc )
+    local found = level.object_by_id( item:id() )
+    if found and found:parent():id() == npc:id() then
+      ogse.remove_item_from_inventory( item, npc )
+    end
   end
   for _, item in ipairs( transfer_items ) do
-    npc:transfer_item( item, who )
+    local found = level.object_by_id( item:id() )
+    if found and found:parent():id() == npc:id() then
+      npc:transfer_item( item, who )
+    end
   end
   -- доспавниваем взамен удаленных патронов
   if who then
