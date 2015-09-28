@@ -1,38 +1,66 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
 -- ”даление аномалий „ерной ƒырой
-local radius = 3 --радиус круга с центром под ногами √√, в котором удал€ютс€ аномалии
 
-local anoms_classes = {
-	[clsid.zone_bfuzz_s] = true,
-	[clsid.zone_electra_s] = true,
-	[clsid.zone_galant_s] = true,
-	[clsid.zone_ice_s] = true,
-	[clsid.zone_mbald_s] = true,
-	[clsid.zone_mincer_s] = true,
-	[clsid.zone_zharka_s] = true,
-	[clsid.ameba_zone] = true
-}
+ --радиус круга с центром под ногами √√, в котором удал€ютс€ аномалии
+local radius = 3
 
-function get_anoms(npc, radius)
-	local anoms = {}
-	local pos = npc:position()
-	local obj
-	for i= 1, 65535 do
-		obj = level.object_by_id(i)
-		if obj and anoms_classes[obj:clsid()] and pos:distance_to(obj:position()) < radius then
-			table.insert(anoms, obj:id())
-		end
-	end
-	return anoms
+
+function attach( sm )
+  sm:subscribe({ signal = "on_drop", fun = this.on_item_drop })
 end
 
-function on_item_drop(item)
-	if item:section() ~= "af_black_hole" then return end
-	
-	local anoms = get_anoms(db.actor, radius)
-	local timeout = 0
 
-	for i, id in ipairs(anoms) do
-		timeout = timeout+0.2
-		amk.start_timer("anom_remover", timeout, id)
-	end
+function on_item_drop( item )
+  if item:section() == "af_black_hole" then
+    timer_drop_item( item, db.actor ):start()
+    return true
+  end
+end
+
+
+class "timer_drop_item" ( ogse_qt.quick_timer )
+function timer_drop_item:__init( item, parent ) super()
+  self.item_id   = item:id()
+  self.parent_id = parent:id()
+end
+
+function timer_drop_item:condition()
+  local item = level.object_by_id( self.item_id )
+  if item == nil then
+    self:stop()
+  elseif item:parent() == nil then
+    return true
+  elseif item:parent():id() ~= self.parent_id then
+    self:stop()
+  end
+  return false
+end
+
+function timer_drop_item:action()
+  local item = level.object_by_id( self.item_id )
+  if item then
+    local anoms   = amk_anoms.get_anomaly_list( db.actor, radius )
+    local timeout = 0
+    for _, v in ipairs( anoms ) do
+      timeout = timeout + 0.2
+      local id = v.id
+      dsh.timeout(
+        timeout,
+        function() remove_anomaly( id ) end
+      )
+    end
+  end
+end
+
+
+function remove_anomaly( id )
+  local sobj = alife():object( id )
+  if sobj and new_dialog.item_much( "art_acumm", 2 ) then
+    local status = amk_anoms.get_anomaly_status( sobj )
+    if status == "" or status == "on" then
+      amk_anoms.set_anomaly_status( sobj, "del" )
+      alife():release( sobj, true )
+      sak.out_item_namber( "art_acumm", 2 )
+    end
+  end
 end
