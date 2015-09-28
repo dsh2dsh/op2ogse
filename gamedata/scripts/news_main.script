@@ -1598,39 +1598,11 @@ function isGameObject(obj)
 	return bResult
 end
 
-function get_object_levelname(obj)
-	local sim = alife()
-	local mlevel = "null"	
-	if (obj) then
-		local m_game_vertex
-		local nm = "nil"
-		if (obj.name) then nm = obj:name() end
-		if (isGameObject(obj)) then
-			m_game_vertex = obj:game_vertex_id()
-		else
-			m_game_vertex = obj.m_game_vertex_id
-		end
-		if (m_game_vertex and game_graph():valid_vertex_id(m_game_vertex)) then
-			local lvert = game_graph():vertex(m_game_vertex)
-			if (lvert ~= nil and lvert.level_id) then
-				local lid = lvert:level_id()
-				if (lid ~= nil) then
-					mlevel = sim:level_name(lid)
-				else
-					if _debug == true then mylog(" get_object_levelname - level id is null "..nm) end
-				end
-			else
-				if _debug == true then mylog(" get_object_levelname - vertex is null "..nm) end
-			end
-			if mlevel == nil then mlevel = "nil" end
-		else
-			if _debug == true then mylog(" get_object_levelname - vertex_id is null "..nm) end
-		end
-	else
-		if _debug == true then mylog("get_object_levelname - no obj") end
-	end
-	return mlevel
+
+function get_object_levelname( obj )
+  return object_level_name( obj )
 end
+
 
 function check_news()
 	-- выдать те новости, что успели собраться и сгрупироватся.
@@ -1669,100 +1641,114 @@ function check_news()
   end  
 end
 
-function add_spawned_object(obj)
-	local sim = alife()
-	if (obj and (IAmAStalker[obj:clsid()] or IAmAMonster[obj:clsid()])) then
-		if obj.can_switch_online and obj:can_switch_online() == false then return end
-		local s_comm = get_npc_community(obj)
-		local communities = {
-			[ "actor"] = true,
-			[ "stalker"] = true,
-			[ "dolg"] = true,
-			[ "freedom"] = true,
-			[ "stranger"] = true,
-			[ "trader"] = true,
-			[ "arena_enemy"] = true,
-			[ "actor_dolg"] = true,
-			[ "actor_freedom"] = true,
-			[ "ecolog"] = true,
-			[ "nebo"] = true,
-			[ "green"] = true
-			}
-		if (s_comm and communities[s_comm]) then 
-			return -- это сталкер
-		end
-		local s_id = ""
-		local pos = get_object_position(obj)
-		local lev = get_object_levelname(obj)
-		local obj_type = 0
-		if IAmAStalker[obj:clsid()] then 
-			obj_type = 1
-		elseif IAmAMonster[obj:clsid()] then 
-			obj_type = 2 
-		end
-		if (isGameObject(obj)) then
-			s_id = obj:id()
-		else
-			s_id = obj.id
-		end	
-		-- Проверим, не фильтруется ли он по smart_terrain
---		if (news_data.smart_filters and #news_data.smart_filters>0) then
-			local m_obj = nil
-			if (obj.smart_terrain_id) then
-				m_obj = obj
-			else
-				m_obj = sim:object(s_id)
-			end
-			if (m_obj and m_obj.smart_terrain_id and m_obj:smart_terrain_id() and m_obj:smart_terrain_id()~=65535 and news_data.smart_filters[s_comm]) then
-				local sm = sim:object(m_obj:smart_terrain_id())
-				if (sm and sm.name and sm:name()) then
-					local sn = sm:name()
-					for ks, vs in pairs (news_data.smart_filters[s_comm]) do
-						if string_find(sn, "^"..vs) then
-							if _debug == true then mylog("add_spawned_object - "..s_comm.." on "..sn.." filtered") end
-							return
-						end
-					end
-				end
-			end
---		end
-		-- Проверим, не монолитовцы ли это...
-		if s_comm == "monolith" then
-			if lev == "l10_radar" or lev == "l10u_bunker" or lev == "l11_pripyat" or lev == "l12_stancia" or lev == "l12_stancia_2" or lev == "l12u_control_monolith" or lev == "l12u_sarcofag" then
-				return
-			end
-		end
-		if s_comm == "zombie" or s_comm == "zombied" then
-			if lev == "l08_yantar" then
-				return
-			end
-		end
-		local b_added = false
-		if table_spawned then
-			-- for k, v in pairs(table_spawned) do
-			for i=1, #table_spawned do
-				local v = table_spawned[i]
-				if (v.community == s_comm and v.level == lev) then
-					local mpos = v.position
-					if (mpos) then
-						local dist = pos:distance_to(mpos)
-						if (dist < distance_close) then
-							v.count = v.count + 1
-							b_added = true
-							break
-						end
-					end
-				end
-			end
-		end
-		if (b_added == false) then
-			t = {id = s_id, community = s_comm, count = 1, level = lev, position = pos, o_type = obj_type}
-			table.insert(table_spawned, t)
-		else
-			--
-		end
-	end
+
+function add_spawned_object( obj )
+  if obj and ( IsStalker( obj ) or IsMonster( obj ) ) then
+    if obj.can_switch_online and obj:can_switch_online() == false then return end
+    local s_comm = get_npc_community( obj )
+    local communities = {
+      [ "actor"         ] = true,
+      [ "stalker"       ] = true,
+      [ "dolg"          ] = true,
+      [ "freedom"       ] = true,
+      [ "stranger"      ] = true,
+      [ "trader"        ] = true,
+      [ "arena_enemy"   ] = true,
+      [ "actor_dolg"    ] = true,
+      [ "actor_freedom" ] = true,
+      [ "ecolog"        ] = true,
+      [ "nebo"          ] = true,
+      [ "green"         ] = true,
+    }
+    if s_comm and communities[ s_comm ] then
+      return -- это сталкер
+    end
+    local obj_type = 0
+    if IsStalker( obj ) then
+      obj_type = 1
+    elseif IsMonster( obj ) then
+      obj_type = 2
+    end
+    local s_id = ""
+    if isGameObject( obj ) then
+      s_id = obj:id()
+    else
+      s_id = obj.id
+    end
+    -- Проверим, не фильтруется ли он по smart_terrain
+    local m_obj = nil
+    if obj.smart_terrain_id then
+      m_obj = obj
+    else
+      m_obj = alife():object( s_id )
+    end
+    local lev = object_level_name( obj )
+    if m_obj
+      and m_obj.smart_terrain_id and m_obj:smart_terrain_id()
+      and m_obj:smart_terrain_id() ~= 65535
+      and news_data.smart_filters[ s_comm ]
+    then
+      local sm = alife():object( m_obj:smart_terrain_id() )
+      if sm and sm.name and sm:name() then
+        local sn = sm:name()
+        for ks, vs in pairs( news_data.smart_filters[ s_comm ] ) do
+          if string.find( sn, "^"..vs ) and lev == object_level_name( sm ) then
+            if _debug == true then
+              mylog( "add_spawned_object - " .. s_comm .. " on " .. sn .. " filtered" )
+            end
+            return
+          end
+        end
+      end
+    end
+    -- Проверим, не монолитовцы ли это...
+    if s_comm == "monolith" then
+      if
+        lev == "l10_radar"
+        or lev == "l10u_bunker"
+        or lev == "l11_pripyat"
+        or lev == "l12_stancia" or lev == "l12_stancia_2"
+        or lev == "l12u_control_monolith" or lev == "l12u_sarcofag"
+      then
+        return
+      end
+    end
+    if s_comm == "zombie" or s_comm == "zombied" then
+      if lev == "l08_yantar" then
+        return
+      end
+    end
+    local b_added = false
+    local pos     = get_object_position( obj )
+    if table_spawned then
+      for i, v in ipairs( table_spawned ) do
+        if v.community == s_comm and v.level == lev then
+          local mpos = v.position
+          if mpos then
+            local dist = pos:distance_to( mpos )
+            if dist < distance_close then
+              v.count = v.count + 1
+              b_added = true
+              break
+            end
+          end
+        end
+      end
+    end
+    if b_added == false then
+      t = {
+        id        = s_id,
+        community = s_comm,
+        count     = 1,
+        level     = lev,
+        position  = pos,
+        o_type    = obj_type,
+      }
+      table.insert( table_spawned, t )
+    end
+  end
 end
+
 
 function add_killed_by_actor(obj)
 	if (obj and (IAmAStalker[obj:clsid()] or IAmAMonster[obj:clsid()])) then
