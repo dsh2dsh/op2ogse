@@ -8,9 +8,9 @@
 --- Настройки схемы
 -----------------------------------------------------------------------
 local debug_flag = false
-local monsters_too = true --false
+local monsters_too = true
 local turn_off_restrictors = false	-- выключить рестрикторную часть
-local turn_off_path_around = true --false	-- выключить часть обхода по путям
+local turn_off_path_around = true	-- выключить часть обхода по путям
 local transit_coeff = 1.4 	-- Коэффициент, на который умножается радиус аномалии для получения транзитных точек. Нельзя выставлять менее 1.2 - будет зацеплять аномалию
 --local exit_coeff = 7		-- Коэффициент, на который умножается радиус аномалии для получения точки выхода из маршрута. Имеет смысл ставить побольше, чтобы непись не отирался около аномалии на выходе.
 local timeout = 3000		-- Время в миллисекундах, на которое NPC забывает об аномалии после успешного её обхода. Нужно обязательно, чтобы непись не застрял вокруг аномалии, иначе схема может отправить его обходить её бесконечно.
@@ -54,17 +54,20 @@ local excluded_locations = {
 }
 
 local added_restrictions = {}
+local last_position      = {}
+
 
 function init()
-	event("npc_death"):register(death)
-	event("npc_net_destroy"):register(death)
-	event("npc_update"):register(update_norm)
-	if monsters_too then
-		event("monster_death"):register(death)
-		event("monster_net_destroy"):register(death)
-		event("monster_update"):register(update_norm)
-	end
+  event( "npc_death"       ):register( death )
+  event( "npc_net_destroy" ):register( death )
+  event( "npc_update"      ):register( update_norm )
+  if monsters_too then
+    event( "monster_death"       ):register( death )
+    event( "monster_net_destroy" ):register( death )
+    event( "monster_update"      ):register( update_norm )
+  end
 end
+
 
 function remove_restriction(npc, anomid)
 	if npc and anomid and not isIndoor(level.name()) then
@@ -93,132 +96,111 @@ function remove_restriction(npc, anomid)
 	end
 end
 
-function death(e)
-	e:setFingerprint("ogse_anom_evader_death")
-	local nid = e.victim:id()
-	local anoms = added_restrictions[nid]
-	if anoms then
-		local npc_sobj = alife():object(nid)
-		for k, v in pairs(anoms) do
-			local sobj = alife():object(k)
-			if debug_flag then log1("!!REMOVE_RESTRICT "..k.." FOR "..e.victim:name()) end
-			if sobj then
-				e.victim:remove_restrictions("",sobj:name())
-			end
-		end
-		added_restrictions[nid] = nil
-	end
+
+function death( e )
+  e:setFingerprint( "ogse_anom_evader_death" )
+  local nid   = e.victim:id()
+  local anoms = added_restrictions[ nid ]
+  if anoms then
+    local restrs = {}
+    for k, v in pairs( anoms ) do
+      local sobj = alife():object( k )
+      if debug_flag then
+        log1( "!!REMOVE_RESTRICT " .. k .. " FOR " .. e.victim:name() )
+      end
+      if sobj then
+        table.insert( restrs, sobj:name() )
+      end
+    end
+    if table.getn( restrs ) > 0 then
+        e.victim:remove_restrictions( "", table.concat( restrs, "," ) )
+    end
+    added_restrictions[ nid ] = nil
+    last_position[ nid ]      = nil
+  end
 end
 
-function update_norm(e)
-	
-	e:setFingerprint("ogse_anom_evader_update")
-	
-	local npc = e.obj
-	if not npc:alive() then return end
 
---[=[
-	if is_alife_controlled(npc) and not xr_companion.is_companion(npc:id()) then
-		return
-	end
---]=]
+function update_norm( e )
+  e:setFingerprint( "ogse_anom_evader_update" )
+
+  local npc = e.obj
+  if not npc:alive() then return end
 	
-	local profile = npc:profile_name()
-	local name = npc:name()
-	local lev_name = level.name()
+  local profile  = npc:profile_name()
+  local name     = npc:name()
+  local lev_name = level.name()
 	
-	if
-	  excluded_npc[ profile ]
-	  or excluded_npc[ name ]
-	  or (
-	    IsStalker( npc ) and excluded_comms[ npc:character_community() ]
-	  )
-	then
-		return
-	end	
-	if excluded_locations[lev_name] then
-		return
-	end
-	
-	local hasanom, anomid, pos, cls, dist, radius, sect_anom = ogse_anomaly.get_nearest_anomaly_by_point(npc:position())
-	local obj = level.object_by_id(anomid)	
-	if hasanom and obj and ogse_anomaly.get_anomaly_mode(anomid) ~= "del" then
-	
-		if debug_flag then log1("--FOUND_ANOMALY "..sect_anom.." FOR "..npc:name().." dist ["..tostring(dist).."]") end
-	
-		for k, v in pairs(excluded_sect) do
-			if string.find(sect_anom, k) then
-				return false
-			end			
-		end	
-	
-		if dist < radius+1 then
-			local an_name = obj:name()
-			local sobj = alife():object(npc:id())
-			if not added_restrictions[npc:id()] or (added_restrictions[npc:id()] and not added_restrictions[npc:id()][anomid]) then
-				if debug_flag then log1("--ADD_RESTRICT_NORM "..an_name.." FOR "..npc:name()) end
-				if not added_restrictions then
-					added_restrictions = {}
-				end
-				if not added_restrictions[npc:id()] then
-					added_restrictions[npc:id()] = {}
-				end
-				added_restrictions[npc:id()][anomid] = time_global() + 30000
-			end
-		else	
-			local nid = npc:id()
-			local anoms = added_restrictions[nid]
-			if anoms then
-				local npc_sobj = alife():object(nid)
-				for k, v in pairs(anoms) do
-					-- if time_global() > v then
-						local sobj = alife():object(k)
-						if debug_flag then log1("!!REMOVE_RESTRICT_NORM_DIST "..k.." FOR "..npc:name()) end
-						npc:remove_restrictions("",sobj:name())
-						
-					-- end
-				end
-				added_restrictions[nid] = nil
-			end	
-				
-		end
-	elseif obj then
-		added_restrictions[e.obj:id()] = nil
-	end
-	
-	local anoms = added_restrictions[npc:id()]
-	
-	if anoms then
-		local restr = ""
-		local cnt = 0
-		for k, v in pairs(anoms) do
-			local sobj = alife():object(k)
-			if sobj then
-				if cnt == 0 then
-					restr = sobj:name()
-				else
-					restr = restr..","..sobj:name()
-				end
-			end
-			cnt = cnt + 1
-		end
-		if restr ~= "" then
-			if
-			  turn_off_restrictors
-			  or (
-			    IsStalker( npc )
-			    and npc:character_community() == "zombied"
-			  ) then
-				log1("!!RESTRICT_TURNED_OFF_NORM or "..npc:name().." is zombied.")
-			else
-				npc:add_restrictions("", restr)
-				if debug_flag then 
-					log1("--ADD_RESTRICT_NORM FINISHED ["..restr.."] FOR "..npc:name())
-				end			
-			end
-		end
-	end
+  if
+    excluded_npc[ profile ]
+    or excluded_npc[ name ]
+    or (
+      IsStalker( npc ) and excluded_comms[ npc:character_community() ]
+    )
+  then
+    return
+  end	
+  if excluded_locations[ lev_name ] then return end
+
+  local curr_pos = npc:position()
+  local prev_pos = last_position[ npc:id() ]
+  if prev_pos then
+    if prev_pos:distance_to( curr_pos ) < 20 then
+      return
+    else
+      last_position[ npc:id() ] = curr_pos
+    end
+  else
+    last_position[ npc:id() ] = curr_pos
+  end
+  
+  if not added_restrictions[ npc:id() ] then
+    added_restrictions[ npc:id() ] = {}
+  end
+
+  local restr = {}
+  for _, o in ipairs( amk_anoms.get_anomaly_list( npc, 30 ) ) do 
+    local obj = level.object_by_id( o.id )	
+    if obj and ogse_anomaly.get_anomaly_mode( o.id ) ~= "del" then
+      local sect_anom = obj:section()
+      local ignore    = false
+      for k, v in pairs( excluded_sect ) do
+        if string.find( sect_anom, k ) then
+          ignore = true
+          break
+        end
+      end
+      if not ignore then
+        restr[ obj:name() ] = true
+      end
+    end
+  end
+
+  local del = {}
+  for k, _ in pairs( added_restrictions[ npc:id() ] ) do
+    if restr[ k ] then
+      restr[ k ] = nil -- уже установлен
+    else
+      table.insert( del, k ) -- удалить старый
+    end
+  end
+  if table.getn( del ) > 0 then
+    for _, k in ipairs( del ) do
+      added_restrictions[ npc:id() ][ k ] = nil
+    end
+    npc:remove_restrictions( "", table.concat( del, "," ) )
+  end
+
+  local add = {}
+  for k, _ in pairs( restr ) do
+    table.insert( add, k ) -- добавить новый
+    added_restrictions[ npc:id() ][ k ] = true
+  end
+  if table.getn( add ) > 0 then
+    npc:add_restrictions( "", table.concat( add, "," ) )
+  end
 end
+
 
 function update(npc)
 	
