@@ -6,47 +6,27 @@
 -------------------------------------------------------------------------------
 
 function attach(sm) -- для менеджера сигналов
-	sm:subscribe({signal = "on_init", fun = this.on_actor_init})
+	sm:subscribe({signal = "on_goodwill_change", fun = this.on_goodwill_change})
+	sm:subscribe({signal = "on_release_npc", fun = this.on_release})
+	sm:subscribe({signal = "on_save", fun = this.save})
+	sm:subscribe({signal = "on_load", fun = this.load})
 end
 
-local rrr
-function on_actor_init()
-	log1("RRR INITING")
-	rrr = reverse_relation_register() -- создание
-end
+local relation_table = {}
 
-class "reverse_relation_register"
-function reverse_relation_register:__init()
-	self.sm = ogse_signals.get_mgr()
-	
-	self._on_goodwill_change = {signal = "on_goodwill_change", self = self, fun = self.on_goodwill_change}
-	self.sm:subscribe(self._on_goodwill_change)
-	
-	self._on_release = {signal = "on_release_npc", self = self, fun = self.on_release}
-	self.sm:subscribe(self._on_release)
-
-	self._on_save = {signal = "on_save", self = self, fun = self.save}
-	self.sm:subscribe(self._on_save)
-	
-	self._on_load = {signal = "on_load", self = self, fun = self.load}
-	self.sm:subscribe(self._on_load)
-	
-	self.relation_table = {}
-end
-
-function reverse_relation_register:on_goodwill_change(from, to)
+function on_goodwill_change(from, to)
 	local to_table
 	local to_id = to
 	if to == 0 then
 		return
 	end
-	if self.relation_table then
-		to_table = self.relation_table[to_id]
+	if relation_table then
+		to_table = relation_table[to_id]
 		if not to_table then
 			to_table = {}
 		end
 	else
-		self.relation_table = {}
+		relation_table = {}
 		to_table = {}
 	end
 	local idx = 0
@@ -57,41 +37,41 @@ function reverse_relation_register:on_goodwill_change(from, to)
 	end
 	if idx == 0 then
 		table.insert(to_table, from)
-		self.relation_table[to_id] = to_table
+		relation_table[to_id] = to_table
 	end
 	log1("[RELATIONS] GOODWILL CHANGED FROM "..alife():object(from):name().." TO "..alife():object(to):name())
 end
 
-function reverse_relation_register:on_release(npc_id)
+function on_release(npc_id)
 	if not db.actor then return end
 	if npc_id == 0 then return end
 	log1("[RELATIONS] NPC "..tostring(npc_id).." RELEASED")
-	if self.relation_table then
-		local from_table = self.relation_table[npc_id]
+	if relation_table then
+		local from_table = relation_table[npc_id]
 		if from_table then
 			local t_size = table.getn(from_table)
 			for i = 1, t_size do
 				db.actor:clear_personal_record(from_table[i], npc_id)
 				log1("[RELATIONS] 	RELATION RECORD CLEARED FOR OBJECT "..tostring(from_table[i]))
 			end
-			self.relation_table[npc_id] = nil
+			relation_table[npc_id] = nil
 		end
 	end
 end
 
-function reverse_relation_register:save()
+function save()
 	local pk = net_packet()
 	pk:w_begin(123) -- двухбайтовая заглушка
 	pk:r_seek(2) -- чтобы пропустить эти два байта при чтении
 	local rel_table_size = 0
-	for k,v in pairs(self.relation_table) do
+	for k,v in pairs(relation_table) do
 		if v then
 			rel_table_size = rel_table_size + 1
 		end
 	end
 	pk:w_u16(rel_table_size)
 	log1("[RELATIONS] RELATION TABLE SIZE IS "..tostring(rel_table_size))
-	for k,v in pairs(self.relation_table) do
+	for k,v in pairs(relation_table) do
 		if v then
 			local table_size = table.getn(v)
 			log1("[RELATIONS] 	SAVING RELATION TABLE RECORD "..tostring(k).." WITH SIZE "..tostring(table_size))
@@ -111,8 +91,8 @@ function reverse_relation_register:save()
 	ogse.save_var("ogse_relation_reverse_table", pk, "chunk")
 end
 
-function reverse_relation_register:load()
-	self.relation_table = {}
+function load()
+	relation_table = {}
 	
 	local pk = ogse.load_var_safe("ogse_relation_reverse_table")
 	if pk then
@@ -129,9 +109,9 @@ function reverse_relation_register:load()
 				log1("[RELATIONS] LOADING RELATION TO "..tostring(to_id).." FROM "..tostring(curr_id))
 			end
 			if to_id == 0 then
-				self.relation_table["actor"] = to_table
+				relation_table["actor"] = to_table
 			else
-				self.relation_table[to_id] = to_table
+				relation_table[to_id] = to_table
 			end
 		end
 		log1("[RELATIONS] RELATION TABLE LOADED!")
