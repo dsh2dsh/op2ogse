@@ -303,6 +303,7 @@ function se_smart_terrain:get_obj_community( obj )
   end
 end
 
+
 -- инициализация.
 -- чтение custom data.
 function se_smart_terrain:read_params()
@@ -311,10 +312,8 @@ function se_smart_terrain:read_params()
 
   if not ini:section_exist( sect ) then
     sect = "gulag1"
-
     if not ini:section_exist( sect ) then
---      abort( "[smart_terrain %s] no configuration!", self:name() )
-      printf( "[smart_terrain %s] no configuration!", self:name() )
+      log2( "[smart_terrain %s] no configuration!", self:name() )
       self.disabled = true
       return
     end
@@ -325,64 +324,78 @@ function se_smart_terrain:read_params()
   end
 
   local gp       = {}
-
   self.npc_info  = {}          -- group и squad для каждого npc
   self.gparams   = gp          -- настройки гулага
 
-  gp.type        = ini:r_string( sect, "type" )
-  gp.preset_name = r_str ( ini, sect, "preset" )
---' printf("%s read_params preset name [%s]", self:name(), tostring(gp.preset_name))
-  gp.capacity    = self:dsh_override_params(
-    "capacity", r_num ( ini, sect, "capacity", 100 ) -- ёмкость. а настоящая ёмкость = min(эта_ёмкость, ёмкость гулага)
+  gp.type        = get_string( sect, "type",   nil, ini )
+  gp.preset_name = get_string( sect, "preset", nil, ini )
+  -- ёмкость. а настоящая ёмкость = min(эта_ёмкость, ёмкость гулага)
+  gp.capacity    = get_float( sect, "capacity", 100, ini )
+  gp.squad       = get_float( sect, "squad", nil, ini )
+
+  gp.idle_min, gp.idle_max = r_2nums( ini, sect, "idle", 0, 0 )
+  gp.duration_min, gp.duration_max = r_2nums(
+    ini, sect, "duration", 10000, 10001
   )
-  gp.squad       = r_num ( ini, sect, "squad" )
-
-  gp.idle_min,     gp.idle_max      = r_2nums( ini, sect, "idle",       0,     0 )
-  gp.duration_min, gp.duration_max  = r_2nums( ini, sect, "duration",   10000, 10001 )
-  gp.stay_min,     gp.stay_max      = smart_terrain_params.get_stay_time_interval( r_str( ini, sect, "stay", "default" ) )
-
-  gp.respawn     = r_str ( ini, sect, "respawn" )
-
---  printf( "gp.stay_min=%d, gp.stay_max=%d", gp.stay_min * h2ms, gp.stay_max * h2ms )
-
-  gp.cond        = self:dsh_override_params(
-    "cond", r_str( ini, sect, "cond" )
+  gp.stay_min, gp.stay_max = smart_terrain_params.get_stay_time_interval(
+    r_str( ini, sect, "stay", "default" )
   )
+
+  gp.respawn = get_string( sect, "respawn", nil, ini )
+  gp.cond    = get_string( sect, "cond",    nil, ini )
+  gp.groups  = get_string( sect, "groups",  nil, ini )
+
+  self.rank_inc_min = get_string( "smart_terrain_rank_change", "min" )
+  self.rank_inc_max = get_string( "smart_terrain_rank_change", "max" )
+
+  self.accepted_communities = nil
+  self.communities = get_string( sect, "communities", nil, ini )
+
+  self:dsh_override_params( ini, sect )
+
   if gp.cond then
-    gp.cond = xr_logic.parse_condlist( nil, sect, "cond", gp.cond)
+    gp.cond = xr_logic.parse_condlist( nil, sect, "cond", gp.cond )
   end
 
-  gp.groups      = r_str( ini, sect, "groups" )
   if gp.groups then
     gp.groups = parse_nums( gp.groups )
   end
 
-  self.accepted_communities = nil
-
-  local t = self:dsh_override_params(
-    "communities", r_str( ini, sect, "communities" )
-  )
-  if t then
-    t = parse_names( t )
-
+  if self.communities then
+    local comms = parse_names( self.communities )
     self.accepted_communities = {}
-
-    for i, v in ipairs( t ) do
-      self.accepted_communities[v] = true
+    for i, v in ipairs( comms ) do
+      self.accepted_communities[ v ] = true
     end
   end
 
-  local ltx = system_ini()
-
-  self.rank_inc_min = ltx:r_string( "smart_terrain_rank_change", "min" )
-  self.rank_inc_max = ltx:r_string( "smart_terrain_rank_change", "max" )
-
   self.population_locked = false
-
-  self.gulag = xr_gulag.gulag( self, self.gparams.type, self.gparams.squad, self.gparams.groups, self.npc_info, self.gparams.capacity )
-
+  self.gulag = xr_gulag.gulag(
+    self, self.gparams.type, self.gparams.squad, self.gparams.groups,
+    self.npc_info, self.gparams.capacity
+  )
   self.gulag_working = false
 end
+
+
+local dsh_override_opts = {
+  [ "capacity"    ] = function( ... ) get_float(  ... ) end,
+  [ "communities" ] = function( ... ) get_string( ... ) end,
+  [ "cond"        ] = function( ... ) get_string( ... ) end,
+}
+
+function se_smart_terrain:dsh_override_params( ini, sect )
+  if not dsh.is_gulag_fixes_enabled() then return end
+  local dsh_sect = "dsh.gulag.override." .. self:name()
+  if sys_ini:section_exist( dsh_sect ) then
+    for k, r_func in pairs( dsh_override_opts ) do
+      if sys_ini:line_exist( dsh_sect, k ) then
+        self[ k ] = r_func( dsh_sect, k, nil, ini )
+      end
+    end
+  end
+end
+
 
 -- подходит ли персонаж по предустановкам.
 -- если такой предустановки нету, то он всегда подходит.
@@ -1156,23 +1169,6 @@ function se_smart_terrain:update()
 		-- barin end
     self:remove_gulag()
   end
-end
-
-
-function se_smart_terrain:dsh_override_params( name, val )
-  if dsh.is_gulag_fixes_enabled() then
-    local dsh_sect = "dsh.gulag.override." .. self:name()
-    if sys_ini:section_exist( dsh_sect ) then
-      if sys_ini:line_exist( dsh_sect, name ) then
-        if name == "communities" or name == "cond" then
-          val = get_string( dsh_sect, name, val )
-        elseif name == "capacity" then
-          val = get_float( dsh_sect, name, val )
-        end
-      end
-    end
-  end
-  return val
 end
 
 
