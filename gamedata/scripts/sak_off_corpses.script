@@ -1,12 +1,8 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 --схема удаления трупов сталкеров
-local show_detailed_logs = false --отображать подробную статистику в ПДА-Журнал-История
-local summ_corpses = 0 --общее допустимое число трупов на всех территориях (не включая СИД)
-local dist_to_corpses = 0 --50 --расстояние от ГГ, свыше которого считаются трупы.
-local tabl_corpses={}
-local tabl_corpses_9510={}
-local removed_corpses = 0
-local exceptions_9510 = {
+local tabl_corpses      = {}
+local tabl_corpses_9510 = {}
+local exceptions_9510   = {
   -- трупики на Кордоне
   [  24 ]  = true, -- esc_factory_prisoner_guard
   [ 123 ] = true, -- gar_seryi_drug3
@@ -42,119 +38,13 @@ local exceptions_9510 = {
   [1075 ] = true,
 }
 
---очистка нетпакета
--- local netpacket_cleaning = true --очищать нетпакет от неудавшиеся артмодификаций (true - включено, false - выключено)
-local artmod_sections_removed = 0
-
 --схема удаления трупов монстров
-local dist_to_corpses_motstr = 0 --20 --расстояние от ГГ, свыше которого считаются трупы.
-local tabl_monsters_dead={} --все мёртвые монстры
-local tabl_monsters_live_to_remove = {} --список монстров живых на удаление
-local tabl_monsters_dead_with_parts_to_remove = {} --список монстров мёртвых на удаление
-local summ_dead_monsters = 0 --общее допустимое число трупов монстров без "запчастей" на всех территориях 
-
-local tabl_monsters_live_restrict = { --ограничения на количество живых монстров (-1 - без ограничений),
-  --отключил всё. Shadowman :D
-  [clsid.boar_s]          = -1,
-  [clsid.bloodsucker_s]   = -1,
-  [clsid.dog_s]           = -1,
-  [clsid.flesh_s]         = -1,
-  [clsid.psy_dog_s]       = -1,
-  [clsid.pseudodog_s]     = -1,
-  [clsid.burer_s]         = -1,
-  [clsid.cat_s]           = -1,
-  [clsid.chimera_s]       = -1,
-  [clsid.controller_s]    = -1, -- не трогать контроллёров!!! у них есть что почитать ;)
-  [clsid.fracture_s]      = -1,
-  [clsid.poltergeist_s]   = -1,
-  [clsid.gigant_s]        = -1,
-  [clsid.zombie_s]        = -1,
-  [clsid.tushkano_s]      = -1,
-  [clsid.snork_s]         = -1
-}
-
-local tabl_monsters_dead_with_parts_restrict = { --ограничения на количество мёртвых монстров с "запчастями" (-1 - без ограничений)
-  [clsid.boar_s]          = 5,
-  [clsid.bloodsucker_s]   = 5,
-  [clsid.dog_s]           = 5,
-  [clsid.flesh_s]         = 5,
-  [clsid.psy_dog_s]       = 5,
-  [clsid.pseudodog_s]     = 5,
-  [clsid.burer_s]         = 5,
-  [clsid.cat_s]           = 5,
-  [clsid.chimera_s]       = 5,
-  [clsid.controller_s]    = -1, -- не трогать контроллёров!!! у них есть что почитать ;)
-  [clsid.fracture_s]      = 5,
-  [clsid.poltergeist_s]   = 5,
-  [clsid.gigant_s]        = 5,
-  [clsid.zombie_s]        = 5,
-  [clsid.tushkano_s]      = 5,
-  [clsid.snork_s]         = 5
-}
-
-local tabl_monsters_stat_total = {} --статистика по монстрам всего
-local tabl_monsters_stat_live = {} --статистика по монстрам живым
-local tabl_monsters_stat_live_removed = {} --статистика по монстрам живым удалённым
-local tabl_monsters_stat_dead = {} --статистика по монстрам мёртвым
-local tabl_monsters_stat_dead_removed = {} --статистика по монстрам мёртвым убранным
-local tabl_monsters_stat_dead_with_parts = {} --статистика по монстрам мёртвым с "запчастями" найденным
-local tabl_monsters_stat_dead_with_parts_removed = {} --статистика по монстрам мёртвым с "запчастями" убранным
-
-for m, c in pairs( tabl_monsters_live_restrict ) do
-  tabl_monsters_stat_total[ m ] = 0
-  tabl_monsters_stat_live[ m ] = 0
-  tabl_monsters_live_to_remove[ m ] = {}
-  tabl_monsters_dead_with_parts_to_remove[ m ] = {}
-  tabl_monsters_stat_live_removed[ m ] = 0
-  tabl_monsters_stat_dead[ m ] = 0
-  tabl_monsters_stat_dead_removed[ m ] = 0
-  tabl_monsters_stat_dead_with_parts[ m ] = 0
-  tabl_monsters_stat_dead_with_parts_removed[ m ] = 0
-end
-
-local monsters_total_count = 0
-local monsters_live_count = 0
-local monsters_live_removed_count = 0
-local monsters_dead_count = 0
-local monsters_dead_removed_count = 0
-local monsters_dead_with_parts_removed_count = 0
-
-local outfits_removed_count = 0 -- всего отобранных броников
-local outfits_cost_not_zero_count = 0 -- отобранных ценных броников
-local outfits_cost_zero_count = 0 -- отобранных копеечных броников
-local outfits_cost_returned = 0 -- всего денег вернули
-local stalkers_total = 0 -- всего сталкеров
-local stalkers_robbed_from_outits = 0 -- сколько сталкеров "ограблено"
-local stalkers_outfits_costs_returned_count = 0 -- скольким сталкерам вернули денги
-
-local tabl_monsters_names = {
-  [clsid.boar_s]          = "кабанов",
-  [clsid.bloodsucker_s]   = "кровососов",
-  [clsid.dog_s]           = "собак",
-  [clsid.flesh_s]         = "плотей",
-  [clsid.psy_dog_s]       = "пси-собак",
-  [clsid.pseudodog_s]     = "псевдособак",
-  [clsid.burer_s]         = "бюреров",
-  [clsid.cat_s]           = "котов",
-  [clsid.chimera_s]       = "химер",
-  [clsid.controller_s]    = "контролёров",
-  [clsid.fracture_s]      = "изломов",
-  [clsid.poltergeist_s]   = "полтергейстов",
-  [clsid.gigant_s]        = "псевдогигантов",
-  [clsid.zombie_s]        = "зомби",
-  [clsid.tushkano_s]      = "тушканов и крыс",
-  [clsid.snork_s]         = "снорков"
-}
+local tabl_monsters_dead = {} --все мёртвые монстры
 
 --плюс схема удаления бесхозного оружия (если в названии предмета нет
 --"grenade_" или "wpn_" - то это не считается оружием и убираться не
 --будет !!!)
-local summ_weapons = 0 --общее допустимое число бесхозного оружия на всех территориях.
-local dist_to_weapons = 150 --расстояние от ГГ, свыше которого считается оружие.
-local dist_from_weapons_to_trup = 1 --расстояние от ствола до оставшихся трупов, свыше которого считается оружие.
 local tabl_weapons = {}
-local weapons_removed = 0
-local removed_weapons_radar = 0 --на Радар и Госпиталь исключения не распространяются, с земли уберется всё оружие
 
 
 local parent_keep_items = {}
@@ -163,18 +53,15 @@ function off_corpses()
 
   if game_graph():valid_vertex_id( db.actor:game_vertex_id() ) then
     local actor_level = level.name()
-    local actorpos    = db.actor:position()
     -- главный цикл
     for a = 1, 65534 do
       local obj = alife():object( a )
       if obj and game_graph():valid_vertex_id( obj.m_game_vertex_id ) then
-        local obj_clsid = obj:clsid()
         local obj_level = object_level_name( obj )
-        local posobj    = obj.position
         local obj_name  = obj:name()
 
         -- сталкер
-        if IAmAStalker[ obj_clsid ] and obj_level ~= actor_level then
+        if IsStalker( obj ) and obj_level ~= actor_level then
           if not obj:alive() then
             -- проверка трупа сталкера, если не в исключениях - в
             -- таблицу и бум удалять
@@ -197,24 +84,10 @@ function off_corpses()
           end
 
           -- монстр
-        elseif IAmAMonster[ obj_clsid ] and obj_level ~= actor_level then
-          tabl_monsters_stat_total[ obj_clsid ] = tabl_monsters_stat_total[ obj_clsid ] + 1
-          monsters_total_count = monsters_total_count + 1
+        elseif IsMonster( obj ) and obj_level ~= actor_level then
           if not obj:alive() then
             -- труп
             table.insert( tabl_monsters_dead, obj )
-            tabl_monsters_stat_dead[ obj_clsid ] = tabl_monsters_stat_dead[ obj_clsid ] + 1
-            monsters_dead_count = monsters_dead_count + 1
-          else
-            -- живой
-            tabl_monsters_stat_live[ obj_clsid ] = tabl_monsters_stat_live[ obj_clsid ] + 1
-            monsters_live_count = monsters_live_count + 1
-            -- сбор живых монстров на удаление (не удаляются здесь,
-            -- чтобы потом удалять равномерно, если количесво
-            -- перерастёт разрешенное)
-            if tabl_monsters_live_restrict[ obj_clsid ] > -1 then
-              tabl_monsters_live_to_remove[ obj_clsid ][ tabl_monsters_stat_live[ obj_clsid ] ] = obj.id
-            end
           end
         end
 
@@ -242,8 +115,6 @@ function off_corpses()
                   --таблиц, когда ГГ не на Радаре и Госпитале
                   --(исключения не трогаем)
                   alife():release( obj, true )
-                  removed_weapons_radar = removed_weapons_radar + 1
-                  weapons_removed = weapons_removed + 1
                 elseif obj_level ~= actor_level then 
                   table.insert( tabl_weapons, obj )
                 end
@@ -298,7 +169,7 @@ function off_corpses()
 
         -- фикс кривых smart_terrain
         if
-          ( IAmAStalker[ obj_clsid ] or IAmAMonster[ obj_clsid ] )
+          ( IsStalker( obj ) or IsMonster( obj ) )
           and
           obj:alive()
         then
@@ -315,89 +186,25 @@ function off_corpses()
     end -- for
 
     --зачистка мёртвых монстров
-    if table.getn( tabl_monsters_dead ) > summ_dead_monsters then
-      table.sort( tabl_monsters_dead, max_comp )
-      if table.getn( tabl_monsters_dead ) > summ_dead_monsters then
-        local b = table.getn( tabl_monsters_dead )
-        local n = b
-        while b > summ_dead_monsters and n > 0 do
-          local corps = tabl_monsters_dead[ n ]
-          local id = corps:clsid()
-          if not parent_keep_items[ corps.id ] then --если нету "запчастей" - удаляем
-            alife():release( corps, true )
-            table.remove( tabl_monsters_dead, n )
-            b = b - 1
-            tabl_monsters_stat_dead_removed[ id ] = tabl_monsters_stat_dead_removed[ id ] + 1
-            monsters_dead_removed_count = monsters_dead_removed_count + 1
-          else --если есть "запчасти" - смотрим
-            tabl_monsters_stat_dead_with_parts[ id ] = tabl_monsters_stat_dead_with_parts[ id ] + 1
-            --если не в "красной книге" - то смотрим дальше
-            if tabl_monsters_dead_with_parts_restrict[ id ] > -1 then
-              --сбор мёртвых монстров на удаление (не удаляются здесь,
-              --чтобы потом удалять равномерно, если количесво
-              --перерастёт разрешенное)
-              tabl_monsters_dead_with_parts_to_remove[ id ][ tabl_monsters_stat_dead_with_parts[ id ] ] = corps
-            end
-          end
-          n = n - 1
-        end
+    for _, corps in ipairs( tabl_monsters_dead ) do
+      if not parent_keep_items[ corps.id ] then
+        alife():release( corps, true )
       end
     end
-
+    
     --зачистка мёртвых человеков
-    if table.getn( tabl_corpses ) > summ_corpses then
-      table.sort( tabl_corpses, max_comp )
-      if table.getn( tabl_corpses ) > summ_corpses then
-        local b = table.getn( tabl_corpses )
-        local n = b
-        while b > summ_corpses and n > 0 do
-          local corps = tabl_corpses[ n ]
-          if not parent_keep_items[ corps.id ] then
-            alife():release( corps, true )
-            table.remove( tabl_corpses, n )
-            b = b - 1
-            removed_corpses = removed_corpses + 1
-          end
-          n = n - 1
-        end
+    for _, corps in ipairs( tabl_corpses ) do
+      if not parent_keep_items[ corps.id ] then
+        alife():release( corps, true )
       end
     end
 
     --зачистка оружия
-    if table.getn( tabl_weapons ) > summ_weapons then
-      table.sort( tabl_weapons, max_comp )
-      local twa = table.getn( tabl_weapons )
-      while twa > summ_weapons do
-        local wpn      = tabl_weapons[ twa ]
-        local wpn_name = wpn:name()
-        if
-          get_dist_to_trup( wpn, tabl_corpses_9510 )
-          and
-          get_dist_to_trup( wpn )
-        then
-          local weapon = tabl_weapons[ twa ]
-          alife():release( weapon, true )
-          table.remove( tabl_weapons, twa )
-          weapons_removed = weapons_removed + 1
-        end
-        twa = twa - 1
-      end
+    for _, wpn in ipairs( tabl_weapons ) do
+      alife():release( wpn, true )
     end
 
   end
-end
-
-
-function get_dist_to_trup( wpn, tbl )
-  if not tbl then tbl = tabl_corpses end
-  local poswpn = wpn.position
-  for i, npc in ipairs( tbl ) do
-    local posnpc = npc.position
-    if poswpn:distance_to( posnpc ) < dist_from_weapons_to_trup then
-      return false
-    end
-  end
-  return true
 end
 
 
@@ -412,10 +219,4 @@ function item_keep( item )
   end
   --проверка по списку оружия
   return protected_items.obj_is_protected( item, "tabl_wpn_keep", "like" )
-end
-
-
-function max_comp( i1, i2 ) -- возвращает true если i1 меньше i2
-  local actorpos = db.actor:position()
-  return i1.position:distance_to( actorpos ) < i2.position:distance_to( actorpos )
 end
