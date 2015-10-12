@@ -1,0 +1,110 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+function attach( sm )
+  sm:subscribe({ signal = "on_update", fun = this.on_update })
+  sm:subscribe({ signal = "on_spawn",  fun = this.on_spawn  })
+end
+
+
+local switch_distances = {}
+
+function on_spawn()
+  local lname    = level.name()
+  local dsh_sect = "dsh.switch_distances." .. lname
+  if sys_ini:section_exist( dsh_sect ) then
+    for _, k in ipairs( get_section_keys( dsh_sect ) ) do
+      switch_distances[ k ] = get_float( dsh_sect, k )
+    end
+  end
+end
+
+
+local check_t
+local freq = 1000
+
+function on_update()
+  if not db.actor then return end
+  if check_t and check_t > time_global() then return end
+  check_t = time_global() + freq
+  for k, sd in pairs( switch_distances ) do
+    local sobj = alife():object( k )
+    if sobj then
+      local obj = level.object_by_id( sobj.id )
+      if obj then
+        if can_switch_offline( obj, sd ) then
+          switch_offline( sobj )
+        end
+      else
+        if can_switch_online( sobj, sd ) then
+          switch_online( sobj )
+        end
+      end
+    end
+  end
+end
+
+
+function can_switch_offline( obj, sd )
+  return obj:position():distance_to( db.actor:position() ) > sd + 20
+end
+
+
+function switch_offline( sobj )
+  local switch_objs = {}
+  if sobj:clsid() == clsid.smart_terrain then
+    for id, v in pairs( sobj.npc_info ) do
+      table.insert( switch_objs, id )
+    end
+  end
+  table.insert( switch_objs, sobj.id )
+  for _, id in ipairs( switch_objs ) do
+    alife():set_switch_online(  id, false )
+    alife():set_switch_offline( id, true  )
+  end
+end
+
+
+function can_switch_online( sobj, sd )
+  return sobj.position:distance_to( db.actor:position() ) < sd
+end
+
+
+function switch_online( sobj )
+  local switch_objs = {}
+  if sobj:clsid() == clsid.smart_terrain then
+    for id, v in pairs( sobj.npc_info ) do
+      table.insert( switch_objs, id )
+    end
+  end
+  table.insert( switch_objs, sobj.id )
+  for _, id in ipairs( switch_objs ) do
+    alife():set_switch_online(  id, true  )
+    alife():set_switch_offline( id, false )
+  end
+end
+
+
+function se_can_switch_online( sobj )
+  if db.actor then
+    local sd = switch_distances[ sobj:name() ]
+    if not sd then
+      local strn_id
+      if sobj.smart_terrain_id then
+        strn_id = sobj:smart_terrain_id()
+      else
+        strn_id = 65535
+      end
+      if strn_id ~= 65535 then
+        local strn = alife():object( strn_id )
+        if strn then
+          sobj = strn
+          sd   = switch_distances[ sobj:name() ]
+        end
+      end
+    end
+    if sd then
+      return can_switch_online( sobj, sd )
+    end
+  end
+  return nil
+end
