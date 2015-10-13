@@ -1,7 +1,11 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
+-- Обработка smart_terrain-ов или неписей, которых нужно убирать в оффлайн
+-- принудительно, при удалении ГГ от них, и возращать в онлайн обратно,
+-- при приближении к ним.
+
 function attach( sm )
-  sm:subscribe({ signal = "on_update", fun = this.on_update })
+--  sm:subscribe({ signal = "on_update", fun = this.on_update })
   sm:subscribe({ signal = "on_spawn",  fun = this.on_spawn  })
 end
 
@@ -20,27 +24,30 @@ end
 
 
 local check_t
-local freq = 1000
+local freq             = 1000
+local switched_offline = {}
 
 function on_update()
   if not db.actor then return end
   if check_t and check_t > time_global() then return end
-  check_t = time_global() + freq
   for k, sd in pairs( switch_distances ) do
     local sobj = alife():object( k )
     if sobj then
       local obj = level.object_by_id( sobj.id )
-      if obj then
+      if obj and not switched_offline[ sobj.id ] then
         if can_switch_offline( obj, sd ) then
           switch_offline( sobj )
+          switched_offline[ sobj.id ] = true
         end
-      else
+      elseif switched_offline[ sobj.id ] then
         if can_switch_online( sobj, sd ) then
           switch_online( sobj )
+          switched_offline[ sobj.id ] = false
         end
       end
     end
   end
+  check_t = time_global() + freq
 end
 
 
@@ -55,8 +62,9 @@ function switch_offline( sobj )
     for id, v in pairs( sobj.npc_info ) do
       table.insert( switch_objs, id )
     end
+  else
+    table.insert( switch_objs, sobj.id )
   end
-  table.insert( switch_objs, sobj.id )
   for _, id in ipairs( switch_objs ) do
     alife():set_switch_online(  id, false )
     alife():set_switch_offline( id, true  )
@@ -75,8 +83,9 @@ function switch_online( sobj )
     for id, v in pairs( sobj.npc_info ) do
       table.insert( switch_objs, id )
     end
+  else
+    table.insert( switch_objs, sobj.id )
   end
-  table.insert( switch_objs, sobj.id )
   for _, id in ipairs( switch_objs ) do
     alife():set_switch_online(  id, true  )
     alife():set_switch_offline( id, false )
@@ -84,8 +93,10 @@ function switch_online( sobj )
 end
 
 
+local ignore = {}
+
 function se_can_switch_online( sobj )
-  if db.actor then
+  if db.actor and not ignore[ sobj.id ] then
     local sd = switch_distances[ sobj:name() ]
     if not sd then
       local strn_id
@@ -97,13 +108,15 @@ function se_can_switch_online( sobj )
       if strn_id ~= 65535 then
         local strn = alife():object( strn_id )
         if strn then
-          sobj = strn
-          sd   = switch_distances[ sobj:name() ]
+          sd = switch_distances[ strn:name() ]
         end
       end
     end
     if sd then
+      if sobj.online then sd = sd + 20 end
       return can_switch_online( sobj, sd )
+    else
+      ignore[ sobj.id ] = true
     end
   end
   return nil
