@@ -1,0 +1,346 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+function attach( sm )
+  sm:subscribe({ signal = "on_release_npc", fun = this.on_release_npc })
+  sm:subscribe({ signal = "on_save",  fun = this.on_save })
+  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
+end
+
+
+local active          = {}
+local all_spawned_obj = {}
+
+function on_spawn()
+  local root_sect = "dsh.respawn.respawners"
+  if sys_ini:section_exist( root ) then
+    for _, name in ipairs( get_section_keys( root_sect ) ) do
+      local enabled = get_bool( root_sect, name )
+      local tname   = "dsh_respawn." .. name
+      if enabled then
+        local respawn  = dsh_respawn( name )
+        active[ name ] = respawn
+        if not ogse_st_mgr.timer_exists( tname ) then
+          respawn:refresh_spawned_obj()
+        end
+      else
+        if ogse_st_mgr.timer_exists( tname ) then
+          local t = ogse_st_mgr.get_timer( tname )
+          t:stop()
+          cleanup_spawned_obj( name )
+        end
+      end
+    end
+  end
+end
+
+
+class "dsh_respawn"
+function dsh_respawn:__init( name )
+  self.name = name
+  self:init_respawn_params()
+  self:load_spawned_obj()
+end
+
+
+function dsh_respawn:name()
+  return self.name
+end
+
+
+function dsh_respawn:init_respawn_params()
+  self.sectSpawnProps = {}
+  local sect = "dsh.respawn." .. self.name
+
+  self.respawn_section = se_respawn.r_spawns(
+    sys_ini, sect, "respawn_section", self.sectSpawnProps
+  )
+  ASSERT(
+    self.respawn_section,
+    "RESPAWN: [%s] field 'respawn_section' doesn't exist.", self.name
+  )
+
+  self.min_count   = get_u32( sect, "min_count", 0 )
+  self.max_count   = get_float( sect, "max_count", -1 )
+  ASSERT(
+    ( self.min_count > self.max_count and self.max_count ~= -1 ),
+    "RESPAWN: [%s] min_count > max_count", self.name
+  )
+  self.max_spawn = get_u32( sect, "max_spawn", 1 )
+
+  self.str_conditions = get_string( sect, "conditions", 100 )
+  self.conditions     = xr_logic.parse_condlist(
+    self, sect, "conditions", self.str_conditions
+  )
+  self.creature_binded_logic = get_string( sect, "creature_binded_logic" )
+
+  local xyzlg = get_string( sect, "xyzlg" )
+  if xyzlg then
+    xyzlg = parse_nums( xyzlg )
+    ASSERT(
+      table.getn( xyzlg == 5 ), "incorrect line '%s'", tostring( xyzlg )
+    )
+    self.position = vector():set( xyzlg[ 1 ], xyzlg[ 2 ], xyzlg[ 3 ] )
+    self.m_level_vertex_id = xyzlg[ 4 ]
+    self.m_game_vertex_id  = xyzlg[ 5 ]
+  else
+    local pos = parse_nums( get_string( sect, "position" ) )
+    ASSERT(
+      table.getn( pos == 3 ), "incorrect line '%s'", tostring( pos )
+    )
+    self.position = vector():set( pos[ 1 ], pos[ 2 ], pos[ 3 ] )
+    self.m_level_vertex_id = get_u32( sect, "level_vertex_id" )
+    self.m_game_vertex_id  = get_u32( sect, "game_vertex_id"  )
+  end
+end
+
+
+function dsh_respawn:read_spawned_obj()
+  local tname = "dsh_respawn." .. self.name.. ".spawned_obj"
+  return ogse.load_var( tname, {} )
+end
+
+
+function dsh_respawn:save()
+  local tname = "dsh_respawn." .. self.name .. ".spawned_obj"
+  if table.getn( self.spawned_obj ) > 0 then
+    ogse.save_var( tname, self.spawned_obj, "array" )
+  else
+    ogse.delete_var( tname )
+  end
+end
+
+
+function dsh_respawn:load_spawned_obj()
+  local objs = self:read_spawned_obj()
+  self.spawned_obj = {}
+  for _, k in ipairs( objs ) do
+    sobj = alife():object( k )
+    if sobj and ( IsMonster( sobj ) or IsStalker( sobj ) ) then
+      all_spawned_obj[ k ] = self.name
+      table.insert( self.spawned_obj, k )
+    end
+  end
+end
+
+
+function dsh_respawn:remove_spawned( id )
+  ASSERT(
+    table.getn( self.spawned_obj ) > 0,
+    "Trying to remove %s from empty %s", id, self.name
+  )
+  local filtered = {}
+  for _, k in ipairs( self.spawned_obj ) do
+    if k ~= id then
+      table.insert( filtered, k )
+    end
+  end
+  all_spawned_obj[ id ] = nil
+  self.spawned_obj = filtered
+end
+
+
+function dsh_respawn:refresh_spawned_obj()
+  local our_sections = {}
+  for _, v in ipairs( self.respawn_section ) do
+    our_sections[ v.section ] = true
+  end
+  -- Пробегаемся по списку уже заспавненных объектов и удаляем из
+  -- них мертвые либо уничтоженные.
+  local filtered = {}
+  for _, v in ipairs( self.respawn_obj ) do
+    local sobj = alife():object( v )
+    if sobj and our_sections[ sobj:section_name() ] then
+      if IsStalker( sobj ) or IsMonster( sobj ) then
+        if sobj:alive() then
+          table.insert( filtered, v )
+        else
+          all_spawned_obj[ v ] = nil
+        end
+      else
+        all_spawned_obj[ v ] = nil
+      end
+    else
+      all_spawned_obj[ v ] = nil
+    end
+  end
+  self.spawned_obj = filtered
+
+  if
+    xr_logic.pick_section_from_condlist(
+      db.actor_proxy, t, t.conditions
+    ) == "0"
+  then
+    return
+  end
+
+  -- экстренный спаун минимального количества объектов
+  if table.getn( self.spawned_obj ) < self.min_count then
+    while table.getn( self.spawned_obj ) < self.min_count do
+      if self:create( 100 ) == false then return end
+    end
+    return
+  end
+
+  -- делаем несколько попыток заспаунить объект.
+  for i = 1, self.max_spawn do
+    if
+      self.max_count ~= -1
+      and table.getn( self.spawned_obj ) >= self.max_count
+    then
+      return
+    end
+    if
+      self:create(
+        xr_logic.pick_section_from_condlist(
+          db.actor_proxy, self, self.conditions
+        )
+      ) == false
+    then
+      return
+    end
+  end
+
+  self:schedule_next_spawn()
+end
+
+
+function dsh_respawn:create( prob )
+  if     tostring( prob ) == "true" then
+    prob = 80
+  elseif tostring( prob ) == "false" then
+    prob =  0
+  end
+  prob = tonumber( prob )
+  ASSERT(
+    prob == nil,
+    "RESPAWN[%s] spawn probability doesn't set", self.name
+  )
+
+  if math.random( 100 ) <= prob then
+    local spawn_section
+    local sum = 0
+    -- Производим рандомную взвешенную выборку с учетом уже
+    -- заспавленного количества человек.
+    for k, v in pairs( self.respawn_section ) do
+      sum = sum + v.prob
+    end
+    sum = math.random( 0, sum )
+    for _, v in ipairs( self.respawn_section ) do
+      sum = sum - v.prob
+      if sum <= 0 then
+        spawn_section = v.section
+        break
+      end
+    end
+    if not spawn_section then return false end
+
+    if self.creature_binded_logic then
+      local cfg_path = "scripts\\amk\\" .. self.creature_binded_logic .. ".ltx"
+      se_monster.on_before_register_callback = function( sobj )
+        local pk = xs_netpk.monster( sobj )
+        if pk:isOk() then
+          local data = pk:get()
+          local cd   = data.custom_data:getTable()
+          cd.logic = {
+            [ "cfg"             ] = cfg_path,
+            [ "dsh_replace_ini" ] = "true",
+          }
+          data.custom_data:set( cd )
+          pk:set( data )
+        end
+      end
+    end
+    local sobj = alife():create(
+      spawn_section,
+      self.position, self.m_level_vertex_id, self.m_game_vertex_id
+    )
+
+    local tt = self.sectSpawnProps[ spawn_section ]
+    if tt.check == true and not self.creature_binded_logic then
+      sobj:brain():update()
+      if sobj:smart_terrain_id() == 65535 then
+        alife():release( sobj, true )
+        return false
+      end
+    end
+
+    table.insert( self.spawned_obj, sobj.id )
+    all_spawned_obj[ sobj.id ] = self.name
+
+    return true
+  end
+end
+
+
+function dsh_respawn:schedule_next_spawn()
+  local delay_hours
+  if ui_mm_opt_main.GetOption( "dsh_classic_respawn" ) then
+    if ui_mm_opt_main.GetOption( "fast_respawn" ) then
+      -- частый респаун
+      delay_hours = math.random( 10, 12 )
+    else
+      -- стандартный респаун
+      delay_hours = math.random( 20, 24 )
+    end
+  else
+    delay_hours = math.random( 12, 24 )
+  end
+  local tname = "dsh_respawn." .. self.name
+  return ogse_st_mgr.delayed_fun_start( tname )
+    :set_gdelayDHMS( 0, delay_hours, 0, 0 )
+    :init( script_name() .. ".on_timer", self.name )
+    :start()
+end
+
+
+function on_timer( name )
+  local respawn = active[ name ]
+  respawn:refresh_spawned_obj()
+end
+
+
+function cleanup_spawned_obj( name )
+  local tname = "dsh_respawn." .. name .. ".spawned_obj"
+  local objs  = ogse.load_var( tname, {} )
+  for _, k in ipairs( objs ) do
+    sobj = alife():object( k )
+    if sobj and ( IsMonster( sobj ) or IsStalker( sobj ) ) then
+      smart_terrain.unregister_npc( sobj )
+      alife():release( sobj )
+    end
+    all_spawned_obj[ k ] = nil
+  end
+  ogse.delete_var( tname )
+end
+
+
+-- Удалить id моба как можно скорее, что бы не успел создасться какой-нибудь
+-- объект с этим же id. А то после такого можно наблюдать, что в респаунере
+-- с крысами, в подземке Агропрома, зарегестрирована Гроза. Как пример.
+-- Потому, что ей был присвоен id убиенной крысы.
+function on_release_npc( id )
+  local name = all_spawned_obj[ id ]
+  if name then
+    local respawn = active[ name ]
+    respawn:remove_spawned( id )
+  end
+end
+
+
+function on_save()
+  for name, respawn in pairs( active ) do
+    respawn:save()
+  end
+end
+
+
+function remove_all_respawners()
+  for name, respawn in pairs( active ) do
+    local tname = "dsh_respawn." .. name
+    if ogse_st_mgr.timer_exists( tname ) then
+      local t = ogse_st_mgr.get_timer( tname )
+      t:stop()
+    end
+    cleanup_spawned_obj( name )
+  end
+end
