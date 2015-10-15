@@ -2,7 +2,7 @@
 
 function attach( sm )
   sm:subscribe({ signal = "on_release_npc", fun = this.on_release_npc })
-  sm:subscribe({ signal = "on_save",  fun = this.on_save })
+  sm:subscribe({ signal = "on_save",  fun = this.on_save  })
   sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
 end
 
@@ -12,12 +12,12 @@ local all_spawned_obj = {}
 
 function on_spawn()
   local root_sect = "dsh.respawn.respawners"
-  if sys_ini:section_exist( root ) then
+  if sys_ini:section_exist( root_sect ) then
     for _, name in ipairs( get_section_keys( root_sect ) ) do
       local enabled = get_bool( root_sect, name )
       local tname   = "dsh_respawn." .. name
       if enabled then
-        local respawn  = dsh_respawn( name )
+        local respawn  = dsh_respawner( name )
         active[ name ] = respawn
         if not ogse_st_mgr.timer_exists( tname ) then
           respawn:refresh_spawned_obj()
@@ -34,20 +34,20 @@ function on_spawn()
 end
 
 
-class "dsh_respawn"
-function dsh_respawn:__init( name )
+class "dsh_respawner"
+function dsh_respawner:__init( name )
   self.name = name
   self:init_respawn_params()
   self:load_spawned_obj()
 end
 
 
-function dsh_respawn:name()
+function dsh_respawner:name()
   return self.name
 end
 
 
-function dsh_respawn:init_respawn_params()
+function dsh_respawner:init_respawn_params()
   self.sectSpawnProps = {}
   local sect = "dsh.respawn." .. self.name
 
@@ -56,14 +56,15 @@ function dsh_respawn:init_respawn_params()
   )
   ASSERT(
     self.respawn_section,
-    "RESPAWN: [%s] field 'respawn_section' doesn't exist.", self.name
+    "RESPAWN: [%s] field 'respawn_section' doesn't exist.", sect
   )
 
   self.min_count   = get_u32( sect, "min_count", 0 )
   self.max_count   = get_float( sect, "max_count", -1 )
   ASSERT(
-    ( self.min_count > self.max_count and self.max_count ~= -1 ),
-    "RESPAWN: [%s] min_count > max_count", self.name
+    not ( self.min_count > self.max_count and self.max_count ~= -1 ),
+    "RESPAWN: [%s] min_count (%s) > max_count (%s)",
+    sect, self.min_count, self.max_count
   )
   self.max_spawn = get_u32( sect, "max_spawn", 1 )
 
@@ -77,7 +78,7 @@ function dsh_respawn:init_respawn_params()
   if xyzlg then
     xyzlg = parse_nums( xyzlg )
     ASSERT(
-      table.getn( xyzlg == 5 ), "incorrect line '%s'", tostring( xyzlg )
+      table.getn( xyzlg ) == 5, "incorrect line '%s'", tostring( xyzlg )
     )
     self.position = vector():set( xyzlg[ 1 ], xyzlg[ 2 ], xyzlg[ 3 ] )
     self.m_level_vertex_id = xyzlg[ 4 ]
@@ -85,7 +86,7 @@ function dsh_respawn:init_respawn_params()
   else
     local pos = parse_nums( get_string( sect, "position" ) )
     ASSERT(
-      table.getn( pos == 3 ), "incorrect line '%s'", tostring( pos )
+      table.getn( pos ) == 3, "incorrect line '%s'", tostring( pos )
     )
     self.position = vector():set( pos[ 1 ], pos[ 2 ], pos[ 3 ] )
     self.m_level_vertex_id = get_u32( sect, "level_vertex_id" )
@@ -94,13 +95,13 @@ function dsh_respawn:init_respawn_params()
 end
 
 
-function dsh_respawn:read_spawned_obj()
+function dsh_respawner:read_spawned_obj()
   local tname = "dsh_respawn." .. self.name.. ".spawned_obj"
   return ogse.load_var( tname, {} )
 end
 
 
-function dsh_respawn:save()
+function dsh_respawner:save()
   local tname = "dsh_respawn." .. self.name .. ".spawned_obj"
   if table.getn( self.spawned_obj ) > 0 then
     ogse.save_var( tname, self.spawned_obj, "array" )
@@ -110,7 +111,7 @@ function dsh_respawn:save()
 end
 
 
-function dsh_respawn:load_spawned_obj()
+function dsh_respawner:load_spawned_obj()
   local objs = self:read_spawned_obj()
   self.spawned_obj = {}
   for _, k in ipairs( objs ) do
@@ -123,7 +124,7 @@ function dsh_respawn:load_spawned_obj()
 end
 
 
-function dsh_respawn:remove_spawned( id )
+function dsh_respawner:remove_spawned( id )
   ASSERT(
     table.getn( self.spawned_obj ) > 0,
     "Trying to remove %s from empty %s", id, self.name
@@ -139,35 +140,44 @@ function dsh_respawn:remove_spawned( id )
 end
 
 
-function dsh_respawn:refresh_spawned_obj()
+function dsh_respawner:refresh_spawned_obj()
+  local res = self:do_refresh_spawned_obj()
+  self:schedule_next_spawn()
+  return res
+end
+
+
+function dsh_respawner:do_refresh_spawned_obj()
   local our_sections = {}
   for _, v in ipairs( self.respawn_section ) do
     our_sections[ v.section ] = true
   end
   -- Пробегаемся по списку уже заспавненных объектов и удаляем из
   -- них мертвые либо уничтоженные.
-  local filtered = {}
-  for _, v in ipairs( self.respawn_obj ) do
-    local sobj = alife():object( v )
-    if sobj and our_sections[ sobj:section_name() ] then
-      if IsStalker( sobj ) or IsMonster( sobj ) then
-        if sobj:alive() then
-          table.insert( filtered, v )
+  if table.getn( self.spawned_obj ) > 0 then
+    local filtered = {}
+    for _, v in ipairs( self.spawned_obj ) do
+      local sobj = alife():object( v )
+      if sobj and our_sections[ sobj:section_name() ] then
+        if IsStalker( sobj ) or IsMonster( sobj ) then
+          if sobj:alive() then
+            table.insert( filtered, v )
+          else
+            all_spawned_obj[ v ] = nil
+          end
         else
           all_spawned_obj[ v ] = nil
         end
       else
         all_spawned_obj[ v ] = nil
       end
-    else
-      all_spawned_obj[ v ] = nil
     end
+    self.spawned_obj = filtered
   end
-  self.spawned_obj = filtered
 
   if
     xr_logic.pick_section_from_condlist(
-      db.actor_proxy, t, t.conditions
+      db.actor_proxy, self, self.conditions
     ) == "0"
   then
     return
@@ -199,12 +209,10 @@ function dsh_respawn:refresh_spawned_obj()
       return
     end
   end
-
-  self:schedule_next_spawn()
 end
 
 
-function dsh_respawn:create( prob )
+function dsh_respawner:create( prob )
   if     tostring( prob ) == "true" then
     prob = 80
   elseif tostring( prob ) == "false" then
@@ -212,10 +220,11 @@ function dsh_respawn:create( prob )
   end
   prob = tonumber( prob )
   ASSERT(
-    prob == nil,
-    "RESPAWN[%s] spawn probability doesn't set", self.name
+    prob ~= nil,
+    "RESPAWN: [%s] spawn probability doesn't set", self.name
   )
 
+log2( "dsh: prob = %s", prob )
   if math.random( 100 ) <= prob then
     local spawn_section
     local sum = 0
@@ -235,14 +244,13 @@ function dsh_respawn:create( prob )
     if not spawn_section then return false end
 
     if self.creature_binded_logic then
-      local cfg_path = "scripts\\amk\\" .. self.creature_binded_logic .. ".ltx"
       se_monster.on_before_register_callback = function( sobj )
         local pk = xs_netpk.monster( sobj )
         if pk:isOk() then
           local data = pk:get()
           local cd   = data.custom_data:getTable()
           cd.logic = {
-            [ "cfg"             ] = cfg_path,
+            [ "cfg"             ] = self.creature_binded_logic,
             [ "dsh_replace_ini" ] = "true",
           }
           data.custom_data:set( cd )
@@ -272,7 +280,7 @@ function dsh_respawn:create( prob )
 end
 
 
-function dsh_respawn:schedule_next_spawn()
+function dsh_respawner:schedule_next_spawn()
   local delay_hours
   if ui_mm_opt_main.GetOption( "dsh_classic_respawn" ) then
     if ui_mm_opt_main.GetOption( "fast_respawn" ) then
@@ -342,5 +350,12 @@ function remove_all_respawners()
       t:stop()
     end
     cleanup_spawned_obj( name )
+  end
+end
+
+
+function iterate_respawners( f )
+  for name, respawn in pairs( active ) do
+    f( respawn )
   end
 end
