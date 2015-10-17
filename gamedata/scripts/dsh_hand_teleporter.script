@@ -10,7 +10,31 @@ function on_use( obj, sobj )
   if not sobj then return end
   if meceniy_utils.teleporter_use == 0 then return end
   if obj:section() == "hand_teleporter" then
-    teleport_me()
+    local curr_lname = level.name()
+    local endpoints  = meceniy_intellectual.tabl_changers_by_level
+    local dst        = {}
+    for lname, v in pairs( endpoints ) do
+      if lname ~= curr_lname then
+        table.insert( dst, v )
+      end
+    end
+    local rnd_dst = dst[ math.random( 1, table.getn( dst ) ) ]
+    teleport_me(
+      {
+        [ "arts" ] = {
+          [ "af_electra_moonlight" ] = 2,
+        },
+        [ "can_teleport_checks" ] = {
+          this.can_teleport_from_this_level,
+        },
+        [ "dst" ] = {
+          [ "pos" ] = rnd_dst.p_dest_pos,
+          [ "lv"  ] = rnd_dst.p_dest_lv,
+          [ "gv"  ] = rnd_dst.p_dest_gv,
+          [ "dir" ] = { 0, 0, 0 },
+        }
+      }
+    )
     return true
   end
 end
@@ -22,30 +46,27 @@ function on_spawn()
 end
 
 
-function teleport_me()
+function teleport_me( t )
   level.start_stop_menu( level.main_input_receiver(), true )
-  if
-    ( not can_teleport_in_this_situation() )
-    or ( not can_teleport_from_this_level() )
-    or not use_arts()
-  then
-    return false
-  end
-  local curr_lname = level.name()
-  local endpoints  = meceniy_intellectual.tabl_changers_by_level
-  local dst        = {}
-  for lname, v in pairs( endpoints ) do
-    if lname ~= curr_lname then
-      table.insert( dst, v )
-    end
-  end
-  local rnd_dst = dst[ math.random( 1, table.getn( dst ) ) ]
+  if not can_teleport( t ) then return false end
   ogse.save_var( script_name() .. ".teleport_me", true )
   db.actor:give_info_portion( "teleport_started" )
   db.actor:disable_info_portion( "no_gravigun" )
   teleport_actor(
-    rnd_dst.p_dest_pos, rnd_dst.p_dest_lv, rnd_dst.p_dest_gv
+    t.dst.pos, t.dst.lv, t.dst.gv, ( t.dst.dir or { 0, 0, 0 } )
   )
+  return true
+end
+
+
+function can_teleport( t )
+  if not can_teleport_in_this_situation() then return false end
+  if t.can_teleport_checks then
+    for _, f in ipairs( t.can_teleport_checks ) do
+      if not f() then return false end
+    end
+  end
+  if not use_arts( t ) then return false end
   return true
 end
 
@@ -90,11 +111,32 @@ function can_teleport_from_this_level()
 end
 
 
-function use_arts()
-  local objs = inventory.on_belt_obj( "af_electra_moonlight" )
-  if objs and table.getn( objs ) >= 2 then
-    for i = 1, 2 do
-      ogse.remove_item_from_inventory( objs[ i ] )
+function use_arts( t )
+  local need_arts = 0
+  local arts      = {}
+  if t.art then
+    arts[ t.art ] = 1
+    need_arts     = need_arts + 1
+  end
+  if t.arts then
+    for k, n in pairs( t.arts ) do
+      arts[ k ] = n
+      need_arts = need_arts + 1
+    end
+  end
+  if need_arts == 0 then return true end
+  local use_arts = {}
+  for k, n in pairs( arts ) do
+    local objs = inventory.on_belt_obj( k )
+    if objs and table.getn( objs ) >= n then
+      for i = 1, n do
+        table.insert( use_arts, objs[ i ] )
+      end
+    end
+  end
+  if table.getn( use_arts ) == need_arts then
+    for _, obj in ipairs( use_arts ) do
+      ogse.remove_item_from_inventory( obj )
     end
     inventory.forced_inventory_update( false )
     return true
