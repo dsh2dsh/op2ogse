@@ -1,0 +1,187 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+function attach( sm )
+  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
+  sm:subscribe({ signal = "on_use",   fun = this.on_use   })
+end
+
+
+function on_use( obj, sobj )
+  if not sobj then return end
+  if meceniy_utils.teleporter_use == 0 then return end
+  if obj:section() == "hand_teleporter" then
+    teleport_me()
+    return true
+  end
+end
+
+
+function on_spawn()
+  ogse.delete_var( script_name() .. ".teleport_me" )
+  db.actor:disable_info_portion( "teleport_started" )
+end
+
+
+function teleport_me()
+  level.start_stop_menu( level.main_input_receiver(), true )
+  if
+    ( not can_teleport_in_this_situation() )
+    or ( not can_teleport_from_this_level() )
+    or not use_arts()
+  then
+    return false
+  end
+  local curr_lname = level.name()
+  local endpoints  = meceniy_intellectual.tabl_changers_by_level
+  local dst        = {}
+  for lname, v in pairs( endpoints ) do
+    if lname ~= curr_lname then
+      table.insert( dst, v )
+    end
+  end
+  local rnd_dst = dst[ math.random( 1, table.getn( dst ) ) ]
+  ogse.save_var( script_name() .. ".teleport_me", true )
+  db.actor:give_info_portion( "teleport_started" )
+  db.actor:disable_info_portion( "no_gravigun" )
+  teleport_actor(
+    rnd_dst.p_dest_pos, rnd_dst.p_dest_lv, rnd_dst.p_dest_gv
+  )
+  return true
+end
+
+
+function can_teleport_in_this_situation()
+  if
+    has_alife_info( "no_teleport_near_heli_btr" )
+    or (
+      has_alife_info( "kod_vveden_verno" )
+      and not has_alife_info( "dead_city_atpeshka" )
+    )
+  then
+    news_manager.send_tip(
+      db.actor,
+      "Не работает, зараза. Что-то не то. Может позже...",
+      nil, "nano", 20000
+    )
+    return false
+  end
+  return true
+end
+
+
+function can_teleport_from_this_level()
+  local endpoints = meceniy_intellectual.tabl_changers_by_level
+  if not endpoints[ level.name() ] then
+    local levels = {}
+    for lname, _ in pairs( endpoints ) do
+      table.insert( levels, game.translate_string( lname ) )
+      news_manager.send_tip(
+        db.actor,
+        string.format(
+          "Отсюда телепортироваться не получится, только с: %s.",
+          table.concat( levels, ", " )
+        ),
+        nil, "nano", 10000
+      )
+      return false
+    end
+  end
+  return true
+end
+
+
+function use_arts()
+  local objs = inventory.on_belt_obj( "af_electra_moonlight" )
+  if objs and table.getn( objs ) >= 2 then
+    for i = 1, 2 do
+      ogse.remove_item_from_inventory( objs[ i ] )
+    end
+    inventory.forced_inventory_update( false )
+    return true
+  end
+  news_manager.send_tip(
+    db.actor,
+    "Эта шарманка без артефактов на поясе не работает.",
+    nil, "nano", 20000
+  )
+  return false
+end
+
+
+local teleport_sid = 9799
+function teleport_actor( pos, lvid, gvid, dir )
+  fly.stop()
+  local apos = db.actor:position()
+  level.add_pp_effector( "teleport.ppe", 2006, false )
+  dsh.timeout( 1000, function()
+    create_level_changer(
+      teleport_sid,
+      { apos.x, apos.y, apos.z },
+      db.actor:level_vertex_id(), db.actor:game_vertex_id(),
+      nil, nil,
+      pos, lvid, gvid, ( dir or { 0, 0, 0 } ),
+      1, 3
+    )
+  end )
+end
+
+
+function create_level_changer( sid, position, lvid, gvid, spot, hint, dest_position, dest_lvid, dest_gvid, dest_dir_v, mode, shapes )
+  local sobj = alife():create(
+    "level_changer", vector():set( unpack( position ) ), lvid, gvid
+  )
+  ASSERT( sobj, "create_level_changer: failed to create level changer" )
+	
+  if spot ~= nil and hint ~= nil then 
+    level.map_add_object_spot_ser( sobj.id, spot, hint )
+  end
+	
+  local initial_packet = xs_netpk.net_alife_level_changer( sobj )
+  local table_lc       = initial_packet:get()
+	
+  table_lc.dest_position   = vector():set( unpack( dest_position ) )
+  table_lc.dest_level_vertex_id = dest_lvid
+  table_lc.dest_game_vertex_id  = dest_gvid
+  table_lc.dest_direction  = vector():set( unpack( dest_dir_v ) )
+  table_lc.dest_level_name = level_system_name_by_gvid( gvid )
+  table_lc.silent_mode     = mode
+  table_lc.story_id        = sid
+  table_lc.restrictor_type = 3 
+	
+	
+  if type( shapes ) == "number" then
+    table_lc.shapes:addSphere( shapes )
+  elseif type( shapes ) == "table" then
+    for i, shp in ipairs( shapes ) do
+      if shp.shtype == 0 then --/ sphere
+        table_lc.shapes:addSphere(
+          shp.radius, vector():set( unpack( shp.center ) )
+        )
+      else --/ box
+        table_lc.shapes:addBox(
+          matrix():set(
+            vector():set( unpack( shp.box[ 1 ] ) ), 
+            vector():set( unpack( shp.box[ 2 ] ) ), 
+            vector():set( unpack( shp.box[ 3 ] ) ), 
+            vector():set( unpack( shp.offset ) )
+          )
+        )
+      end
+    end
+  else
+    abort( "create_level_changer: unknown shape type" )
+  end
+
+  initial_packet:set( table_lc )
+end
+
+
+--[=[ spawn_level_changer.remove_old_teleport() это уже делает
+function start_del()
+  local obj = alife():story_object( teleport_sid )
+  if obj then
+    alife():release( obj, true )
+  end
+end
+start_del()
+--]=]
