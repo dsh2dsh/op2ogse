@@ -1,7 +1,10 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
+  sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
   sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
+  sm:subscribe({ signal = "on_take",  fun = this.on_take })
+  sm:subscribe({ signal = "on_take_from_box", fun = this.on_take_from_box })
   sm:subscribe({ signal = "on_use",   fun = this.on_use   })
 end
 
@@ -32,10 +35,46 @@ function on_use( obj, sobj )
           [ "lv"  ] = rnd_dst.p_dest_lv,
           [ "gv"  ] = rnd_dst.p_dest_gv,
           [ "dir" ] = { 0, 0, 0 },
-        }
+        },
+        [ "randomize_pos" ] = 50,
       }
     )
     return true
+  elseif obj:section() == "teleportator" then
+    level.start_stop_menu( ui_teleportator.teleportator_menu(), true )
+    return true
+  elseif spawn_level_changer.teleports[ obj:section() ] then
+    use_hand_teleport( obj:section() )
+    return true
+  end
+end
+
+
+function use_hand_teleport( sect )
+  local desc  = spawn_level_changer.teleports[ sect ]
+  local goto  = desc.goto_func[ math.random( 1, table.getn( desc.goto_func ) ) ]
+  local place = spawn_level_changer.places[ goto ]
+  local t = {
+    [ "dst" ] = {
+      [ "pos" ] = place.pos,
+      [ "lv"  ] = place.lv,
+      [ "gv"  ] = place.gv,
+      [ "dir" ] = ( place.view or { 0, 0, 0 } ),
+    },
+  }
+  if desc.art then
+    t.art = desc.art
+  elseif desc.pay then
+    t.arts = {
+      [ "af_electra_moonlight" ] = 2,
+    }
+    t.randomize_pos = 50
+  end
+  if desc.autosave then t.autosave = desc.autosave end
+  if not teleport_me( t ) then
+    if not desc.keep then
+      ogse.spawn_item_in_inv( sect )
+    end
   end
 end
 
@@ -46,10 +85,57 @@ function on_spawn()
 end
 
 
+function on_first_update()
+  local radius = ogse.load_var( script_name() .. ".randomize_pos", 0 )
+  ogse.delete_var( script_name() .. ".randomize_pos" )
+  if radius > 0 then
+    local pos = randomize_position( db.actor, radius )
+    db.actor:set_actor_position( pos )
+  end
+  local enemies = ogse.load_var( script_name() .. ".enemies", {} )
+  ogse.delete_var( script_name() .. ".enemies" )
+  if table.getn( enemies ) > 0 then
+    local ids = {}
+    for _, id in ipairs( enemies ) do
+      table.insert( ids, tonumber( id ) )
+    end
+    teleport_enemies_to_me(
+      ids, 5, ( 30 * ( 4 - level.get_game_difficulty() ) ) -- от 30 до 120
+    )
+  end
+end
+
+
+function on_take( obj, sobj )
+  if not sobj then return end
+  if obj:section() == "separator" then return end
+  spawn_level_changer.on_take_teleporter( obj )
+end
+
+function on_take_from_box( box, item, sitem )
+  if not sitem then return end
+  spawn_level_changer.on_take_teleportator( item )
+end
+
+
 function teleport_me( t )
   level.start_stop_menu( level.main_input_receiver(), true )
-  if not can_teleport( t ) then return false end
+  if not can_teleport( t )   then return false end
+  if not use_arts( t, true ) then return false end
+  if t.autosave and t.autosave ~= level.name() then
+    u3_utils.savegame_lc( "Телепорт", t.autosave )
+  end
+  if not use_arts( t ) then return false end
   ogse.save_var( script_name() .. ".teleport_me", true )
+  if t.randomize_pos then
+    ogse.save_var( script_name() .. ".randomize_pos", t.randomize_pos )
+  end
+  local enemies = get_enemies_around(
+    5 * ( level.get_game_difficulty() + 1 ) -- от 5 до 20
+  )
+  if table.getn( enemies ) > 0 then
+    ogse.save_var( script_name() .. ".enemies", enemies, "array" )
+  end
   db.actor:give_info_portion( "teleport_started" )
   db.actor:disable_info_portion( "no_gravigun" )
   teleport_actor(
@@ -66,7 +152,6 @@ function can_teleport( t )
       if not f() then return false end
     end
   end
-  if not use_arts( t ) then return false end
   return true
 end
 
@@ -111,7 +196,7 @@ function can_teleport_from_this_level()
 end
 
 
-function use_arts( t )
+function use_arts( t, test )
   local need_arts = 0
   local arts      = {}
   if t.art then
@@ -121,7 +206,7 @@ function use_arts( t )
   if t.arts then
     for k, n in pairs( t.arts ) do
       arts[ k ] = n
-      need_arts = need_arts + 1
+      need_arts = need_arts + n
     end
   end
   if need_arts == 0 then return true end
@@ -135,10 +220,12 @@ function use_arts( t )
     end
   end
   if table.getn( use_arts ) == need_arts then
-    for _, obj in ipairs( use_arts ) do
-      ogse.remove_item_from_inventory( obj )
+    if not test then
+      for _, obj in ipairs( use_arts ) do
+        ogse.remove_item_from_inventory( obj )
+      end
+      inventory.forced_inventory_update( false )
     end
-    inventory.forced_inventory_update( false )
     return true
   end
   news_manager.send_tip(
@@ -215,6 +302,104 @@ function create_level_changer( sid, position, lvid, gvid, spot, hint, dest_posit
   end
 
   initial_packet:set( table_lc )
+end
+
+
+function randomize_position( npc, radius )
+  local anoms = amk_anoms.get_anomaly_list( npc, radius )
+  local lname = level.name()
+  local gvn, gvx, lvx = amk_anoms.game_vertexes[ lname ][ 1 ], amk_anoms.game_vertexes[ lname ][ 2 ], amk_anoms.level_vertexes[ lname ]
+  local lvids = {}
+  for new_lv = 1, lvx do
+    local pos  = level.vertex_position( new_lv )
+    local dist = npc:position():distance_to( pos )
+    if dist <= radius then
+      local near_anom = false
+      for _, anom in ipairs( anoms ) do
+        if pos:distance_to( anom.pos ) <= anom.radius then
+          near_anom = true
+          break
+        end
+      end
+      if not near_anom then table.insert( lvids, new_lv ) end
+    end
+  end
+  local new_lv   = lvids[ math.random( 1, table.getn( lvids ) ) ]
+  local pos      = level.vertex_position( new_lv )
+  local new_gv   = 0
+  local min_dist = 100000
+  for a = gvn, gvx do
+    g1 = game_graph():vertex( a ):game_point()
+    if g1:distance_to( pos ) < min_dist then
+      min_dist = g1:distance_to( pos )
+      new_gv   = a
+    end
+  end
+  if game_graph():valid_vertex_id( new_gv ) then
+    return pos, new_lv, new_gv
+  end
+  return npc:position(), npc:level_vertex_id(), npc:game_vertex_id()
+end
+
+
+function teleport_enemies_to_me( enemies, min, radius )
+  local lname = level.name()
+  local gvn, gvx, lvx = amk_anoms.game_vertexes[ lname ][ 1 ], amk_anoms.game_vertexes[ lname ][ 2 ], amk_anoms.level_vertexes[ lname ]
+  local lvids = {}
+  for new_lv = 1, lvx do
+    local pos  = level.vertex_position( new_lv )
+    local dist = db.actor:position():distance_to( pos )
+    if dist > min and dist <= radius then
+      table.insert( lvids, new_lv )
+    end
+  end
+  for _, id in ipairs( enemies ) do
+    local sobj = alife():object( id )
+    if sobj then
+      smart_terrain.unregister_npc( sobj )
+      sobj:brain():can_choose_alife_tasks( false )
+      se_respawn.on_release_npc( id )
+      dsh_respawn.on_release_npc( id )
+      local new_lv   = lvids[ math.random( 1, table.getn( lvids ) ) ]
+      local pos      = level.vertex_position( new_lv )
+      local new_gv   = 0
+      local min_dist = 100000
+      for a = gvn, gvx do
+        g1 = game_graph():vertex( a ):game_point()
+        if g1:distance_to( pos ) < min_dist then
+          min_dist = g1:distance_to( pos )
+          new_gv   = a
+        end
+      end
+      if game_graph():valid_vertex_id( new_gv ) then
+        alife():teleport_object( "", pos, new_lv, new_gv, id )
+      else
+      end
+    end
+  end
+end
+
+
+function get_enemies_around( radius )
+  local enemies = {}
+  for id in pairs( db.creature ) do
+    if id then
+      local obj = level.object_by_id( id )
+      if obj and obj:is_custom_monster() and obj:alive() then
+        local dist = obj:position():distance_to( db.actor:position() )
+        if
+          ogse.get_npc_relation( obj, db.actor ) == "enemy"
+          and (
+            obj:see( db.actor )
+            or obj:position():distance_to( db.actor:position() ) <= radius
+          )
+        then
+          table.insert( enemies, obj:id() )
+        end
+      end
+    end
+  end
+  return enemies
 end
 
 
