@@ -473,7 +473,7 @@ end
 
 
 local level_recipient_rnd_coef = {
-  [ "l11_pripyat" ] = 0,
+--  [ "l11_pripyat" ] = 0,
 }
 
 class "drop_manager"
@@ -488,7 +488,7 @@ function drop_manager:__init( npc, who )
     and ( IsStalker( who ) or IsMonster( who ) )
   then
     local rnd = ( 4 - level.get_game_difficulty() )
-      * ( level_recipient_rnd_coef[ level.name() ] or 0.01 )
+      * ( level_recipient_rnd_coef[ level.name() ] or 0.1 )
     local is_lucky = math.random() < rnd
     if
       ogse.is_quest_npc( who )
@@ -530,141 +530,123 @@ end
 
 
 function drop_manager:create_release_item()
-	if self.npc == nil then return end
-	--' Спрашиваем у серверного объекта генерились ли предметы
-	local se_obj = alife():object(self.npc:id())
-	if (se_obj == nil) then return end
-	if se_obj.death_droped == true then
-		return
-	end
-	se_obj.death_droped = true
+  if self.npc == nil then return end
+  --' Спрашиваем у серверного объекта генерились ли предметы
+  local se_obj = alife():object( self.npc:id() )
+  if not se_obj then return end
+  if se_obj.death_droped then return end
+  se_obj.death_droped = true
 
-	local data = data_by_community.communities[self.npc:character_community()]
-	if not data then
-		data = data_by_community.default
-	end
+  local data = data_by_community.communities[ self.npc:character_community() ]
+  if not data then
+    data = data_by_community.default
+  end
 
-	local cond = data.condition
-	local cond_add = 5*(3-level.get_game_difficulty())
+  local cond     = data.condition
+  local cond_add = 5 * ( 3 - level.get_game_difficulty() )
 
 --[=[
-	--// xr_companion
-	if xr_companion.is_companion(self.npc:id()) then
-		self.npc:iterate_inventory(companion_item, self.npc)
-		return
-	end	
-	--// xr_companion
+  --// xr_companion
+  if xr_companion.is_companion( self.npc:id() ) then
+    self.npc:iterate_inventory( companion_item, self.npc )
+    return
+  end	
+  --// xr_companion
 --]=]
 	
-    --' Запускаем итератор на удаление предметов
-    self.npc:iterate_inventory(
-      function( npc, item )
-        self:keep_item( item )
-      end,
-      self.npc
-    )
+  --' Запускаем итератор на удаление предметов
+  self.npc:iterate_inventory(
+    function( npc, item )
+      self:keep_item( item )
+    end,
+    self.npc
+  )
 
-    --' чистим стволы и задаем им состояние
-    self:npc_clear_spawn( cond.min, cond.max, cond_add )
+  --' чистим стволы и задаем им состояние
+  self:npc_clear_spawn( cond.min, cond.max, cond_add )
 
-    --' Проверка на отсутствие спауна лута
-    local ini = self.npc:spawn_ini()
-    if ini and ini:section_exist("dont_spawn_loot") then
-        return
-    end
+  --' Проверка на отсутствие спауна лута
+  local ini = self.npc:spawn_ini()
+  if ini and ini:section_exist( "dont_spawn_loot" ) then
+    return
+  end
 
-    --' Доспавниваем необходимое количество итемов:
-    --' Необходимо составить список объектов которые могут быть заспавнены для персонажа
-    local spawn_items = item_by_community[self.npc:character_community()]
-    local who         = self:get_recipient()
-    if spawn_items and who then
-      for k, v in pairs( spawn_items ) do
-        --' По каждому объекту необходимо получить зависимости
-        if check_item_dependence( self.npc, k ) == true then
-          --' По каждому объекту необходимо получить количество
-          local number = math.ceil(
-            math_random( count_by_level[ k ].min, count_by_level[ k ].max )
-          )
-          --' Необходимо заспавнить нужное количество.
-          create_items( who, k, number, v )
-        end
+  --' Доспавниваем необходимое количество итемов:
+  --' Необходимо составить список объектов которые могут быть заспавнены для персонажа
+  local spawn_items = item_by_community[ self.npc:character_community() ]
+  local who         = self:get_recipient()
+  if spawn_items and who then
+    for k, v in pairs( spawn_items ) do
+      --' По каждому объекту необходимо получить зависимости
+      if check_item_dependence( self.npc, k ) == true then
+        --' По каждому объекту необходимо получить количество
+        local number = math.ceil(
+          math_random( count_by_level[ k ].min, count_by_level[ k ].max )
+        )
+        --' Необходимо заспавнить нужное количество.
+        create_items( who, k, number, v )
       end
     end
+  end
 	
-	--' Даем письмо
-	give_letter(self.npc)
+  --' Даем письмо
+  give_letter( self.npc )
 	
-	local vis
-	local otf
-		local sect	
-	--local npc_name = self.npc:name()
-	local npc_name = protected_items.get_obj_name(self.npc)
-	if not string_find(self.npc:section(), "arena") and
-		self.npc:character_community() ~= "arena_enemy" and
-		npc_name ~= "yan_specnaz_dead" and
-		npc_name ~= "x16_stalker_ghost" then 
-		local t = amk.read_stalker_params(se_obj)
-		if t then
-			vis = t.visual
-			vis = amk.str_explode("\\",vis)
-			vis = vis[3]
-		end	
-	end
-	
-	--local finish = false
-	if vis then
-		sect = visuals[vis]
-		if not sect then
-			for k,v in pairs(sect_by_visual_part) do
-				if string_find(vis, k) then
-					if v.sect then
-						sect = v.sect
-						break
-					elseif v.npc_names then -- v.npc_names
-						sect = v.npc_names[npc_name]
-						--[[for name,outf in pairs(v.npc_names) do
-							if name == npc_name then
-								sect = outf
-								finish = true
-								break
-							end
-						end]]
-						--if finish then
-						if sect then
-							break
-						end
-					end
-				end
-			end
-		end
-			
-		if sect and who then
-                  otf = create_items(
-                    who, sect, 1, data.probability_outfit * 10
-                  )
-                  if otf then
-                    level.client_spawn_manager():add(
-                      otf.id, -1, function( id, obj )
-                        obj:set_condition(
-                          ( math.random( cond.min, cond.max ) + cond_add ) / 100
-                        )
-                      end
-                    )
-                  end
-		end
-	end
+  local npc_name = protected_items.get_obj_name( self.npc )
+  if
+    not string.find( self.npc:section(), "arena" )
+    and self.npc:character_community() ~= "arena_enemy"
+    and npc_name ~= "yan_specnaz_dead"
+    and npc_name ~= "x16_stalker_ghost"
+  then 
+    local vis = table.remove(
+      amk.str_explode( "\\", self.npc:get_visual_name() )
+    )
+    if vis then
+      local sect = visuals[ vis ]
+      if not sect then
+        for k, v in pairs( sect_by_visual_part ) do
+          if string.find( vis, k ) then
+            if v.sect then
+              sect = v.sect
+              break
+            elseif v.npc_names then
+              sect = v.npc_names[ npc_name ]
+              if sect then
+                break
+              end
+            end
+          end
+        end
+      end
+      if
+        self.npc:relation( db.actor ) ~= game_object.enemy
+        or sect == "voen_exo_outfit"
+      then
+        who = self.npc
+      end
+      if sect and who then
+        local otf = create_items(
+          who, sect, 1, data.probability_outfit * 10
+        )
+        if otf then
+          level.client_spawn_manager():add(
+            otf.id, -1, function( id, obj )
+              obj:set_condition(
+                ( math.random( cond.min, cond.max ) + cond_add ) / 100
+              )
+            end
+          )
+        end
+      end
+    end	
+  end
 
-	--[[for k, v in pairs(names_info) do
-		if string_find(npc_name, k) then
-			db.actor:give_info_portion(v)
-			break
-		end
-	end]]
-	if names_info[npc_name] then
-		if db.actor:dont_has_info(names_info[npc_name]) then
-			db.actor:give_info_portion(names_info[npc_name])
-		end
-	end
+  if names_info[ npc_name ] then
+    if db.actor:dont_has_info( names_info[ npc_name ] ) then
+      db.actor:give_info_portion( names_info[ npc_name ] )
+    end
+  end
 end
 
 
