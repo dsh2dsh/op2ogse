@@ -155,12 +155,103 @@ function on_empty_smart( strn )
     table.insert( sects, dsh_sect .. "." .. profile )
   end
   local change_on_empty = false
+  local restrictors
   for _, curr_sect in ipairs( sects ) do
     if sys_ini:section_exist( curr_sect ) then
       change_on_empty = get_bool(
         curr_sect, "dsh_change_profile_on_empty", change_on_empty
       )
+      restrictors = get_string(
+        curr_sect, "dsh_cleanup_restrictors", restrictors
+      )
     end
   end
   if not change_on_empty then return end
+  log2( "dsh: change_on_empty %s", strn:name() )
+  local profiles
+  for _, curr_sect in ipairs( sects ) do
+    if sys_ini:section_exist( curr_sect ) then
+      profiles = get_string( curr_sect, "dsh_profiles", profiles )
+    end
+  end
+  ASSERT( profiles, "profiles not found for %s", strn:name() )
+  log2( "dsh: profiles for %s: %s", strn:name(), profiles )
+  local new_profile = select_prob_name( parse_probs( profiles ) )
+  log2( "dsh: new profile for %s: %s", strn:name(), new_profile )
+  switch_smart_terrain_profile( strn, new_profile )
+  if restrictors then
+    log2( "dsh: cleanup restrictors: %s", restrictors )
+    for _, k in ipairs( parse_names( restrictors ) ) do
+      local sobj = alife():object( k )
+      if sobj then
+        alife():release( sobj )
+        log2( "dsh: %s released", k )
+      end
+    end
+  end
+end
+
+
+function parse_probs( str )
+  local t = {}
+  local last
+  for _, k in ipairs( parse_names( str ) ) do
+    if last then
+      local p = tonumber( k )
+      if p then
+        last.prob = p
+        last      = nil
+      else
+        last = {
+          name = k,
+          prob = 1,
+        }
+        table.insert( t, last )
+      end
+    else
+      last = {
+        name = k,
+        prob = 1,
+      }
+      table.insert( t, last )
+    end
+  end
+end
+
+
+function select_prob_name( t )
+  local sum = 0
+  for _, v in ipairs( t ) do
+    sum = sum + v.prob
+  end
+  sum = math.random( 0, sum )
+  for _, v in ipairs( t ) do
+    sum = sum - v.prob
+    if sum <= 0 then
+      return v.name
+    end
+  end
+  ASSERT( nil, "nothing found: sum = %s", sum )
+end
+
+
+function switch_smart_terrain_profile( strn, profile )
+  local pk = xs_netpk.smart_terrain( strn )
+  ASSERT( pk:isOk(), "can't read netpk of %s", strn:name() )
+  local data = pk:get()
+  local cd   = data.custom_data:getTable()
+  if not cd.dsh then cd.dsh = {} end
+  cd.dsh.active_profile = profile
+  data.custom_data:set( cd )
+  pk:set( data )
+  strn.dsh_active_profile = profile
+  strn:dsh_override_params()
+  if strn.communities then
+    local comms = parse_names( strn.communities )
+    strn.accepted_communities = {}
+    for i, v in ipairs( comms ) do
+      strn.accepted_communities[ v ] = true
+    end
+  end
+  strn:remove_gulag( strn.id )
 end
