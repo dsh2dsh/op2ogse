@@ -1,0 +1,2497 @@
+
+local time_open = 22	-- время (час) открытия арены, min = 0, max = 23
+local time_close = 7	-- время (час) закрытия, min = 0, max = 23
+local delay_min = 0		-- минимальное количество полных дней (суток) между закрытием и открытием арены, min = 0
+local delay_max = 2		-- максимальное количество полных дней (суток) между закрытием и открытием арены, min = 1
+local delay_mut = 4		-- количество полных дней (суток) до открытия полного списка мутантов, min = 0
+local stake1 = 500		-- ставка №1 в тотализаторе (руб.)
+local stake2 = 1000		-- ставка №2 в тотализаторе (руб.)
+local stake3 = 2000		-- ставка №3 в тотализаторе (руб.)
+local perc_min = 30		-- минимальный процент дохода с суммы ставки
+local perc_max = 100	-- максимальный процент дохода с суммы ставки
+local aem_only = false	-- (!!!МЕНЯТЬ ТОЛЬКО ОДИН РАЗ!!!) false - мод активируется после прохождения оригинальной арены / true - мод активируется сразу.
+---------------------------------------------------------------------------------------------------
+local arenaext = nil	-- объект manager
+local time_def = nil	-- время в мире на момент начала игры (CTime)
+local update_time = game.CTime()
+local actor = db.actor
+local sim = alife()
+---------------------------------------------------------------------------------------------------
+-- вывод отладочной информации
+---------------------------------------------------------------------------------------------------
+
+function printf(fmt, ...)
+	local msg = string.format(fmt, ...)
+	local msg_no_ws = string.gsub(msg, "%s", "_")
+	get_console():execute("dbg:" .. msg_no_ws)
+end
+
+---------------------------------------------------------------------------------------------------
+-- функции для работы с ltx
+---------------------------------------------------------------------------------------------------
+
+function read_string(ini, section, field, candef, def)
+	if ini:section_exist(section) and ini:line_exist(section, field) then
+		return ini:r_string(section, field)
+	end
+	if candef == false then
+		abort("can't read string field '" .. field .. "' from section [" .. section .. "]")
+	end
+	return def
+end
+
+function read_number(ini, section, field, candef, def)
+	if ini:section_exist(section) and ini:line_exist(section, field) then
+		return ini:r_float(section, field)
+	end
+	if candef == false then
+		abort("can't read number field '" .. field .. "' from section [" .. section .. "]")
+	end
+	return def
+end
+
+function parse_place(line)
+	if line == nil then
+		abort("no value for section [place] in aem_manager.ltx")
+	end
+
+	local t = se_respawn.parse_names(line)
+	local n = table.getn(t)
+	if n ~= 5 then
+		abort("inalid value for section [place] in aem_manager.ltx")
+	end
+		
+	local place = {}
+	place.pos = vector():set(tonumber(t[1]), tonumber(t[2]), tonumber(t[3]))
+	place.lvid = tonumber(t[4])
+	place.gvid = tonumber(t[5])
+
+	return place
+end
+
+function load_team(ini, section)
+	--printf("load_team('%s')", section)
+	local info = {}
+	info.name   = read_string(ini, section, "name", true, "aem_" .. section)
+	info.name1  = read_string(ini, section, "name1", true, "aem_" .. section .. "1")
+	info.name2  = read_string(ini, section, "name2", true, "aem_" .. section .. "2")
+	info.intro  = read_string(ini, section, "intro", true, nil)
+	info.extro  = read_string(ini, section, "extro", true, nil)
+	info.spawn1 = se_respawn.parse_names(read_string(ini, section, "spawn1", true, ""))
+	info.spawn2 = se_respawn.parse_names(read_string(ini, section, "spawn2", true, ""))
+	info.place1 = se_respawn.parse_names(read_string(ini, section, "place1", false, nil))
+	info.place2 = se_respawn.parse_names(read_string(ini, section, "place2", false, nil))
+	info.humans_min = read_number(ini, section, "humans_min", true, 6)
+	info.humans_max = read_number(ini, section, "humans_max", true, 6)
+	info.mutants_min = read_number(ini, section, "mutants_min", true, 6)
+	info.mutants_max = read_number(ini, section, "mutants_max", true, 6)
+	return info
+end
+
+function load_group(ini, section)
+	--printf("load_group('%s')", section)
+	local info = {}
+
+	if section == "turnament" then
+		info.title  = read_string(ini, section, "title", true, "aem_" .. section)
+		info.info   = read_string(ini, section, "info", true, "aem_" .. section .. "_info")
+		info.done   = read_string(ini, section, "done", true, "aem_" .. section .. "_done")
+		info.teams  = se_respawn.parse_names(read_string(ini, section, "teams", false, nil))
+		info.fights = se_respawn.parse_names(read_string(ini, section, "fights", false, nil))
+		info.dlg_size = 100 + 100 * (table.getn(info.teams) * (table.getn(info.teams) - 1))
+	elseif section == "stakes" then
+		info.title  = read_string(ini, section, "title", true, "aem_" .. section)
+		info.info   = read_string(ini, section, "info", true, "aem_" .. section .. "_info")
+		info.done   = read_string(ini, section, "done", true, "aem_" .. section .. "_done")
+		info.teams1 = se_respawn.parse_names(read_string(ini, section, "teams1", false, nil))
+		info.teams2 = se_respawn.parse_names(read_string(ini, section, "teams2", false, nil))
+		info.fights = se_respawn.parse_names(read_string(ini, section, "fights", false, nil))
+		info.dlg_size = 100 + 100 * (table.getn(info.teams1) * table.getn(info.teams2))
+	else
+		info.title  = read_string(ini, section, "title", true, "aem_" .. section)
+		info.info   = read_string(ini, section, "info", true, "aem_" .. section .. "_info")
+		info.done   = read_string(ini, section, "done", true, "aem_" .. section .. "_done")
+		info.fights = se_respawn.parse_names(read_string(ini, section, "fights", false, nil))
+		info.dlg_size = 100
+	end
+
+	return info
+end
+
+function load_fight(ini, section, group)
+	--printf("load_fight('%s')", section)
+	local info = {}
+	info.group = group
+
+	if group == "turnament" then
+		info.done  = read_string(ini, section, "done", true, "aem_" .. section .. "_done")
+		info.intro = read_string(ini, section, "intro", true, nil)
+		info.extro = read_string(ini, section, "extro", true, nil)
+		info.team1 = read_string(ini, section, "team1", true, "aem_" .. section .. "_1")
+		info.team2 = read_string(ini, section, "team2", true, "aem_" .. section .. "_2")
+		info.winer = read_string(ini, section, "winer", true, nil)
+		info.dlg_size = 0
+	elseif group == "stakes" then
+		info.done  = read_string(ini, section, "done", true, "aem_" .. section .. "_done")
+		info.intro = read_string(ini, section, "intro", true, nil)
+		info.extro = read_string(ini, section, "extro", true, nil)
+		info.team1 = read_string(ini, section, "team1", true, "aem_" .. section .. "_1")
+		info.team2 = read_string(ini, section, "team2", true, "aem_" .. section .. "_2")
+		info.dlg_size = 0
+	else
+		info.title = read_string(ini, section, "title", true, "aem_" .. section)
+		info.done  = read_string(ini, section, "done", true, "aem_" .. section .. "_done")
+		info.intro = read_string(ini, section, "intro", true, nil)
+		info.extro = read_string(ini, section, "extro", true, nil)
+		info.spawn = se_respawn.parse_names(read_string(ini, section, "spawn", false, nil))
+		info.place = se_respawn.parse_names(read_string(ini, section, "place", false, nil))
+		info.money = read_number(ini, section, "money", false, 0)
+		info.bonus_5s = read_number(ini, section, "bonus_5s", true, 0)
+		info.bonus_10s = read_number(ini, section, "bonus_10s", true, 0)
+		info.bonus_15s = read_number(ini, section, "bonus_15s", true, 0)
+		info.bonus_20s = read_number(ini, section, "bonus_20s", true, 0)
+		info.bonus_30s = read_number(ini, section, "bonus_30s", true, 0)
+		info.bonus_40s = read_number(ini, section, "bonus_40s", true, 0)
+		info.bonus_50s = read_number(ini, section, "bonus_50s", true, 0)
+		info.bonus_60s = read_number(ini, section, "bonus_60s", true, 0)
+		info.bonus = read_string(ini, section, "bonus", true, nil)
+		info.unlimit = read_string(ini, section, "unlimit", true, nil)
+		info.nounlimit = read_string(ini, section, "nounlimit", true, nil)
+		info.dlg_size = 100
+	end
+
+	return info
+end
+
+---------------------------------------------------------------------------------------------------
+-- собственно аренный manager
+---------------------------------------------------------------------------------------------------
+
+class "CArenaext"
+function CArenaext:__init()
+	--printf("CArenaext:__init")
+	local i, j, n, n2, id, id2, value, info
+
+	time_def = time_get_start()
+
+	-- время последнего обновления (update)
+	self.lt = xr_logic.pstor_retrieve(actor, "aem_lt", 0)
+	-- время последнего/следующего открытия арены
+	self.nt = xr_logic.pstor_retrieve(actor, "aem_nt", 0)
+	-- время последней реальной активации (reinit)
+	self.it = xr_logic.pstor_retrieve(actor, "aem_it", 0)
+	-- время последнего сражения с монстрами
+	self.mt = xr_logic.pstor_retrieve(actor, "aem_mt", 0)
+
+	-- битовая маска уничтоженных группировок
+	self.mk = xr_logic.pstor_retrieve(actor, "aem_mk", 0)
+	self.mk_all = 0
+
+	-- чтение LTX
+	local ini = ini_file("misc\\aem_manager.ltx")
+
+	-- вещи, которые нельзя выносить с арены (удаляются при выходе с арены)
+	self.arena_items = {}
+	if ini:section_exist("arena_items") then
+		n = ini:line_count("arena_items")
+		for i=0,n-1 do
+			result, id, value = ini:r_line("arena_items",i,"",nil)
+			--printf(" arena_items: '%s'", id)
+			self.arena_items[id] = true
+		end
+	end
+
+	-- запрещённые для боя на арене вещи
+	self.remove_items = {}
+	if ini:section_exist("remove_items") then
+		n = ini:line_count("remove_items")
+		for i=0,n-1 do
+			result, id, value = ini:r_line("remove_items",i,"",nil)
+			--printf(" remove_items: '%s'", id)
+			self.remove_items[id] = true
+		end
+	end
+
+	-- вещи оставляемые ГГ во время тотализатора
+	self.keep_items = {}
+	if ini:section_exist("keep_items") then
+		n = ini:line_count("keep_items")
+		for i=0,n-1 do
+			result, id, value = ini:r_line("keep_items",i,"",nil)
+			--printf(" keep_items: '%s'", id)
+			self.keep_items[id] = true
+		end
+	end
+
+	-- чтение списка стартовых позиций
+	if not ini:section_exist("places") then
+		abort("no section [places] in aem_manager.ltx")
+	end
+	self.places = {}
+	n = ini:line_count("places")
+	for i=0,n-1 do
+		result, id, value = ini:r_line("places",i,"",nil)
+		--printf(" places: '%s'-'%s'", id, value)
+		self.places[id] = parse_place(value)
+	end
+
+	-- чтение команд
+	if not ini:section_exist("teams") then
+		abort("no section [teams] in aem_manager.ltx")
+	end
+	self.teams = {}
+	n = ini:line_count("teams")
+	for i=0,n-1 do
+		result, id, value = ini:r_line("teams",i,"",nil)
+		--printf(" teams: '%s'-'%s'", id, value)
+		self.teams[id] = load_team(ini, id)
+	end
+
+	-- чтение груп и боёв
+	if not ini:section_exist("groups") then
+		abort("no section [groups] in aem_manager.ltx")
+	end
+	self.groups = {}
+	self.fights = {}
+	self.groups_order = se_respawn.parse_names(read_string(ini, "groups", "order", false, nil))
+	n = table.getn(self.groups_order)
+	local bit = 1
+	for i=1,n do
+		id = self.groups_order[i]
+		self.groups[id] = load_group(ini, id)
+
+		n2 = table.getn(self.groups[id].fights)
+		for j=1,n2 do
+			id2 = self.groups[id].fights[j]
+			self.fights[id2] = load_fight(ini, id2, id)
+		end
+
+		if id ~= "mutants" and id ~= "special" then
+			self.groups[id].mk = bit
+			self.mk_all = self.mk_all + bit
+			bit = bit * 2
+		end
+	end
+
+	-- чтение 'stakes'
+	id = "stakes"
+	self.groups[id] = load_group(ini, id)
+	n2 = table.getn(self.groups[id].fights)
+	for j=1,n2 do
+		id2 = self.groups[id].fights[j]
+		self.fights[id2] = load_fight(ini, id2, id)
+	end
+
+	-- чтение 'turnament'
+	id = "turnament"
+	self.groups[id] = load_group(ini, id)
+	n2 = table.getn(self.groups[id].fights)
+	for j=1,n2 do
+		id2 = self.groups[id].fights[j]
+		self.fights[id2] = load_fight(ini, id2, id)
+	end
+
+	-- настройка id фраз диалога
+	local dlg_id = 100
+	-- для групп
+	for id,value in pairs(self.groups) do
+		self.groups[id].dlg_id = dlg_id
+		dlg_id = dlg_id + self.groups[id].dlg_size
+	end
+	-- для боёв
+	for id,value in pairs(self.fights) do
+		self.fights[id].dlg_id = dlg_id
+		dlg_id = dlg_id + self.fights[id].dlg_size
+	end
+
+	-- вспомогательные таблицы для поиска id фраз диалога
+	self.stakes_phrase = {}
+	self.turnament_phrase = {}
+
+	info = self.groups["stakes"]
+	value = info.dlg_id + 100
+	n = table.getn(info.teams1)
+	n2 = table.getn(info.teams2)
+	for i=1, n do
+		for j=1, n2 do
+			self.stakes_phrase[info.teams1[i] .. info.teams2[j]] = value
+			value = value + 100
+		end
+	end
+
+	info = self.groups["turnament"]
+	value = info.dlg_id + 100
+	n = table.getn(info.teams)
+	for i=1, n do
+		for j=1, n do
+			if i ~= j then
+				self.turnament_phrase[info.teams[i] .. info.teams[j]] = value
+				value = value + 100
+			end
+		end
+	end
+end
+
+-------
+-- возвращает имя текущего боя
+-------
+function CArenaext:current()
+	return xr_logic.pstor_retrieve(actor, "aem_cr")
+end
+
+-------
+-- возвращает описание боя с указанным именем
+-------
+function CArenaext:description(name)
+	return self.fights[name]
+end
+
+-------
+-- является ли текущий бой ставочным
+-------
+function CArenaext:is_stake()
+	local info = self:description(self:current())
+	return (info.group == "stakes" or info.group == "turnament")
+end
+
+-------
+-- выиграла ли ставка
+-------
+function CArenaext:is_stake_win()
+	return	((actor:has_info("aem_stake_team1") and xr_logic.pstor_retrieve(actor, "aem_team1") > 0) or
+		 (actor:has_info("aem_stake_team2") and xr_logic.pstor_retrieve(actor, "aem_team2") > 0))
+end
+
+-------
+-- сколько времени (часов) прошло после последнего боя с мутантами
+-------
+function CArenaext:get_mutants_time()
+	return (time_get_curr() - self.mt)
+end
+
+-------
+-- были ли все группировки уничтожены Меченым хотябы по одному разу
+-------
+function CArenaext:is_stalkers_evil()
+	return (bit_and(self.mk, self.mk_all) == self.mk_all)
+end
+
+-------
+-- проверяет группу текущего боя
+-------
+function CArenaext:is_group_name(name)
+	local info = self:description(self:current())
+	return info.group == name
+end
+
+-------
+-- проверяет начальную озвучку текущего боя
+-------
+function CArenaext:is_intro_name(name)
+	local info = self:description(self:current())
+	return info.intro == name
+end
+
+-------
+-- проверяет конечную озвучку текущего боя
+-------
+function CArenaext:is_extro_name(name)
+	local info = self:description(self:current())
+	if info.extro ~= nil then
+		return info.extro == name
+	end
+	-- для тотализатора две озвучки, в зависимости от результата
+	if info.group == "stakes" or info.group == "turnament" then
+		if xr_logic.pstor_retrieve(actor, "aem_team1") > 0 then
+			local team = xr_logic.pstor_retrieve(actor, info.team2, "")
+			aem_lights.win_team1()
+			return self.teams[team].extro == name
+		elseif xr_logic.pstor_retrieve(actor, "aem_team2") > 0 then
+			local team = xr_logic.pstor_retrieve(actor, info.team1, "")
+			aem_lights.win_team2()
+			return self.teams[team].extro == name
+		end
+	end
+	-- озвучка не найдена
+	return false
+end
+
+-------
+-- вызывается в случае смерти каждого участника боя
+-------
+function CArenaext:on_death(npc, team)
+	--printf("CArenaext:on_death('%s'-'%s')", team, npc:section())
+
+	if team ~= "team1" and team ~= "team2" then
+		abort("CArenaext:on_death('invalid team')")
+	end
+
+	-- уменьшаем счётчик команды
+	local cnt = xr_logic.pstor_retrieve(actor, "aem_" .. team, 0)
+	if cnt > 0 then
+		cnt = cnt - 1
+		xr_logic.pstor_store(actor, "aem_" .. team, cnt)
+	end
+
+	if actor:has_info("aem_timeover") then
+		-- убийство по истечению времени наказуемо
+		actor:give_info_portion("aem_fight_foul")
+	elseif cnt == 0 and actor:dont_has_info("aem_fight_done") then
+		-- команда уничтожена, необходимо закончить бой
+		actor:give_info_portion("aem_fight_done")
+		-- мигалки для ставочных боёв
+		local info = self:description(self:current())
+		if info.group ~= "turnament" and info.group ~= "stakes" then
+			aem_lights.win()
+		end
+	end
+end
+
+-------
+-- вызывается при выходе с арены
+-------
+function CArenaext:on_done_fight()
+	local name = self:current()
+	--printf("CArenaext:on_done_fight('%s')", name)
+	local info = self:description(name)
+
+	-- запрещаем бой для диалога
+	actor:give_info_portion(info.done)
+
+	local cnt_t1 = xr_logic.pstor_retrieve(actor, "aem_team1")
+	local cnt_t2 = xr_logic.pstor_retrieve(actor, "aem_team2")
+
+	-- выход в следующий круг для турнира
+	if info.group == "turnament" then
+		if info.winer ~= nil and info.winer ~= "" then
+			local winer
+			if cnt_t1 > 0 then
+				winer = xr_logic.pstor_retrieve(actor, info.team1, "")
+			elseif cnt_t2 > 0 then
+				winer = xr_logic.pstor_retrieve(actor, info.team2, "")
+			else
+				-- !!! ничья, что будем делать?
+				winer = xr_logic.pstor_retrieve(actor, info.team1, "")
+			end
+			xr_logic.pstor_store(actor, info.winer, winer)
+		end
+	end
+
+	-- условия для организации специальных боёв
+	-- только если противник реально изничтожен, а не таймаут
+	if cnt_t1 == 0 then
+		if info.group == "mutants" then
+			-- запоминаем дату последнего уничтожения мутантов
+			self.mt = time_get_curr()
+			xr_logic.pstor_store(actor, "aem_mt", self.mt)
+		else
+			-- запоминаем уничтоженние актёром крупных команд группировок
+			local group = self.groups[info.group]
+			if group.mk ~= nil then
+				if table.getn(info.spawn) == 6 then
+					self.mk = bit_or(self.mk, group.mk)
+					xr_logic.pstor_store(actor, "aem_mk", self.mk)
+					--printf("mk=%x", self.mk)
+				end
+			end
+		end
+	end
+
+	-- проверим всю группу, которой принадлежит бой, на предмет завершения
+	local t = self.groups[info.group].fights
+	local cnt = table.getn(t)
+	local done = true
+	for i=1,cnt do
+		if actor:dont_has_info(self.fights[t[i]].done) then
+			done = false
+			break
+		end
+	end
+	-- все бои данной группы завершены
+	if done == true then
+		self:on_done_group(info.group)
+	end
+end
+
+-------
+-- вызывается в случае завершения группы боёв
+-------
+function CArenaext:on_done_group(name)
+	--printf("CArenaext:on_done_group('%s')", name)
+	local info = self.groups[name]
+
+	-- запрещаем группу для диалога
+	actor:give_info_portion(info.done)
+
+	-- проверим все группы, может уже все закончены?
+	local done = true
+	for id, info in pairs(self.groups) do
+		if actor:dont_has_info(info.done) then
+			done = false
+			break
+		end
+	end
+	-- все бои завершены, арена пройдена
+	if done == true then
+		self:on_done_all()
+	end
+end
+
+-------
+-- вызывается в случае завершения всех боёв арены
+-------
+function CArenaext:on_done_all()
+	--printf("CArenaext:on_done_all()")
+	actor:give_info_portion("aem_done")
+end
+
+-------
+-- инициализация мода
+-------
+function CArenaext:startup()
+	--printf("CArenaext:startup()")
+	if actor:dont_has_info("aem_startup") then
+		actor:give_info_portion("aem_spam")
+		actor:give_info_portion("aem_startup")
+		
+		local ct = level.get_time_minutes()
+		xr_logic.pstor_store(actor, "aem_ct", ct)
+		
+		-- очистка ящичка
+		local box = level_object_by_sid(574)
+		if box ~= nil then
+			clear_box(box)
+		else
+			clear_offline_box(574)
+		end
+		
+		-- удаление 'деревянного' долговца
+		local obj = sim:object("level_prefix_physic_object_0004")
+		if obj ~= nil then
+			sim:release(obj)
+		end
+		
+		-- освободим место в баре, если оно занято
+		local obj = sim:object("bar_bar_visitors_1_2")
+		if obj ~= nil then
+			sim:release(obj)
+		end
+	end
+	timeup()
+end
+
+function CArenaext:timeup()
+	self.lt = time_get_curr()
+	self.nt = time_get_next(self.lt + 12)	-- хотя бы 12 часов обождать
+	if aem_only == true then
+		self.it = self.nt
+	else
+		self.it = 0
+	end
+	self.mt = self.nt
+	self.mk = 0
+	actor:give_info_portion(self.groups["special"].done)
+	
+-- тест первой инициализации, что бы не ждать долго
+--	self.nt = time_get_next(self.lt - 3)
+
+-- тест повторной инициализации
+--	self.nt = time_get_next(self.lt - 3)
+--	self.it = self.nt
+
+-- тест всех монстров
+--	self.nt = time_get_next(self.lt - 3)
+--	self.it = self.nt
+--	self.mt = 0
+
+-- тест сборной
+--	self.nt = time_get_next(self.lt - 3)
+--	self.it = self.nt
+--	self.mk = self.mk_all
+
+-- тест сборной, перешедшей в следующую активацию
+--	self.nt = time_get_next(self.lt - 3)
+--	self.it = self.nt
+--	actor:disable_info_portion(self.groups["special"].done)
+
+	xr_logic.pstor_store(actor, "aem_lt", self.lt)
+	xr_logic.pstor_store(actor, "aem_nt", self.nt)
+	xr_logic.pstor_store(actor, "aem_it", self.it)
+	xr_logic.pstor_store(actor, "aem_mt", self.mt)
+	xr_logic.pstor_store(actor, "aem_mk", self.mk)
+end
+
+-------
+-- удаление мода
+-------
+function CArenaext:cleanup()
+	local i, n, result, id, value, obj, section
+	--printf("CArenaext:cleanup()")
+	
+	-- чтение LTX
+	local ini = ini_file("misc\\aem_manager.ltx")
+	
+	-- возврат стандартного освещения на арене
+	aem_lights.remove_all_aem_lamps()
+	aem_lights.turn_arena_lamps_on()
+	
+	-- создание списка удаляемых инфопоршинов
+	local info = {}
+	if ini:section_exist("info") then
+		n = ini:line_count("info")
+		for i=0,n-1 do
+			result, id, value = ini:r_line("info",i,"",nil)
+			table.insert(info, id)
+		end
+	end
+	for id, value in pairs(self.groups) do
+		table.insert(info, value.done)
+	end
+	for id, value in pairs(self.fights) do
+		table.insert(info, value.done)
+	end
+	
+	-- создание списка удаляемых переменных
+	local pstor = {}
+	if ini:section_exist("pstor") then
+		n = ini:line_count("pstor")
+		for i=0,n-1 do
+			result, id, value = ini:r_line("pstor",i,"",nil)
+			table.insert(pstor, id)
+		end
+	end
+	for id, value in pairs(self.fights) do
+		if value.group == "stakes" or value.group == "turnament" then
+			table.insert(pstor, value.team1)
+			table.insert(pstor, value.team2)
+		end
+	end
+	
+	local storage = db.storage[actor:id()].pstor
+	
+	-- удаление инфопоршинов
+	for id, value in pairs(info) do
+		actor:disable_info_portion(value)
+	end
+	
+	-- удаление переменных
+	for id, value in pairs(pstor) do
+		if storage[value] ~= nil then
+			storage[value] = nil
+		end
+	end
+
+	-- удаление объектов
+	for id=0, 65535 do
+		obj = sim:object(id)
+		if obj ~= nil then
+			if string.find(obj:name(), "aem_") then
+				sim:release(obj)
+			end
+		end
+	end
+--	news_manager.send_tip(db.actor, "%c[25,240,25,25]МОД УДАЛЁН", nil, nil, 30000)
+end
+
+-------
+-- сгенерить доступные бои
+-------
+function CArenaext:reinit()
+	--printf("CArenaext:reinit()")
+	local name, info, t, tt, i, j, n, nn, cnt, rnd, fight
+
+	---- именно здесь, до установки info_portion-ов
+	local special = self:is_stalkers_evil() or actor:dont_has_info(self.groups["special"].done)
+
+	-- запрещаем все группы
+	for name, info in pairs(self.groups) do
+		actor:give_info_portion(info.done)
+	end
+
+	-- запрещаем все бои
+	for name, info in pairs(self.fights) do
+		actor:give_info_portion(info.done)
+	end
+
+	-- мутанты
+	info = self.groups["mutants"]
+	actor:disable_info_portion(info.done)	-- разрешаем группу мутантов
+	if is_init_mutants() then			-- разрешаем все бои
+		for i, name in pairs(info.fights) do
+			actor:disable_info_portion(self.fights[name].done)
+		end
+	else						-- разрешаем 3-4 случайных боя
+		t = {}
+		for i, name in pairs(info.fights) do
+			table.insert(t, name)
+		end
+		n = math.random(3, 4)
+		for i=1, n do
+			cnt = table.getn(t)
+			rnd = math.random(cnt)
+			actor:disable_info_portion(self.fights[t[rnd]].done)
+			table.remove(t, rnd)
+		end
+	end
+
+	-- инициализация stakes
+	t = {}
+	tt = {}
+	info = self.groups["stakes"]
+	actor:disable_info_portion(info.done)
+	for i, name in pairs(info.teams1) do
+		table.insert(t, name)
+	end
+	for i, name in pairs(info.teams2) do
+		table.insert(tt, name)
+	end
+	n = table.getn(info.fights)	
+	nn = math.random(3, 4)
+	if nn > n then nn = n end	
+	for i=1, n do
+		fight = self.fights[info.fights[i]]
+		if i <= nn then
+			cnt = table.getn(t)
+			rnd = math.random(cnt)
+			xr_logic.pstor_store(actor, fight.team1, t[rnd])
+			table.remove(t, rnd)
+			cnt = table.getn(tt)
+			rnd = math.random(cnt)
+			xr_logic.pstor_store(actor, fight.team2, tt[rnd])
+			table.remove(tt, rnd)
+			actor:disable_info_portion(fight.done)
+		else
+			xr_logic.pstor_store(actor, fight.team1, "")
+			xr_logic.pstor_store(actor, fight.team2, "")
+			actor:give_info_portion(fight.done)
+		end
+	end
+
+	-- инициализация turnament
+	t = {}
+	info = self.groups["turnament"]
+	actor:disable_info_portion(info.done)
+	for i, name in pairs(info.teams) do
+		table.insert(t, name)
+	end
+	for i=1, 2 do
+		fight = self.fights[info.fights[i]]
+		cnt = table.getn(t)
+		rnd = math.random(cnt)
+		xr_logic.pstor_store(actor, fight.team1, t[rnd])
+		table.remove(t, rnd)
+		rnd = math.random(cnt-1)
+		xr_logic.pstor_store(actor, fight.team2, t[rnd])
+		table.remove(t, rnd)
+		actor:disable_info_portion(fight.done)
+	end
+	fight = self.fights[info.fights[3]]
+	xr_logic.pstor_store(actor, fight.team1, "")
+	xr_logic.pstor_store(actor, fight.team2, "")
+	actor:disable_info_portion(fight.done)
+
+	-- инициализация остальных групп и боёв
+	if special then						-- бой со сборной
+		info = self.groups["special"]
+		actor:disable_info_portion(info.done)
+		for i, name in pairs(info.fights) do
+			actor:disable_info_portion(self.fights[name].done)
+		end
+		-- сброс статистики, что бы фраза не появлялась в диалоге больше одного раза
+		-- если бой не завершить, то он перейдёт в следующую активацию по info_portion
+		self.mk = 0
+	else
+		t = {}
+		for name, info in pairs(self.groups) do
+			if name ~= "mutants" and name ~= "special" and
+			   name ~= "stakes" and name ~= "turnament"
+			then
+				table.insert(t, name)
+			end
+		end
+		
+		n = math.random(3, 4)  -- колличество случайных групп
+		for i=1, n do
+			cnt = table.getn(t)
+			rnd = math.random(cnt)
+			info = self.groups[t[rnd]]
+			table.remove(t, rnd)
+			actor:disable_info_portion(info.done)
+			
+			tt = {}
+			for j, name in pairs(info.fights) do  -- составление 'таблиц' боёв для каждой группы
+				table.insert(tt, name)
+			end
+			nn = math.random(1, 4)  -- колличество разрешаемых боёв
+			for j=1, nn do
+				cnt = table.getn(tt)
+				rnd = math.random(cnt)
+				actor:disable_info_portion(self.fights[tt[rnd]].done)
+				table.remove(tt, rnd)
+			end
+		end
+	end
+	
+	-- обновляем рестрикты каждый раз при начале новой арены
+	for id=0, 65535 do
+		obj = level.object_by_id(id)
+		if obj ~= nil then
+			section = obj:section()
+			if section == "aem_sound" or section == "aem_timer" then
+				sim:release(sim:object(id), true)
+			end
+		end
+	end
+	
+	-- рестриктор, который будет выполнять озвучку и выход с арены
+	sim:create("aem_sound", vector():set(150.14, -14.16, 74.03), actor:level_vertex_id(), actor:game_vertex_id())
+	
+	-- рестриктор, который будет выполнять функции таймера, при сражениях на время
+	sim:create("aem_timer", vector():set(150.14, -14.16, 74.03), actor:level_vertex_id(), actor:game_vertex_id())
+	
+	self.it = self.nt
+	xr_logic.pstor_store(actor, "aem_it", self.it)
+	actor:give_info_portion("aem_ready")
+end
+
+-------
+-- вызывается из "bind_stalker.script" <actor_binder:update(delta)>
+-------
+function CArenaext:update()
+	local curr = time_get_curr()
+
+	local id, npc, ctm, rt, ct
+	
+	if actor:dont_has_info("aem_startup") then
+		if aem_only == true then
+			actor:give_info_portion("bar_arena_fight_8_done")
+			startup()
+		end
+	end
+	
+	id = xr_logic.pstor_retrieve(actor, "aem_id", 0)
+
+	-- удаляем Арни и создаём его клона
+	if id == 0 then
+		npc = sim:object("bar_arena_man")
+		if npc ~= nil then
+			sim:release(npc)
+			if npc:alive() ~= true then
+				-- мёртвый
+				actor:give_info_portion("aem_arny_dead")
+				actor:give_info_portion("aem_arny_dis_1")
+				admin_dead()
+			else
+				-- живой
+				local obj = sim:create("aem_arny", vector():set(149.561569213867,0.429975032806396,69.2308807373047), 40035, 1180)
+				-- сохранение id
+				xr_logic.pstor_store(actor, "aem_id", obj.id)
+			end
+		else
+			actor:give_info_portion("aem_arny_spread_out")
+			actor:give_info_portion("aem_arny_dis_2")
+			admin_dead()
+		end
+	end
+	
+	-- проверка Арни(админа) по сохранённому id: мёртв или уничтожен	
+	if  update_time < game.get_game_time() then
+		local idle_time = game.CTime()
+		idle_time:setHMSms(0, 5, 0, 0)
+		update_time = game.get_game_time() + idle_time
+		--printf("CArenaext:update(30sec_update_done)")
+		if id > 0 then	
+			id = xr_logic.pstor_retrieve(actor, "aem_id")
+			npc = sim:object(id)
+			if npc ~= nil and npc:clsid() == clsid.script_stalker then
+				if npc:alive() ~= true then
+					-- мёртвый
+					if npc:profile_name() == "aem_arny" then
+						actor:give_info_portion("aem_arny_dead")
+						actor:give_info_portion("aem_arny_dis_1")
+					elseif string.find(npc:name(), "aem_admin") then
+						actor:give_info_portion("aem_admin_dead")
+					else
+						-- Арни(админа) порвало -> заспавнился левый id -> левый умер -> update
+						if actor:dont_has_info("aem_arny_dis_1") and actor:dont_has_info("aem_arny_dis_2") then
+							actor:give_info_portion("aem_arny_spread_out")
+							actor:give_info_portion("aem_arny_dis_2")
+						else
+							actor:give_info_portion("aem_admin_spread_out")
+						end
+					end
+					admin_dead()
+				else
+					-- живой
+					if npc:profile_name() ~= "aem_arny" and not string.find(npc:name(), "aem_admin") then
+						-- уничтожен (порвало в аномалии)
+						if actor:dont_has_info("aem_arny_dis_1") and actor:dont_has_info("aem_arny_dis_2") then
+							actor:give_info_portion("aem_arny_spread_out")
+							actor:give_info_portion("aem_arny_dis_2")
+						else
+							actor:give_info_portion("aem_admin_spread_out")
+						end
+						admin_dead()
+					end
+				end
+			else
+				-- уничтожен (порвало в аномалии)
+				if actor:dont_has_info("aem_arny_dis_1") and actor:dont_has_info("aem_arny_dis_2") then
+					actor:give_info_portion("aem_arny_spread_out")
+					actor:give_info_portion("aem_arny_dis_2")
+				else
+					actor:give_info_portion("aem_admin_spread_out")
+				end
+				admin_dead()
+			end
+		end
+	end
+
+	-- выдача сообщения о восстановлении работы арены
+	-- инициализация спавна админа
+	rt = xr_logic.pstor_retrieve(actor, "aem_rt")
+	if rt ~= nil then
+		if (curr + rt >= self.nt) and (self.lt + rt < self.nt) then
+			msg("aem_restore")
+			actor:disable_info_portion("aem_arny_dead")
+			actor:disable_info_portion("aem_admin_dead")
+			actor:disable_info_portion("aem_arny_spread_out")
+			actor:disable_info_portion("aem_admin_spread_out")
+			actor:give_info_portion("aem_spam")
+			admin_spawn()
+			db.storage[db.actor:id()].pstor["aem_rt"] = nil
+		end
+	end
+
+	-- 5 мин. после закрытия арены: сообщение + info для смены рестрикта
+	ct = xr_logic.pstor_retrieve(actor, "aem_ct")
+	if ct ~= nil then
+		ctm = level.get_time_minutes()
+		
+		if ctm >= ct then
+			x = 0
+		else --if ctm < ct
+			x = 60
+		end
+		
+		if ctm >= ct + 5 - x then
+			if actor:has_info("aem_spam") then
+				local txt = {"aem_drunk_1", "aem_drunk_2", "aem_drunk_3", "aem_drunk_4"}
+				local cnt = table.getn(txt)
+				local rnd = math.random(cnt)
+				msg(txt[rnd])
+			end
+			actor:give_info_portion("aem_go_bar")
+			db.storage[db.actor:id()].pstor["aem_ct"] = nil
+		end
+	end
+
+	if actor:has_info("aem_startup") then
+		if actor:has_info("aem_open") then
+			if actor:has_info("aem_done") then
+				--printf("CArenaext:update(~aem_open)")
+				self.nt = time_get_next(curr + 1) -- хотя бы часовой перерыв
+				xr_logic.pstor_store(actor, "aem_nt", self.nt)
+				actor:disable_info_portion("aem_done")
+				actor:disable_info_portion("aem_open")
+				actor:disable_info_portion("aem_ready")
+				if actor:has_info("aem_spam") then
+					msg("aem_msg_done")
+				end
+				-- отключение мегафона и освещения щита "Арена"
+				actor:disable_info_portion("aem_megafone")
+				--aem_lights.shield_off()
+				-- запомним время закрытия арены
+				local ct = level.get_time_minutes()
+				xr_logic.pstor_store(actor, "aem_ct", ct)
+			elseif time_need_close(curr, self.nt) and
+				actor:dont_has_info("bar_arena_fight") and
+				actor:dont_has_info("aem_fight_wait")
+			then
+				--printf("CArenaext:update(~aem_open)")
+				self.nt = time_get_next(curr + 1) -- хотя бы часовой перерыв
+				xr_logic.pstor_store(actor, "aem_nt", self.nt)
+				actor:disable_info_portion("aem_open")
+				actor:disable_info_portion("aem_ready")
+				if actor:has_info("aem_spam") then
+					msg("aem_msg_close")
+				end
+				-- отключение мегафона и освещения щита "Арена"
+				actor:disable_info_portion("aem_megafone")
+				--aem_lights.shield_off()
+				-- запомним время закрытия арены
+				local ct = level.get_time_minutes()
+				xr_logic.pstor_store(actor, "aem_ct", ct)
+			end
+		else
+			if curr >= self.nt then
+				--printf("CArenaext:update(aem_open)")
+				actor:give_info_portion("aem_open")
+				actor:disable_info_portion("aem_go_bar")
+			elseif (curr + 3 >= self.nt) and (self.lt + 3 < self.nt) then
+				-- включение мегафона и освещения щита "Арена"
+				actor:give_info_portion("aem_megafone")
+				--aem_lights.shield_on()
+				actor:disable_info_portion("aem_go_bar")
+			end
+			if actor:has_info("aem_spam") then
+				if (curr >= self.nt) and (self.lt < self.nt) then
+					msg("aem_msg_open")
+				elseif (curr + 3 >= self.nt) and (self.lt + 3 < self.nt) then
+					msg("aem_msg_3h")
+				elseif (curr + 6 >= self.nt) and (self.lt + 6 < self.nt) then
+					msg("aem_msg_6h")
+				elseif (curr + 12 >= self.nt) and (self.lt + 12 < self.nt) then
+					msg("aem_msg_12h")
+				elseif (curr + 24 >= self.nt) and (self.lt + 24 < self.nt) then
+					msg("aem_msg_24h")
+				elseif (curr + 48 >= self.nt) and (self.lt + 48 < self.nt) then
+					msg("aem_msg_48h")
+				elseif (curr + 72 >= self.nt) and (self.lt + 72 < self.nt) then
+					msg("aem_msg_72h")
+				elseif (curr + 96 >= self.nt) and (self.lt + 96 < self.nt) then
+					msg("aem_msg_96h")
+				end
+			end
+		end
+		
+		-- проверка на разрыв диалога после передачи денег для ставки
+		if not actor:is_talking() and actor:has_info("aem_fight_wait") then
+			self:start_stake()		
+		end
+		
+		-- ???
+		if self.grenads then
+			if aem_grenade.unload2(self.grenads) then
+				self.grenads = nil
+			end
+		end
+	end
+	
+	self.lt = curr
+	xr_logic.pstor_store(actor, "aem_lt", self.lt)
+end
+
+-------
+-- начать бой
+-------
+function CArenaext:start(phr_id)
+	local name = self:fight_by_phrase(phr_id)
+	--printf("CArenaext:start('%s')", name)
+
+	-- запоминаем имя боя
+	xr_logic.pstor_store(actor, "aem_cr", name)
+
+	-- запомним группировку ГГ
+	xr_logic.pstor_store(actor, "aem_cm", actor:character_community())
+
+	local info = self.fights[name]
+
+	if info.group == "stakes" then
+		
+		-- спавн первой команды - мутанты
+		local team1 = self.teams[xr_logic.pstor_retrieve(actor, info.team1, "")]
+		local a1 = team1.mutants_min
+		local b1 = team1.mutants_max
+		local n1 = math.random(a1,b1)
+		
+		xr_logic.pstor_store(actor, "aem_team1", n1)
+		for i=1, n1 do
+			local spawn = team1.spawn1[i]
+			local place = self.places[team1.place1[i]]
+			local obj = sim:create(spawn, place.pos, place.lvid, place.gvid)
+		end
+		
+		-- спавн второй команды - люди
+		local team2 = self.teams[xr_logic.pstor_retrieve(actor, info.team2, "")]
+		local a2 = team1.humans_min
+		local b2 = team1.humans_max
+		local n2 = math.random(a2,b2)
+		
+		xr_logic.pstor_store(actor, "aem_team2", n2)
+		for i=1, n2 do
+			local spawn = team2.spawn2[i]
+			local place = self.places[team2.place2[i]]
+			local obj = sim:create(spawn, place.pos, place.lvid, place.gvid)
+		end
+		
+		-- ставка
+		if actor:has_info("aem_stake1") then
+			manage_money(stake1, "out")
+		elseif actor:has_info("aem_stake2") then
+			manage_money(stake2, "out")
+		elseif actor:has_info("aem_stake3") then
+			manage_money(stake3, "out")
+		end
+		
+		-- отложенный старт 
+		actor:give_info_portion("aem_fight_wait")
+		
+	elseif info.group == "turnament" then
+		
+		-- спавн первой команды
+		local team1 = self.teams[xr_logic.pstor_retrieve(actor, info.team1, "")]
+		local n1 = table.getn(team1.spawn1)
+		xr_logic.pstor_store(actor, "aem_team1", n1)
+		for i=1, n1 do
+			local spawn = team1.spawn1[i]
+			local place = self.places[team1.place1[i]]
+			local obj = sim:create(spawn, place.pos, place.lvid, place.gvid)
+		end
+		
+		-- спавн второй команды
+		local team2 = self.teams[xr_logic.pstor_retrieve(actor, info.team2, "")]
+		local n2 = table.getn(team2.spawn2)
+		xr_logic.pstor_store(actor, "aem_team2", n2)
+		for i=1, n2 do
+			local spawn = team2.spawn2[i]
+			local place = self.places[team2.place2[i]]
+			local obj = sim:create(spawn, place.pos, place.lvid, place.gvid)
+		end
+		
+		-- ставка 
+		if actor:has_info("aem_stake1") then
+			manage_money(stake1, "out")
+		elseif actor:has_info("aem_stake2") then
+			manage_money(stake2, "out")
+		elseif actor:has_info("aem_stake3") then
+			manage_money(stake3, "out")
+		end
+		
+		-- отложенный старт 
+		actor:give_info_portion("aem_fight_wait")
+		
+	else
+		
+		-- спавн участников
+		local n = table.getn(info.spawn)
+		xr_logic.pstor_store(actor, "aem_team1", n)
+		for i=1, n do
+			local spawn = info.spawn[i]
+			local place = self.places[info.place[i]]
+			local obj = sim:create(spawn, place.pos, place.lvid, place.gvid)
+		end
+		
+		-- 'волшебный' ящичек
+		local box = level_object_by_sid(574)
+		-- отнимем у ГГ опасные вещи
+		put_items_to_box(box, self.remove_items)
+		
+		-- ???
+		self.grenads = aem_grenade.unload1()
+		
+		-- запускаем кучу логики, завязанную на этот info_portion
+		actor:give_info_portion("bar_arena_fight")
+		
+	end
+end
+
+-------
+-- начать отложенный бой
+-------
+function CArenaext:start_stake()
+	-- отключаем отложенный старт 
+	actor:disable_info_portion("aem_fight_wait")
+
+	-- 'волшебный' ящичек
+	local box = level_object_by_sid(574)
+	-- отнимем у ГГ всё, кроме самого необходимого, дабы он не вмешивался в ход боя
+	put_items_to_box_exept(box, self.keep_items)
+
+	-- ГГ временно пополняет ряды торговцев
+	actor:set_character_community("trader",0,0)
+
+	-- телепортация к зрителям
+	db.actor:give_info_portion("teleport_started")
+	level.add_pp_effector ("teleport.ppe", 2006, false)
+	actor:set_actor_position(vector():set(140.05,-13.387,108.039))
+	actor:set_actor_direction(1.57)
+	db.actor:give_info_portion("teleport_finished")
+
+	-- запускаем кучу логики, завязанную на этот info_portion 
+	actor:give_info_portion("bar_arena_fight")
+	
+	-- смена группировки для team2
+	local npc
+	for id=0, 65535 do
+		npc = level.object_by_id(id)
+		if npc ~= nil and string.find(npc:section(),"_t2_") then
+			npc:set_character_community("stalker", 0, 0)
+		end
+	end
+end
+
+-------
+-- выход с арены после финальной озвучки
+-------
+function CArenaext:finish()
+	local name = self:current()
+	--printf("CArenaext:finish('%s')", name)
+	local info = self.fights[name]
+
+	-- бой окончен, пометим это и кое-что ещё
+	self:on_done_fight()
+
+	-- телепортация к Арни
+	db.actor:give_info_portion("teleport_started")
+	level.add_pp_effector ("blink.ppe", 234, false)
+	actor:set_actor_position(patrol("t_walk_2"):point(0))
+	local dir = patrol("t_look_2"):point(0):sub(patrol("t_walk_2"):point(0))
+	actor:set_actor_direction(-dir:getH())
+	db.actor:give_info_portion("teleport_finished")
+
+	-- ГГ покидает ряды торговцев
+	local community = xr_logic.pstor_retrieve(actor, "aem_cm")
+	actor:set_character_community(community,0,0)
+	db.storage[db.actor:id()].pstor["aem_cm"] = nil
+
+	-- удаление оружия, незаконно вынесеного с арены
+	if info.group ~= "turnament" or info.group ~= "stakes" then
+		clear_items(self.arena_items)
+	end
+
+	-- 'волшебный' ящичек
+	local box = level_object_by_sid(574)
+	-- возврат ГГ ранее отобранных вещей
+	get_items_from_box(box)
+
+	-- перезапуск логики рестриктов
+	actor:disable_info_portion("bar_arena_fight")
+	actor:disable_info_portion("bar_arena_fight_begin")
+
+	-- массовое убийство врагов, оставшихся на арене после выхода ГГ
+	local bot
+	for id=0, 65535 do
+		bot = level.object_by_id(id)
+		if bot ~= nil and bot:alive() == true then
+			if string.find(bot:out_restrictions(),"bar_arena_restrictor") then
+				bot:kill(bot)
+			end
+		end
+	end
+end
+
+-------
+-- получить награду и почистить инфу о бое, чтобы можно было приступить к следующему
+-------
+function CArenaext:close()
+	local name = self:current()
+	--printf("CArenaext:close('%s')", name)
+	local info = self.fights[name]
+
+	if info.group == "turnament" or info.group == "stakes" then
+		if (actor:has_info("aem_stake_team1") and xr_logic.pstor_retrieve(actor, "aem_team1") > 0) or
+		   (actor:has_info("aem_stake_team2") and xr_logic.pstor_retrieve(actor, "aem_team2") > 0) then
+			local money = 0
+			if actor:has_info("aem_stake1") then
+				money = stake1 + math.random(stake1*perc_min/100, stake1*perc_max/100)
+			elseif actor:has_info("aem_stake2") then
+				money = stake2 + math.random(stake2*perc_min/100, stake2*perc_max/100)
+			elseif actor:has_info("aem_stake3") then
+				money = stake3 + math.random(stake3*perc_min/100, stake3*perc_max/100)
+			end
+			manage_money(money, "in")
+		else
+			manage_money(0, "in")
+		end
+		actor:disable_info_portion("aem_stake_team1")
+		actor:disable_info_portion("aem_stake_team2")
+		actor:disable_info_portion("aem_stake1")
+		actor:disable_info_portion("aem_stake2")
+		actor:disable_info_portion("aem_stake3")
+	else
+		
+		if actor:has_info("aem_fight_foul") then
+			manage_money(info.money, "out")
+		elseif actor:has_info("aem_timeover") then
+			manage_money(0, "in")
+		else
+			manage_money(info.money, "in")
+			
+			if actor:has_info("aem_bonus") and actor:dont_has_info("aem_timeover") then
+				local money = 0
+				if actor:has_info("aem_bonus_5s") then
+					money = info.bonus_5s
+				elseif actor:has_info("aem_bonus_10s") then
+					money = info.bonus_10s
+				elseif actor:has_info("aem_bonus_15s") then
+					money = info.bonus_15s	
+				elseif actor:has_info("aem_bonus_20s") then
+					money = info.bonus_20s
+				elseif actor:has_info("aem_bonus_30s") then
+					money = info.bonus_30s
+				elseif actor:has_info("aem_bonus_40s") then
+					money = info.bonus_40s
+				elseif actor:has_info("aem_bonus_50s") then
+					money = info.bonus_50s
+				elseif actor:has_info("aem_bonus_60s") then
+					money = info.bonus_60s
+				end
+				
+				if money ~= nil and money > 0 then
+					manage_money(money, "in")
+				end
+			end
+		end
+		actor:disable_info_portion("aem_bonus")
+		actor:disable_info_portion("aem_bonus_5s")
+		actor:disable_info_portion("aem_bonus_10s")
+		actor:disable_info_portion("aem_bonus_15s")
+		actor:disable_info_portion("aem_bonus_20s")
+		actor:disable_info_portion("aem_bonus_30s")
+		actor:disable_info_portion("aem_bonus_40s")
+		actor:disable_info_portion("aem_bonus_50s")
+		actor:disable_info_portion("aem_bonus_60s")
+		actor:disable_info_portion("aem_timeover")
+		actor:disable_info_portion("aem_fight_foul")
+	end
+
+	-- чистка арены (если делать в finish, то есть глюки)
+	xr_zones.purge_arena_items("bar_arena")
+	-- сброс освещения после боя
+	--aem_lights.lights_reset()
+	aem_lights.remove_all_aem_lamps()
+	
+
+	actor:disable_info_portion("aem_fight_done")
+	db.storage[db.actor:id()].pstor["aem_cr"] = nil
+	db.storage[db.actor:id()].pstor["aem_team1"] = nil
+	db.storage[db.actor:id()].pstor["aem_team2"] = nil
+end
+
+---------------------------------------------------------------------------------------------------
+-- функции для работы с динамическим диалогом
+---------------------------------------------------------------------------------------------------
+--
+-- Есть какие бои, Арни?
+--   На сегодня всё, арена закрыта.
+--   Выбирай...
+--     <group1>
+--     <group2>
+--     ...
+--     ret
+--
+-- <single>
+-- Должане
+--   В каком колличестве?
+--     Один
+--       Сколько времени тебе понадобится?
+--         10 секунд
+--         20 секунд
+--         30 секунд
+--         40 секунд
+--         <ret>
+--     ...
+--     <ret>
+--
+-- <stake>
+-- Тотализатор
+--   Какой бой?
+--     Военные против Свободы
+--       На кого ставишь?
+--         Военные
+--           Сколько?
+--             1000
+--               Ну чтож, все ставки сделаны.
+--                 Поехали
+--             2000
+--               Ну чтож, все ставки сделаны.
+--                 Поехали
+--             3000
+--               Ну чтож, все ставки сделаны.
+--                 Поехали
+--             <nomoney>
+--             <ret>
+--         Свобода
+--           Сколько?
+--             1000
+--               Ну чтож, все ставки сделаны.
+--                 Поехали
+--             2000
+--               Ну чтож, все ставки сделаны.
+--                 Поехали
+--             3000
+--               Ну чтож, все ставки сделаны.
+--                 Поехали
+--             <nomoney>
+--             <ret>
+--         <ret>
+--     ...
+--     <ret>
+--
+-- <turnament>
+-- Турнир
+--   Какой бой?
+--     Военные против Свободы.
+--       На кого ставишь?
+--         Военные
+--           Сколько?
+--             1000
+--               И так, все ставки сделаны.
+--                 Поехали
+--             2000
+--               И так, все ставки сделаны.
+--                 Поехали
+--             3000
+--               И так, все ставки сделаны.
+--                 Поехали
+--             <nomoney>
+--             <ret>
+--         Свобода
+--           Сколько?
+--             1000
+--               И так, все ставки сделаны.
+--                 Поехали
+--             2000
+--               И так, все ставки сделаны.
+--                 Поехали
+--             3000
+--               И так, все ставки сделаны.
+--                 Поехали
+--             <nomoney>
+--             <ret>
+--         <ret>
+--     <ret>
+--
+---------------------------------------------------------------------------------------------------
+
+-------
+-- Added by DEXXX
+-- Проверяем версию игры и подставляем нужный тип данных
+-------
+function chk_ver(pid)
+	if tonumber(_G.main_menu.get_main_menu():GetGSVer()) <= 1.0004 then
+		return pid
+	else
+		if pid == -1 then
+			return ""
+		else
+			return tostring(pid)
+		end
+	end
+end
+
+function chk_ver_back(ph_curr)
+	if tonumber(_G.main_menu.get_main_menu():GetGSVer()) <= 1.0004 then
+		return ph_curr
+	else
+		return tonumber(ph_curr)
+	end
+end
+
+-------
+-- создаётся диалог актера, в котором будут выдаваться задания
+-------
+function CArenaext:dlg_init(dlg)
+	--printf("CArenaext:dlg_init(...)")
+
+	local phr = dlg:AddPhrase("aem_job_quest", chk_ver(0), chk_ver(-1), -10000)
+	local phr_script = phr:GetPhraseScript()
+
+	phr = dlg:AddPhrase("aem_job_closed", chk_ver(1), chk_ver(0), -10000)
+	phr_script = phr:GetPhraseScript()
+	phr_script:AddDontHasInfo("aem_ready")
+
+	phr = dlg:AddPhrase("aem_job_select", chk_ver(2), chk_ver(0), -10000)
+	phr_script = phr:GetPhraseScript()
+	phr_script:AddHasInfo("aem_ready")
+
+	phr = dlg:AddPhrase("aem_job_extra", chk_ver(3), chk_ver(2), -10000)
+	phr_script = phr:GetPhraseScript()
+	phr_script:AddPrecondition("aem_manager.is_stakes_or_turnament_valid")
+
+	phr = dlg:AddPhrase("aem_job_extra_info", chk_ver(4), chk_ver(3), -10000)
+
+	self:dlg_init_stakes(dlg, 4)
+	self:dlg_init_turnament(dlg, 4)
+	
+	local i
+	local count = table.getn(self.groups_order)
+	for i=1, count do
+		self:dlg_init_group(dlg, self.groups_order[i], 2)
+	end
+
+	dlg:AddPhrase("aem_job_extra_reject", chk_ver(5), chk_ver(4), -10000)
+
+	dlg:AddPhrase("aem_job_reject", chk_ver(6), chk_ver(2), -10000)
+end
+
+-------
+-- добавляет в диалог группу обычных боёв
+-------
+function CArenaext:dlg_init_group(dlg, name, parent)
+	--printf("CArenaext:dlg_init_group('%s')", name)
+
+	local group = self.groups[name]
+	local dlg_id = group.dlg_id
+
+	local phr = dlg:AddPhrase(group.title, dlg_id, parent, -10000)
+	local phr_script = phr:GetPhraseScript()
+	phr_script:AddDontHasInfo(group.done)
+
+	dlg:AddPhrase(group.info, dlg_id+1, dlg_id, -10000)
+
+	local i
+	local count = table.getn(group.fights)
+	for i=1, count do
+		self:dlg_init_fight(dlg, group.fights[i], dlg_id+1)
+	end
+
+	dlg:AddPhrase("aem_job_group_reject", dlg_id+2, dlg_id+1, -10000)
+end
+
+-------
+-- добавляет в диалог один обычный бой
+-------
+function CArenaext:dlg_init_fight(dlg, name, parent)
+	--printf("CArenaext:dlg_init_fight('%s')", name)
+
+	local fight = self.fights[name]
+	local dlg_id = fight.dlg_id
+
+	local phr = dlg:AddPhrase(fight.title, dlg_id, parent, -10000)
+	local phr_script = phr:GetPhraseScript()
+	phr_script:AddDontHasInfo(fight.done)
+
+	if fight.bonus ~= nil then
+		phr = dlg:AddPhrase(fight.bonus, dlg_id+1, dlg_id, -10000)
+	else
+		phr = dlg:AddPhrase("aem_job_time_quest", dlg_id+1, dlg_id, -10000)
+	end
+
+	if fight.nounlimit == nil then
+		if fight.unlimit ~= nil then
+			phr = dlg:AddPhrase(fight.unlimit, dlg_id+10, dlg_id+1, -10000)
+		else
+			phr = dlg:AddPhrase("aem_job_time_unlimited", dlg_id+10, dlg_id+1, -10000)
+		end
+		phr_script = phr:GetPhraseScript()
+		phr_script:AddDisableInfo("aem_bonus")
+		phr_script:AddAction("aem_manager.start_fight")
+		phr_script:AddAction("dialogs.break_dialog")
+	end
+	if fight.bonus_5s > 0 then
+		phr = dlg:AddPhrase("aem_job_time_5", dlg_id+9, dlg_id+1, -10000)
+		phr_script = phr:GetPhraseScript()
+		phr_script:AddGiveInfo("aem_bonus")
+		phr_script:AddGiveInfo("aem_bonus_5s")
+		phr_script:AddAction("aem_manager.start_fight")
+		phr_script:AddAction("dialogs.break_dialog")
+	end
+	if fight.bonus_10s > 0 then
+		phr = dlg:AddPhrase("aem_job_time_10", dlg_id+8, dlg_id+1, -10000)
+		phr_script = phr:GetPhraseScript()
+		phr_script:AddGiveInfo("aem_bonus")
+		phr_script:AddGiveInfo("aem_bonus_10s")
+		phr_script:AddAction("aem_manager.start_fight")
+		phr_script:AddAction("dialogs.break_dialog")
+	end
+	if fight.bonus_15s > 0 then
+		phr = dlg:AddPhrase("aem_job_time_15", dlg_id+7, dlg_id+1, -10000)
+		phr_script = phr:GetPhraseScript()
+		phr_script:AddGiveInfo("aem_bonus")
+		phr_script:AddGiveInfo("aem_bonus_15s")
+		phr_script:AddAction("aem_manager.start_fight")
+		phr_script:AddAction("dialogs.break_dialog")
+	end
+	if fight.bonus_20s > 0 then
+		phr = dlg:AddPhrase("aem_job_time_20", dlg_id+6, dlg_id+1, -10000)
+		phr_script = phr:GetPhraseScript()
+		phr_script:AddGiveInfo("aem_bonus")
+		phr_script:AddGiveInfo("aem_bonus_20s")
+		phr_script:AddAction("aem_manager.start_fight")
+		phr_script:AddAction("dialogs.break_dialog")
+	end
+	if fight.bonus_30s > 0 then
+		phr = dlg:AddPhrase("aem_job_time_30", dlg_id+5, dlg_id+1, -10000)
+		phr_script = phr:GetPhraseScript()
+		phr_script:AddGiveInfo("aem_bonus")
+		phr_script:AddGiveInfo("aem_bonus_30s")
+		phr_script:AddAction("aem_manager.start_fight")
+		phr_script:AddAction("dialogs.break_dialog")
+	end
+	if fight.bonus_40s > 0 then
+		phr = dlg:AddPhrase("aem_job_time_40", dlg_id+4, dlg_id+1, -10000)
+		phr_script = phr:GetPhraseScript()
+		phr_script:AddGiveInfo("aem_bonus")
+		phr_script:AddGiveInfo("aem_bonus_40s")
+		phr_script:AddAction("aem_manager.start_fight")
+		phr_script:AddAction("dialogs.break_dialog")
+	end
+	if fight.bonus_50s > 0 then
+		phr = dlg:AddPhrase("aem_job_time_50", dlg_id+3, dlg_id+1, -10000)
+		phr_script = phr:GetPhraseScript()
+		phr_script:AddGiveInfo("aem_bonus")
+		phr_script:AddGiveInfo("aem_bonus_50s")
+		phr_script:AddAction("aem_manager.start_fight")
+		phr_script:AddAction("dialogs.break_dialog")
+	end
+		if fight.bonus_60s > 0 then
+		phr = dlg:AddPhrase("aem_job_time_60", dlg_id+2, dlg_id+1, -10000)
+		phr_script = phr:GetPhraseScript()
+		phr_script:AddGiveInfo("aem_bonus")
+		phr_script:AddGiveInfo("aem_bonus_60s")
+		phr_script:AddAction("aem_manager.start_fight")
+		phr_script:AddAction("dialogs.break_dialog")
+	end
+	dlg:AddPhrase("aem_job_time_reject", dlg_id+11, dlg_id+1, -10000)
+end
+
+-------
+-- добавляет в диалог группу stakes
+-------
+function CArenaext:dlg_init_stakes(dlg, parent)
+	--printf("CArenaext:dlg_init_stakes()")
+
+	local group = self.groups["stakes"]
+	local dlg_id = group.dlg_id
+
+	local phr = dlg:AddPhrase(group.title, dlg_id, parent, -10000)
+	local phr_script = phr:GetPhraseScript()
+	phr_script:AddDontHasInfo(group.done)
+
+	dlg:AddPhrase(group.info, dlg_id+1, dlg_id, -10000)
+
+	local i, j
+	local name1, name2
+	local fight_id = dlg_id + 100
+	local n1 = table.getn(group.teams1)
+	local n2 = table.getn(group.teams2)
+	for i=1, n1 do
+		name1 = group.teams1[i]
+		for j=1, n2 do
+			name2 = group.teams2[j]
+			self:dlg_init_stakes_fight(dlg, name1, name2, dlg_id+1, fight_id)
+			fight_id = fight_id + 100
+		end
+	end
+
+	dlg:AddPhrase("aem_job_group_reject", dlg_id+2, dlg_id+1, -10000)
+end
+
+-------
+-- добавляет в диалог один бой stakes
+-------
+function CArenaext:dlg_init_stakes_fight(dlg, name1, name2, parent, dlg_id)
+	--printf("CArenaext:dlg_init_stakes_fight('%s vs %s')", name1, name2)
+
+	local team1 = self.teams[name1]
+	local team2 = self.teams[name2]
+
+	local title = game.translate_string(team1.name1)
+	title = title .. " "
+	title = title .. game.translate_string("aem_job_stake_vs")
+	title = title .. " "
+	title = title .. game.translate_string(team2.name2)
+
+	local phr = dlg:AddPhrase(title, dlg_id, parent, -10000)
+	local phr_script = phr:GetPhraseScript()
+	phr_script:AddPrecondition("aem_manager.is_stakes_valid")
+
+	dlg:AddPhrase("aem_job_stake_quest", dlg_id+1, dlg_id, -10000)
+
+	phr = dlg:AddPhrase(team1.name, dlg_id+2, dlg_id+1, -10000)
+	phr_script = phr:GetPhraseScript()
+	phr_script:AddGiveInfo("aem_stake_team1")
+	phr_script:AddDisableInfo("aem_stake_team2")
+
+	dlg:AddPhrase("aem_job_stake_money", dlg_id+3, dlg_id+2, -10000)
+	self:dlg_init_stake_tree(dlg, dlg_id+10, dlg_id+3)
+
+	phr = dlg:AddPhrase(team2.name, dlg_id+4, dlg_id+1, -10000)
+	phr_script = phr:GetPhraseScript()
+	phr_script:AddGiveInfo("aem_stake_team2")
+	phr_script:AddDisableInfo("aem_stake_team1")
+
+	dlg:AddPhrase("aem_job_stake_money", dlg_id+5, dlg_id+4, -10000)
+	self:dlg_init_stake_tree(dlg, dlg_id+50, dlg_id+5)
+
+	dlg:AddPhrase("aem_job_stake_reject", dlg_id+6, dlg_id+1, -10000)
+end
+
+-------
+-- добавляет в диалог группу turnament
+-------
+function CArenaext:dlg_init_turnament(dlg, parent)
+	--printf("CArenaext:dlg_init_turnament()")
+
+	local group = self.groups["turnament"]
+	local dlg_id = group.dlg_id
+
+	local phr = dlg:AddPhrase(group.title, dlg_id, parent, -10000)
+	local phr_script = phr:GetPhraseScript()
+	phr_script:AddDontHasInfo(group.done)
+
+	dlg:AddPhrase(group.info, dlg_id+1, dlg_id, -10000)
+
+	local i, j
+	local name1, name2
+	local fight_id = dlg_id + 100
+	local n = table.getn(group.teams)
+	for i=1, n do
+		name1 = group.teams[i]
+		for j=1, n do
+			if i ~= j then
+				name2 = group.teams[j]
+				self:dlg_init_turnament_fight(dlg, name1, name2, dlg_id+1, fight_id)
+				fight_id = fight_id + 100
+			end
+		end
+	end
+
+	dlg:AddPhrase("aem_job_group_reject", dlg_id+2, dlg_id+1, -10000)
+end
+
+-------
+-- добавляет в диалог один бой turnament
+-------
+function CArenaext:dlg_init_turnament_fight(dlg, name1, name2, parent, dlg_id)
+	--printf("CArenaext:dlg_init_turnament_fight('%s vs %s')", name1, name2)
+
+	local team1 = self.teams[name1]
+	local team2 = self.teams[name2]
+
+	local title = game.translate_string(team1.name1)
+	title = title .. " "
+	title = title .. game.translate_string("aem_job_stake_vs")
+	title = title .. " "
+	title = title .. game.translate_string(team2.name2)
+
+	local phr = dlg:AddPhrase(title, dlg_id, parent, -10000)
+	local phr_script = phr:GetPhraseScript()
+	phr_script:AddPrecondition("aem_manager.is_turnament_valid")
+
+	dlg:AddPhrase("aem_job_stake_quest", dlg_id+1, dlg_id, -10000)
+
+	phr = dlg:AddPhrase(team1.name, dlg_id+2, dlg_id+1, -10000)
+	phr_script = phr:GetPhraseScript()
+	phr_script:AddGiveInfo("aem_stake_team1")
+	phr_script:AddDisableInfo("aem_stake_team2")
+
+	dlg:AddPhrase("aem_job_stake_money", dlg_id+3, dlg_id+2, -10000)
+	self:dlg_init_stake_tree(dlg, dlg_id+10, dlg_id+3)
+
+	phr = dlg:AddPhrase(team2.name, dlg_id+4, dlg_id+1, -10000)
+	phr_script = phr:GetPhraseScript()
+	phr_script:AddGiveInfo("aem_stake_team2")
+	phr_script:AddDisableInfo("aem_stake_team1")
+
+	dlg:AddPhrase("aem_job_stake_money", dlg_id+5, dlg_id+4, -10000)
+	self:dlg_init_stake_tree(dlg, dlg_id+50, dlg_id+5)
+
+	dlg:AddPhrase("aem_job_stake_reject", dlg_id+6, dlg_id+1, -10000)
+end
+
+-------
+-- добавляет в диалог ветку со ставками
+-------
+function CArenaext:dlg_init_stake_tree(dlg, stake, parent)
+
+	local tm = " "..game.translate_string("aem_job_stake_money_tm")
+
+	local phr = dlg:AddPhrase(tostring(stake1)..tm, stake, parent, -10000)
+	local phr_script = phr:GetPhraseScript()
+	phr_script:AddPrecondition("aem_manager.has_money_1")
+
+	phr = dlg:AddPhrase("aem_job_stake_ready", stake+1, stake, -10000)
+	phr_script = phr:GetPhraseScript()
+	phr_script:AddGiveInfo("aem_stake1")
+	phr_script:AddAction("aem_manager.start_fight")
+
+	phr = dlg:AddPhrase("aem_job_stake_go", stake+2, stake+1, -10000)
+	phr_script = phr:GetPhraseScript()
+	phr_script:AddAction("dialogs.break_dialog")
+
+	phr = dlg:AddPhrase(tostring(stake2)..tm, stake+10, parent, -10000)
+	phr_script = phr:GetPhraseScript()
+	phr_script:AddPrecondition("aem_manager.has_money_2")
+
+	phr = dlg:AddPhrase("aem_job_stake_ready", stake+11, stake+10, -10000)
+	phr_script = phr:GetPhraseScript()
+	phr_script:AddGiveInfo("aem_stake2")
+	phr_script:AddAction("aem_manager.start_fight")
+
+	phr = dlg:AddPhrase("aem_job_stake_go", stake+12, stake+11, -10000)
+	phr_script = phr:GetPhraseScript()
+	phr_script:AddAction("dialogs.break_dialog")
+
+	phr = dlg:AddPhrase(tostring(stake3)..tm, stake+20, parent, -10000)
+	phr_script = phr:GetPhraseScript()
+	phr_script:AddPrecondition("aem_manager.has_money_3")
+
+	phr = dlg:AddPhrase("aem_job_stake_ready", stake+21, stake+20, -10000)
+	phr_script = phr:GetPhraseScript()
+	phr_script:AddGiveInfo("aem_stake3")
+	phr_script:AddAction("aem_manager.start_fight")
+
+	phr = dlg:AddPhrase("aem_job_stake_go", stake+22, stake+21, -10000)
+	phr_script = phr:GetPhraseScript()
+	phr_script:AddAction("dialogs.break_dialog")
+
+	phr = dlg:AddPhrase("aem_job_stake_money_empty", stake+30, parent, -10000)
+	phr_script = phr:GetPhraseScript()
+	phr_script:AddPrecondition("aem_manager.hasnt_money")
+
+	phr = dlg:AddPhrase("aem_job_stake_money_reject", stake+31, parent, -10000)
+	phr_script = phr:GetPhraseScript()
+	phr_script:AddPrecondition("aem_manager.has_money_1")
+end
+
+-------
+-- возвращает id фразы боя turnament
+-------
+function CArenaext:turnament_phrase_id(name)
+	local info = self.fights[name]
+	local name1 = xr_logic.pstor_retrieve(actor, info.team1, "")
+	local name2 = xr_logic.pstor_retrieve(actor, info.team2, "")
+	return self.turnament_phrase[name1 .. name2]
+end
+
+-------
+-- возвращает id фразы боя stakes
+-------
+function CArenaext:stakes_phrase_id(name)
+	local info = self.fights[name]
+	local name1 = xr_logic.pstor_retrieve(actor, info.team1, "")
+	local name2 = xr_logic.pstor_retrieve(actor, info.team2, "")
+	return self.stakes_phrase[name1 .. name2]
+end
+
+-------
+-- возвращает имя боя по id фразы
+-------
+function CArenaext:fight_by_phrase(phr_id)
+	local name, info
+
+	info = self.groups["turnament"]
+	if (phr_id >= info.dlg_id) and (phr_id < info.dlg_id + info.dlg_size) then
+		local i, id
+		local n = table.getn(info.fights)
+		for i=1, n do
+			name = info.fights[i]
+			id = self:turnament_phrase_id(name)
+			if (id ~= nil) and (phr_id >= id) and (phr_id < id + 100) then
+				return name
+			end
+		end
+		return ""
+	end
+
+	info = self.groups["stakes"]
+	if (phr_id >= info.dlg_id) and (phr_id < info.dlg_id + info.dlg_size) then
+		local i, id
+		local n = table.getn(info.fights)
+		for i=1, n do
+			name = info.fights[i]
+			id = self:stakes_phrase_id(name)
+			if (id ~= nil) and (phr_id >= id) and (phr_id < id + 100) then
+				return name
+			end
+		end
+		return ""
+	end
+
+	for name, info in pairs(self.fights) do
+		if (phr_id >= info.dlg_id) and (phr_id < info.dlg_id + info.dlg_size) then
+			return name
+		end
+	end
+	return ""
+end
+
+
+---------------------------------------------------------------------------------------------------
+-- функции для управления manager-ом
+---------------------------------------------------------------------------------------------------
+
+-------
+-- получить и проинициализировать объект класса
+-------
+function get_aem()
+	if arenaext == nil then
+		arenaext = CArenaext()
+	end
+	return arenaext
+end
+
+-------
+-- удалить объект класса
+-------
+function clear_aem()
+	arenaext = nil
+end
+
+
+---------------------------------------------------------------------------------------------------
+-- функции для работы с инвентарём и ящиком
+---------------------------------------------------------------------------------------------------
+
+-------
+-- переносит заданные вещи из инвентаря ГГ в ящик
+-- void put_items_to_box(game_object box, {["section1"]=true, ["section2"]=true, ...} items)
+-------
+function put_items_to_box(box, items)
+	--printf("put_items_to_box('%s')", box:name())
+	db.actor:give_info_portion("biznes_remove_special_item")
+	local obj
+	local cnt = actor:object_count()
+	for i=0, cnt-1 do
+		obj = actor:object(i)
+		if items[obj:section()] == true then
+			--printf(" section='%s'", obj:section())
+			actor:transfer_item(obj, box)
+		end
+	end
+	db.actor:disable_info_portion("biznes_remove_special_item")
+end
+
+-------
+-- переносит все вещи, кроме заданных, из инвентаря ГГ в ящик
+-- void put_items_to_box_exept(game_object box, {["section1"]=true, ["section2"]=true, ...} exept)
+-------
+function put_items_to_box_exept(box, exept)
+	--printf("put_items_to_box_exept('%s')", box:name())
+	db.actor:give_info_portion("biznes_remove_special_item")
+	local obj
+	local cnt = actor:object_count()
+	for i=0, cnt-1 do
+		obj = actor:object(i)
+--		if obj:clsid() ~= clsid.equ_stalker_s then -- оставить ГГ костюм
+			if exept[obj:section()] ~= true then
+				--printf(" section='%s'", obj:section())
+				actor:transfer_item(obj, box)
+			end
+--		end
+	end
+	db.actor:disable_info_portion("biznes_remove_special_item")
+end
+
+-------
+-- переносит все вещи из ящика в инвертарь ГГ
+-- void get_items_from_box(game_object box)
+------
+function get_items_from_box(box)
+	--printf("get_items_from_box('%s')", box:name())
+	db.actor:give_info_portion("biznes_remove_special_item")
+	local obj
+	local ids = enum_box_items(box)
+	for i, id in pairs(ids) do
+		obj = level.object_by_id(id)
+		if obj ~= nil then
+			--printf(" section='%s'", obj:section())
+			box:transfer_item(obj, actor)
+		end
+	end
+	db.actor:disable_info_portion("biznes_remove_special_item")
+end
+
+-------
+-- удаляет заданные вещи из инвентаря ГГ
+-- void clear_items({["section1"]=true, ["section2"]=true, ...} items)
+-------
+function clear_items(items)
+	--printf("clear_items()")
+	db.actor:give_info_portion("biznes_remove_special_item")
+	local obj
+	local cnt = actor:object_count()
+	for i=0, cnt-1 do
+		obj = actor:object(i)
+		if items[obj:section()] == true then
+			--printf(" section='%s'", obj:section())
+			sim:release(sim:object(obj:id()), true)
+		end
+	end
+	db.actor:disable_info_portion("biznes_remove_special_item")
+end
+
+-------
+-- очистить ящик в онлайне
+-- void clear_box(game_object box)
+-------
+function clear_box(box)
+	--printf("clear_box('%s')", box:name())
+	local obj
+	local ids = enum_box_items(box)
+	for i, id in pairs(ids) do
+		sim:release(sim:object(id), true)
+	end
+end
+
+-------
+-- очистить ящик в офлайне
+-- void clear_offline_box(number sid)
+-------
+function clear_offline_box(sid)
+	--printf("clear_offline_box(sid=%d)", sid)
+	local obj = sim:story_object(sid)
+	if obj then
+		local box = obj.id
+		local id
+		for id=0, 65535 do
+			obj = sim:object(id)
+			if obj and obj.parent_id == box then
+				--printf("release(%s)", obj:name())
+				sim:release(obj, true)
+			end
+		end
+	end
+end
+
+-------
+-- получить список id вещей лежащих в ящике
+-- {id1, id2, ...} enum_box_items(game_object box)
+-------
+function enum_box_items(box)
+	--printf("enum_box_items(box='%s')", box:name())
+	local obj
+	local own
+	local ids = {}
+	for id=0, 65535 do
+		obj = level.object_by_id(id)
+		if obj ~= nil then
+			own = obj:parent()
+			if own ~= nil and own:id() == box:id() then
+				--printf("enum section='%s' id=%d", obj:section(), id)
+				table.insert(ids, id)
+			end
+		end
+	end
+	return ids
+end
+
+
+---------------------------------------------------------------------------------------------------
+-- переопределённые binder-ы, как алтернатива net_spawn
+---------------------------------------------------------------------------------------------------
+
+-------
+-- binder для привязки сталкеров к 'bar_arena_restrictor'
+-------
+function bind_npc(npc)
+	npc:add_restrictions("bar_arena_restrictor","")
+	bind_stalker.init(npc)
+end
+
+-------
+-- binder для привязки админов к 'bar_restrictor'
+-------
+function bind_admin(npc)
+	if actor:has_info("aem_go_bar") then
+		npc:add_restrictions("bar_restrictor", "")
+	else
+		npc:remove_all_restrictions()
+	end
+	bind_stalker.init(npc)
+end
+
+-------
+-- binder для привязки монстров к 'bar_arena_restrictor'
+-- !!! не работает для контролёра !!!
+-------
+function bind_mob(mob)
+	mob:add_restrictions("bar_arena_restrictor","")
+	bind_monster.bind(mob)
+end
+
+
+---------------------------------------------------------------------------------------------------
+-- получение и отнятие денег без передачи NPC
+---------------------------------------------------------------------------------------------------
+function manage_money(num, type)
+	if actor then
+		if type == "in" then
+			actor:give_money(num)
+			game_stats.money_quest_update (num) 
+		elseif type == "out" then
+			actor:give_money(-num)
+			game_stats.money_quest_update(-num) 
+		end
+		news_manager.relocate_money(actor, type, num)
+	end
+end
+
+
+---------------------------------------------------------------------------------------------------
+-- вывод сообщений об арене
+---------------------------------------------------------------------------------------------------
+function msg(text)
+	if sleep_manager.is_sleep_active() then return end
+	
+	local npc, who, icon, msg, snd
+	if actor:has_info("aem_arny_dead") or 
+		actor:has_info("aem_admin_dead") or
+		actor:has_info("aem_arny_spread_out") or
+		actor:has_info("aem_admin_spread_out") then
+		who = game.translate_string("aem_barman")
+		icon = Frect():set(332,235,84,45)
+	else
+		npc = sim:object(xr_logic.pstor_retrieve(actor, "aem_id"))
+		if npc ~= nil and npc:alive() == true then
+			if npc:profile_name() == "aem_arny" then
+				who = game.translate_string("bar_arny_name")
+				icon = Frect():set(332,141,84,45)
+			else
+				who = game.translate_string("aem_admin")
+				icon = Frect():set(83,329,84,45)
+			end
+		end
+	end
+
+	msg = game.translate_string(text)
+	snd = xr_sound.get_safe_sound_object([[device\pda\pda_tip]])
+	snd:play_no_feedback(actor, sound_object.s2d, 0, vector(), 1.0)
+	actor:give_game_news("%c[255,238,155,23]"..who..":\\n%c[default]"..msg, "ui\\ui_iconstotal", icon, 0, 15000)
+end
+
+function npc(npc)
+	return npc
+end
+---------------------------------------------------------------------------------------------------
+-- функции для работы со временем
+---------------------------------------------------------------------------------------------------
+
+-------
+-- время начала игры (по хорошему нужно прочесть из ltx игры)
+-------
+function time_get_start()
+	local t = game.CTime()
+	t:set(2012,5,1, 7,30,0,0)
+	return t
+end
+
+-------
+-- время в часах, прошедшее от начала игры
+-------
+function time_get_curr()
+	local t = game.get_game_time()
+	local s = t:diffSec(time_def)
+	return math.floor(s/3600)
+end
+
+-------
+-- время следующего открытия
+-------
+function time_get_next(curr)
+	-- задание случайного интервала следующего открытия арены
+	if delay_min < 1 then
+		curr = curr + (math.random(delay_max) - 1) * 24
+	else
+		curr = curr + math.random(delay_min, delay_max) * 24
+	end
+
+	local days = math.floor(curr / 24)
+	local hour = curr - days * 24
+
+	local next = days * 24 + time_open
+	if hour >= time_open then
+		next = next + 24
+	end
+	return next
+end
+
+-------
+-- проверка, не пора ли закрывать арену
+-------
+function time_need_close(curr, open)
+	local need = open + time_close - time_open
+	if time_close < time_open then
+		need = need + 24
+	end
+	return curr >= need
+end
+
+
+---------------------------------------------------------------------------------------------------
+-- создание диалога выдачи боёв
+---------------------------------------------------------------------------------------------------
+function dlg_init(dlg, npc)
+	get_aem():dlg_init(dlg)
+end
+
+
+---------------------------------------------------------------------------------------------------
+-- Проверка условий диалогов - precondition
+---------------------------------------------------------------------------------------------------
+
+-------
+-- проверка возможности показа в диалоге ветки дополнительных боёв
+-------
+function is_stakes_or_turnament_valid()
+	local arena = get_aem()
+	return	actor:dont_has_info(arena.groups["stakes"].done) or
+		actor:dont_has_info(arena.groups["turnament"].done)
+end
+
+-------
+-- проверка возможности показа в диалоге боя 'stakes'
+-------
+function is_stakes_valid(npc1, npc2, dlg_name, phr_prev, phr_curr)
+	phr_curr = chk_ver_back(phr_curr)
+	local arena = get_aem()
+	name = arena:fight_by_phrase(phr_curr)
+	if name == "" then
+		return false
+	end
+	return actor:dont_has_info(arena.fights[name].done)
+end
+
+-------
+-- проверка возможности показа в диалоге боя 'turnament'
+-------
+function is_turnament_valid(npc1, npc2, dlg_name, phr_prev, phr_curr)
+	phr_curr = chk_ver_back(phr_curr)
+	local arena = get_aem()
+	name = arena:fight_by_phrase(phr_curr)
+	if name == "" then
+		return false
+	end
+	return actor:dont_has_info(arena.fights[name].done)
+end
+
+-------
+-- проверка наличия денег на ставку
+-------
+function has_money_1()
+	return actor:money() >= stake1
+end
+
+function has_money_2()
+	return actor:money() >= stake2
+end
+
+function has_money_3()
+	return actor:money() >= stake3
+end
+
+function hasnt_money()
+	return actor:money() < stake1
+end
+
+-------
+-- проверка вариантов диалога награды за бой
+-------
+
+-- ставка выиграла
+--
+function is_reward_stake_win()
+	if not get_aem():is_stake() then
+		return false
+	end
+	return get_aem():is_stake_win()
+end
+
+-- ставка проиграла
+--
+function is_reward_stake_fail()
+	if not get_aem():is_stake() then
+		return false
+	end
+	return not get_aem():is_stake_win()
+end
+
+-- бой без ограничения времени
+--
+function is_reward_nostake_unlimit()
+	if get_aem():is_stake() then
+		return false
+	end
+	if actor:has_info("aem_bonus") then
+		return false
+	end
+	return true
+end
+
+-- бой с ограничением времени - победа
+--
+function is_reward_nostake_bonus()
+	if get_aem():is_stake() then
+		return false
+	end
+	if actor:dont_has_info("aem_bonus") then
+		return false
+	end
+	return actor:dont_has_info("aem_timeover")
+end
+
+-- бой с ограничением времени - ничья
+--
+function is_reward_nostake_timeover()
+	if get_aem():is_stake() then
+		return false
+	end
+	if actor:dont_has_info("aem_bonus") or actor:dont_has_info("aem_timeover") then
+		return false
+	end
+	return actor:dont_has_info("aem_fight_foul")
+end
+
+-- бой с ограничением времени - фолл
+--
+function is_reward_nostake_foul()
+	if get_aem():is_stake() then
+		return false
+	end
+	if actor:dont_has_info("aem_bonus") or actor:dont_has_info("aem_timeover") then
+		return false
+	end
+	return actor:has_info("aem_fight_foul")
+end
+
+-------
+-- проверка вариантов диалога для инициализации арены
+-------
+
+-- первая активация
+--
+function is_init_first()
+	return get_aem().init_t == 0
+end
+
+-- не первая активация
+--
+function is_init_not_first()
+	return not is_init_first()
+end
+
+-- сборная
+--
+function is_init_stalkers()
+	return get_aem():is_stalkers_evil()
+end
+
+-- не сборная
+--
+function is_init_not_stalkers()
+	return not is_init_stalkers()
+end
+
+-- мутанты
+--
+function is_init_mutants()
+	return get_aem():get_mutants_time() >= delay_mut*24
+end
+
+-- не мутанты
+--
+function is_init_not_mutants()
+	return not is_init_mutants()
+end
+
+
+---------------------------------------------------------------------------------------------------
+-- функции диалогов - action
+---------------------------------------------------------------------------------------------------
+
+-------
+-- инициализация мода
+-------
+function startup()
+	get_aem():startup()
+end
+
+function timeup()
+	get_aem():timeup()
+end
+-------
+-- удаление мода
+-------
+function cleanup()
+	get_aem():cleanup()
+end
+
+-------
+-- сделать на арене посветлее
+-------
+function lights_on()
+	aem_lights.lights_on()
+end
+
+-------
+-- вернуть прежнее освещение
+-------
+function lights_off()
+	aem_lights.lights_off()
+end
+
+-------
+-- 'суточная' переинициализация боёв
+-------
+function reinit()
+	get_aem():reinit()
+end
+
+-------
+-- начать бой, какой именно - определяется по id фразы
+-------
+function start_fight(npc1, npc2, dlg_name, phr_curr)
+-- отсекание случая закрытия арены во время диалога
+	if actor:dont_has_info("aem_ready") then
+		actor:disable_info_portion("aem_bonus")
+		actor:disable_info_portion("aem_bonus_5s")
+		actor:disable_info_portion("aem_bonus_10s")
+		actor:disable_info_portion("aem_bonus_15s")
+		actor:disable_info_portion("aem_bonus_20s")
+		actor:disable_info_portion("aem_bonus_30s")
+		actor:disable_info_portion("aem_bonus_40s")
+		actor:disable_info_portion("aem_bonus_50s")
+		actor:disable_info_portion("aem_bonus_60s")
+		actor:disable_info_portion("aem_stake_team1")
+		actor:disable_info_portion("aem_stake_team2")
+		actor:disable_info_portion("aem_stake1")
+		actor:disable_info_portion("aem_stake2")
+		actor:disable_info_portion("aem_stake3")
+		dialogs.break_dialog(npc1, npc2)
+		return
+	end
+	
+	phr_curr = chk_ver_back(phr_curr)
+
+	get_aem():start(phr_curr)
+end
+
+-------
+-- закрытие боя и получение награды, если она есть
+-------
+function close_fight()
+	get_aem():close()
+end
+
+-------
+-- функция части инициализации смерти аренных менеджеров
+-------
+function admin_dead()
+	if actor:has_info("aem_arny_dead") then
+		msg("aem_arny_dead")
+	elseif actor:has_info("aem_arny_spread_out") then
+		msg("aem_arny_spread_out")
+	elseif actor:has_info("aem_admin_dead") then
+		local txt = {"aem_barm_1", "aem_barm_2", "aem_barm_3", "aem_barm_4"}
+		local cnt = table.getn(txt)
+		local rnd = math.random(cnt)
+		msg(txt[rnd])
+	elseif actor:has_info("aem_admin_spread_out") then
+		msg("aem_admin_spread_out")
+	end
+	
+	if actor:dont_has_info("aem_startup") then
+		timeup()
+	end
+	
+	-- иммитируется закрытие арены
+	actor:disable_info_portion("aem_spam")
+	actor:disable_info_portion("aem_megafone")
+	
+	rt = math.random(5,11)
+	xr_logic.pstor_store(actor, "aem_rt", rt)
+	xr_logic.pstor_store(actor, "aem_id", -1)
+end
+
+-------
+-- заспавним-ка нового администратора для арены
+-------
+function admin_spawn()
+	local obj = sim:create("aem_admin", vector():set(153.451, -0.00164, 42.0269), 40777, 1230)
+
+	-- сохранение id нового админа
+	xr_logic.pstor_store(actor, "aem_id", obj.id)
+end
