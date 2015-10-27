@@ -9,7 +9,8 @@ function attach( sm )
 end
 
 
-local switch_distances = {}
+local can_switch_offline = {}
+local switch_distances   = {}
 
 function on_spawn()
   local lname    = level.name()
@@ -19,82 +20,17 @@ function on_spawn()
       switch_distances[ k ] = get_float( dsh_sect, k )
     end
   end
-end
-
-
-local check_t
-local freq             = 1000
-local switched_offline = {}
-
-function on_update()
-  if not db.actor then return end
-  if check_t and check_t > time_global() then return end
-  for k, sd in pairs( switch_distances ) do
-    local sobj = alife():object( k )
-    if sobj then
-      local obj = level.object_by_id( sobj.id )
-      if obj and not switched_offline[ sobj.id ] then
-        if can_switch_offline( obj, sd ) then
-          switch_offline( sobj )
-          switched_offline[ sobj.id ] = true
-        end
-      elseif switched_offline[ sobj.id ] then
-        if can_switch_online( sobj, sd ) then
-          switch_online( sobj )
-          switched_offline[ sobj.id ] = false
-        end
-      end
+  if sys_ini:section_exist( "dsh.can_switch_offline" ) then
+    for _, k in ipairs( get_section_keys( "dsh.can_switch_offline" ) ) do
+      can_switch_offline[ k ] = get_bool( "dsh.can_switch_offline", k )
     end
-  end
-  check_t = time_global() + freq
-end
-
-
-function can_switch_offline( obj, sd )
-  return obj:position():distance_to( db.actor:position() ) > sd + 20
-end
-
-
-function switch_offline( sobj )
-  local switch_objs = {}
-  if sobj:clsid() == clsid.smart_terrain then
-    for id, v in pairs( sobj.npc_info ) do
-      table.insert( switch_objs, id )
-    end
-  else
-    table.insert( switch_objs, sobj.id )
-  end
-  for _, id in ipairs( switch_objs ) do
-    alife():set_switch_online(  id, false )
-    alife():set_switch_offline( id, true  )
-  end
-end
-
-
-function can_switch_online( sobj, sd )
-  return sobj.position:distance_to( db.actor:position() ) < sd
-end
-
-
-function switch_online( sobj )
-  local switch_objs = {}
-  if sobj:clsid() == clsid.smart_terrain then
-    for id, v in pairs( sobj.npc_info ) do
-      table.insert( switch_objs, id )
-    end
-  else
-    table.insert( switch_objs, sobj.id )
-  end
-  for _, id in ipairs( switch_objs ) do
-    alife():set_switch_online(  id, true  )
-    alife():set_switch_offline( id, false )
   end
 end
 
 
 local ignore = {}
 
-function se_can_switch_online( sobj )
+function get_switch_distance( sobj )
   if db.actor and not ignore[ sobj.id ] then
     local sd = switch_distances[ sobj:name() ]
     if not sd then
@@ -112,11 +48,25 @@ function se_can_switch_online( sobj )
       end
     end
     if sd then
-      if sobj.online then sd = sd + 20 end
-      return can_switch_online( sobj, sd )
+      return sd
     else
       ignore[ sobj.id ] = true
     end
   end
   return nil
+end
+
+
+function se_can_switch_online( sobj )
+  local sd = get_switch_distance( sobj )
+  if sd then
+    if sobj.online then sd = sd + 20 end
+    return sobj.position:distance_to( db.actor:position() ) <= sd
+  end
+  return nil
+end
+
+
+function se_can_switch_offline( sobj )
+  return can_switch_offline[ sobj:name() ]
 end
