@@ -107,6 +107,10 @@ local forbidden_profiles = {		-- запретные профили и имена
 	["major_wounded"]				=	true,
 }
 
+function attach( sm )
+  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
+end
+
 function init()
 	event("npc_hit"):register(hit_callback)
 	event("npc_death"):register(death_place)
@@ -441,16 +445,34 @@ function write_log(str)
 	end
 end
 
-function check_is_enemy(npc, enemy)
-	if not npc or not enemy then return false end
-	local is_engine_enemy = npc:relation(enemy) == game_object.enemy
-	if is_engine_enemy then
-		return true
-	end
-	return false
+
+local ignore_enemies = {}
+function check_is_enemy( npc, enemy )
+  if not npc or not enemy then return false end
+  local is_engine_enemy = npc:relation( enemy ) == game_object.enemy
+  if is_engine_enemy then
+    if ignore_enemies[ npc:name() ] then
+      for _, k in ipairs( ignore_enemies[ npc:name() ] ) do
+        if k == enemy:name() then return false end
+      end
+    end
+    return not is_combat_ignore( npc, enemy )
+  end
+  return false
 end
 
-function is_combat_ignore(npc)
+
+function on_spawn()
+  local dsh_sect = "dsh.xrs_battle_ai.ignore_enemies"
+  if sys_ini:section_exist( dsh_sect ) then
+    for _, k in ipairs( get_section_keys( dsh_sect ) ) do
+      ignore_enemies[ k ] = parse_names( get_string( dsh_sect, k ) )
+    end
+  end
+end
+
+
+function is_combat_ignore( npc, enemy )
 
 	st = db.storage[npc:id()].combat_ignore
 
@@ -460,6 +482,7 @@ function is_combat_ignore(npc)
 
 	if st.enabled then
 		local overrides = xr_logic.generic_scheme_overrides(npc)
+		if enemy then db.storage[ npc:id() ].enemy = enemy end
 		if overrides and
 		   overrides.combat_ignore and
 		   db.actor and
