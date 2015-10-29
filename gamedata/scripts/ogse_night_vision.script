@@ -6,9 +6,9 @@
 --/ Модуль приборов ночного видения /--
 
 -- Параметры
--- флаги
-local allow_scopes_nv_cheat = true
+local allow_scopes_nv_cheat = false			-- разрешить включать ПНВ при прицеливании через оптику (true)
 
+-- флаги
 local exo_convert_flag = false				-- флаг защиты от ошибочного выключения ПНВ при работе с экзой
 
 local night_vision_fx_store = false			-- флаг защиты от ошибочного включения (общий)
@@ -17,7 +17,7 @@ local night_vision_fx_not_sniper = true		-- флаг защиты от ошибочного включения 
 local night_vision_fx_not_trunk = true		-- флаг защиты от ошибочного включения (при работе с багажником транспорта)
 local night_vision_fx_not_btr = true		-- флаг защиты от ошибочного включения (в БТР)
 local night_vision_fx_on = false			-- флаг работающего ПНВ
-local nv_scope_fx_autoenable = true			-- флаг автовключения ночного режима в оптическом прицеле
+local nv_scope_fx_autoenable = false		-- флаг автовключения ночного режима в оптическом прицеле (true)
 local night_vision_scope_fx_on = false		-- флаг работающего ночного режима в оптическом прицеле
 local night_vision_binocular_fx_on = false	-- флаг работающего ночного режима в бинокле
 local night_vision_btr_fx_on = false		-- флаг работающего ПНВ БТР
@@ -42,6 +42,29 @@ local nv_ppe_factor = 0.8			-- уровень интенсивности постэффекта ПНВ
 local nv_scope_ppe_factor = 0.7		-- уровень интенсивности постэффекта ночного режима прицела
 local nv_binocular_ppe_factor = 0.8	-- уровень интенсивности постэффекта ночного режима бинокля
 local nv_btr_ppe_factor = 1.0		-- уровень интенсивности постэффекта ПНВ БТР
+
+
+-- подсветка прицельной сетки by k01jan (по мотивам Light Scopes COP by VanoSanturi, bArt)
+local static_on = ""				-- флаг cтатика
+--Таблица соответсвий* прицел - маска без подсветки - маска с подсветкой (ui_custom_msgs.xml)
+local tbl_sights_lighting = {
+--прицел
+	{
+		"wpn_addon_scope",
+		"wpn_addon_scope_pso-1-1",		--затычка, чисто для количества
+	},
+--сетка без подсветки (не используется, НЕ УДАЛЯТЬ)
+	{
+		"crosshair_pso-1",
+		"crosshair_pso-1",				--дубль для затычки
+	},	
+--сетка с подсветкой
+	{
+		"crosshair_pso-1_light",
+		"crosshair_pso-1_light",		--дубль для затычки
+	}
+}
+
 
 -- Функции
 -- Добавление худа визуального шума окном на рендере при скрытом худе
@@ -162,6 +185,7 @@ function call_pnv(key, bind)
 		return
 	end
 	if key == ogse_rebind_key.get_key_preset_value("night_vision_key") then
+--чисто для демо-ролика ogse.send_tip("А это что за кнопочка?..")
 		if db.actor:alive() then
 			quicklaunch_nv_call()
 			quicklaunch_nv_scope_call()
@@ -534,6 +558,25 @@ function nv_scope_fx(mode)
 				local scope_status = system_ini():r_u32(act_it:section(), "scope_status")
 				local scope_section = system_ini():r_string(act_it:section(), "scope_name")
 				if scope_status ~= 0 and scope_section then
+-- k01jan (подсветка прицельных сеток)
+					if system_ini():line_exist(scope_section, "scope_sights_lighting") then
+						local scope_sights_lighting = system_ini():r_string(scope_section, "scope_sights_lighting")
+						if scope_sights_lighting then
+							if scope_status == 1 then
+								turn_on_scope_sights_lighting(scope_section)
+							elseif scope_status == 2 then
+								local s_act_it = alife():object(act_it:id())
+								if s_act_it then
+									local wpndata = m_net_utils.get_weapon_data(s_act_it)
+									local addonf = wpndata.addon_flags
+									if bit_and(addonf, 1) == 1 then
+										turn_on_scope_sights_lighting(scope_section)
+									end
+								end
+							end
+						end
+					end
+-- EOF k01jan					
 					if system_ini():line_exist(scope_section, "nightvision_sect") then
 						local nightvision_section = system_ini():r_string(scope_section, "nightvision_sect")
 						if nightvision_section then
@@ -556,8 +599,60 @@ function nv_scope_fx(mode)
 		end
 	elseif mode == false and night_vision_scope_fx_on == true then
 		turn_off_nv_scope_fx()
+		turn_off_scope_sights_lighting(static_on)
 	end
 end
+
+-- k01jan
+--включение подсветки сетки (не использовать напрямую)
+function turn_on_scope_sights_lighting(scope_static)
+	for a=1,2 do
+		if scope_static==tbl_sights_lighting[1][a] then
+			add_static(tbl_sights_lighting[3][a])
+			--del_static(tbl_sights_lighting[2][a])
+		end
+	end
+	night_vision_scope_fx_on = true
+end
+
+--выключение подсветки сетки (не использовать напрямую)
+function turn_off_scope_sights_lighting(static_off)
+	del_static(static_off)
+	night_vision_scope_fx_on = false
+end
+
+--[[ light scopes cop
+-- НЕ ИСПОЛЬЗУЕТСЯ
+--Добавляем обычную сетку
+--function add_simple_scope(scope_section)
+--	for a=1,21 do
+--		if scope_section==tbl_sights_lighting[1][a] then
+--			add_static(tbl_sights_lighting[2][a])
+--			del_static(tbl_sights_lighting[3][a])
+--		end
+--	end
+--end
+--]]
+
+--Добавляем статик (подсветка прицельной сетки)
+function add_static(static)
+	local hud = get_hud()
+	if hud:GetCustomStatic(static) == nil then 
+		hud:AddCustomStatic(static, true)
+	end
+	static_on = static -- Запоминаем статик.
+end
+
+--Удаляем статик
+function del_static(static) 
+	local hud = get_hud()
+	if hud:GetCustomStatic(static) then
+		hud:RemoveCustomStatic(static)
+	end
+end
+
+
+-- EOF k01jan
 
 -- Старт ночника в прицеле (не использовать напрямую)
 function turn_on_nv_scope_fx(nightvision_section)

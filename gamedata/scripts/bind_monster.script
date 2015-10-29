@@ -4,6 +4,9 @@
 local particles={}
 local debug_flag = false
 
+local BurerNum
+local BurerTimer = 0
+
 function bind(obj)
 	printf("_bp: monster.bind: name='%s', id='%d'", obj:name(), obj:id())
 
@@ -48,6 +51,117 @@ function generic_object_binder:reinit()
 	end
 	self.object:set_callback(152,					self.before_hit_callback,		self)
 end
+
+function generic_object_binder:controller_hit()
+	local target = self.object:get_enemy()
+	if target and self.object:see(target) and IsStalker(target) then
+		local dist = self.object:position():distance_to(target:position())
+		if dist <= 2.0 then
+			if not self.get_hit then
+				self.get_hit = time_global() + 100
+				self.start_anim_hit_cont = true
+			elseif self.get_hit <= time_global() then
+				if self.start_anim_hit_cont then
+					self.object:play_cycle("stand_attack_1", true)
+					
+					local song_start = xr_sound.get_safe_sound_object("monsters\\controller\\controller_hit_2")
+					song_start:play_at_pos(self.object, self.object:position(), sound_object.s3d)
+					self.start_anim_hit_cont = false
+				end
+				if not self.hit_to_enemy then
+					self.hit_to_enemy = time_global() + 1000
+				elseif self.hit_to_enemy <= time_global() then
+					level.add_cam_effector("camera_effects\\hit_back_left.anm", 777, false, "")
+					
+					local h = hit()
+					h.draftsman = self.object
+					h.direction = vector():set(0,0,0)  
+					h:bone("bip01_spine")   
+					h.power     = 0.40     
+					h.impulse   = 1
+					h.type      = hit.wound
+					target:hit(h)
+					
+					self.hit_to_enemy = nil
+					self.get_hit = nil
+				end
+			end
+		else
+			self.hit_to_enemy = nil
+			self.get_hit = nil
+		end
+	end
+	if self.object:animation_count() < 1 then
+		local i = math.random(0,5)
+		self.object:add_animation("stand_walk_fwd_"..i, true)
+	end
+end
+function generic_object_binder:bloodsucker_hit()
+	local enemy = self.object:get_enemy()
+  
+	if enemy and enemy:id() == db.actor:id() and self.object:see(enemy) then
+	--/ если у кровососа есть враг/цель и кровосос его видит то ...
+		local distance = self.object:position():distance_to(enemy:position())
+		if distance <= 2 then --/ дистанция для анимации 'засоса'
+			local timer = time_global()
+			if (self.timer_anim or 0) < timer then
+				self.timer_anim = timer + 2000 --/ таймер анимации ~ 2 сек
+				if self.object:animation_count() > 0 then
+					self.object:clear_animations()
+				end
+				self.object:add_animation("vampire_0", true) --/ варианты: "vampire_0" | "idle"
+				--/ озвучка 'засоса'
+				
+				if enemy:id() == db.actor:id() then
+					local sound = sound_object("monsters\\bloodsucker\\sucking_attack")
+					sound:play_at_pos(self.object, self.object:position())
+				end
+				
+			end
+			--/ хит жертве (притягиваем)
+			if (self.timer_hit or 0) < timer and (self.timer_anim and self.timer_anim + 2000 >= timer) then
+				self.timer_hit = timer + 800 --/ таймер хита ~ 0.5 сек
+				local h = hit()
+				local vDir = self.object:direction() --/ вектор кровососа
+				local vDirHit = vector_rotate_y(vDir,179.0)							
+				h.draftsman = self.object
+				h.direction = vDirHit --/ направление хита
+				h:bone("bip01_spine") --/ для учета 'брони'
+				h.power     = 0.10
+				h.impulse   = 120/distance --/ чем ближе - тем сильнее 'засос'
+				h.type      = hit.wound --hit.strike
+				if enemy:id() == db.actor:id() then --/ жертва == актор? (а нужно?)
+					level.add_pp_effector("fire_hit.ppe", 3000, false)
+					-- db.actor:set_actor_position(self.object:position())				
+					-- db.actor:set_actor_direction(vDirHit:getH())
+				end						
+				enemy:hit(h) --/ наносим хит жертве
+			end
+		else	
+			
+		end
+	end
+end
+function generic_object_binder:burer_hit()
+	local target = self.object:get_enemy()
+	local v1 = self.object:direction()
+	local v2 = db.actor:direction()
+	if target and (target:id()==0) and v1:dotproduct(v2) < -0.6 and self.object:see(db.actor) and self.object:position():distance_to(db.actor:position())<6 then
+		BurerNum = 1
+		db.actor.power = -1.0
+		local active_slot = db.actor:active_slot()
+		if active_slot==1 or active_slot==2 then
+			db.actor:drop_item(db.actor:active_item())
+			self.object:play_cycle("stand_attack_0", false)
+		end
+		BurerTimer = time_global() + 6000*(1+math.random(-0.2,0.2))
+		self.object:add_animation("stand_idle_"..math.random(0,2), true)
+	elseif BurerNum and BurerTimer < time_global() + 6000 then
+		self.object:add_animation("stand_idle_"..math.random(0,2), true)
+		BurerNum = nil
+	end
+end
+
 function generic_object_binder:update(delta)
 	ogse_debug.check_npc()
 	ogse_debug.check_actor()
@@ -114,9 +228,11 @@ function generic_object_binder:update(delta)
 		log1("--xr_combat_companion cannot be loaded!")
 	end
 	ogse_debug.process_monster(self.object, "upd", 7)
+	
+	local class_id = self.object:clsid()
 
 	-- Апдейт торговли
-	if self.object:clsid() == clsid.script_trader then
+	if class_id == clsid.script_trader then
 		trade_manager.update(self.object)
 	end
 	
@@ -128,59 +244,16 @@ function generic_object_binder:update(delta)
 		else
 			self.object:set_tip_text("")
 		end
+			
+		if class_id == clsid.controller_s 	then 		self:controller_hit()		end
+		if class_id == clsid.bloodsucker_s 	then		self:bloodsucker_hit()		end
+		if class_id == clsid.burer_s		then		self:burer_hit()			end
+		
 	else
 		self.object:set_tip_text_default()
 	end
 	
 	ogse_debug.process_monster(self.object, "upd", 9)
-
-	if self.object:clsid() == clsid.bloodsucker_s and self.object:alive() then
-
-		local enemy = self.object:get_enemy()
-	  
-		if enemy and enemy:id() == db.actor:id() and self.object:see(enemy) then
-		--/ если у кровососа есть враг/цель и кровосос его видит то ...
-			local distance = self.object:position():distance_to(enemy:position())
-			if distance <= 2 then --/ дистанция для анимации 'засоса'
-				local timer = time_global()
-				if (self.timer_anim or 0) < timer then
-					self.timer_anim = timer + 2000 --/ таймер анимации ~ 2 сек
-					if self.object:animation_count() > 0 then
-						self.object:clear_animations()
-					end
-					self.object:add_animation("vampire_0", true) --/ варианты: "vampire_0" | "idle"
-					--/ озвучка 'засоса'
-					
-					if enemy:id() == db.actor:id() then
-						local sound = sound_object("monsters\\bloodsucker\\sucking_attack")
-						sound:play_at_pos(self.object, self.object:position())
-					end
-					
-				end
-				--/ хит жертве (притягиваем)
-				if (self.timer_hit or 0) < timer and (self.timer_anim and self.timer_anim + 2000 >= timer) then
-					self.timer_hit = timer + 800 --/ таймер хита ~ 0.5 сек
-					local h = hit()
-					local vDir = self.object:direction() --/ вектор кровососа
-					local vDirHit = vector_rotate_y(vDir,179.0)							
-					h.draftsman = self.object
-					h.direction = vDirHit --/ направление хита
-					h:bone("bip01_spine") --/ для учета 'брони'
-					h.power     = 0.10
-					h.impulse   = 120/distance --/ чем ближе - тем сильнее 'засос'
-					h.type      = hit.wound --hit.strike
-					if enemy:id() == db.actor:id() then --/ жертва == актор? (а нужно?)
-						level.add_pp_effector("fire_hit.ppe", 3000, false)
-						-- db.actor:set_actor_position(self.object:position())				
-						-- db.actor:set_actor_direction(vDirHit:getH())
-					end						
-					enemy:hit(h) --/ наносим хит жертве
-				end
-			else	
-				
-			end
-		end
-	end
 
 	ogse_debug.process_monster(self.object, "upd", 10)	
 
@@ -322,7 +395,11 @@ function generic_object_binder:death_callback(victim, who)
 end
 
 function generic_object_binder:before_hit_callback(p_s_hit, p_ignore_flags)
+	if self.object:clsid()==clsid.burer_s then	
+		self.health_before_hit = self.object.health
+	end
 end
+
 function generic_object_binder:hit_callback(obj, amount, local_direction, who, bone_index)
 --	printf("HIT_CALLBACK: [%s] amount[%s]", obj:name(), amount)
 
@@ -351,6 +428,26 @@ function generic_object_binder:hit_callback(obj, amount, local_direction, who, b
 	_sdata.info_about_npc(obj)
 	
 	ogse_debug.process_monster(self.object, "hit", 6)
+	
+	if self.object:clsid()==clsid.burer_s then	
+		local v1 = self.object:direction()
+		local v2 = db.actor:direction()
+	
+		if v1:dotproduct(v2) < -0.6 then
+			if not self.time_hit then
+				self.time_hit = time_global() + 4000
+			end
+			
+			local particle_start = particles_object("anomaly2\\burer_shield_01")
+			local pos = self.object:bone_position("bip01_head")
+			local dir = self.object:direction()
+			pos:add(dir:mul(1.0))
+			particle_start:play_at_pos(pos)
+			self.object.health = self.health_before_hit - self.object.health
+		end
+	end
+	
+	ogse_debug.process_monster(self.object, "hit", 7)
 	
 	event("monster_hit"):trigger({victim = self.object, amount = amount, dir = local_direction, who = who, bone = bone_index})	
 	
