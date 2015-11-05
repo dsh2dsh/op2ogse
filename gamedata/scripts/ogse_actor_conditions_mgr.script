@@ -1,8 +1,11 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
-function attach(sm) -- для менеджера сигналов
-	sm:subscribe({signal = "on_spawn",  fun = this.on_spawn})
-	sm:subscribe({signal = "on_update", fun = this.on_update--[[, queued = true]]})
+
+function attach( sm ) -- для менеджера сигналов
+  sm:subscribe({ signal = "on_destroy", fun = this.on_destroy })
+  sm:subscribe({ signal = "on_spawn",   fun = this.on_spawn  })
+  sm:subscribe({ signal = "on_update",  fun = this.on_update })
 end
+
 
 -- читаем глобальные параметры эффектов здоровья
 local satiety_v = get_float("actor_script_condition", "satiety_v")
@@ -35,6 +38,12 @@ ASSERT(
 )
 local override_sprint_koef
 
+local run_koef = get_float( "actor", "run_coef" )
+ASSERT(
+  run_koef,
+  "ogse_actor_conditions_mgr: 'actor:run_coef' parameter not found!"
+)
+
 local jump_power = get_float( "actor_condition", "jump_power" )
 ASSERT(
   jump_power,
@@ -48,11 +57,24 @@ ASSERT(
   "ogse_actor_conditions_mgr: 'actor_condition:walk_power' parameter not found!"
 )
 
---
+
 local pt
+local cam_inert, cur_cam_inert
+
 function on_spawn()
-	pt = {game.get_game_time():get()}
+  pt = { game.get_game_time():get() }
+  cam_inert     = get_con_float( "cam_inert" )
+  cur_cam_inert = cam_inert
 end
+
+
+function on_destroy()
+  if cam_inert then
+    cmd( "cam_inert", cam_inert )
+  end
+end
+
+
 local cached_item_cond_effects = {}
 local function get_item_cond_effect(item)
 	--TODO: сделать получение эффекта непосредственно из объекта
@@ -70,8 +92,15 @@ local function get_item_cond_effect(item)
 	return ef
 end
 
+
+local override_power = 1
+
 function on_update()
 	if not (db.actor and db.actor:alive()) then return end
+	local act = db.actor
+        if act.power > override_power then
+          act.power = override_power - act.power
+        end
 	--log3("%04d/%02d/%02d %02d:%02d:%02d.%03d", unpack(pt))
 	local previous_check_time = game.CTime()
 	previous_check_time:set(unpack(pt))
@@ -79,16 +108,19 @@ function on_update()
 	local dt = current_time:diffSec(previous_check_time)
 	if dt == 0 then return end
 	pt = {current_time:get()}
-	local act = db.actor
 	-- учитываем здесь естественное оголодание, а также движковое(обнулять его нельзя, на нем основан показ свойств артефактов)
 	local cur_satiety_v = satiety_v + ( satiety_v * ( 1 - act.power ) )
-	if
+        local satiety_custom_k = 1
+        if override_power < 1 then
+	  satiety_custom_k = 3
+	elseif
 	  act:is_actor_sprinting() or act:is_actor_climbing()
 	  or
 	  act.power < 0.9 or act:get_bleeding() > 0.1
 	then
-	  cur_satiety_v = cur_satiety_v * 2
+	  satiety_custom_k = 2
 	end
+	cur_satiety_v = cur_satiety_v * satiety_custom_k
 	local summary_satiety_effect = cur_satiety_v + engine_satiety_v
 	local summary_health_effect = satiety_health_v_base - engine_satiety_health_v
 	local summary_power_effect = - engine_satiety_power_v
@@ -153,6 +185,8 @@ function on_update()
 	end
 	--if act.satiety < 0.1 then act.satiety = 1 end
 
+--[=[
+-- sprint_koef применяется к run_koef, т.ч. достаточно менять run_koef
 	local cur_sprint_koef = override_sprint_koef or sprint_koef
 	if act.satiety < light_hunger_limit then
 	  cur_sprint_koef = 1 + (
@@ -165,6 +199,53 @@ function on_update()
 	  )
 	end
 	set_sprint_factor( cur_sprint_koef )
+--]=]
+
+        local cur_run_koef = run_koef
+        if act.satiety < light_hunger_limit then
+          cur_run_koef = 1 + (
+            ( cur_run_koef - 1 ) * ( act.satiety / light_hunger_limit )
+          )
+        end
+        if act.health < 0.7 then
+          cur_run_koef = 1 + (
+            ( cur_run_koef - 1 ) * ( act.health / 0.7 )
+          )
+        end
+        local inv_weight  = db.actor:get_inventory_weight()
+        local max_weight  = db.actor:get_actor_max_weight()
+        local walk_weight = db.actor:get_actor_max_walk_weight()
+        local outfit      = db.actor:item_in_slot( 6 )
+        if outfit then
+          max_weight  = max_weight  + sys_ini:r_float(
+            outfit:section(), "additional_inventory_weight",  0
+          )
+          walk_weight = walk_weight + sys_ini:r_float(
+            outfit:section(), "additional_inventory_weight2", 0
+          )
+        end
+        local new_cam_inert
+        if inv_weight > max_weight then
+          local k      = 1 - inv_weight / walk_weight
+          cur_run_koef = 1 + ( ( cur_run_koef - 1 ) * k )
+          if k < 0.2 then
+            override_power = 0.2
+          else
+            override_power = k
+          end
+          if cam_inert < 0.9 then
+            new_cam_inert = cam_inert
+              + ( math.round( ( ( 0.9 - cam_inert ) * k ) * 100 ) / 100 )
+          end
+        else
+          override_power = 1
+          new_cam_inert  = cam_inert
+        end
+        set_run_factor( cur_run_koef )
+        if new_cam_inert and new_cam_inert ~= cur_cam_inert then
+          cmd( "cam_inert", new_cam_inert )
+          cur_cam_inert = new_cam_inert
+        end
 
 	local cur_jump_power = override_jump_power or jump_power
 	if act.satiety < light_hunger_limit then
@@ -182,12 +263,12 @@ function on_update()
 	local cur_walk_power = walk_power
 	if act.satiety < light_hunger_limit then
 	  cur_walk_power = cur_walk_power + (
-	    ( 0.01 - cur_walk_power ) * ( 1 - ( act.satiety / light_hunger_limit ) )
+	    ( 0.002 - cur_walk_power ) * ( 1 - ( act.satiety / light_hunger_limit ) )
 	  )
 	end
 	if act.health < 0.7 then
 	  cur_walk_power = cur_walk_power + (
-	    ( 0.01 - cur_walk_power ) * ( 1 - ( act.health / 0.7 ) )
+	    ( 0.002 - cur_walk_power ) * ( 1 - ( act.health / 0.7 ) )
 	  )
 	end
 	set_walk_power( cur_walk_power )
