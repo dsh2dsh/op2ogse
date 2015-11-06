@@ -1,4 +1,5 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
+
 local override_game_types = {
   [ "af_fosfor"     ] = "",
   [ "amk_metka"     ] = "",
@@ -25,6 +26,7 @@ local override_game_types = {
   [ "wpn_fot"       ] = "",
   [ "zamok"         ] = "",
 }
+
 
 function attach( sm )
   sm:subscribe({ signal = "on_before_spawn", fun = this.on_before_spawn })
@@ -161,6 +163,7 @@ function save_rukzak( id, data )
   else
     ogse.delete_var( prefix .. ".sections" )
     ogse.delete_var( prefix .. ".conds"    )
+    ogse.delete_var( prefix .. ".inv_drop" )
     ogse.delete_var( prefix .. ".types"    )
     ogse.delete_var( prefix .. ".counts"   )
     ogse.delete_var( prefix .. ".infos"    )
@@ -280,7 +283,7 @@ function spawn_item_in_inv( sect, who )
       who:game_vertex_id(),
       who:id()
   else
-    pos, lvid, gvid, id = 
+    pos, lvid, gvid, id =
       who.position,
       who.m_level_vertex_id,
       who.m_game_vertex_id,
@@ -510,6 +513,101 @@ function is_item_valuable( item )
 end
 
 
+function get_actor_items( check_f )
+  local items_our = {}
+  local by_key    = {}
+  if not check_f then check_f = this.can_include_into_actor_items end
+  for i = 0, db.actor:object_count() - 1 do
+    local obj = db.actor:object( i )
+    if check_f( obj ) then
+      local sect = obj:section()
+      local cond = string.format( "%.2f", obj:condition() * 100 )
+      local info = get_item_info( obj )
+      local key  = sect .. ":" .. cond .. ":" .. info
+      local item = by_key[ key ]
+      if item then
+        table.insert( by_key[ key ].game_objs, obj )
+      else
+        item = {
+          [ "section"   ] = sect,
+          [ "condition" ] = tonumber( cond ),
+          [ "game_objs" ] = { obj },
+          [ "game_type" ] = get_game_type( obj ),
+          [ "info"      ] = info,
+          [ "key"       ] = key,
+        }
+        by_key[ key ] = item
+        table.insert( items_our, item )
+      end
+      if item.game_type == "ammo" then
+        if item.count then
+          item.count = item.count + dunin_ammo.get_ammo_size( obj )
+        else
+          item.count = dunin_ammo.get_ammo_size( obj )
+        end
+      end
+    end
+  end
+  return items_our
+end
+
+
+function can_include_into_actor_items( item )
+  if db.actor:is_in_ruck( item ) then
+    local sect = item:section()
+    if not get_bool( sect, "quest_item" ) then
+      local igw = sys_ini:r_u32( sect, "inv_grid_width",  0 )
+      local igh = sys_ini:r_u32( sect, "inv_grid_height", 0 )
+      if igw > 0 and igh > 0 then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+
+function get_game_type( obj )
+  local game_type
+  local sect          = obj:section()
+  local override_type = override_game_type( sect )
+  if override_type then
+    game_type = override_type
+  elseif obj:is_ammo() then
+    game_type = "ammo"
+  elseif obj:is_knife() then
+    game_type = "knife"
+  elseif obj:is_weapon_magazined() then
+    game_type = "weapon"
+  elseif obj:is_outfit() then
+    game_type = "outfit"
+  elseif obj:is_artefact() then
+    game_type = "artefact"
+  elseif obj:is_grenade() then
+    game_type = "grenade"
+  elseif obj:is_missile() then
+    game_type = "missile"
+  elseif obj:is_scope() then
+    game_type = "scope"
+  elseif obj:is_silencer() then
+    game_type = "silencer"
+  elseif obj:is_grenade_launcher() then
+    game_type = "gl"
+  elseif obj:is_medkit() then
+    game_type = "medkit"
+  elseif obj:is_antirad() then
+    game_type = "antirad"
+  elseif obj:is_food_item() then
+    game_type = "food"
+  elseif obj:is_bottle_item() then
+    game_type = "bottle"
+  elseif obj:is_eatable_item() then
+    game_type = "eatable"
+  end
+  return game_type or ""
+end
+
+
 function bind( obj )
   local new_binder = generic_rukzak_binder( obj )
   obj:bind_object( new_binder )
@@ -520,7 +618,20 @@ class "generic_rukzak_binder" ( object_binder )
 function generic_rukzak_binder:__init( obj ) super( obj )
   self.am = ogse_signals.get_mgr()
   self.object:set_nonscript_usable( true )
-  self.object:set_tip_text( "st_search_treasure" )
+end
+
+
+function generic_rukzak_binder:net_spawn( data )
+  if not object_binder.net_spawn( self, data ) then
+    return false
+  end
+  local prefix   = "dsh_rukzak." .. self.object:id()
+  local inv_drop = ogse.load_var( prefix .. ".inv_drop", false, "bool" )
+  if inv_drop then
+    self.dsh_tip_text = "inventory_item_use"
+  end
+  self.object:set_tip_text( self.dsh_tip_text or "st_search_treasure" )
+  return true
 end
 
 
@@ -1078,96 +1189,8 @@ end
 
 
 function ui_rukzak:FillOurList()
-  self.items_our = {}
-  local by_key   = {}
-  for i = 0, db.actor:object_count() - 1 do
-    local obj = db.actor:object( i )
-    if self:can_include_into_list( obj ) then
-      local sect = obj:section()
-      local cond = string.format( "%.2f", obj:condition() * 100 )
-      local info = get_item_info( obj )
-      local key  = sect .. ":" .. cond .. ":" .. info
-      local item = by_key[ key ]
-      if item then
-        table.insert( by_key[ key ].game_objs, obj )
-      else
-        item = {
-          [ "section"   ] = sect,
-          [ "condition" ] = tonumber( cond ),
-          [ "game_objs" ] = { obj },
-          [ "game_type" ] = self:get_game_type( obj ),
-          [ "info"      ] = info,
-          [ "key"       ] = key,
-        }
-        by_key[ key ] = item
-        table.insert( self.items_our, item )
-      end
-      if item.game_type == "ammo" then
-        if item.count then
-          item.count = item.count + dunin_ammo.get_ammo_size( obj )
-        else
-          item.count = dunin_ammo.get_ammo_size( obj )
-        end
-      end
-    end
-  end
+  self.items_our = get_actor_items()
   self:FillList( self.items_our, self.ui_list_our, self.index_our )
-end
-
-
-function ui_rukzak:get_game_type( obj )
-  local game_type
-  local sect          = obj:section()
-  local override_type = override_game_type( sect )
-  if override_type then
-    game_type = override_type
-  elseif obj:is_ammo() then
-    game_type = "ammo"
-  elseif obj:is_knife() then
-    game_type = "knife"
-  elseif obj:is_weapon_magazined() then
-    game_type = "weapon"
-  elseif obj:is_outfit() then
-    game_type = "outfit"
-  elseif obj:is_artefact() then
-    game_type = "artefact"
-  elseif obj:is_grenade() then
-    game_type = "grenade"
-  elseif obj:is_missile() then
-    game_type = "missile"
-  elseif obj:is_scope() then
-    game_type = "scope"
-  elseif obj:is_silencer() then
-    game_type = "silencer"
-  elseif obj:is_grenade_launcher() then
-    game_type = "gl"
-  elseif obj:is_medkit() then
-    game_type = "medkit"
-  elseif obj:is_antirad() then
-    game_type = "antirad"
-  elseif obj:is_food_item() then
-    game_type = "food"
-  elseif obj:is_bottle_item() then
-    game_type = "bottle"
-  elseif obj:is_eatable_item() then
-    game_type = "eatable"
-  end
-  return game_type or ""
-end
-
-
-function ui_rukzak:can_include_into_list( item )
-  if db.actor:is_in_ruck( item ) then
-    local sect = item:section()
-    if not get_bool( sect, "quest_item" ) then
-      local igw = sys_ini:r_u32( sect, "inv_grid_width",  0 )
-      local igh = sys_ini:r_u32( sect, "inv_grid_height", 0 )
-      if igw > 0 and igh > 0 then
-        return true
-      end
-    end
-  end
-  return false
 end
 
 

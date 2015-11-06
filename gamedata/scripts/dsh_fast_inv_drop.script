@@ -1,0 +1,232 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+local mandatory_items = {
+  {
+    [ "num"      ] = 10,
+    [ "sections" ] = { "bandage" },
+  },
+  {
+    [ "num"      ] = 10,
+    [ "sections" ] = { "medkit_scientic", "medkit_army", "medkit" },
+  },
+  {
+    [ "num"      ] = 3,
+    [ "sections" ] = { "antirad", "suvorotka" },
+  },
+  {
+    [ "num"      ] = 3,
+    [ "sections" ] = { "kolbasa", "conserva", "bread", "sandwich" },
+  },
+}
+
+
+function attach( sm )
+  sm:subscribe({ signal = "on_key_down",   fun = this.on_key_down   })
+  sm:subscribe({ signal = "on_rukzak_use", fun = this.on_rukzak_use })
+end
+
+
+function on_key_down( key, bind )
+  if key ~= DIK_keys.DIK_NUMPAD5 then return end
+  local item = db.actor:object( "treasure_item" )
+  if item then
+    local walk_accel = get_walk_accel()
+    set_walk_accel( 0 )
+    local snd = sound_object( "interface\\misery\\inv_open" )
+    snd:play( db.actor, 0, sound_object.s2d )
+    dsh.timeout(
+      snd:length() * 1.15, function()
+        drop_inventory( item )
+        set_walk_accel( walk_accel )
+      end
+    )
+  end
+  return true
+end
+
+
+function on_rukzak_use( obj )
+  local id       = obj:id()
+  local prefix   = "dsh_rukzak." .. id
+  local inv_drop = ogse.load_var( prefix .. ".inv_drop", false, "bool" )
+  if inv_drop then
+    local walk_accel = get_walk_accel()
+    set_walk_accel( 0 )
+    local snd = sound_object( "interface\\misery\\inv_close" )
+    snd:play( db.actor, 0, sound_object.s2d )
+    ogse.remove_item( obj )
+    dsh.timeout(
+      snd:length() * 1.15, function()
+        set_walk_accel( walk_accel )
+        move_to_inventory( id )
+      end
+    )
+    return true
+  end
+end
+
+
+function drop_inventory( item )
+  local real = get_string( item:section(), "real_item_section" )
+  local pos  = db.actor:position()
+  local new  = alife():create(
+    real, pos, db.actor:level_vertex_id(), db.actor:game_vertex_id()
+  )
+  ogse.remove_item_from_inventory( item )
+  local ignore_items = get_need_weapons()
+  local need_ammo    = get_need_ammo()
+  ignore_items[ item:id() ] = true
+  local actor_items  = mandatory_filter(
+    dsh_rukzak.get_actor_items(
+      function( obj )
+        if need_ammo[ obj:section() ] or ignore_items[ obj:id() ] then
+          return false
+        end
+        return dsh_rukzak.can_include_into_actor_items( obj )
+      end
+    )
+  )
+  local has_metka = false
+  local has_zamok = false
+  for _, ai in ipairs( actor_items ) do
+    for _, obj in ipairs( ai.game_objs ) do
+      if obj:section() == "zamok" then
+        has_zamok = true
+      elseif obj:section() == "amk_metka" then
+        has_metka = true
+      end
+      ogse.remove_item_from_inventory( obj )
+    end
+  end
+  if has_metka then
+    level.map_add_object_spot_ser( new.id, "habar_location", "аўъчръ" )
+    ogse.save_var(
+      "dsh_rukzak." .. new.id .. ".metka", "аўъчръ"
+    )
+  end
+  ogse.save_var( "dsh_rukzak." .. new.id .. ".zamok", has_zamok )
+  if has_zamok then
+    amk_offline_alife.protected.ids[ new.id ] = 1
+  end
+  ogse.save_var( "dsh_rukzak." .. new.id .. ".inv_drop", true )
+  dsh_rukzak.save_rukzak( new.id, actor_items )
+  if not ui_mm_opt_main.GetOption( "art_degradation" ) then
+    inventory.check_immunities()
+  end
+  inventory.forced_inventory_update( false )
+end
+
+
+function get_need_ammo()
+  local weapons = { unpack( dsh_2p.get_pseudo_slots() ) }
+  local sec_obj = db.actor:item_in_slot( 2 )
+  if sec_obj then table.insert( weapons, sec_obj ) end
+  local need_ammo = {}
+  for _, obj in ipairs( weapons ) do
+    local sect = obj:section()
+    local ammo_class = get_string( sect, "ammo_class", "" )
+    for _, ammo in ipairs( parse_names( ammo_class ) ) do
+      need_ammo[ ammo ] = true
+    end
+    local grenade_class = get_string( sect, "grenade_class", "" )
+    for _, ammo in ipairs( parse_names( grenade_class ) ) do
+      need_ammo[ ammo ] = true
+    end
+  end
+  local grenade_obj = db.actor:item_in_slot( 3 )
+  if grenade_obj then
+    need_ammo[ grenade_obj:section() ] = true
+  end
+  return need_ammo
+end
+
+
+function get_need_weapons()
+  local weapons = {}
+  for _, obj in ipairs( dsh_2p.get_pseudo_slots() ) do
+    weapons[ obj:id() ] = true
+  end
+  return weapons
+end
+
+
+function mandatory_filter( items )
+  local index = {}
+  for _, item in ipairs( items ) do
+    index[ item.section ] = item
+  end
+  for _, item in ipairs( mandatory_items ) do
+    local cnt = item.num
+    for _, sect in ipairs( item.sections ) do
+      local our = index[ sect ]
+      if our then
+        while table.getn( our.game_objs ) > 0 and cnt > 0 do
+          table.remove( our.game_objs )
+          cnt = cnt - 1
+        end
+        our.count = table.getn( our.game_objs )
+        if cnt == 0 then break end
+      end
+    end
+  end
+  local filtered = {}
+  for _, item in ipairs( items ) do
+    if table.getn( item.game_objs ) > 0 then
+      if not item.count then
+        item.count = table.getn( item.game_objs )
+      end
+      table.insert( filtered, item )
+    end
+  end
+  return filtered
+end
+
+
+function move_to_inventory( rukzak )
+  local items = dsh_rukzak.load_rukzak( rukzak )
+  for _, item in ipairs( items ) do
+    while item.count > 0 do
+      local sobj
+      if item.game_type == "ammo" then
+        local box_size = dsh_rukzak.get_ammo_box_size( item.section )
+        if item.count > box_size then
+          sobj = dsh_rukzak.spawn_ammo_in_inv( item.section, box_size )
+          item.count = item.count - box_size
+        else
+          sobj = dsh_rukzak.spawn_ammo_in_inv( item.section, item.count )
+          item.count = 0
+        end
+      else
+        if item.game_type == "weapon" then
+          sobj = dsh_rukzak.spawn_weapon_in_inv( item.section, item.info )
+        else
+          sobj = dsh_rukzak.spawn_item_in_inv( item.section )
+        end
+        if string.find( item.section, "arc_art_box_" ) then
+          local data  = m_net_utils.get_item_data( sobj )
+          data.custom = item.info or ""
+          m_net_utils.set_item_data( data, sobj )
+        end
+        item.count = item.count - 1
+      end
+      if item.condition < 100 then
+        level.client_spawn_manager():add(
+          sobj.id, -1, function( id, obj )
+            dsh.set_condition( obj, item.condition / 100 )
+          end
+        )
+      end
+      if item.count == 0 then
+        if item.section == "zamok" then
+          amk_offline_alife.protected.ids[ rukzak ] = nil
+        end
+      end
+    end
+  end
+  dsh_rukzak.save_rukzak( rukzak, {} )
+  dsh_rukzak.spawn_item_in_inv( "treasure_item" )
+  db.actor:give_info_portion( "biznes_remove_special_item" )
+  dsh.timeout( 1000, function()
+    db.actor:disable_info_portion( "biznes_remove_special_item" )
+  end )
+end
