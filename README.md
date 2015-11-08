@@ -8,8 +8,8 @@ dsh mod для ОП-2
 
 Ссылки для скачивания:
 
-- https://yadi.sk/d/Nwbuuk-WkATY2
-- https://drive.google.com/open?id=0B0h2HnCBW9H1R3phLTJMTGhsTEk
+- https://yadi.sk/d/-kBzB53BkJPU5
+- https://drive.google.com/open?id=0B0h2HnCBW9H1WVNQUXhqQ0JhWFE
 
 Не продавайте журналы "Playboy", они вам пригодятся.
 
