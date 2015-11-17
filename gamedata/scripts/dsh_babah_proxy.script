@@ -16,7 +16,6 @@ function on_take( obj, sobj )
   if not sobj then return end
   local sect = obj:section()
   if babah.mines.sect[ sect ] then
-      remove_mine( obj )
       ogse.remove_item_from_inventory( obj )
       ogse.spawn_item_in_inv( sect .. "_inv" )
     return true
@@ -38,6 +37,8 @@ function on_use( obj, sobj )
 end
 
 
+local mines_on_timer = {}
+
 function on_drop( obj, sobj )
   if not sobj then return end
   local id   = obj:id()
@@ -46,14 +47,19 @@ function on_drop( obj, sobj )
     babah.mines.sect[ sect ] and sect
   )
   if real and sobj.parent_id == 65535 then
-    remove_mine( obj )
     ogse.remove_item( obj )
     local pos = calc_new_mine_pos()
     local new = alife():create( real, pos, db.actor:level_vertex_id(), db.actor:game_vertex_id() )
-    dsh.timeout(
-      babah.mines.sect[ real ].delay * 1000,
-      function()
-        babah.addMine( alife():object( new.id ) )
+    level.client_spawn_manager():add(
+      new.id, -1, function( id, obj )
+        mines_on_timer[ new.id ] = dsh.timeout(
+          babah.mines.sect[ real ].delay * 1000,
+          function()
+            local binder = obj:binded_object()
+            binder.ready_to_explode = true
+            mines_on_timer[ new.id ] = nil
+          end
+        )
       end
     )
     if level.main_input_receiver() then
@@ -112,4 +118,64 @@ end
 function calc_new_mine_pos()
   local pos = vector():mad( db.actor:position(), db.actor:direction(), 0.5 )
   return pos
+end
+
+
+function bind_mine( obj )
+  local new_binder = generic_mine_binder( obj )
+  obj:bind_object( new_binder )
+end
+
+
+class "generic_mine_binder" ( object_binder )
+function generic_mine_binder:__init( obj ) super( obj )
+  self.freq = 1000
+  self.ready_to_explode = false
+end
+
+
+function generic_mine_binder:net_spawn( data )
+  if not object_binder.net_spawn( self, data ) then
+    return false
+  end
+  self.dsh_update_t = 0
+  return true
+end
+
+
+function generic_mine_binder:update( delta )
+  object_binder.update( self, delta )
+  if self.object:parent() then
+    local id = self.object:id()
+    if mines_on_timer[ id ] then
+      mines_on_timer[ id ]:stop()
+      mines_on_timer[ id ] = nil
+    end
+    self.ready_to_explode = false
+    return
+  end
+  if self.dsh_update_t <= time_global() then
+    if self.ready_to_explode then
+      local pos = self.object:position()
+      local exploded = false
+      for _, k in ipairs({ "btr", "creature" }) do
+        for id, _ in pairs( db[ k ] ) do
+          local obj = level.object_by_id( id )
+          if obj and obj:alive() and obj:position():distance_to( pos ) < 1.5 then
+            self.object:explode()
+            exploded = true
+            break
+          end
+        end
+        if exploded then break end
+      end
+    end
+    self.dsh_update_t = time_global() + self.freq
+  end
+end
+
+
+function generic_mine_binder:load( reader )
+  object_binder.load( self, reader )
+  self.ready_to_explode = true
 end
