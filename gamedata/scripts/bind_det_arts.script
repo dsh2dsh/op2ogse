@@ -27,23 +27,68 @@ local list_arts = {
 }
 
 local snd_obj = xr_sound.get_safe_sound_object( "ambient\\da_beep" )
-local need_del_spot = nil
+
+
+function attach( sm )
+  sm:subscribe({ signal = "on_drop",         fun = this.remove_art_det })
+  sm:subscribe({ signal = "on_item_to_ruck", fun = this.remove_art_det })
+  sm:subscribe({ signal = "on_item_to_slot", fun = this.use_art_det    })
+  sm:subscribe({ signal = "on_spawn",        fun = this.start_update   })
+end
+
+
+function use_art_det( obj )
+  local in_slot = db.actor:item_in_slot( 8 )
+  if in_slot and in_slot:id() == obj:id() then
+    subscribe()
+    iteration_del_spot()
+  end
+end
+
+
+function remove_art_det( obj )
+  if not db.actor:item_in_slot( 8 ) then
+    unsubscribe()
+    iteration_del_spot()
+  end
+end
+
+
+local signals
+function subscribe()
+  if not signals then
+    signals = {
+      { signal = "on_update", fun = this.on_update },
+    }
+    local sm = ogse_signals.get_mgr()
+    for _, s in ipairs( signals ) do
+      sm:subscribe( s )
+    end
+  end
+end
+
+function unsubscribe()
+  if signals then
+    local sm = ogse_signals.get_mgr()
+    for _, s in ipairs( signals ) do
+      sm:unsubscribe( s )
+    end
+    signals = nil
+  end
+end
 
 
 function start_update()
   db.artefacts = {}
-  local sobj, section
+  local lname  = level.name()
   for id = 1, 65534 do
-    sobj = alife():object( id )
+    local sobj = alife():object( id )
     -- Собираем в таблицу арты только на текущей территории
     if
-      sobj
-      and
-      game_graph():valid_vertex_id( sobj.m_game_vertex_id )
-      and
-      game_graph():vertex( sobj.m_game_vertex_id ):level_id() == alife():level_id()
+      sobj and object_level_name( sobj ) == lname
+      and game_graph():valid_vertex_id( sobj.m_game_vertex_id )
     then
-      section = sobj:section_name()
+      local section = sobj:section_name()
       if string.find( section, "^af_" ) or list_arts[ section ] then
         db.artefacts[ id ] = { spot = false, tim_beep = 0 }
       end
@@ -52,41 +97,40 @@ function start_update()
 end
 
 
+local freq, update_t = 1000
+
+function on_update()
+  if update_t and update_t > time_global() then return end
+  update()
+  update_t = time_global() + freq
+end
+
+
 function update()
   local found = db.actor:item_in_slot( 8 )
   if found then
     found = found:section()
-  else
-    found = ""
-  end
-  if
-    found == "det_artefact_super"
-    and
-    has_alife_info( "tel_dcity_kanaliy" )
-  then
-    this.det_super()
-    need_del_spot = true
-  elseif found == "detektor_amorf" then
-    this.det_izomorf()
-    need_del_spot = true
-  elseif found == "det_artefact_indy" then
-    this.det_indy()
-    need_del_spot = true
-  elseif need_del_spot then
-    this.iteration_del_spot()
-    need_del_spot = nil
+    if
+      found == "det_artefact_super"
+      and has_alife_info( "tel_dcity_kanaliy" )
+    then
+      det_super()
+    elseif found == "detektor_amorf" then
+      det_izomorf()
+    elseif found == "det_artefact_indy" then
+      det_indy()
+    end
   end
 end
 
 
 function det_indy()
-  local obj, dist
   local time_g = time_global()
   for k, v in pairs( db.artefacts ) do
-    obj = level.object_by_id( k)
+    local obj = level.object_by_id( k)
     if obj then
       if not obj:parent() then
-        dist = db.actor:position():distance_to_sqr( obj:position() )
+        local dist = db.actor:position():distance_to_sqr( obj:position() )
         if dist <= 40 * 40 and dist < time_g - v.tim_beep  then
           if not snd_obj:playing() then
             db.artefacts[ k ].tim_beep = time_g
@@ -98,7 +142,7 @@ function det_indy()
           this.del_spot( k, v )
         end
       else
-        this.del_spot(k, v)
+        this.del_spot( k, v )
       end
     end
   end
@@ -106,18 +150,17 @@ end
 
 
 function det_izomorf()
-  local obj, dist
   local time_g = time_global()
   for k, v in pairs( db.artefacts ) do
-    obj = level.object_by_id( k )
+    local obj = level.object_by_id( k )
     if obj then
       if not obj:parent() then
-        dist = db.actor:position():distance_to_sqr( obj:position() )
+        local dist = db.actor:position():distance_to_sqr( obj:position() )
         if dist < 60 * 60 then
           if not v.spot then
             level.map_add_object_spot(
               k, "artefact_location", game.translate_string(
-                sys_ini:r_string( obj:section(), "inv_name" )
+                get_string( obj:section(), "inv_name" )
               )
             )
             db.artefacts[ k ].spot = true
@@ -140,21 +183,20 @@ end
 
 
 function det_super()
-  local sobj, dist
   local time_g = time_global()
   for k, v in pairs( db.artefacts ) do
-    sobj = alife():object( k )
+    local sobj = alife():object( k )
     if sobj then
       if sobj.parent_id == 65535 then
         if not v.spot then
           level.map_add_object_spot(
             k, "artefact_location", game.translate_string(
-              sys_ini:r_string( sobj:section_name(), "inv_name" )
+              get_string( sobj:section_name(), "inv_name" )
             )
           )
           db.artefacts[ k ].spot = true
         end
-        dist = db.actor:position():distance_to_sqr( sobj.position )
+        local dist = db.actor:position():distance_to_sqr( sobj.position )
         if dist < 60 * 60 then
           if v.tim_beep < time_g and not snd_obj:playing() then
             db.artefacts[ k ].tim_beep = time_g + 2500
@@ -172,10 +214,9 @@ end
 
 
 function iteration_del_spot()
-  local sobj
   for k, v in pairs( db.artefacts ) do
     if v.spot then
-      sobj = alife():object( k )
+      local sobj = alife():object( k )
       if sobj then
         this.del_spot( k, v )
       end
