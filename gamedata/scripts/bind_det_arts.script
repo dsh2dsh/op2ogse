@@ -31,7 +31,6 @@ local snd_obj = xr_sound.get_safe_sound_object( "ambient\\da_beep" )
 
 function attach( sm )
   sm:subscribe({ signal = "on_drop",         fun = this.remove_art_det })
-  sm:subscribe({ signal = "on_first_update", fun = this.start_update   })
   sm:subscribe({ signal = "on_item_to_ruck", fun = this.remove_art_det })
   sm:subscribe({ signal = "on_item_to_slot", fun = this.use_art_det    })
 end
@@ -78,22 +77,6 @@ function unsubscribe()
 end
 
 
-function start_update()
-  db.artefacts = {}
-  local lname  = level.name()
-  for id = 1, 65534 do
-    local sobj = alife():object( id )
-    -- Собираем в таблицу арты только на текущей территории
-    if sobj and level.object_by_id( sobj.id ) then
-      local section = sobj:section_name()
-      if string.find( section, "^af_" ) or list_arts[ section ] then
-        db.artefacts[ id ] = { spot = false, tim_beep = 0 }
-      end
-    end
-  end
-end
-
-
 local update_t
 function on_update()
   if update_t and update_t > time_global() then return end
@@ -110,108 +93,111 @@ function update()
       found == "det_artefact_super"
       and has_alife_info( "tel_dcity_kanaliy" )
     then
-      det_super()
+      det_super( artefacts )
     elseif found == "detektor_amorf" then
-      det_izomorf()
+      det_izomorf( artefacts )
     elseif found == "det_artefact_indy" then
-      det_indy()
+      det_indy( artefacts )
     end
   end
 end
 
 
+local artefacts = {}
 function det_indy()
   local max_dist = 40 * 40
-  for k, v in pairs( db.artefacts ) do
-    local obj = level.object_by_id( k)
-    if obj then
-      if not obj:parent() then
-        local dist = db.actor:position():distance_to_sqr( obj:position() )
-        if dist <= max_dist then
-          if v.tim_beep <= time_global() and not snd_obj:playing() then
-            snd_obj:play_no_feedback(
-              db.actor, sound_object.s2d, 0, vector(), 1.0
-            )
-            db.artefacts[ k ].tim_beep = time_global()
-              + math.floor( dist / max_dist * 2500 )
-          end
-        else
-          this.del_spot( k, v )
+  for k, obj in pairs( db.artefacts ) do
+    if not artefacts[ k ] then
+      artefacts[ k ] = { spot = false, tim_beep = 0 }
+    end
+    v = artefacts[ k ]
+    if not obj:parent() then
+      local dist = db.actor:position():distance_to_sqr( obj:position() )
+      if dist <= max_dist then
+        if v.tim_beep <= time_global() and not snd_obj:playing() then
+          snd_obj:play_no_feedback(
+            db.actor, sound_object.s2d, 0, vector(), 1.0
+          )
+          v.tim_beep = time_global() + math.floor( dist / max_dist * 2500 )
         end
       else
         this.del_spot( k, v )
       end
+    else
+      this.del_spot( k, v )
     end
   end
 end
 
 
 function det_izomorf()
-  local time_g = time_global()
-  for k, v in pairs( db.artefacts ) do
-    local obj = level.object_by_id( k )
-    if obj then
-      if not obj:parent() then
-        local dist = db.actor:position():distance_to_sqr( obj:position() )
-        if dist < 60 * 60 then
-          if not v.spot then
-            level.map_add_object_spot(
-              k, "artefact_location", game.translate_string(
-                get_string( obj:section(), "inv_name" )
-              )
+  local max_dist = 60 * 60
+  for k, obj in pairs( db.artefacts ) do
+    if not artefacts[ k ] then
+      artefacts[ k ] = { spot = false, tim_beep = 0 }
+    end
+    v = artefacts[ k ]
+    if not obj:parent() then
+      local dist = db.actor:position():distance_to_sqr( obj:position() )
+      if dist <= max_dist then
+        if not v.spot then
+          level.map_add_object_spot(
+            k, "artefact_location", game.translate_string(
+              get_string( obj:section(), "inv_name" )
             )
-            db.artefacts[ k ].spot = true
-          end
-          if v.tim_beep < time_g and not snd_obj:playing() then
-            db.artefacts[ k ].tim_beep = time_g + 2500
-            snd_obj:play_no_feedback(
-              db.actor, sound_object.s2d, 0, vector(), 1.0
-            )
-          end
-        else
-          this.del_spot( k, v )
+          )
+          v.spot = true
+        end
+        if v.tim_beep < time_global() and not snd_obj:playing() then
+          v.tim_beep = time_global() + 2500
+          snd_obj:play_no_feedback(
+            db.actor, sound_object.s2d, 0, vector(), 1.0
+          )
         end
       else
         this.del_spot( k, v )
       end
+    else
+      this.del_spot( k, v )
     end
   end
 end
 
 
 function det_super()
-  local time_g = time_global()
-  for k, v in pairs( db.artefacts ) do
-    local sobj = alife():object( k )
-    if sobj then
-      if sobj.parent_id == 65535 then
-        if not v.spot then
-          level.map_add_object_spot(
-            k, "artefact_location", game.translate_string(
-              get_string( sobj:section_name(), "inv_name" )
-            )
+  local max_dist = 60 * 60
+  for k, obj in pairs( db.artefacts ) do
+    if not artefacts[ k ] then
+      artefacts[ k ] = { spot = false, tim_beep = 0 }
+    end
+    v = artefacts[ k ]
+    if not obj:parent() then
+      if not v.spot then
+        level.map_add_object_spot(
+          k, "artefact_location", game.translate_string(
+            get_string( sobj:section_name(), "inv_name" )
           )
-          db.artefacts[ k ].spot = true
-        end
-        local dist = db.actor:position():distance_to_sqr( sobj.position )
-        if dist < 60 * 60 then
-          if v.tim_beep < time_g and not snd_obj:playing() then
-            db.artefacts[ k ].tim_beep = time_g + 2500
-            snd_obj:play_no_feedback(
-              db.actor, sound_object.s2d, 0, vector(), 1.0
-            )
-          end
-        end
-      else
-        this.del_spot( k, v )
+        )
+        v.spot = true
       end
+      local dist = db.actor:position():distance_to_sqr( sobj.position )
+      if dist <= max_dist then
+        if v.tim_beep < time_global() and not snd_obj:playing() then
+          v.tim_beep = time_global() + 2500
+          snd_obj:play_no_feedback(
+            db.actor, sound_object.s2d, 0, vector(), 1.0
+          )
+        end
+      end
+    else
+      this.del_spot( k, v )
     end
   end
 end
 
 
 function iteration_del_spot()
-  for k, v in pairs( db.artefacts ) do
+  for k, v in pairs( artefacts ) do
     if v.spot then
       local sobj = alife():object( k )
       if sobj then
@@ -225,30 +211,37 @@ end
 function del_spot( k, v )
   if v.spot then
     level.map_remove_object_spot( k, "artefact_location" )
-    db.artefacts[ k ].spot = false
+    v.spot = false
   end
 end
 
 
-function not_falling( obj )
-  local sobj = alife():object( obj:id() )
-  if not sobj then
-    -- серверный объект исчез - убираем из таблицы
-    return false, nil
-  end
-  if sobj.position:distance_to( obj:position() ) - sobj.position:distance_to_xz( obj:position() ) > 10 then
-    -- большая разница по высоте, скорее всего провалился, переспавниваем
-    sobj = amk_anoms.respawn_falling_art( sobj )
-    return false, sobj.id
-  end
-  return true, nil
+function bind_artefact( obj )
+  obj:bind_object( artefact_binder( obj ) )
 end
 
 
-function not_falling_se( sobj )
-  local obj = level.object_by_id( sobj.id )
-  if obj then
-    return not_falling( obj )
+class "artefact_binder"( object_binder )
+function artefact_binder:__init( obj ) super( obj )
+end
+
+
+function artefact_binder:net_spawn( data )
+  if not object_binder.net_spawn( self, data ) then
+    return false
   end
-  return true, nil
+  db.artefacts[ self.object:id() ] = self.object
+  return true
+end
+
+
+function artefact_binder:reinit()
+  object_binder.reinit( self )
+  db.artefacts[ self.object:id() ] = self.object
+end
+
+
+function artefact_binder:net_destroy()
+  db.artefacts[ self.object:id() ] = nil
+  object_binder.net_destroy( self )
 end
