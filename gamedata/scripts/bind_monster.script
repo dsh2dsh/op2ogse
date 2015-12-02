@@ -16,51 +16,54 @@ local insect_sound = xr_sound.get_safe_sound_object([[anomaly\flies]])
 local komar_sound = xr_sound.get_safe_sound_object([[anomaly\komar]])
 local cat_kulon_timer = 2000 -- Akill квест на ловлю котов, время через какое кот пойман
 
- function bind(obj)      
-   printf("_bp: monster.bind: name='%s', id='%d'", obj:name(), obj:id())
 
-   -- Для спауна
-   --xr_spawner.spawn_client(obj) 
+function bind( obj )
+  local new_binder = generic_object_binder( obj )
+  obj:bind_object( new_binder )
+end
 
-   local new_binder = generic_object_binder(obj) 
-   obj:bind_object(new_binder) 
-end 
 
-------------------------------------------------------------------------------------
-class "generic_object_binder" (object_binder) 
-
-function generic_object_binder:__init(obj) super(obj) 
-           self.loaded = false 
-           self.chtime = 0 
-           self.last_update = 0 
---Обработчик мутантов
-	self.MonsterEffector = meceniy_mutants_manager.MonsterEffector()
-	self.am = ogse_signals.get_mgr()
+class "generic_object_binder" ( object_binder )
+function generic_object_binder:__init( obj ) super( obj )
+  self.loaded      = false
+  self.chtime      = 0
+  self.last_update = 0
+  self.master_koef = 1 / ( 4 - level.get_game_difficulty() )
+  --Обработчик мутантов
+  self.MonsterEffector = meceniy_mutants_manager.MonsterEffector()
+  self.am = ogse_signals.get_mgr()
   self.am:call( "on_monster_init", obj, self )
-end 
+end
 
-function generic_object_binder:reload(section) 
-object_binder.reload(self, section) 
-end 
 
-function generic_object_binder:reinit() 
-object_binder.reinit(self) 
+function generic_object_binder:reload( section )
+  object_binder.reload( self, section )
+end
 
--- У торговца нет поддержки перемещения
-if self.object:clsid() ~= clsid.script_trader then 
-self.object:set_patrol_extrapolate_callback(generic_object_binder.extrapolate_callback, self) 
-end 
 
-db.storage[self.object:id()] = { }
+function generic_object_binder:reinit()
+  object_binder.reinit( self ) 
 
- self.st = db.storage[self.object:id()] 
- self.object:set_callback(callback.patrol_path_in_point, self.waypoint_callback, self) 
- self.object:set_callback(callback.hit, self.hit_callback, self) 
- self.object:set_callback(callback.death, self.death_callback, self) 
- self.object:set_callback(callback.use_object, self.use_callback, self)
-end 
+  -- У торговца нет поддержки перемещения
+  if self.object:clsid() ~= clsid.script_trader then
+    self.object:set_patrol_extrapolate_callback(
+      generic_object_binder.extrapolate_callback, self
+    )
+  end
 
-prevent_gulag_registration_for_id=0 
+  db.storage[ self.object:id() ] = {}
+  self.st = db.storage[self.object:id() ]
+
+  self.object:set_callback(
+    callback.patrol_path_in_point, self.waypoint_callback, self
+  )
+  self.object:set_callback( callback.hit, self.hit_callback, self )
+  self.object:set_callback( callback.death, self.death_callback, self )
+  self.object:set_callback( callback.use_object, self.use_callback, self )
+end
+
+
+prevent_gulag_registration_for_id=0
 
 
 function generic_object_binder:update(delta)
@@ -118,13 +121,6 @@ function generic_object_binder:update(delta)
   if self.object:alive() then
     -- в Волне все эффекты отключаем
     if not has_alife_info( "volna_goodwill" ) then
-      local master_koef = 1 / ( 4 - level.get_game_difficulty() )
-
-      --/#+# 'засос кровососа боксёра' --------------------------------------
-      if self.object:clsid() == clsid.bloodsucker_s then
-        self:bloodsucker_hit()
-      end
-      --/#+# 'засос кровососа боксёра' --------------------------------------
 
       -- Атака насекомых при приближении к чумному зомби
       if self.object:section() == "zombie_plague" then
@@ -289,7 +285,7 @@ function generic_object_binder:update(delta)
           h.type      = hit.telepatic
           h.direction = vector():set( 0, 0, 0 )
           h:bone( "bip01_spine" ) --/ для учета 'брони'
-          h.power     = 0.05 + math.random() * 0.1 * master_koef
+          h.power     = 0.05 + math.random() * 0.1 * self.master_koef
           h.impulse   = 0.0
           a:hit( h )
           snd:play_at_pos( a, a:position() )
@@ -338,7 +334,7 @@ function generic_object_binder:update(delta)
           timer = time_global() + time_cat_next_attack
           local h = hit()
           h.type      = hit.telepatic
-          h.power     = 0.01 + math.random() * 0.05 * master_koef
+          h.power     = 0.01 + math.random() * 0.05 * self.master_koef
           h.impulse   = 0.0
           h:bone( "bip01_spine" ) -- чтобы учитывалась броня
           h.draftsman = self.object
@@ -459,62 +455,8 @@ function generic_object_binder:update(delta)
       if self.chtime < time_global() then
         self.chtime = time_global() + 2000
         self.MonsterEffector:update( self.object )
-        if
-          self.object:clsid() == clsid.dog_s
-          and self.object:alive() and self.object.health > 0.05
-        then
-          local npc = self.object:best_enemy()
-          if npc then
-            if
-              npc:id() == db.actor:id()
-              and db.actor:see( self.object )
-              and self.object:see( db.actor )
-              and math.random() < 0.4
-            then
-              if
-                self.object:section() == "dog_strong"
-                and math.random() < 0.6
-              then
-                alife():create(
-                  "phantom_dog_" .. math.random( 2 ),
-                  self.object:position(),
-                  db.actor:level_vertex_id(), db.actor:game_vertex_id()
-                )
-              else
-                level.add_pp_effector( "radiation.ppe", 2012, false )
-                local h = hit()
-                h.type      = hit.telepatic
-                h.power     = 0.02 + math.random() * 0.05 * master_koef
-                h.impulse   = 0.0
-                h:bone( "bip01_spine" ) -- чтобы учитывалась броня
-                h.draftsman = self.object
-                h.direction = self.object:direction()
-                db.actor:hit( h )
-              end
-              if math.random() < 0.02 then
-                local active_item = db.actor:active_item()
-                if
-                  active_item
-                  and active_item:section() ~= "bolt"
-                  and active_item:section() ~= "wpn_knife"
-                then
-                  if
-                    not inventory.on_belt( "af_idol_monolita" )
-                    or math.random() < 0.5
-                  then
-                    db.actor:drop_item( active_item )
-                    archievements.acv_count_event(
-                      "acv_drop", 10, "Маша-растеряша"
-                    )
-                  end
-                end
-              end
-            end
-          end
-        end                  -- self.object:clsid() == clsid.dog_s
-      end                    -- if self.chtime < time_global()
-
-    end                      -- if not has_alife_info( "volna_goodwill" )
+      end
+    end                   -- if not has_alife_info( "volna_goodwill" )
 
     local act_scheme = db.storage[self.object:id()].active_section or ""
     if
@@ -990,49 +932,6 @@ function generic_object_binder:enemy_callback( obj, enemy_st )
     end
   end
   return true
-end
-
-
-function generic_object_binder:bloodsucker_hit()
-  if self.object.health < 0.52 then return end
-  local enemy = self.object:get_enemy()
-  if enemy and enemy:id() == db.actor:id() and self.object:see( enemy ) then
-    --/ если у кровососа есть враг/цель и кровосос его видит то ...
-    local distance = self.object:position():distance_to( enemy:position() )
-    if distance <= 2 then --/ дистанция для анимации 'засоса'
-      local timer = time_global()
-      if ( self.timer_anim or 0 ) < timer then
-        self.timer_anim = timer + 2000 --/ таймер анимации ~ 2 сек
-        if self.object:animation_count() > 0 then
-          self.object:clear_animations()
-        end
-        self.object:add_animation( "vampire_0", true ) --/ варианты: "vampire_0" | "idle"
-        --/ озвучка 'засоса'
-        local sound = sound_object( "monsters\\bloodsucker\\vimpire_sucking" )
-        sound:play_at_pos( self.object, self.object:position() )
-      end
-      --/ хит жертве (притягиваем)
-      if
-        ( self.timer_hit or 0 ) < timer
-        and ( self.timer_anim and self.timer_anim + 2000 >= timer )
-      then
-        self.timer_hit = timer + 800 --/ таймер хита ~ 0.5 сек
-        local h = hit()
-        local vDir    = self.object:direction() --/ вектор кровососа
-        local vDirHit = vector_rotate_y( vDir, 179.0 )
-        h:bone( "bip01_spine" ) --/ для учета 'брони'
-        h.draftsman = self.object
-        h.direction = vDirHit --/ направление хита
-        h.power     = 0.10
-        h.impulse   = 120 / distance --/ чем ближе - тем сильнее 'засос'
-        h.type      = hit.wound --hit.strike
-        level.add_pp_effector( "fire_hit.ppe", 3000, false )
-        -- db.actor:set_actor_position( self.object:position() )
-        -- db.actor:set_actor_direction( vDirHit:getH() )
-        enemy:hit( h ) --/ наносим хит жертве
-      end
-    end
-  end
 end
 
 
