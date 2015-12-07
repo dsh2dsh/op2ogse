@@ -4,9 +4,12 @@
 --/ version 2.5 (27/04/2011)/--
 
 --/ Модуль приборов ночного видения /--
+function attach(sm)
+	sm:subscribe({signal = "on_load",        		fun = this.on_game_load})
+end
 
+local GRIDS
 -- Параметры
-local allow_scopes_nv_cheat = false			-- разрешить включать ПНВ при прицеливании через оптику (true)
 
 -- флаги
 local exo_convert_flag = false				-- флаг защиты от ошибочного выключения ПНВ при работе с экзой
@@ -17,7 +20,8 @@ local night_vision_fx_not_sniper = true		-- флаг защиты от ошибочного включения 
 local night_vision_fx_not_trunk = true		-- флаг защиты от ошибочного включения (при работе с багажником транспорта)
 local night_vision_fx_not_btr = true		-- флаг защиты от ошибочного включения (в БТР)
 local night_vision_fx_on = false			-- флаг работающего ПНВ
-local nv_scope_fx_autoenable = false		-- флаг автовключения ночного режима в оптическом прицеле (true)
+local autoenable_nv_scope = system_ini():r_bool("wpn_addon_setup", "cheat_nv_scope_autoenable")
+local nv_scope_fx_autoenable = autoenable_nv_scope
 local night_vision_scope_fx_on = false		-- флаг работающего ночного режима в оптическом прицеле
 local night_vision_binocular_fx_on = false	-- флаг работающего ночного режима в бинокле
 local night_vision_btr_fx_on = false		-- флаг работающего ПНВ БТР
@@ -45,26 +49,15 @@ local nv_btr_ppe_factor = 1.0		-- уровень интенсивности постэффекта ПНВ БТР
 
 
 -- подсветка прицельной сетки by k01jan (по мотивам Light Scopes COP by VanoSanturi, bArt)
-local static_on = ""				-- флаг cтатика
+local scope_on = ""				-- флаг статика прицела
+
+--цветокоррекция - ЖЁЛТЫЙ rgb(255, 255, 20) пронормировано в диапазон 0..1 (/255)
+			
 --Таблица соответсвий* прицел - маска без подсветки - маска с подсветкой (ui_custom_msgs.xml)
 local tbl_sights_lighting = {
---прицел
-	{
-		"wpn_addon_scope",
-		"wpn_addon_scope_pso-1-1",		--затычка, чисто для количества
-	},
---сетка без подсветки (не используется, НЕ УДАЛЯТЬ)
-	{
-		"crosshair_pso-1",
-		"crosshair_pso-1",				--дубль для затычки
-	},	
---сетка с подсветкой
-	{
-		"crosshair_pso-1_light",
-		"crosshair_pso-1_light",		--дубль для затычки
-	}
+	["wpn_addon_scope"] = "sights_pso-1_light",
+	["wpn_addon_scope_pso1m21"] = "sights_pso-1-1_light",
 }
-
 
 -- Функции
 -- Добавление худа визуального шума окном на рендере при скрытом худе
@@ -277,13 +270,18 @@ end
 -- Режим прицеливания через оптику
 local switch_1 = false
 local switch_2 = true
-function on_sniper_mode(mode)
-	if allow_scopes_nv_cheat == true then return end
+function on_sniper_mode(mode,scope)
 	if mode == nil then return end
 	if mode == true then
 		night_vision_fx_not_sniper = false
 		standby_nv_fx(true)
 		switch_2 = true
+		
+		if scope ~= nil then --проверка, передано ли scope
+			--ogse.send_tip("scope_name для отрисовки сетки ПОЛУЧЕНО ")
+turn_on_scope_sights(scope)				--ТЕСТ переноса (-АПДЕЙТ)
+		--else ogse.send_tip("НЕ ПЕРЕДАНО scope_name для отрисовки сетки")
+		end
 		if nv_scope_fx_autoenable and not switch_1 then
 			nv_scope_fx(true)	-- врубаем ночной прицел, если задано автовключение
 			switch_1 = true
@@ -296,6 +294,7 @@ function on_sniper_mode(mode)
 			night_vision_fx_not_sniper = true
 			switch_2 = false
 			standby_nv_fx(false)
+			turn_off_scope_sights()
 		end
 	end
 end
@@ -560,8 +559,9 @@ function nv_scope_fx(mode)
 				if scope_status ~= 0 and scope_section then
 -- k01jan (подсветка прицельных сеток)
 					if system_ini():line_exist(scope_section, "scope_sights_lighting") then
-						local scope_sights_lighting = system_ini():r_string(scope_section, "scope_sights_lighting")
-						if scope_sights_lighting then
+						local scope_sights_lighting = system_ini():r_bool(scope_section, "scope_sights_lighting")
+						if scope_sights_lighting == true then
+							--ogse.send_tip("+++подсветка прицельной сетки scope_sights_lighting включена в конфиге")
 							if scope_status == 1 then
 								turn_on_scope_sights_lighting(scope_section)
 							elseif scope_status == 2 then
@@ -574,7 +574,9 @@ function nv_scope_fx(mode)
 									end
 								end
 							end
+						--else ogse.send_tip("---подсветка прицельной сетки scope_sights_lighting отключена в конфиге")
 						end
+					--else ogse.send_tip("НЕ настроена подсветка прицельной сетки scope_sights_lighting в конфиге")
 					end
 -- EOF k01jan					
 					if system_ini():line_exist(scope_section, "nightvision_sect") then
@@ -598,60 +600,165 @@ function nv_scope_fx(mode)
 			end
 		end
 	elseif mode == false and night_vision_scope_fx_on == true then
-		turn_off_nv_scope_fx()
-		turn_off_scope_sights_lighting(static_on)
+		if not get_grids():is_active() then
+			turn_off_nv_scope_fx()
+		end
+		turn_off_scope_sights_lighting(scope_on)
 	end
 end
 
 -- k01jan
+--включение сетки (не использовать напрямую, вызывается при обновлении динамических элементов худа из ogse_dynamic_hud.script) ---АПДЕЙТ ВСЕГДА!!!
+function turn_on_scope_sights(scope_static)
+  if scope_static then	--проверить, передан ли scope_static
+	--ogse.send_tip("статик прицела scope_name получен ")
+	if night_vision_scope_fx_on == false then		--ночной режим не включен 
+		local scope_color = "0,0,0,0"
+		if system_ini():line_exist(scope_static, "scope_color_sect") then
+			scope_color = system_ini():r_string(scope_static, "scope_color_sect")
+		end
+		cmd("r2_color_grading "..scope_color)
+	scope_on = scope_static -- Запоминаем статик
+	end
+  --else ogse.send_tip("+scope_static НЕ передан - НЕ рисуем сетку")
+  end
+end
+
+--выключение сетки (не использовать напрямую)
+function turn_off_scope_sights()
+	cmd("r2_color_grading 0.0,0.0,0.0,0.0")
+	scope_on = ""
+end
+
 --включение подсветки сетки (не использовать напрямую)
 function turn_on_scope_sights_lighting(scope_static)
-	for a=1,2 do
-		if scope_static==tbl_sights_lighting[1][a] then
-			add_static(tbl_sights_lighting[3][a])
-			--del_static(tbl_sights_lighting[2][a])
-		end
+	if scope_static then
+		get_grids():show_static(scope_static)
+		scope_on = scope_static -- Запоминаем статик.scope
 	end
 	night_vision_scope_fx_on = true
 end
 
 --выключение подсветки сетки (не использовать напрямую)
-function turn_off_scope_sights_lighting(static_off)
-	del_static(static_off)
+function turn_off_scope_sights_lighting(scope_static)
+	if scope_static then
+		get_grids():hide_static(scope_static)
+	end
 	night_vision_scope_fx_on = false
 end
 
---[[ light scopes cop
--- НЕ ИСПОЛЬЗУЕТСЯ
---Добавляем обычную сетку
---function add_simple_scope(scope_section)
---	for a=1,21 do
---		if scope_section==tbl_sights_lighting[1][a] then
---			add_static(tbl_sights_lighting[2][a])
---			del_static(tbl_sights_lighting[3][a])
---		end
---	end
---end
---]]
-
 --Добавляем статик (подсветка прицельной сетки)
-function add_static(static)
-	local hud = get_hud()
-	if hud:GetCustomStatic(static) == nil then 
-		hud:AddCustomStatic(static, true)
+
+function get_grids()
+--	log1("ogse_night_vision:get_grids")
+	if not GRIDS then
+		GRIDS = grid_static()
 	end
-	static_on = static -- Запоминаем статик.
+	return GRIDS
 end
 
---Удаляем статик
-function del_static(static) 
-	local hud = get_hud()
-	if hud:GetCustomStatic(static) then
-		hud:RemoveCustomStatic(static)
+function on_game_load()
+--	log1("ogse_night_vision:on_game_load")
+	if GRIDS then
+		GRIDS:reset()
+		GRIDS:update_rects()
+	else
+		GRIDS = grid_static()
 	end
 end
 
+function on_main_menu()
+--	log1("ogse_night_vision:on_main_menu")
+	get_grids():update_rects()
+end
 
+class "grid_static" (CUIScriptWnd)
+function grid_static:__init() super()
+--	log1("ogse_night_vision:grid_static:__init")
+	self.initialized = false
+	local xml = CScriptXmlInit()
+	local dev = device()
+	local ratio = dev.width/dev.height
+	local width = 1024*1.6/ratio
+	local offset = (1024-width)/2
+	local basic = Frect():set(0,0,1024,768)
+	self:Init(basic.x1, basic.y1, basic.x2, basic.y2)
+	xml:ParseFile("ui_scope_grids.xml")
+	self.statics = {}
+	for k,v in pairs(tbl_sights_lighting) do
+		self.statics[k] = xml:InitStatic(v, self)
+		self.statics[k]:SetWndRect(offset,0,width,768)
+		self.statics[k]:Show(false)
+		self.statics[k]:SetStretchTexture(true)
+	end
+end
+
+function grid_static:__finalize()
+--	log1("ogse_night_vision:grid_static:__finalize")
+end
+
+function grid_static:reset()
+--	log1("ogse_night_vision:grid_static:reset")
+	local hud = get_hud()
+	if hud and self.initialized then
+--		log1("ogse_night_vision:grid_static:RemoveDialogToRender")
+		hud:RemoveDialogToRender(self)
+		self.initialized = false
+	end
+end
+
+function grid_static:add_to_render()
+--	log1("ogse_night_vision:grid_static:add_to_render")
+	if not self.initialized then
+		local hud = get_hud()
+		if hud then
+--			log1("ogse_night_vision:grid_static:AddDialogToRender")
+			hud:AddDialogToRender(self)
+			self.initialized = true
+		end
+	end
+end
+
+function grid_static:update_rects()	
+--	log1("ogse_night_vision:grid_static:update_rects")
+	local dev = device()
+	local ratio = dev.width/dev.height
+	local width = 1024*1.6/ratio
+	local offset = (1024-width)/2
+	for k,v in pairs(tbl_sights_lighting) do
+		self.statics[k]:SetWndRect(offset,0,width,768)
+		self.statics[k]:Show(false)
+		self.statics[k]:SetStretchTexture(true)
+	end
+end
+
+function grid_static:is_active()
+--	log1("ogse_night_vision:grid_static:is_active")
+	local active = false
+	for k,v in pairs(tbl_sights_lighting) do
+		if self.statics[k]:IsShown() then
+			active = true
+			break
+		end
+	end
+	return active
+end
+
+function grid_static:show_static(static)
+--	log1("ogse_night_vision:grid_static:show_static")
+	if static ~= "" and self.statics[static] and not self.statics[static]:IsShown() then
+		self:add_to_render()
+		self.statics[static]:Show(true)
+	end
+end
+
+function grid_static:hide_static(static)
+--	log1("ogse_night_vision:grid_static:hide_static")
+	if static ~= "" and self.statics[static] and self.statics[static]:IsShown() then
+		self.statics[static]:Show(false)
+		self:reset()
+	end
+end
 -- EOF k01jan
 
 -- Старт ночника в прицеле (не использовать напрямую)
