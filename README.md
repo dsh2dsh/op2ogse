@@ -8,8 +8,8 @@ dsh mod для ОП-2
 
 Ссылки для скачивания:
 
-- https://yadi.sk/d/bgiHrI1Tm32qj
-- https://drive.google.com/open?id=0B0h2HnCBW9H1UUNfQTUxUFBXTUk
+- https://yadi.sk/d/tJRiGg6JmCaSj
+- https://drive.google.com/open?id=0B0h2HnCBW9H1LTBZOWVkWVp5OXM
 
 Новая игра не нужна и можно продолжать с текущего сейва ОП-2.
 
