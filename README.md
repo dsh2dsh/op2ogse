@@ -11,6 +11,10 @@ dsh mod для ОП-2
 - https://yadi.sk/d/tJRiGg6JmCaSj
 - https://drive.google.com/open?id=0B0h2HnCBW9H1LTBZOWVkWVp5OXM
 
+- Что бы прицельные сетки круглые были: https://yadi.sk/d/1HZMZAn6gEp3W
+- Худ под меня: https://yadi.sk/d/5G_TkvICmB4ty
+- Некоторые текстуры на любителя: https://yadi.sk/d/jQCakrvFkQtk7
+
 Новая игра не нужна и можно продолжать с текущего сейва ОП-2.
 
 Не продавайте журналы "Playboy", они вам пригодятся.
