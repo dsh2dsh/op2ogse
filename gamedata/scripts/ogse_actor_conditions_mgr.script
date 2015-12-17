@@ -151,7 +151,14 @@ function on_update()
   local dt = current_time:diffSec( previous_check_time )
   if dt == 0 then return end
   pt = { current_time:get() }
-  ogse_signals.get_mgr():call( "on_before_actor_conditions_update" )
+  local ext = {
+    [ "health_restore_speed"    ] = 0,
+    [ "radiation_restore_speed" ] = 0,
+    [ "satiety_restore_speed"   ] = 0,
+    [ "power_restore_speed"     ] = 0,
+    [ "bleeding_restore_speed"  ] = 0,
+  }
+  ogse_signals.get_mgr():call( "on_before_actor_conditions_update", ext )
   -- учитываем здесь естественное оголодание, а также
   -- движковое(обнулять его нельзя, на нем основан показ свойств
   -- артефактов)
@@ -167,24 +174,23 @@ function on_update()
   end
   cur_satiety_v = cur_satiety_v * satiety_custom_k
   local summary_satiety_effect = cur_satiety_v + engine_satiety_v
+    + adjust_satiety_restore_speed( ext.satiety_restore_speed )
   local summary_health_effect  = satiety_health_v_base - engine_satiety_health_v
+    + ext.health_restore_speed
   local summary_power_effect   = - engine_satiety_power_v
-  local summary_bleeding_restore_effect = 0
-  local af_additional_inventory_weight  = 0
-  local af_additional_inventory_weight2 = 0
+    + ext.power_restore_speed
+  local summary_bleeding_restore_effect  = ext.bleeding_restore_speed
+  local summary_radiation_restore_effect = ext.radiation_restore_speed
+  local af_additional_inventory_weight   = 0
+  local af_additional_inventory_weight2  = 0
   -- неучтённые в движке эффекты от артефактов на поясе
   for i = 0, act:belt_count() - 1 do
     local item = act:item_on_belt( i )
     local ef = get_item_cond_effect( item )
     if ef then
-      local satiety_restore_speed = ef.satiety_restore_speed
-      if act:is_actor_sprinting() or act:is_actor_climbing() then
-        if     satiety_restore_speed > 0 then
-          satiety_restore_speed = satiety_restore_speed / 2
-        elseif satiety_restore_speed < 0 then
-          satiety_restore_speed = satiety_restore_speed * 2
-        end
-      end
+      local satiety_restore_speed = adjust_satiety_restore_speed(
+        ef.satiety_restore_speed
+      )
       summary_satiety_effect = summary_satiety_effect + satiety_restore_speed
       af_additional_inventory_weight  = af_additional_inventory_weight
         + ef.additional_inventory_weight
@@ -197,14 +203,9 @@ function on_update()
   if armor then
     local ef = get_item_cond_effect( armor )
     if ef then
-      local satiety_restore_speed = ef.satiety_restore_speed
-      if act:is_actor_sprinting() or act:is_actor_climbing() then
-        if     satiety_restore_speed > 0 then
-          satiety_restore_speed = satiety_restore_speed / 2
-        elseif satiety_restore_speed < 0 then
-          satiety_restore_speed = satiety_restore_speed * 2
-        end
-      end
+      local satiety_restore_speed = adjust_satiety_restore_speed(
+        ef.satiety_restore_speed
+      )
       summary_satiety_effect = summary_satiety_effect + satiety_restore_speed
       summary_health_effect  = summary_health_effect + ef.health_restore_speed
       summary_power_effect   = summary_power_effect + ef.power_restore_speed
@@ -235,6 +236,7 @@ function on_update()
   if act:get_bleeding() > 0.1 and summary_bleeding_restore_effect > 0.0 then
     act:heal_wounds( summary_bleeding_restore_effect * dt )
   end
+  act.radiation = summary_radiation_restore_effect * dt
   --if act.satiety < 0.1 then act.satiety = 1 end
 
   local cur_sprint_koef = override_sprint_koef or sprint_koef
@@ -356,3 +358,16 @@ function change_walk_accel( k )
   override_walk_accel = k
   set_walk_accel( override_walk_accel or ( min_walk_accel + cur_walk_accel ) )
 end
+
+
+function adjust_satiety_restore_speed( v )
+  if db.actor:is_actor_sprinting() or db.actor:is_actor_climbing() then
+    if v > 0 then
+      v = v / 2
+    elseif v < 0 then
+      v = v * 2
+    end
+  end
+  return v
+end
+
