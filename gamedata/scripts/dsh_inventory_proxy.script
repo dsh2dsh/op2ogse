@@ -1,12 +1,50 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
 function attach( sm )
-  sm:subscribe({ signal = "on_drop",         fun = this.on_item_from_belt })
+  sm:subscribe({ signal = "on_drop_before_all", fun = this.on_drop })
+  sm:subscribe({ signal = "on_info",         fun = this.on_info           })
   sm:subscribe({ signal = "on_item_to_belt", fun = this.on_item_to_belt   })
   sm:subscribe({ signal = "on_item_to_ruck", fun = this.on_item_from_belt })
   sm:subscribe({ signal = "on_item_to_slot", fun = this.on_item_from_belt })
+--  sm:subscribe({ signal = "on_take",         fun = this.on_take           })
+  sm:subscribe({ signal = "on_update",       fun = this.on_update         })
 end
 
 
-function on_item_to_belt( obj, sobj )
+local cached   = {}
+local cleanup_timer
+local dropped  = {}
+
+function on_drop( obj )
+  --[=[
+  local sect = obj:section()
+  if dropped[ sect ] then
+    dropped[ sect ][ obj:id() ] = true
+  else
+    dropped[ sect ] = { [ obj:id() ] = true }
+  end
+  if cleanup_timer then cleanup_timer:stop() end
+  cleanup_timer = dsh.timeout(
+    1000, function()
+      cleanup_inventory_cache()
+      cleanup_timer  = nil
+    end
+  )
+  --]=]
+  on_item_from_belt( obj )
+end
+
+
+function on_take( obj )
+  if cached[ obj:section() ] then
+    table.insert( cached[ obj:section() ], obj )
+  else
+    cached[ obj:section() ] = { obj }
+  end
+end
+
+
+function on_item_to_belt( obj )
   if device().precache_frame < 1 then
     if not ui_mm_opt_main.GetOption( "art_degradation" ) then
       inventory.check_immunities( obj )
@@ -16,7 +54,7 @@ function on_item_to_belt( obj, sobj )
 end
 
 
-function on_item_from_belt( obj, sobj )
+function on_item_from_belt( obj )
   if device().precache_frame < 1 then
     if inventory.on_belt( obj:section() ) then
       if not ui_mm_opt_main.GetOption( "art_degradation" ) then
@@ -25,4 +63,46 @@ function on_item_from_belt( obj, sobj )
       inventory.forced_inventory_update( false )
     end
   end
+end
+
+
+function on_info( npc, info_id )
+  inventory.on_inventory_info( info_id )
+end
+
+
+function on_update()
+  inventory.update()
+end
+
+
+function cleanup_inventory_cache()
+  for sect, _ in pairs( dropped ) do
+    objects( sect )
+  end
+  dropped = {}
+end
+
+
+function objects( sect )
+  if cached[ sect ] and dropped[ sect ] then
+    local filtered = {}
+    for _, obj in ipairs( cached[ sect ] ) do
+      if not dropped[ sect ][ obj:id() ] then
+        table.insert( filtered, obj )
+      end
+    end
+    if table.getn( filtered ) > 0 then
+      cached[ sect ] = filtered
+    else
+      cached[ sect ] = nil
+    end
+    dropped[ sect ] = nil
+  end
+  return cached[ sect ] or {}
+end
+
+
+function object( sect )
+  return objects( sect )[ 0 ]
 end
