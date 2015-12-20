@@ -9,8 +9,8 @@ function attach( sm )
 end
 
 
-local can_switch_offline = {}
-local switch_distances   = {}
+local can_switch_offline
+local switch_distances = {}
 
 function on_spawn()
   local lname    = level.name()
@@ -20,31 +20,24 @@ function on_spawn()
       switch_distances[ k ] = get_float( dsh_sect, k )
     end
   end
-  if sys_ini:section_exist( "dsh.can_switch_offline" ) then
-    for _, k in ipairs( get_section_keys( "dsh.can_switch_offline" ) ) do
-      can_switch_offline[ k ] = get_bool( "dsh.can_switch_offline", k )
+  can_switch_offline = {}
+  dsh_sect = "dsh.can_switch_offline." .. lname
+  if sys_ini:section_exist( dsh_sect ) then
+    for _, k in ipairs( get_section_keys( dsh_sect ) ) do
+      can_switch_offline[ k ] = get_bool( dsh_sect, k )
     end
   end
 end
 
 
 local ignore = {}
-
 function get_switch_distance( sobj )
   if db.actor and not ignore[ sobj.id ] then
     local sd = switch_distances[ sobj:name() ]
     if not sd then
-      local strn_id
-      if sobj.smart_terrain_id then
-        strn_id = sobj:smart_terrain_id()
-      else
-        strn_id = 65535
-      end
-      if strn_id ~= 65535 then
-        local strn = alife():object( strn_id )
-        if strn then
-          sd = switch_distances[ strn:name() ]
-        end
+      local strn_name = get_smart_terrain_name( sobj )
+      if strn_name then
+        sd = switch_distances[ strn_name ]
       end
     end
     if sd then
@@ -67,6 +60,48 @@ function se_can_switch_online( sobj )
 end
 
 
+local ignore_switch_offline = {}
 function se_can_switch_offline( sobj )
-  return can_switch_offline[ sobj:name() ]
+  if not can_switch_offline then return end
+  if not ignore_switch_offline[ sobj.id ] then
+    local can = can_switch_offline[ sobj:name() ]
+    if can == nil then can = can_switch_offline[ sobj:profile_name() ] end
+    if can == nil then
+      local strn_name = get_smart_terrain_name( sobj )
+      if strn_name then
+        can = can_switch_offline[ strn_name ]
+      end
+    end
+    if can ~= nil then
+      return can
+    else
+      ignore_switch_offline[ sobj.id ] = true
+    end
+  end
+end
+
+
+local strn_cache = {}
+function get_smart_terrain_name( sobj )
+  if
+    not strn_cache[ sobj.id ]
+    or strn_cache[ sobj.id ].ttl < time_global()
+  then
+    strn_cache[ sobj.id ] = {
+      [ "ttl" ] = time_global() + 60000,
+    }
+    local strn_id
+    if sobj.smart_terrain_id then
+      strn_id = sobj:smart_terrain_id()
+    else
+      strn_id = 65535
+    end
+    if strn_id ~= 65535 then
+      local strn = alife():object( strn_id )
+      if strn then
+        strn_cache[ sobj.id ].name = strn:name()
+      end
+    end
+  end
+  return strn_cache[ sobj.id ].name
 end
