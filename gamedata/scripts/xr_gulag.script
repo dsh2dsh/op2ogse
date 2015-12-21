@@ -92,7 +92,7 @@ function gulag:load_jobs()
 	self.capacity               = math_min( capacity, self.capacity )
 	self.capacity_non_exclusive = self.capacity
 
---	printf("LOAD JOBS %s", tostring(self.name))
+	--log2("LOAD JOBS %s", tostring(self.name))
 	-- DEBUG
 --	self:validate_jobs()
 end
@@ -125,24 +125,27 @@ end
 
 -- подготовка гулага к работе
 function gulag:initialize()
-	self.ObjectJobPathName = {} --' по id. имя патрульного пути места работы персонажа
-	self.restrictors       = {} --' по id. назначенные гулагом рестрикторы для каждого персонажа
+  self.ObjectJobPathName = {} --' по id. имя патрульного пути места работы персонажа
+  self.restrictors       = {} --' по id. назначенные гулагом рестрикторы для каждого персонажа
 
-	self:prepare_jobs()
+  self:prepare_jobs()
+  self.calculateStates = gulag_tasks.loadStates( self.name, self.type )
 
-	self.calculateStates = gulag_tasks.loadStates( self.name, self.type )
+  local ini  = self.smrttrn:spawn_ini()
+  local sect = "smart_terrain"
+  if not ini:section_exist( sect ) then
+    sect = "gulag1"
+  end
 
-	local ini = self.smrttrn:spawn_ini()
-	local sect = "smart_terrain"
-	if not ini:section_exist( sect ) then
-		sect = "gulag1"
-	end
+  local switch_0, switch_1 = self:dsh_get_gulag_switches( ini, sect )
+  self.state_switch_0 = xr_logic.parse_condlist(
+    self.smrttrn, "gulag1", "switch_0", switch_0
+  )
+  self.state_switch_1 = xr_logic.parse_condlist(
+    self.smrttrn, "gulag1", "switch_1", switch_1
+  )
 
-	local switch_0, switch_1 = self:dsh_get_gulag_switches( ini, sect )
-	self.state_switch_0 = xr_logic.parse_condlist( self.smrttrn, "gulag1", "switch_0", switch_0 )
-	self.state_switch_1 = xr_logic.parse_condlist( self.smrttrn, "gulag1", "switch_1", switch_1 )
-
-	self.JobLoaded = nil
+  self.JobLoaded = nil
 end
 
 -- подготовить работы.
@@ -324,22 +327,22 @@ end
 
 -- восстановление информации об объекте
 function gulag:load_obj( packet, obj_id )
-	self.Object[obj_id]           = true
-	self.population = self.population + 1
-	if not self.npc_info[ obj_id ].exclusive then
-	  self.population_non_exclusive = self.population_non_exclusive + 1
-	end
+  self.Object[ obj_id ] = true
+  self.population = self.population + 1
+  if not self.npc_info[ obj_id ].exclusive then
+    self.population_non_exclusive = self.population_non_exclusive + 1
+  end
 
-	self.Object_begin_job[obj_id] = packet:r_bool()
-	self.Object_didnt_begin_job[obj_id] = packet:r_bool()
-	if not self.Object_didnt_begin_job[obj_id] then
-	  self.population_comed = self.population_comed + 1
-	end
+  self.Object_begin_job[ obj_id ]       = packet:r_bool()
+  self.Object_didnt_begin_job[ obj_id ] = packet:r_bool()
+  if not self.Object_didnt_begin_job[ obj_id ] then
+    self.population_comed = self.population_comed + 1
+  end
 
-	local jobN = packet:r_u8()
-	if jobN ~= 0 then
-		self.ObjectJob[obj_id] = jobN
-	end
+  local jobN = packet:r_u8()
+  if jobN ~= 0 then
+    self.ObjectJob[ obj_id ] = jobN
+  end
 end
 
 -- добавить объект под гулаг.
@@ -360,18 +363,17 @@ end
 -- настроить персонажа на работу в офлайне.
 -- если он в это время в онлайне, то вызвать object_setup_online
 function gulag:object_setup_offline( obj_id, was_online )
-	--log2( "[smart_terrain %s] gulag: object_setup_offline: obj=%sm was_online = %s", self.name, self.npc_info[obj_id].name, tostring( was_online ) )
+  --log2( "[smart_terrain %s] gulag: object_setup_offline: obj=%sm was_online = %s", self.name, self.npc_info[obj_id].name, tostring( was_online ) )
 
-	self.Object[obj_id] = true
-
-	self:clear_restrictors_info( obj_id )
-
-	if not was_online then
-		local obj = level.object_by_id( obj_id )
-		if obj ~= nil then
-			self:object_setup_online( obj_id, obj, true )
-		end
-	end
+  self.Object[ obj_id ] = true
+  self:clear_restrictors_info( obj_id )
+  
+  if not was_online then
+    local obj = level.object_by_id( obj_id )
+    if obj ~= nil then
+      self:object_setup_online( obj_id, obj, true )
+    end
+  end
 end
 
 -- настроить персонажа на работу в онлайне.
@@ -438,18 +440,14 @@ end
 -- измененяет потери в лагере.
 -- вызывается из gulag:update() и smart_terrain.on_death()
 function gulag:update_objs()
-	local obj, cl_obj, online
-
-	for obj_id, npc_info in pairs( self.npc_info ) do
-		cl_obj = level.object_by_id( obj_id )
-		online = cl_obj ~= nil
-
-		if self.Object[obj_id] ~= true and not online then
-			self:object_setup_offline( obj_id )
-		end
-
-		--'obj = cl_obj or npc_info.se_obj
-	end
+  for obj_id, npc_info in pairs( self.npc_info ) do
+    local cl_obj = level.object_by_id( obj_id )
+    online = cl_obj ~= nil
+    if self.Object[ obj_id ] ~= true and not online then
+      self:object_setup_offline( obj_id )
+    end
+    --'obj = cl_obj or npc_info.se_obj
+  end
 end
 
 --' Убирание мертвого чувака. Вызывается из смарттеррейна
@@ -981,14 +979,27 @@ end
 
 -- установить серверному объекту персонажа упраление переключения онлайн/офлайн
 function gulag:setup_job_online( se_obj, job )
-	if job then
-		se_obj.job_online_condlist = job.online_condlist
-		se_obj.job_online          = job.online
-	else
-		se_obj.job_online_condlist = nil
-		se_obj.job_online          = nil
-	end
+  if job then
+    se_obj.job_online_condlist = job.online_condlist
+    se_obj.job_online          = job.online
+  else
+    se_obj.job_online_condlist = nil
+    se_obj.job_online          = nil
+  end
 end
+
+
+function gulag:reinit_job_online()
+  for id, npc_info in pairs( self.npc_info ) do
+    local jobN = self.ObjectJob[ id ]
+    local job  = self.Job[ jobN ]
+    if job then
+      local se_obj = npc_info.se_obj
+      self:setup_job_online( se_obj, job )
+    end
+  end
+end
+
 
 valid_restrictors = {}
 
