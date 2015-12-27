@@ -4,53 +4,48 @@
 -- принудительно, при удалении ГГ от них, и возращать в онлайн обратно,
 -- при приближении к ним.
 
-function attach( sm )
-  sm:subscribe({ signal = "on_init", fun = this.on_actor_init })
+function init()
 end
 
 
-local can_switch_offline
 local switch_distances = {}
-
-function on_actor_init()
-  local lname    = level.name()
-  ASSERT( lname, "unknown level.name(): %s", tostring( lname ) )
-  local dsh_sect = "dsh.switch_distances." .. lname
-  if sys_ini:section_exist( dsh_sect ) then
-    for _, k in ipairs( get_section_keys( dsh_sect ) ) do
-      switch_distances[ k ] = get_float( dsh_sect, k )
+function load_switch_distances( sobj )
+  local lname = object_level_name( sobj )
+  if not switch_distances[ lname ] then
+    switch_distances[ lname ] = {}
+    local dsh_sect = "dsh.switch_distances." .. lname
+    if sys_ini:section_exist( dsh_sect ) then
+      for _, k in ipairs( get_section_keys( dsh_sect ) ) do
+        switch_distances[ lname ][ k ] = get_float( dsh_sect, k )
+      end
     end
   end
-  can_switch_offline = {}
-  dsh_sect = "dsh.can_switch_offline." .. lname
-  if sys_ini:section_exist( dsh_sect ) then
-    for _, k in ipairs( get_section_keys( dsh_sect ) ) do
-      can_switch_offline[ k ] = get_bool( dsh_sect, k )
-    end
-  end
+  return switch_distances[ lname ]
 end
 
 
-local ignore = {}
+local cache_switch_distance = {}
 function get_switch_distance( sobj )
-  if db.actor and not ignore[ sobj.id ] then
-    local sd = switch_distances[ sobj:name() ]
+  if not cache_switch_distance[ sobj.id ] then
+    cache_switch_distance[ sobj.id ] = {}
+    local level_switch_distances = load_switch_distances( sobj )
+    local sd = level_switch_distances[ sobj:name() ]
     if not sd then
       local strn_name = get_smart_terrain_name( sobj )
       if strn_name then
-        sd = switch_distances[ strn_name ]
+        sd = level_switch_distances[ strn_name ]
       end
     end
     if sd then
-      return sd
-    else
-      ignore[ sobj.id ] = true
+      cache_switch_distance[ sobj.id ].sd = sd
     end
   end
+  return cache_switch_distance[ sobj.id ].sd
 end
 
 
 function se_can_switch_online( sobj )
+  if not db.actor then return end
   local sd = get_switch_distance( sobj )
   if sd then
     if sobj.online then sd = sd + 20 end
@@ -59,17 +54,41 @@ function se_can_switch_online( sobj )
 end
 
 
+local can_switch_offline = {}
+function load_can_switch_offline( sobj )
+  local lname = object_level_name( sobj )
+  if not can_switch_offline[ lname ] then
+    can_switch_offline[ lname ] = {}
+    local suffixes = { "" }
+    if ui_mm_opt_main.GetOption( "dsh_antifreeze" ) then
+      table.insert( suffixes, ".opt" )
+    end
+    for _, sfx in ipairs( suffixes ) do
+      local dsh_sect = "dsh.can_switch_offline" .. sfx .. "." .. lname
+      if sys_ini:section_exist( dsh_sect ) then
+        for _, k in ipairs( get_section_keys( dsh_sect ) ) do
+          can_switch_offline[ lname ][ k ] = get_bool( dsh_sect, k )
+        end
+      end
+    end
+  end
+  return can_switch_offline[ lname ]
+end
+
+
 local cache_switch_offline = {}
 function se_can_switch_offline( sobj )
-  if not can_switch_offline then return end
   if not cache_switch_offline[ sobj.id ] then
     cache_switch_offline[ sobj.id ] = {}
-    local can = can_switch_offline[ sobj:name() ]
-    if can == nil then can = can_switch_offline[ sobj:profile_name() ] end
+    local level_can_switch_offline = load_can_switch_offline( sobj )
+    local can = level_can_switch_offline[ sobj:name() ]
+    if can == nil then
+      can = level_can_switch_offline[ sobj:profile_name() ]
+    end
     if can == nil then
       local strn_name = get_smart_terrain_name( sobj )
       if strn_name then
-        can = can_switch_offline[ strn_name ]
+        can = level_can_switch_offline[ strn_name ]
       end
     end
     if can ~= nil then
