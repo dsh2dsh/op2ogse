@@ -53,8 +53,6 @@ function se_monster:__init (section) super (section)
 	self.ini = nil
 	self.ini_initialized = false
 
-	self.spawner_present = false
-
 	self.smart_terrain_conditions = nil
 	self.smart_terrain_conditions_initialized = false
 
@@ -79,172 +77,82 @@ function se_monster:__init (section) super (section)
 	self.state = nil
 end
 --------------------
+
+
 function se_monster:get_ini()
-	if not self.ini_initialized then
-		self.ini             = self:spawn_ini ()
-		self.ini_initialized = true
+  if not self.ini_initialized then
+    self.ini             = self:spawn_ini ()
+    self.ini_initialized = true
 
-		if
-		  self.ini:section_exist( "logic" )
-		  and
-		  get_bool( "logic", "dsh_replace_ini", false, self.ini )
-		then
-		  local cfg = get_string( "logic", "cfg", nil, self.ini )
-		  if cfg then self.ini = ini_file( cfg ) end
-		end
-		
-		self.spawner_present = self.ini:section_exist ("spawner")
+    if
+      self.ini:section_exist( "logic" )
+      and get_bool( "logic", "dsh_replace_ini", false, self.ini )
+    then
+      local cfg = get_string( "logic", "cfg", nil, self.ini )
+      if cfg then self.ini = dsh.cached_ini_file( cfg ) end
+    end
 
-		if self.ini ~= nil and self.spawner_present == true then
-		  if self.ini:line_exist ("spawner", "check_distance") == true then
-				self.check_distance = 	utils.cfg_get_bool(self.ini, "spawner", "check_distance", 	self, false, false)
-			end
-			if self.ini:line_exist ("spawner", "min_distance") == true then
-				self.min_distance = 	utils.cfg_get_number(self.ini, "spawner", "min_distance", 		self, false, 150)
-			end
-			if self.ini:line_exist ("spawner", "day_night_switch") == true then
-				self.day_night_switch = utils.cfg_get_bool(self.ini, "spawner", "day_night_switch", self, false, false)
-			end
-		end
-		
-		self.day_begin = utils.cfg_get_number(system_ini(), self:section_name(), "DayTime_Begin", self, false, -1)
-		self.day_end = utils.cfg_get_number(system_ini(), self:section_name(), "DayTime_End", self, false, -1)
-		
-		if self.min_distance==nil then 
-			local sys = system_ini()
-			if sys ~= nil and sys:line_exist ("alife", "switch_distance") == true then
-				self.min_distance = sys:r_u32 ("alife", "switch_distance") - 1.5
-				if self.min_distance<1.5 then
-					self.min_distance=1.5
-				elseif self.min_distance>1.5 then
-					self.min_distance=1.5
-				end
-			else
-				 self.min_distance = 1.5
-			end
-		end
-		
-	end
+    if self.ini:section_exist( "spawner" ) then
+      self.spawner = xr_logic.parse_condlist(
+        db.actor, "spawner", "cond",
+        get_string( "spawner", "cond", nil, self.ini )
+      )
+      self.day_night_switch = get_bool(
+        "spawner", "day_night_switch", false, self.ini
+      )
+      self.day_begin = get_float( self:section_name(), "DayTime_Begin", -1 )
+      self.day_end   = get_float( self:section_name(), "DayTime_End",   -1 )
+    end
+  end
 end
---------------------
+
+
 function se_monster:get_job_online()
-	if self.job_online_condlist == nil then
-		return self.job_online
-	else
-		return xr_logic.pick_section_from_condlist(db.actor_proxy, self, self.job_online) ~= nil
-	end
+  if self.job_online_condlist == nil then
+    return self.job_online
+  else
+    return xr_logic.pick_section_from_condlist(
+      db.actor_proxy, self, self.job_online
+    ) ~= nil
+  end
 end
---------------------
-function se_monster:can_switch_offline ()
-	if self:get_job_online() ~= nil then
-		return not self:get_job_online()
-	else
-		return cse_alife_monster_base.can_switch_offline (self)
-	end
+
+
+function se_monster:can_switch_offline()
+  return true
 end
 
 
 function se_monster:can_switch_online()
   if self:dsh_avoid_this_level() then
-    need_be_online[ self.id ] = nil
-    return save_state( self, false )
+    return false
   end
 
-  local rpt = false
-  if need_be_online[ self.id ] ~= nil then
-    local r = need_be_online[ self.id ]
-    need_be_online[ self.id ] = nil
-    if rpt then
-      amk.mylog( self:name() .. " need_be_online " .. tostring( r ) )
-    end
-    return save_state( self, r )
+  local job_online = self:get_job_online()
+  if job_online == false then return job_online end
+
+  local cse_can_switch = cse_alife_monster_base.can_switch_online( self )
+    and is_creature_day( self, self.day_night_switch )
+  
+  if self.ini == nil or self.spawner == nil then
+    return cse_can_switch
   end
 
-  local r = self:get_job_online()
-  if r ~= nil then
-    if rpt then
-      amk.mylog( self:name() .. " get_job_online " .. tostring( r ) )
-    end
-    return save_state( self, r )
+  if db.actor ~= nil and db.actor:alive() == false then
+    return self.online
   end
-
-  local day_night_switch, check_distance = select_logic( self )
+  
+  local can = cse_can_switch
   if self.online == false then
-    -- если игрока нет, то в оффлайн
-    if db.actor == nil or db.actor:alive() == false then
-      if rpt then
-        amk.mylog( self:name() .. " off no actor false " )
-      end
-      return save_state( self, false )
-    end
-
-    -- Если в custom_data зверушки есть cond в секции [spawner], то
-    -- это условие должно иметь приоритет.
-    local chk_spawner = xr_spawner.check_spawn( self )
-    if chk_spawner ~= nil then
-      if rpt then
-        amk.mylog( self:name() .. " off check spawn " .. tostring( chk_spawner ) )
-      end
-      return save_state( self, chk_spawner )
-    end
-
-    --если "ночь" - остаемся в офф
-    if not is_creature_day( self, day_night_switch ) then
-      if rpt then
-        amk.mylog( self:name() .. " off not creature's day false" )
-      end
-      return save_state( self, false )
-    end
-
-    --если задана дистанция проверки, то проверим.
-    if check_distance == true then
-      -- проверим дистанцию до игрока. если меньше требуемой, то офф
-      if not amk_offline_alife.sobj_is_far( self, self.min_distance ) then
-        if rpt then
-          amk.mylog( self:name() .. " off distance false" )
-        end
-        return save_state( self, false )
-      end
-    end
-
-    --все проверки прошли - финал
-    if rpt then amk.mylog( self:name() .. " off standard" ) end
-    return save_state( self, cse_alife_monster_base.can_switch_online( self ) )
+    can = (
+      xr_logic.pick_section_from_condlist( db.actor, self, self.spawner ) ~= nil
+      and cse_can_switch
+    )
   else
-    if db.actor == nil or db.actor:alive() == false then
-      if rpt then
-        amk.mylog( self:name() .. " on no actor true" )
-      end
-      return save_state( self, true )
-    end
-
-    -- Если в custom_data зверушки есть cond в секции [spawner], то
-    -- это условие должно иметь приоритет.
-    local chk_spawner = xr_spawner.check_spawn( self )
-    if chk_spawner ~= nil then
-      if rpt then
-        amk.mylog( self:name() .. " off check spawn " .. tostring( chk_spawner ) )
-      end
-      return save_state( self, chk_spawner )
-    end
-
-    if check_distance == true then
-      -- проверим дистанцию до игрока. если больше требуемой, то от винта
-      if not amk_offline_alife.sobj_is_far( self, self.min_distance )  then
-        local obj = level.object_by_id( self.id )
-        --если "ночь" и ГГ не видит - уходим в офф, иначе остаемся в онлайне
-        local r = is_creature_day( self, day_night_switch )
-          or ( obj ~= nil and db.actor:see( obj ) )
-        if rpt then
-          amk.mylog( self:name() .. " on day see " .. tostring( r ) )
-        end
-        return save_state( self, r )
-      end
-    end
-
-    if rpt then amk.mylog( self:name() .. " on standard" ) end
-    return save_state( self, cse_alife_monster_base.can_switch_online( self ) )
+    can = cse_can_switch
   end
+
+  return can
 end
 
 
@@ -421,7 +329,7 @@ end
 --------------------
 function is_creature_day(obj, day_night_switch)
 	--проверка на дневной/ночной режим
-	if day_night_switch == true then
+	if day_night_switch then
 		if obj.day_begin~=-1 and obj.day_end~=-1 then
 			local hrs = level.get_time_hours()
 			local de = obj.day_end
