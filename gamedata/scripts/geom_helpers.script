@@ -1,0 +1,480 @@
+zones = {
+	[clsid.obj_climable]        	 = "net_alife_object_climable", -- CSE_ALifeObjectClimable 
+	--
+	[clsid.script_zone] 	   	 	 = "net_alife_space_restrictor", -- CSE_ALifeSpaceRestrictor
+	[clsid.space_restrictor]    	 = "net_alife_space_restrictor", -- CSE_ALifeSpaceRestrictor
+	[clsid.script_restr] 	     	 = "net_alife_space_restrictor", -- CSE_ALifeSpaceRestrictor
+	--
+	[clsid.level_changer] 	   	 	 = "net_alife_level_changer", -- CSE_ALifeLevelChanger
+	--[clsid.team_base_zone] 	 	 = 4 -- CSE_ALifeTeamBaseZone
+	[clsid.smart_zone] 		 		 = "net_alife_smart_zone", -- CSE_ALifeSmartZone
+	[clsid.respawn] 		     	 = "net_alife_smart_zone", -- CSE_ALifeSmartZone
+	[clsid.smart_terrain]       	 = "net_alife_smart_zone", -- CSE_ALifeSmartZone
+	[clsid.zone] 			   	 	 = "net_alife_custom_zone", -- CSE_ALifeCustomZone
+	--
+	[clsid.torrid_zone] 	   	 	 = "net_alife_torrid_zone", -- CSE_ALifeTorridZone
+	[clsid.ameba_zone] 		 		 = "net_zone_anom", -- CSE_ALifeAnomalousZone 
+	[clsid.nogravity_zone] 	 		 = "net_zone_anom", -- CSE_ALifeAnomalousZone
+	[clsid.zone_dead] 		   	 	 = "net_zone_anom", -- CSE_ALifeAnomalousZone
+	[clsid.zone_galantine] 	 		 = "net_zone_anom", -- CSE_ALifeAnomalousZone
+	[clsid.zone_mincer] 	   	 	 = "net_zone_anom", -- CSE_ALifeAnomalousZone
+	[clsid.zone_mosquito_bald]  	 = "net_zone_anom", -- CSE_ALifeAnomalousZone
+	[clsid.zone_radioactive]    	 = "net_zone_anom", -- CSE_ALifeAnomalousZone
+	[clsid.zone_acid_fog] 	   	 	 = "net_zone_anom", -- CSE_ALifeAnomalousZone
+	[clsid.zone_galant_s]       	 = "net_zone_anom", -- CSE_ALifeAnomalousZone
+	[clsid.zone_mbald_s] 	     	 = "net_zone_anom", -- CSE_ALifeAnomalousZone
+	[clsid.zone_mincer_s]       	 = "net_zone_anom", -- CSE_ALifeAnomalousZone
+	[clsid.zone_bfuzz] 		 		 = "net_zone_anom", -- CSE_ALifeZoneVisual
+	--[clsid.zone_campfire] 	   	 = true
+	[clsid.zone_rusty_hair]     	 = "net_alife_zone_visual", -- CSE_ALifeZoneVisual
+	[clsid.zone_bfuzz_s] 	     	 = "net_alife_zone_visual", -- CSE_ALifeZoneVisual
+}
+----------------------------------------------------------------------------------------------------
+-- выделение из матрицы углов поворота в последовательности x,z,y
+-- подразумевается, что матрица является правильной матрицей поворота
+-- функция содрана из библиотеки Wild Magic 5
+function extract_euler_xzy(m)
+	if m.i.y < 1 then
+		if m.i.y > -1 then
+			local az = math.asin(-m.i.y)
+			local ax = math.atan2(m.k.y, m.j.y)
+			local ay = math.atan2(m.i.z, m.i.x)
+			return ax, az, ay
+		else
+			local az = math.pi / 2
+			local ax = -math.atan2(-m.k.x, m.k.z)
+			local ay = 0
+			return ax, az, ay
+		end
+	else
+		local az = -math.pi / 2
+		local ax = math.atan2(-m.k.x, m.k.z)
+		local ay = 0
+		return ax, az, ay
+	end
+end
+function rot_matrix_x(alpha)
+	local tr_matr = matrix():set(
+		vector():set(1,0,0),
+		vector():set(0,math.cos(alpha),-math.sin(alpha)),
+		vector():set(0,math.sin(alpha), math.cos(alpha)),
+		vector():set(0,0,0)
+	)
+	tr_matr._44_ = 1
+	return tr_matr
+end
+function rot_matrix_y(alpha)
+	local tr_matr = matrix():set(
+		vector():set( math.cos(alpha),0,math.sin(alpha)),
+		vector():set(0, 1,0),
+		vector():set(-math.sin(alpha),0,math.cos(alpha)),
+		vector():set(0,0,0)
+	)
+	tr_matr._44_ = 1
+	return tr_matr
+end
+function rot_matrix_z(alpha)
+	local tr_matr = matrix():set(
+		vector():set(math.cos(alpha),-math.sin(alpha),0),
+		vector():set(math.sin(alpha), math.cos(alpha),0),
+		vector():set(0,0,1),
+		vector():set(0,0,0)
+	)
+	tr_matr._44_ = 1
+	return tr_matr
+end
+function scale_matrix(x,y,z)
+	local tr_matr = matrix():set(
+		vector():set(x,0,0),
+		vector():set(0,y,0),
+		vector():set(0,0,z),
+		vector():set(0,0,0)
+	)
+	tr_matr._44_ = 1
+	return tr_matr
+end
+function shear_matrix(a01,a02,a12)
+	local sh_matr = matrix():set(
+		vector():set(1.0,a01,a02),
+		vector():set(0.0,1.0,a12),
+		vector():set(0.0,0.0,1.0),
+		vector():set(0,0,0)
+	)
+	sh_matr._44_ = 1
+	return sh_matr
+end
+function translation_matrix(x,y,z)
+	local tr_matr = matrix():set(
+		vector():set(1,0,0),
+		vector():set(0,1,0),
+		vector():set(0,0,1),
+		vector():set(x,y,z)
+	)
+	tr_matr._44_ = 1
+	return tr_matr
+end
+function make_euler_xzy(ax, az, ay)
+    local xmat = rot_matrix_x(ax)
+    local zmat = rot_matrix_z(az)
+    local ymat = rot_matrix_y(ay)
+
+    --return matrix():mul_43(matrix():mul_43(ymat, zmat), xmat)
+	return mul_43(matrix(), mul_43(matrix(), ymat, zmat), xmat)
+end
+
+function mul_43(res, m1, m2)
+	if res.mul_43 then
+		res:mul_43(m1, m2)
+	else
+		local res_00 = m1.j.x * m2.i.y + m1.k.x * m2.i.z + m1.i.x * m2.i.x;
+		local res_01 = m1.j.y * m2.i.y + m1.k.y * m2.i.z + m1.i.y * m2.i.x;
+		local res_02 = m1.j.z * m2.i.y + m1.k.z * m2.i.z + m1.i.z * m2.i.x;
+		--
+		local res_10 = m1.i.x * m2.j.x + m1.k.x * m2.j.z + m1.j.x * m2.j.y;
+		local res_11 = m1.k.y * m2.j.z + m1.j.y * m2.j.y + m1.i.y * m2.j.x;
+		local res_12 = m1.k.z * m2.j.z + m1.j.z * m2.j.y + m1.i.z * m2.j.x;
+		--
+		local res_20 = m1.i.x * m2.k.x + m1.k.x * m2.k.z + m1.j.x * m2.k.y;
+		local res_21 = m1.k.y * m2.k.z + m1.j.y * m2.k.y + m1.i.y * m2.k.x;
+		local res_22 = m1.k.z * m2.k.z + m1.j.z * m2.k.y + m1.i.z * m2.k.x;
+		--
+		local res_30 = m1.i.x * m2.c.x + m1.k.x * m2.c.z + m1.j.x * m2.c.y + m1.c.x;
+		local res_31 = m1.k.y * m2.c.z + m1.j.y * m2.c.y + m1.i.y * m2.c.x + m1.c.y;
+		local res_32 = m1.k.z * m2.c.z + m1.j.z * m2.c.y + m1.i.z * m2.c.x + m1.c.z;
+		--
+		res:set(
+			vector():set(res_00, res_01, res_02),
+			vector():set(res_10, res_11, res_12),
+			vector():set(res_20, res_21, res_22),
+			vector():set(res_30, res_31, res_32)
+			)
+		res._14_ = 0.0
+		res._24_ = 0.0
+		res._34_ = 0.0
+		res._44_ = 1.0
+	end
+	return res
+end
+--[[function mul_43(m1, m2)
+	return matrix():mul_43(m1, m2)
+end]]
+function transform_tiny(m, v)
+	local res = vector()
+	return transform_tiny_(m, res, v)
+end
+function transform_tiny_(m, res, v)
+	res.x = m.i.x * v.x + m.k.x * v.z + m.j.x * v.y + m.c.x;
+	res.y = m.k.y * v.z + m.j.y * v.y + m.i.y * v.x + m.c.y;
+	res.z = m.k.z * v.z + m.j.z * v.y + m.i.z * v.x + m.c.z;
+	return res
+end
+--[[function combine_transformations(transl, scale, rotation, shear)
+	return matrix():mul_43(
+		transl,
+		matrix():mul_43(
+			shear,
+			matrix():mul_43(rotation, scale)
+		)
+	)
+end]]
+function combine_transformations(transl, scale, rotation, shear)
+	return mul_43(
+		matrix(),
+		transl,
+		mul_43(
+			matrix(),
+			shear,
+			mul_43(
+				matrix(),
+				rotation,
+				scale)
+		)
+	)
+end
+
+--[[ функция выполняет декомпозицию исходной матрицы 'm' на матрицу масштабирования 'scale'
+-- и вращения 'rotation'. Подразумевается, что исходная матрица не содержит трансформации
+-- сдвига, поэтому сдвиговая матрица попросту выкидывается. Это допущение достаточно обосновано, 
+-- поскольку в редакторе SDK нет возможности задавать сдвиг. Т.е. там нельзя сделать бокс 
+-- не перпендикулярной формы. Если сдвиговые компоненты и возникают, то только как результат
+-- накопленных ошибок округления и их можно смело выкидывать. В любом случае, это справедливо для
+-- большинства традиционных зон: рестрикторов, смартов, переходов, аномалий и т.п.]]
+function decompose_matrix(m, offset, scale, rotation, shear)
+	offset:set(
+		vector():set(1,0,0), 
+		vector():set(0,1,0), 
+		vector():set(0,0,1), 
+		m.c)
+	offset._44_ = 1.0
+	--
+	local sx = m.i:magnitude()
+	local sy = m.j:magnitude()
+	local sz = m.k:magnitude()
+	scale:set(
+		vector():set(sx,0,0), 
+		vector():set(0,sy,0), 
+		vector():set(0,0,sz), 
+		vector())
+	scale._44_ = 1.0
+	rotation:set(
+		vector():set(m.i:div(sx)),
+		vector():set(m.j:div(sy)),
+		vector():set(m.k:div(sz)),
+		vector())
+	rotation._44_ = 1.0
+	shear:set(matrix():identity())
+	
+	
+	--[[do return end
+	local sc1, sc2, sc3, r11,r12,r13,r21,r22,r23,r31,r32,r33, sh12,sh13,sh23 = math.decompose_matrix(m.i.x, m.i.y, m.i.z, m.j.x, m.j.y, m.j.z, m.k.x, m.k.y, m.k.z)
+	scale:set(
+		vector():set(sc1,0,0), 
+		vector():set(0,sc2,0), 
+		vector():set(0,0,sc3), 
+		vector())
+	scale._44_ = 1.0
+	rotation:set(
+		vector():set(r11,r12,r13), 
+		vector():set(r21,r22,r23), 
+		vector():set(r31,r32,r33), 
+		vector())
+	rotation._44_ = 1.0
+	shear:set(
+		vector():set(1.0,sh12,sh13), 
+		vector():set(0.0,1.0,sh23), 
+		vector():set(0.0,0.0,1.0), 
+		vector())
+	shear._44_ = 1.0]]
+end
+-- получение world-трансформации объекта
+function get_xform(cobj)
+	local xform = matrix()
+	if type(cobj.get_go_float) == "function" then
+		local a = {}
+		for i=0,15 do
+			a[i] = cobj:get_go_float(80 + i*4)
+		end
+		xform:set(
+			vector():set(a[0], a[1], a[2]),
+			vector():set(a[4], a[5], a[6]),
+			vector():set(a[8], a[9], a[10]),
+			vector():set(a[12], a[13], a[14])
+		)
+	else
+		xform:set(
+			vector():set(1, 0, 0),
+			vector():set(0, 1, 0),
+			vector():set(0, 0, 1),
+			cobj:position()
+		)
+	end
+	xform._14_ = 0
+	xform._24_ = 0
+	xform._34_ = 0
+	xform._44_ = 1
+	--print_matrix("xform", xform)
+	--print_vector("pos", cobj:position())
+	return xform
+end
+
+function build_plane(arg1, arg2, arg3)
+	local d13 = vector():sub(arg3, arg1)
+	local d12 = vector():sub(arg2, arg1)
+	local plane = {}
+	plane.n = vector():crossproduct(d13, d12):normalize() -- нормаль к плоскости
+	plane.d = - arg1:dotproduct(plane.n) -- точка на плоскости, которая одновременно находится
+	-- на нормали к этой плоскости, выходящей из начала координат (ближайшая к началу координат 
+	-- точка плоскости)
+	return plane
+end
+function inside_box(planes, point, radius)
+	for i,plane in ipairs(planes) do
+		-- плоскость задана нормалью и растоянием
+		if plane.n:dotproduct(point) < (radius - plane.d) then
+			return false
+		end
+	end
+	return true
+end
+function distance_from_shape_boundary(pos, shape, point)
+	--log1(type(shape))
+	if shape.t == shape_type.sphere then
+		--log1("sphere")
+		return (shape.r - vector():sub(vector():add(pos, shape.offset), point):magnitude())
+	elseif shape.t == shape_type.box then
+		local dist = math.huge
+		for _,plane in ipairs(shape.planes) do
+			-- плоскость задана нормалью и растоянием
+			local a = plane.n:dotproduct(point) + plane.d
+			if a < dist then
+				dist = a
+			end
+		end
+		return dist
+	else
+		abort("")
+	end
+end
+function distance_from_zone_boundary(zone_data, point)
+	--log1("distance_from_zone_boundary")
+	--log1(type(shapes))
+	local dist = -math.huge
+	--log3("num=%d", #shapes)
+	for i,shape in ipairs(zone_data.shapes) do
+		--log3("i=%d", i)
+		local d = distance_from_shape_boundary(zone_data.xform.c, shape, point)
+		if d > dist then
+			dist = d
+		end
+	end
+	return dist
+end
+local base_box_vertices = {
+	vector():set(-.5, -.5, -.5),
+	vector():set(-.5, -.5,  .5),
+	vector():set(-.5,  .5,  .5),
+	vector():set(-.5,  .5, -.5),
+	vector():set( .5,  .5,  .5),
+	vector():set( .5,  .5, -.5),
+	vector():set( .5, -.5,  .5),
+	vector():set( .5, -.5, -.5),
+}
+function build_box_vertices(xformed_box_transformation)
+	--print_matrix("xformed_box_transformation", xformed_box_transformation)
+	local vertices = {}
+	for i,v in ipairs(base_box_vertices) do
+		vertices[i] = transform_tiny(xformed_box_transformation, v)
+	end
+	return vertices
+end
+--[[для онлайнового объекта, имеющего составной шейп, вернуть таблицу с полной информацией
+-- о его положении и каждом элементарном шейпе. Формат таблицы:
+-- {
+--     obj = <сам клиентский объект>, -- на всякий случай
+--     sobj = <серверный объект>,     -- тоже на всякий случай
+--     xform = <матрица глобальной трансформации объекта>, 
+--            реально в этой матрице для объектов на уровне используется только трансформация 
+--            смещения, т.е. компонент матрицы 'xform.c', который в сущности просто является
+--            вектором глобальных координат объекта
+--     shapes = { -- массив элементарных шейпов: боксов или сфер
+--         { -- формат сферы
+--             t = shape_type.sphere,
+--             offset = <центр сферы в виде объекта vector>,
+--             r = <радиус сферы>,
+--         },
+--         { -- формат бокса
+--             t = shape_type.box,
+--             m = <матрица трансформации>,
+--             -- v - это массив кординат вертексов бокса в виде объектов класса vector
+--             -- в целом бокс представляет собой исходно куб со стороной 1 игровой метр и центром
+--             -- в точке с координатами [0,0,0], подвергнутый последовательно двум трансформациям:
+--             -- 1. самого объекта (xform), что по-сути просто является сдвигом центра единичного
+--             --    куба в центр локальной системы координат объекта
+--             -- 2. локальной трансформации, описываемой матрицей m, которая может включать
+--             --    трансформации масштабирования (задаёт размеры бокса), вращения и 
+--             --    дополнительного смещения центра бокса относительно начала локальной системы
+--             --    координат (или иными словами, относительно формального расположения
+--             --    объекта)
+--             -- ниже перечислены вершины и исходные вершины единичного куба, 
+--             -- из которых они получены (порядок выбран произвольно, но от этого 
+--             -- момента надо его соблюдать).
+--             v = {
+--                 [1] = ..., --[-.5, -.5, -.5],
+--                 [2] = ..., --[-.5, -.5,  .5],
+--                 [3] = ..., --[-.5,  .5,  .5],
+--                 [4] = ..., --[-.5,  .5, -.5],
+--                 [5] = ..., --[ .5,  .5,  .5],
+--                 [6] = ..., --[ .5,  .5, -.5],
+--                 [7] = ..., --[ .5, -.5,  .5],
+--                 [8] = ..., --[ .5, -.5, -.5],
+--             },
+--             -- Не забывайте обновлять этот список при изменении матрицы m! Для этого есть
+--             -- функция build_box_vertices
+--         },
+--     },
+-- }
+]]
+function get_all_shapes_data(cobj)
+	--log1("get_all_shapes_data")
+	local data = {}
+	data.cobj = cobj
+	data.sobj = alife():object(cobj:id())
+	--log1("_-3")
+	local fun_name = zones[cobj:clsid()]
+	ASSERT(fun_name, "get_all_shapes_data: unknown zone type")
+	--log3("fun_name: %s", fun_name)
+	local pk = xs_netpk[fun_name](data.sobj)
+	--log1("_-1")
+	local row_data = pk:get()
+	--log1("1")
+	local shapes_row_data = row_data.shapes
+	local xform_orig = get_xform(cobj)
+	--print_matrix("xform_orig", xform_orig)
+	local xoffset = matrix()
+	local xscale = matrix()
+	local xrot = matrix()
+	local xshear = matrix()
+	--log1("2")
+	decompose_matrix(xform_orig, xoffset, xscale, xrot, xshear)
+	--print_matrix("xoffset", xoffset)
+	--print_matrix("xscale", xscale)
+	--print_matrix("xrot", xrot)
+	--print_matrix("xshear", xshear)
+	--log1("3")
+	local xform_comp = combine_transformations(matrix():identity(), xscale, xrot, xshear)
+	data.xform = xoffset
+	--
+	data.game_vertex_id = row_data.game_vertex_id
+	data.distance = row_data.distance
+	data.level_vertex_id = row_data.level_vertex_id
+	
+	data.shapes = {}
+	--log3("shapes_row_data:count = %d", shapes_row_data:count())
+	for k = 1, shapes_row_data:count() do
+		local shape = {}
+		data.shapes[k] = shape
+		local shp = shapes_row_data:get(k)
+		if shp:isSphere() then
+			shape.t = shape_type.sphere
+			shape.offset = shp.offset
+			shape.r = shp.r
+		else
+			shape.t = shape_type.box
+			local m = matrix():set(shp.box_matrix)
+			shape.m = mul_43(matrix(), xform_comp, m)
+			shape.v = build_box_vertices(mul_43(matrix(), data.xform, shape.m))
+			shape.planes = {}
+			shape.planes[1] = build_plane(shape.v[1],shape.v[4],shape.v[6])
+			shape.planes[2] = build_plane(shape.v[2],shape.v[3],shape.v[4])
+			shape.planes[3] = build_plane(shape.v[7],shape.v[6],shape.v[5])
+			shape.planes[4] = build_plane(shape.v[5],shape.v[3],shape.v[2])
+			shape.planes[5] = build_plane(shape.v[4],shape.v[3],shape.v[5])
+			shape.planes[6] = build_plane(shape.v[2],shape.v[1],shape.v[7])
+
+			local offset = matrix()
+			local scale = matrix()
+			local rotation = matrix()
+			local shear = matrix()
+			decompose_matrix(shape.m, offset, scale, rotation, shear)
+			shape.a = {extract_euler_xzy(rotation)}
+			shape.offset = {offset.c.x, offset.c.y, offset.c.z}
+			shape.scale = {scale.i.x, scale.j.y, scale.k.z}
+			shape.shear = {shear.i.y, shear.i.z, shear.j.z}
+			--
+			--log1("----------------------------------------------------------------------------------")
+			--print_matrix("shape.m", shape.m)
+			--log1(string.format("ax=%f, az=%f, ay=%f", unpack(shape.a)))
+			--print_matrix("scale", scale)
+			--print_matrix("shear", shear)
+			--local a2 = make_euler_xzy(unpack(shape.a))
+			--print_matrix("rotation2", a2)
+			--print_matrix("sh2", shear_matrix(unpack(shape.shear)))
+			--local mm = get_shape_transformations(shape)
+			--print_matrix("mm", mm)
+			--local transl = translation_matrix(unpack(shape.offset))
+			--local m2 = combine_transformations(transl, scale, rotation, shear)
+			--print_matrix("m2", m2)
+		end
+	end
+	return data
+end
