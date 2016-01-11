@@ -1,0 +1,79 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+function attach( sm ) -- для менеджера сигналов
+  sm:subscribe({
+    signal = "on_actor_before_use", fun = this.on_actor_before_use
+  })
+  sm:subscribe({
+    signal = "on_before_actor_conditions_update",
+    fun    = this.on_actor_conditions_update
+  })
+  sm:subscribe({ signal = "on_sleep_finished", fun = this.on_sleep_finished })
+  sm:subscribe({ signal = "on_spawn",          fun = this.on_spawn          })
+end
+
+
+local energy_drink_in_use = false
+local energy_drink_tname  = script_name() .. ".use_energy_drink"
+local post_energy_drink_tname  = script_name() .. ".post_energy_drink_end"
+
+function on_spawn()
+  if ogse_st_mgr.timer_exists( energy_drink_tname ) then
+    energy_drink_in_use = true
+  end
+  if ogse_st_mgr.timer_exists( post_energy_drink_tname ) then
+    set_actor_power_max( 0.1 )
+  end
+end
+
+
+function on_actor_conditions_update( ext )
+  if energy_drink_in_use then
+    ext.power_restore_speed   = ext.power_restore_speed   + 0.011   -- +200
+    ext.satiety_restore_speed = ext.satiety_restore_speed - 0.00011 -- 1100%
+    ext.sprint_koef_add       = ext.sprint_koef_add + 0.4
+  end
+end
+
+
+function on_actor_before_use( obj, sobj )
+  if not sobj then return true end
+  local sect = obj:section()
+  if sect == "energy_drink" then
+    use_energy_drink( obj, sobj )
+    return true
+  end
+end
+
+
+function use_energy_drink( obj, sobj )
+  local n = ogse.load_var( script_name() .. ".energy_drink_n", 0 )
+  if n < 3 and not energy_drink_in_use then
+    ogse_st_mgr.delayed_fun_start( energy_drink_tname )
+      :set_gdelay( 3600 - 900 * n )
+      :init( script_name() .. ".on_energy_drink_end" )
+      :start()
+    ogse.save_var( script_name() .. ".energy_drink_n", n + 1, "u8" )
+  end
+end
+
+
+function on_energy_drink_end()
+  energy_drink_in_use = false
+  set_actor_power_max( 0.1 )
+  local n = ogse.load_var( script_name() .. ".energy_drink_n", 1 )
+  ogse_st_mgr.delayed_fun_start( post_energy_drink_tname )
+    :set_delay( 3 * n )
+    :init( script_name() .. ".post_energy_drink_end" )
+    :start()
+end
+
+
+function post_energy_drink_end()
+  set_actor_power_max( 1 )
+end
+
+
+function on_sleep_finished()
+  ogse.delete_var( script_name() .. ".energy_drink_n" )
+end
