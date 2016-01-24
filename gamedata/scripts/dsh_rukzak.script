@@ -354,59 +354,76 @@ end
 
 function blowout_modif_arts()
   local arts = dsh.get_art_levels()
+  local step = ( 1 + level.get_game_difficulty() ) * 10
   for _, k in ipairs( ogse_unist.get_all_names() ) do
     local id = string.match( k, "^dsh_rukzak%.([^.]+)%.sections$" )
     if id then
       id = tonumber( id )
-      local modified = 0
-      local items    = load_rukzak( id )
-      local af_buliz
+      local items = load_rukzak( id )
+      local index = {}
       for _, item in ipairs( items ) do
-        if item.section == "af_buliz" and item.condition >= 100 then
-          af_buliz = item
-        elseif
+        index[ item.key ] = item
+      end
+      local modified = 0
+      local added    = {}
+      for _, item in ipairs( items ) do
+        if
           arts[ item.section ]
           and
           table.getn( arts[ item.section ].next ) < 2
         then
           -- Вырождаются модификаты последнего или предпоследнего уровня
-          local cnt = item.count
-          if item.condition >= 1 and cnt < 100 then
-            for i = 1, cnt do
-              if math.random() < 0.05 then
-                modified   = modified   + 1
-                item.count = item.count - 1
+          if item.condition >= 1 then
+            for i = 1, item.count do
+              local cond = item.condition - math.random( step )
+              if cond <= 0 then cond = 0 end
+              local key = string.format( "%s:%.2f:", item.section, cond )
+              if added[ key ] then
+                added[ key ].count = added[ key ].count + 1
+              else
+                added[ key ] = {
+                  [ "section"   ] = item.section,
+                  [ "condition" ] = cond,
+                  [ "game_type" ] = "artefact",
+                  [ "count"     ] = 1,
+                  [ "info"      ] = "",
+                  [ "key"       ] = key,
+                }
               end
+              item.count = item.count - 1
             end
           else
-            local rnd_cnt
-            if item.condition < 1 then
-              rnd_cnt = cnt
-            else
-              rnd_cnt = math.round( cnt * ( math.random( 10 ) / 100 ) )
-            end
-            modified   = modified   + rnd_cnt
-            item.count = item.count - rnd_cnt
+            modified   = modified + item.count
+            item.count = 0
           end
         end
       end
       if modified > 0 then
-        if af_buliz then
-          af_buliz.count = af_buliz.count + modified
+        local key = string.format( "%s:%.2f:", "af_buliz", 100 )
+        if index[ key ] then
+          index[ key ].count = index[ key ].count + modified
         else
-          table.insert(
-            items,
-            {
-              [ "section"   ] = "af_buliz",
-              [ "condition" ] = 100,
-              [ "game_type" ] = "artefact",
-              [ "count"     ] = modified,
-              [ "info"      ] = "",
-            }
-          )
+          local item = {
+            [ "section"   ] = "af_buliz",
+            [ "condition" ] = 100,
+            [ "game_type" ] = "artefact",
+            [ "count"     ] = modified,
+            [ "info"      ] = "",
+            [ "key"       ] = key,
+          }
+          table.insert( items, item )
+          index[ key ] = item
         end
-        save_rukzak( id, items )
       end
+      for key, item in pairs( added ) do
+        if index[ key ] then
+          index[ key ].count = index[ key ].count + item.count
+        else
+          table.insert( items, item )
+          index[ key ] = item
+        end
+      end
+      save_rukzak( id, items )
     end
   end
 end
@@ -1235,9 +1252,6 @@ end
 function ui_rukzak:on_quit()
   if self.changed then
     save_rukzak( self.owner_id, self.items_other )
-    if not ui_mm_opt_main.GetOption( "art_degradation" ) then
-      inventory.check_immunities()
-    end
     inventory.forced_inventory_update( false )
   end
   if self.weight_timer then self.weight_timer:stop() end

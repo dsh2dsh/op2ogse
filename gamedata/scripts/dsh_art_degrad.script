@@ -48,43 +48,36 @@ local our_hits = {              -- какие типы хита будут обрабатываться
     [ "sect" ] = "telepatic_immunity",
   },
   [ "bleeding" ] = {
-    [ "max"  ] = 1,
+    [ "max"  ] = 10,
     [ "sect" ] = "bleeding_restore_speed",
   },
   [ "health" ] = {
-    [ "max"  ] = 1,
+    [ "max"  ] = 100,
     [ "sect" ] = "health_restore_speed",
   },
   [ "power" ] = {
-    [ "max"  ] = 1,
+    [ "max"  ] = 1000,
     [ "sect" ] = "power_restore_speed",
   },
   [ "radiation" ] = {
-    [ "max"  ] = 1,
+    [ "max"  ] = 5000,
     [ "sect" ] = "radiation_restore_speed",
   },
 }
 
 
-local sm_attached
 function attach( sm )
-  if not ui_mm_opt_main.GetOption( "art_degradation" ) then return end
-  sm_attached = {
-    { signal = "on_actor_before_hit",  fun = this.before_hit },
-    { signal = "on_hit",               fun = this.on_hit },
-    { signal = "on_update",            fun = this.on_update, queued = true  },
-    { signal = "on_use",               fun = this.on_use  },
-  }
-  for _, v in ipairs( sm_attached ) do
-    sm:subscribe( v )
-  end
+  sm:subscribe({ signal = "on_actor_before_hit", fun = this.before_hit })
+  sm:subscribe({ signal = "on_hit",              fun = this.on_hit })
+  sm:subscribe({ signal = "on_spawn",            fun = this.on_spawn })
+  sm:subscribe({ signal = "on_update",           fun = this.on_update })
+  sm:subscribe({ signal = "on_use",              fun = this.on_use  })
 end
-function detach( sm )
-  for _, v in ipairs( sm_attached ) do
-    sm:unsubscribe( v )
-  end
-  got_hits = {}
-  has_hit  = false
+
+
+local pt
+function on_spawn()
+  pt = { game.get_game_time():get() }
 end
 
 
@@ -197,48 +190,54 @@ end
 
 local last_t = 0
 function on_update()
-  local bleeding = db.actor:get_bleeding()
-  if bleeding > 0 then
+  if device().precache_frame > 0 then return end
+  local previous_check_time = game.CTime()
+  previous_check_time:set( unpack( pt ) )
+  local current_time = game.get_game_time()
+  local dt = current_time:diffSec( previous_check_time )
+  if dt == 0 then return end
+  pt = { current_time:get() }
+
+  if db.actor:get_bleeding() > 0 then
     local hit_type = "bleeding"
     if got_hits[ hit_type ] then
-      got_hits[ hit_type ] = got_hits[ hit_type ] + bleeding
+      got_hits[ hit_type ] = got_hits[ hit_type ] + dt
     else
-      got_hits[ hit_type ] = bleeding
+      got_hits[ hit_type ] = dt
     end
     has_hit = true
   end
-  local health = db.actor.health
-  if health < 1 then
+
+  if db.actor.health < 1 then
     local hit_type = "health"
-    local val      = 1 - health
     if got_hits[ hit_type ] then
-      got_hits[ hit_type ] = got_hits[ hit_type ] + val
+      got_hits[ hit_type ] = got_hits[ hit_type ] + dt
     else
-      got_hits[ hit_type ] = val
+      got_hits[ hit_type ] = dt
     end
     has_hit = true
   end
-  local power = db.actor.power
-  if power < 1 then
+
+  if db.actor.power < 0.99 then
     local hit_type = "power"
-    local val      = 1 - power
     if got_hits[ hit_type ] then
-      got_hits[ hit_type ] = got_hits[ hit_type ] + val
+      got_hits[ hit_type ] = got_hits[ hit_type ] + dt
     else
-      got_hits[ hit_type ] = val
+      got_hits[ hit_type ] = dt
     end
     has_hit = true
   end
-  local radiation = db.actor.radiation
-  if radiation > 0 then
+
+  if db.actor.radiation > 0 then
     local hit_type = "radiation"
     if got_hits[ hit_type ] then
-      got_hits[ hit_type ] = got_hits[ hit_type ] + radiation
+      got_hits[ hit_type ] = got_hits[ hit_type ] + dt
     else
-      got_hits[ hit_type ] = radiation
+      got_hits[ hit_type ] = dt
     end
     has_hit = true
   end
+
   if has_hit and time_global() - last_t >= 1000 then
     local empty = {}
     local master_coef = 4 - level.get_game_difficulty()
