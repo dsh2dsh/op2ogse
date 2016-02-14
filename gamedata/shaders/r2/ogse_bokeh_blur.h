@@ -92,9 +92,9 @@ float bdepth(float2 coords) {				//blurring depth
 float3 color(float2 coords,float blur, float2 color_scale) {	//processing the sample
 	float3 col = float3(0.0, 0.0, 0.0);
 #ifdef DDOF_CHROMATIC_ABERRATION
-	col.r = tex2Dlod(s_image,coords + float4(0.0,1.0,0.0,0.0)*color_scale).r;
-	col.g = tex2Dlod(s_image,coords + float4(-0.866,-0.5,0.0,0.0)*color_scale).g;
-	col.b = tex2Dlod(s_image,coords + float4(0.866,-0.5,0.0,0.0)*color_scale).b;
+	col.r = tex2Dlod(s_image,float4(coords.xy,0,0) + float4(0.0,1.0,0.0,0.0)*float4(color_scale.xy,0,0)).r;
+	col.g = tex2Dlod(s_image,float4(coords.xy,0,0) + float4(-0.866,-0.5,0.0,0.0)*float4(color_scale.xy,0,0)).g;
+	col.b = tex2Dlod(s_image,float4(coords.xy,0,0) + float4(0.866,-0.5,0.0,0.0)*float4(color_scale.xy,0,0)).b;
 #else
 	col = tex2Dlod(s_image,float4(coords.xy,0,0)).xyz;
 #endif
@@ -119,12 +119,12 @@ float3 debugFocus(float3 col, float blur, float depth) {
 
 	return col;
 }
-float vignette(float2 center) {
+/*float vignette(float2 center) {
 	float dist = distance(center, float2(0.5,0.5));
 	float gain = DDOF_FSTOP;
 	dist = smoothstep(1 + gain, DDOF_VIGNOUT+gain, dist);
 	return saturate(dist);
-}
+}*/
 
 float3 bokeh_dof(float2 center, float d, float blur) {
 	
@@ -172,9 +172,9 @@ float3 bokeh_dof(float2 center, float d, float blur) {
 	col = debugFocus(col, blur, depth);
 #endif
 	
-#ifdef DDOF_VIGNETTING
-	col *= vignette(center);
-#endif
+//#ifdef DDOF_VIGNETTING
+//	col *= vignette(center);
+//#endif
 
 	return col;
 }
