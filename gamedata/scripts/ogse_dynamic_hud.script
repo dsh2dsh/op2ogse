@@ -5,31 +5,30 @@
 --------------------------------------------------------------------------------
 
 function attach(sm)
-  sm:subscribe({ signal = "on_destroy", fun = this.on_destroy })
-  sm:subscribe({ signal = "on_key_down", fun = this.chek_keys })
-  sm:subscribe({ signal = "on_key_up", fun = this.chek_keys_free })
-  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
-  sm:subscribe({ signal = "on_update", fun = this.on_update })
+  sm:subscribe({ signal = "on_destroy",  fun = this.on_destroy     })
+  sm:subscribe({ signal = "on_key_down", fun = this.chek_keys      })
+  sm:subscribe({ signal = "on_key_up",   fun = this.chek_keys_free })
+  sm:subscribe({ signal = "on_spawn",    fun = this.on_spawn       })
+  sm:subscribe({ signal = "on_update",   fun = this.on_update      })
 end
 auto_attach = true
 
-local nv_cheat = system_ini():r_bool("wpn_addon_setup", "cheat_nv_block")
-local nv_block = nv_cheat
 
 -- чтобы отключить эффект, поставьте вместо единицы ноль:
 local blurs_enable = monnoroch_options.blurs_enable
 local blood_enable = monnoroch_options.blood_enable
 local bleed_enable = monnoroch_options.bleed_enable
-local suithud = monnoroch_options.suithud_enable
+local suithud      = monnoroch_options.suithud_enable
 
-local suithud_enable = suithud
-local need_sniper_chek = false
-local sniper_mode = false
-local sm = ogse_signals.get_mgr()
+local blood_intensity  = 0
 local mycurrent_suithud
+local need_sniper_chek = false
+local sniper_mode      = false
 local suit_condition
-local wotsuittype = ""
-local blood_intensity = 0
+local suithud_enable   = suithud
+local wotsuittype      = ""
+
+local sm = ogse_signals.get_mgr()
 
 
 function on_spawn()
@@ -57,350 +56,264 @@ function on_update()
   -- Динамический худ
   doabcevents()
   -- Динамический худ
-  if show_time_t then
-    if show_time_t <= time_global() then
-      sak.show_time()
-      show_time_t = time_global() + 1000
-    end
-  else
+  if ( not show_time_t ) or show_time_t <= time_global() then
+    sak.show_time()
     show_time_t = time_global() + 1000
   end
 end
 
--- global functions -------------------------------------------------------------------------------------------------
 
--- вызывается из ogse.on_actor_update
--- Убирание худа при использовании оптического прицела или бинокля -- scope_texture
+-- Убирание худа при использовании оптического прицела или бинокля
 function check_sniper()
-	if db.actor and db.actor:alive() and (need_sniper_chek == true or sniper_mode == true) then
-		if zoom_mode() == 1 then
-			local act_it = db.actor:active_item()
-			if act_it and (string.find(act_it:section(), "wpn_") or string.find(act_it:section(), "hunters_toz")) then
-				local sobj = alife():object(act_it:id())
-				if not sobj then return end
-				local scope = 0
-				if sys_ini:line_exist(act_it:section(), "scope_status") then
-					scope = sys_ini:r_u32(act_it:section(), "scope_status")
-				end
-				local launcher = 0
-				if sys_ini:line_exist(act_it:section(), "grenade_launcher_status") then
-					launcher = sys_ini:r_u32(act_it:section(), "grenade_launcher_status")
-				end
-				local wpn_state = m_net_utils.get_weapon_w_gl_full_data(sobj) 
-				if (scope == 1 or (scope == 2 and bit_and(wpn_state.addon_flags, 1) == 1)) and 
-				   ((launcher == 0) or (launcher == 2 and (bit_and(wpn_state.addon_flags, 2) ~= 2)) or 
-				    (launcher == 2 and (bit_and(wpn_state.addon_flags, 2) == 2 and wpn_state.updgrenade_mode == 0)) or 
-				    (launcher == 1 and wpn_state.updgrenade_mode == 0)) or 
-				   string.find(act_it:section(), "wpn_binoc") then
-					sniper_mode = true
-					bind_stalker.scopeUsed = true
-					return
-				end
-			end
-		end
-	end
-	sniper_mode = false
-	bind_stalker.scopeUsed = false
+  if
+    db.actor and db.actor:alive()
+    and ( need_sniper_chek == true or sniper_mode == true )
+  then
+    if zoom_mode() == 1 then
+      local wpn = db.actor:active_item()
+      if wpn and wpn:is_weapon() then
+        local scope_status = ogse_wpn_utils.get_scope_status( wpn )
+        local scope_flag = scope_status == 1
+          or (
+            scope_status == 2 and ogse_wpn_utils.get_scope_flag( wpn )
+          )
+        if scope_flag then
+          local gl_status = 0
+          if wpn:is_weapon_gl() then
+            gl_status = ogse_wpn_utils.get_grenade_launcher_status( wpn )
+          end
+          local gl_flag = gl_status == 1
+            or (
+              gl_status == 2 and ogse_wpn_utils.get_grenade_launcher_flag( wpn )
+            )
+          if
+            ( not gl_flag )
+            or ( not ogse_wpn_utils.get_gl_mode( wpn ) )
+          then
+            local binder = wpn:binded_object()
+            if
+              ( not binder )
+              or ( not binder[ "dsh_switch_scope.use_iron_scope" ] )
+            then
+              sniper_mode = true
+              bind_stalker.scopeUsed = true
+              return
+            end
+          end
+        end
+      end
+    end
+  end
+  sniper_mode = false
+  bind_stalker.scopeUsed = false
 end
 
--- вызывается из ogse.on_actor_update
+
 -- Обновление динамических элементов худа
 local on_sniper_mode = false
 function update_hud_elements()
-	if db.actor and db.actor:alive() then
-		local act_it = db.actor:active_item()
-		if act_it and (string.find(act_it:section(), "wpn_") or string.find(act_it:section(), "hunters_toz")) then
-			if sniper_mode == true then
-				if suithud_enable == 1 then
---					set_blood_intensity(0)
-					suithud_enable = 0
-					set_my_suit_hud()
-				end
-				if amk.load_variable( "option_rad", 1) > 0 then
-				  ui_rad.update(false)
-				end
-				biodetector.update("off")
-				if not on_sniper_mode then
-				  sak.show_time()
-				  if not wpn_IsRotatingToZoom( act_it ) then
-				    ogse_night_vision.on_sniper_mode( true )
-				    on_sniper_mode = true
-				  end
-				end
---[=[
-				ogse.hide_time()
-				---целимся с оптикой: в ОГСЕ -- БЛОК ВСЕХ --ogse_night_vision.on_sniper_mode(true)
-				
--- k01jan (обратотка исключений для запрета ПНВ во время прицеливания через оптику)
-				local scope_section = nil
-				local nv_lock = true	--запретить ПНВ, дефолт ОГСЕ
-				if system_ini():line_exist(act_it:section(), "scope_name") then	--ищем используемый стволом прицел
-					scope_section = system_ini():r_string(act_it:section(), "scope_name")
-					if scope_section ~= nil then --ищем параметр nightvision_lock в прицеле
-						if system_ini():line_exist(scope_section, "nightvision_lock") then --читаем nightvision_lock из прицела
-							--ловит только "есть" или "нет" nightvision_lock в конфиге -----nv_lock = system_ini():r_string(scope_section, "nightvision_lock")
-							--если в конфиге nightvision_lock=false то, в виде исключения, разрешаем использовать ПНВ с оптикой (z.b., коллиматоры)
-							nv_lock = system_ini():r_bool(scope_section, "nightvision_lock")
-						--else ogse.send_tip("НЕТ nightvision_lock в этом прицеле")
-						end
-											end
-				--- КОСЯК: пропускает прицелы, встроенные (scope_status =1 а scope_name НЕТ) в стволы (например G36), фиксим:
-				else --ogse.send_tip("НЕТ scope_name в конфиге") --ищем параметр nightvision_lock в стволе 
-					if system_ini():line_exist(act_it:section(), "nightvision_lock") then --читаем nightvision_lock из ствола
-						--если в конфиге nightvision_lock=false то, в виде исключения, разрешаем использовать ПНВ с оптикой (z.b., коллиматоры)
-						nv_lock = system_ini():r_bool(act_it:section(), "nightvision_lock")
-					--else ogse.send_tip("НЕТ nightvision_lock в этом стволе")
-					end
-				end
---проверка запрета ПНВ для оптики
-				if nv_block == true then --ogse.send_tip("запрет ПНВ для оптики, дефолт ОГСЕ")
-					if nv_lock == true then  ogse_night_vision.on_sniper_mode(true, scope_section)
-				--+else ogse.send_tip("ИСКЛЮЧЕНИЕ - разрешаем ПНВ")
-				end
-				--+else ogse.send_tip("ЧИТ - разрешаем ПНВ для оптики") 
-				end				
--- EOF k01jan
---]=]
-			else
-				if amk.load_variable( "option_rad", 1) > 0 then
-				  ui_rad.update(true)
-				end
-				if suithud == 1 and suithud_enable == 0 then
-					suithud_enable = 1
-					check_my_suit_hud()			
-				end	
-				biodetector.update()
-				if on_sniper_mode then
-				  ogse_night_vision.on_sniper_mode( false )
-				  sak.show_time()
-				  on_sniper_mode = false
-				end
-			end
-		else
-			biodetector.update()
-			if amk.load_variable( "option_rad", 1) > 0 then
-			  ui_rad.update(true)
-			end
-			if on_sniper_mode then
-			  ogse_night_vision.on_sniper_mode( false )
-			  sak.show_time()
-			  on_sniper_mode = false
-			end
-		end
-	else	
-		if suithud_enable == 1 then
---			set_blood_intensity(0)
-			suithud_enable = 0
-			set_my_suit_hud()
-		end
-		biodetector.update("off")
-		if amk.load_variable( "option_rad", 1) > 0 then
-		  ui_rad.update(false)
-		end
-	end
-end
-
--- вызывается из ogse.on_actor_update
-local freemem = 0
-local freemem2 = 0
-function doabcevents()
-	if db.actor == nil then return end
-	
-	local chkfreetime = time_global()
-	if freemem == 0 then freemem = time_global() + 1000 end
-	if chkfreetime > freemem then
-		freemem = 0
---		remove_m134()
-		if suithud == 1 then
-		  if amk.load_variable( "option_hud", 2 ) < 1 then
-		    suithud = 0
-		    suithud_enable = 0
-		    set_my_suit_hud()
-		  end
-		else
-		  if amk.load_variable( "option_hud", 2 ) > 0 then
-		    suithud = 1
-		    if not sniper_mode then suithud_enable = 1 end
-		  end
-		end
-		check_my_suit_hud()
-		bleed_condition()
---		set_blood()
-	end
-	local chkfreetime2 = time_global()
-	if freemem2 == 0 then freemem2 = time_global() + 40 end
-	if chkfreetime2 > freemem2 then
-		freemem2 = 0
-		init_blurs()
---		amk_mod.blood()
---		amk_mod.set_blood()
-	end
-end
-
-local last_shader_mode = "off"
-function switch_shader_effects(mode)
-  if mode ~= last_shader_mode then
-	cmd("r2_rain_drops_control "..mode)
-	cmd("r2_lens_dirt_control "..mode)
-	last_shader_mode = mode
+  if db.actor and db.actor:alive() then
+    if sniper_mode == true then
+      if suithud_enable == 1 then
+        suithud_enable = 0
+        set_my_suit_hud()
+      end
+      biodetector.update( "off" )
+      if amk.load_variable( "option_rad", 1 ) > 0 then
+        ui_rad.update( false )
+      end
+      if not on_sniper_mode then
+        sak.show_time()
+        if not wpn_IsRotatingToZoom( db.actor:active_item() ) then
+          ogse_night_vision.on_sniper_mode( true )
+          on_sniper_mode = true
+        end
+      end
+    else
+      if suithud == 1 and suithud_enable == 0 then
+        suithud_enable = 1
+        check_my_suit_hud()
+      end
+      biodetector.update()
+      if amk.load_variable( "option_rad", 1 ) > 0 then
+        ui_rad.update( true )
+      end
+      if on_sniper_mode then
+        ogse_night_vision.on_sniper_mode( false )
+        sak.show_time()
+        on_sniper_mode = false
+      end
+    end
+  else
+    if suithud_enable == 1 then
+      suithud_enable = 0
+      set_my_suit_hud()
+    end
+    biodetector.update( "off" )
+    if amk.load_variable( "option_rad", 1 ) > 0 then
+      ui_rad.update( false )
+    end
   end
 end
 
--- вызывается из ogse.on_actor_update
--- запускается(так сейчас по коду) после 102 апдейтов
-function hud_antigaz()
-	if check_remove_gasmask() == true then return end	-- проверка надевания противогаза на костюм с худом
-	if suithud_enable == 0 then return end
 
-	local gmask = db.actor:item_in_slot(10)
-	if not gmask then return end
-	
-	if gmask:section() == "af_maska_1" then
-		set_my_suit_hud( nil, "hud_gazmask" )
-	elseif gmask:section() == "af_maska_2" then
-		set_my_suit_hud( nil, "hud_merc" )
-	else
-		set_my_suit_hud()
-	end
+local freemem  = 0
+local freemem2 = 0
+
+function doabcevents()
+  if not db.actor then return end
+  local chkfreetime = time_global()
+  if freemem == 0 then freemem = time_global() + 1000 end
+  if chkfreetime > freemem then
+    freemem = 0
+    if suithud == 1 then
+      if amk.load_variable( "option_hud", 2 ) < 1 then
+        suithud = 0
+        suithud_enable = 0
+        set_my_suit_hud()
+      end
+    else
+      if amk.load_variable( "option_hud", 2 ) > 0 then
+        suithud = 1
+        if not sniper_mode then suithud_enable = 1 end
+      end
+    end
+    check_my_suit_hud()
+    bleed_condition()
+  end
+  local chkfreetime2 = time_global()
+  if freemem2 == 0 then freemem2 = time_global() + 40 end
+  if chkfreetime2 > freemem2 then
+    freemem2 = 0
+    init_blurs()
+  end
 end
 
--- вызывается из ogse.on_key
+
+local last_shader_mode = "off"
+function switch_shader_effects( mode )
+  if mode ~= last_shader_mode then
+    cmd( "r2_rain_drops_control " .. mode )
+    cmd( "r2_lens_dirt_control "  .. mode )
+    last_shader_mode = mode
+  end
+end
+
 -- Проверка нажатия клавиш
-function chek_keys(key, bind)
-	if bind == key_bindings.kWPN_ZOOM then
-		need_sniper_chek = true
-	end
+function chek_keys( key, bind )
+  if bind == key_bindings.kWPN_ZOOM then
+    need_sniper_chek = true
+  end
 end
 
--- вызывается из ogse.on_key_free
+
 -- Проверка отпускания клавиш
-function chek_keys_free(key, bind)
-	if bind == key_bindings.kWPN_ZOOM then
-		need_sniper_chek = false
-	end
+function chek_keys_free( key, bind )
+  if bind == key_bindings.kWPN_ZOOM then
+    need_sniper_chek = false
+  end
 end
 
--- вызывается из ogse_car_control.show_car_hud
-function on_show_car_hud()
---	set_blood_intensity(0)
-	suithud_enable = 0
-	set_my_suit_hud()
-end
-
--- вызывается из ogse_car_control.hide_car_hud
-function on_hide_car_hud()
-	suithud_enable = get_u32("options","suithud_enable", 0)
-	check_my_suit_hud()
-end
-
--- вызывается из ogse_hitfx.npc_on_death
-function set_blood_intensity(intensity)
-	blood_intensity = intensity
-	set_blood()
-end
-
--- local functions---------------------------------------------------------------------------------------
 
 local smoktime = 0
 function check_my_suit_hud()
-	if suithud_enable == 0 then return end
-	local gsmktime = time_global()
-	if smoktime == 0 then smoktime = time_global() + 4000 end
-
-	if db.actor then
-		local csuithud = db.actor:get_current_outfit()
-		local suithudtype, isitbino, suithudname
-		if csuithud ~= nil then suithudname = csuithud:section() end
-		local dynamic_hud_enable = false
-		if suithudname ~= nil then
-			suit_condition = ""
-			if     csuithud:condition() > 0.87 then
-			  suit_condition = "blue"
-			elseif csuithud:condition() > 0.69 then
-			  suit_condition = "green"
-			elseif csuithud:condition() > 0.60 then
-			  suit_condition = "yellow"
-			elseif csuithud:condition() > 0.40 then
-			  suit_condition = "red"
-			elseif csuithud:condition() > 0.25 then
-			  suit_condition = "red2"
-			else
-			  suit_condition = "red3"
-			end
-		
-			dynamic_hud_enable = get_bool( suithudname, "dynamic_hud_enable", false )
-			if dynamic_hud_enable then
-		          wotsuittype = get_string( suithudname, "dynamic_hud_type", nil )
-			  if wotsuittype then suithudtype = wotsuittype .. "_" .. suit_condition end
-			else
-			  for k,v in pairs( amk_mod.suitHudName_wotType ) do
-			    if string.find( suithudname, k ) then
-			      suithudtype = v .. "_" .. suit_condition
-			      wotsuittype = v
-			      break
-			    end
-			  end
-			end
-		else
-			suithudtype = nil
-		end
-		if not db.actor:alive() then suithudtype = nil end
-		set_my_suit_hud( dynamic_hud_enable, suithudtype )
-	end
+  if suithud_enable == 0 then return end
+  local gsmktime = time_global()
+  if smoktime == 0 then smoktime = time_global() + 4000 end
+  if db.actor then
+    local csuithud = db.actor:get_current_outfit()
+    local suithudtype, isitbino, suithudname
+    if csuithud then suithudname = csuithud:section() end
+    local dynamic_hud_enable = false
+    if suithudname then
+      suit_condition = ""
+      if     csuithud:condition() > 0.87 then
+        suit_condition = "blue"
+      elseif csuithud:condition() > 0.69 then
+        suit_condition = "green"
+      elseif csuithud:condition() > 0.60 then
+        suit_condition = "yellow"
+      elseif csuithud:condition() > 0.40 then
+        suit_condition = "red"
+      elseif csuithud:condition() > 0.25 then
+        suit_condition = "red2"
+      else
+        suit_condition = "red3"
+      end
+      dynamic_hud_enable = get_bool( suithudname, "dynamic_hud_enable", false )
+      if dynamic_hud_enable then
+        wotsuittype = get_string( suithudname, "dynamic_hud_type" )
+        if wotsuittype then
+          suithudtype = wotsuittype .. "_" .. suit_condition
+        end
+      end
+    else
+      suithudtype = nil
+    end
+    if not db.actor:alive() then suithudtype = nil end
+    set_my_suit_hud( dynamic_hud_enable, suithudtype )
+  end
 end
+
 
 local suitfirstrun = "yes"
 local is_helmet_on = false
 local hidden_hud
 
 function set_my_suit_hud( dynamic_hud_enable, hudtype )
-	if not hudtype and not dynamic_hud_enable then
-		local wchud = get_hud():GetCustomStatic(mycurrent_suithud)
-		if wchud then get_hud():RemoveCustomStatic(mycurrent_suithud) end
-		suitfirstrun = "yes"
-		switch_shader_effects("off")
-		if sniper_mode then
-		  hidden_hud = mycurrent_suithud
-		end
-		mycurrent_suithud = nil
-		if is_helmet_on and not sniper_mode then
-		  is_helmet_on = false
-		  sm:call( "on_actor_helmet_off" )
-		end
-		return
-	end
-	local call_helmet = false
-	if hudtype ~= mycurrent_suithud then
-		if mycurrent_suithud then
-			get_hud():RemoveCustomStatic(mycurrent_suithud)
-		end
-		if hudtype then
-			get_hud():AddCustomStatic(hudtype)
-			sak.show_time( true )
-			sm:call("on_hud_show")
-			biodetector.update( "off" )
-			if string.find(hudtype, wotsuittype) then
-				if suitfirstrun == "no" and suit_condition ~= "green" and suit_condition ~= "blue" then
-					local snd_obj = sound_object("material\\glass\\glass_fall03hl")
-					if snd_obj then
-						snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 9.0)
-					end
-				end
-				if suitfirstrun == "yes" then suitfirstrun = "no" end
-			end
-		end
-		if not hidden_hud then
-		  call_helmet = true
-		end
-	end
-	switch_shader_effects("on")
-	mycurrent_suithud = hudtype
-	hidden_hud = nil
-	is_helmet_on      = true
-	if call_helmet then
-	  call_helmet = false
-	  sm:call( "on_actor_helmet_on" )
-	end
+  if not hudtype and not dynamic_hud_enable then
+    local wchud = get_hud():GetCustomStatic( mycurrent_suithud )
+    if wchud then get_hud():RemoveCustomStatic( mycurrent_suithud ) end
+    suitfirstrun = "yes"
+    switch_shader_effects( "off" )
+    if sniper_mode then
+      hidden_hud = mycurrent_suithud
+    end
+    mycurrent_suithud = nil
+    if is_helmet_on and not sniper_mode then
+      is_helmet_on = false
+      sm:call( "on_actor_helmet_off" )
+    end
+    return
+  end
+  local call_helmet = false
+  if hudtype ~= mycurrent_suithud then
+    if mycurrent_suithud then
+      get_hud():RemoveCustomStatic( mycurrent_suithud )
+    end
+    if hudtype then
+      get_hud():AddCustomStatic( hudtype )
+      sak.show_time( true )
+      sm:call( "on_hud_show" )
+      biodetector.update( "off" )
+      if string.find( hudtype, wotsuittype ) then
+        if
+          suitfirstrun == "no"
+          and suit_condition ~= "green"
+          and suit_condition ~= "blue"
+        then
+          local snd_obj = sound_object( "material\\glass\\glass_fall03hl" )
+          if snd_obj then
+            snd_obj:play_no_feedback(
+              db.actor, sound_object.s2d, 0, vector(), 9.0
+            )
+          end
+        end
+        if suitfirstrun == "yes" then suitfirstrun = "no" end
+      end
+    end
+    if not hidden_hud then
+      call_helmet = true
+    end
+  end
+  switch_shader_effects( "on" )
+  mycurrent_suithud = hudtype
+  hidden_hud        = nil
+  is_helmet_on      = true
+  if call_helmet then
+    call_helmet = false
+    sm:call( "on_actor_helmet_on" )
+  end
 end
 
 
@@ -416,270 +329,128 @@ function get_current_helmet()
 end
 
 
-local isactcondset = "false"
-local radeffect = "false"
+local isactcondset = false
+local radeffect    = false
 function bleed_condition()
-	if bleed_enable == 0 then return end
-	if db.actor.health < 0.31 and isactcondset ~= "true" then
-		level.add_pp_effector ("alcohol.ppe", 2012, true)
-		isactcondset = "true"
-	end
-	if db.actor.health > 0.30 and isactcondset ~= "false" then
-		level.remove_pp_effector (2012)
-		isactcondset = "false"
-	end
-	if db.actor.radiation > 0.3 and radeffect ~= "true" then
-		level.add_pp_effector ("alcohol.ppe", 2013, true)
-		radeffect = "true"
-	end
-	if db.actor.radiation == 0 and radeffect ~= "false" then
-		level.remove_pp_effector (2013)
-		radeffect = "false"
-	end
+  if bleed_enable == 0 then return end
+  if db.actor.health < 0.31 and not isactcondset then
+    level.add_pp_effector( "alcohol.ppe", 2012, true )
+    isactcondset = true
+  end
+  if db.actor.health > 0.30 and isactcondset then
+    level.remove_pp_effector( 2012 )
+    isactcondset = false
+  end
+  if db.actor.radiation > 0.3 and not radeffect then
+    level.add_pp_effector( "alcohol.ppe", 2013, true )
+    radeffect = true
+  end
+  if db.actor.radiation == 0 and radeffect then
+    level.remove_pp_effector( 2013 )
+    radeffect = false
+  end
 end
 
-local m_blood = nil
-
-function init_blood()
-	if blood_enable == 0 then return end
-	if mycurrent_suithud ~= nil then
-		local zoom=67.5/device().fov
-		zoom=(zoom-1)*1.5+1
-		if zoom<1.001 then
-			zoom=1.001
-		end
-		local stretchy=0.75/(math.floor(device().aspect_ratio*1000)/1000)
-		if stretchy<1 then stretchy=1 end
-		local rect={x=-768*zoom+768,y=(-512*zoom+512)*stretchy-(stretchy-1)*300,w=1024*zoom,h=768*zoom*stretchy}
-		if get_hud():GetCustomStatic("hud_blood_exo") == nil then
-			get_hud():AddCustomStatic("hud_blood_exo")
-			m_blood = get_hud():GetCustomStatic("hud_blood_exo"):wnd()
-			m_blood:SetWidth(0)
-			m_blood:SetColor(GetARGB(0,255,255,255))
-			m_blood:SetWndRect(Frect():set(rect.x,rect.y,rect.w,rect.h))
-			sm:call("on_hud_show")
-		end
-		if get_hud():GetCustomStatic("hud_blood_gas") == nil then
-			get_hud():AddCustomStatic("hud_blood_gas")
-			m_blood = get_hud():GetCustomStatic("hud_blood_gas"):wnd()
-			m_blood:SetWidth(0)
-			m_blood:SetColor(GetARGB(0,255,255,255))
-			m_blood:SetWndRect(Frect():set(rect.x,rect.y,rect.w,rect.h))			
-			sm:call("on_hud_show")
-		end
-		if get_hud():GetCustomStatic("hud_blood_merc") == nil then
-			get_hud():AddCustomStatic("hud_blood_merc")
-			m_blood = get_hud():GetCustomStatic("hud_blood_merc"):wnd()
-			m_blood:SetWidth(0)
-			m_blood:SetColor(GetARGB(0,255,255,255))
-			m_blood:SetWndRect(Frect():set(rect.x,rect.y,rect.w,rect.h))			
-			sm:call("on_hud_show")
-		end
-		if get_hud():GetCustomStatic("hud_blood_mil") == nil then
-			get_hud():AddCustomStatic("hud_blood_mil")
-			m_blood = get_hud():GetCustomStatic("hud_blood_mil"):wnd()
-			m_blood:SetWidth(0)
-			m_blood:SetColor(GetARGB(0,255,255,255))
-			m_blood:SetWndRect(Frect():set(rect.x,rect.y,rect.w,rect.h))			
-			sm:call("on_hud_show")
-		end
-		if get_hud():GetCustomStatic("hud_blood_sci") == nil then
-			get_hud():AddCustomStatic("hud_blood_sci")
-			m_blood = get_hud():GetCustomStatic("hud_blood_sci"):wnd()
-			m_blood:SetWidth(0)
-			m_blood:SetColor(GetARGB(0,255,255,255))
-			m_blood:SetWndRect(Frect():set(rect.x,rect.y,rect.w,rect.h))			
-			sm:call("on_hud_show")
-		end		
-	end
-end
-
-function set_blood()
-	if mycurrent_suithud then
-		if string.find(mycurrent_suithud,"hud_exo") and get_hud():GetCustomStatic("hud_blood_exo") then
-			m_blood = get_hud():GetCustomStatic("hud_blood_exo"):wnd()
-			m_blood:SetColor(GetARGB(blood_intensity,255,255,255))
-			if blood_intensity > 50 then blood_intensity = blood_intensity - 50 else blood_intensity = 0 end
-		elseif string.find(mycurrent_suithud,"hud_mil") and get_hud():GetCustomStatic("hud_blood_mil") then
-			m_blood = get_hud():GetCustomStatic("hud_blood_mil"):wnd()
-			m_blood:SetColor(GetARGB(blood_intensity,255,255,255))
-			if blood_intensity > 50 then blood_intensity = blood_intensity - 50 else blood_intensity = 0 end
-		elseif string.find(mycurrent_suithud,"hud_sci") and get_hud():GetCustomStatic("hud_blood_sci") then
-			m_blood = get_hud():GetCustomStatic("hud_blood_sci"):wnd()
-			m_blood:SetColor(GetARGB(blood_intensity,255,255,255))
-			if blood_intensity > 50 then blood_intensity = blood_intensity - 50 else blood_intensity = 0 end
-		elseif string.find(mycurrent_suithud,"hud_merc") and get_hud():GetCustomStatic("hud_blood_merc") then
-			m_blood = get_hud():GetCustomStatic("hud_blood_merc"):wnd()
-			m_blood:SetColor(GetARGB(blood_intensity,255,255,255))
-			if blood_intensity > 50 then blood_intensity = blood_intensity - 50 else blood_intensity = 0 end
-		elseif string.find(mycurrent_suithud,"hud_gas") and get_hud():GetCustomStatic("hud_blood_gas") then
-			m_blood = get_hud():GetCustomStatic("hud_blood_gas"):wnd()
-			m_blood:SetColor(GetARGB(blood_intensity,255,255,255))
-			if blood_intensity > 50 then blood_intensity = blood_intensity - 50 else blood_intensity = 0 end
-		end		
-	end
-end
 
 function init_blurs()
-	if blurs_enable == 0 then return end
-	if amk.load_variable( "option_hud", 2 ) < 2 then return end
-	if mycurrent_suithud ~= nil and not string.find(mycurrent_suithud,"_red3") and not string.find(mycurrent_suithud,"hud_sci_") then
-		local zoom=67.5/device().fov
-		zoom=(zoom-1)*1.5+1
-		if zoom<1.001 then
-			zoom=1.001
-		end
-		local stretchy=0.75/(math.floor(device().aspect_ratio*1000)/1000)
-		if stretchy<1 then stretchy=1 end
-		local rect={x=-768*zoom+768,y=(-512*zoom+512)*stretchy-(stretchy-1)*300,w=1024*zoom,h=768*zoom*stretchy}
-		set_blurs(true,rect)
-	else
-		set_blurs(false)
-	end
+  if blurs_enable == 0 then return end
+  if amk.load_variable( "option_hud", 2 ) < 2 then return end
+  if
+    mycurrent_suithud
+    and ( not string.find( mycurrent_suithud, "_red3"    ) )
+    and ( not string.find( mycurrent_suithud, "hud_sci_" ) )
+  then
+    local zoom = 67.5 / device().fov
+    zoom =( zoom - 1 ) * 1.5 + 1
+    if zoom < 1.001 then
+      zoom = 1.001
+    end
+    local stretchy = 0.75 / ( math.floor( device().aspect_ratio * 1000 ) / 1000 )
+    if stretchy < 1 then stretchy = 1 end
+    local rect = {
+      x = -768 * zoom + 768,
+      y = ( -512 * zoom + 512 ) * stretchy - ( stretchy - 1 ) * 300,
+      w = 1024 * zoom,
+      h = 768 * zoom * stretchy,
+    }
+    set_blurs( true, rect )
+  else
+    set_blurs( false )
+  end
 end
 
-local blurs=nil
-local blurval=0 -- уровень запотевания от 0 до 1
-local blurlt=0 -- время последнего обновления
-local blurcyctime=0 -- время начала последнего цикла дыхания (выдох)
-local blurlastphase=0
-function set_blurs(enabled,rect)
-	if (not blurs) or get_hud():GetCustomStatic("hud_blur1")==nil then
-		blurs={}
-		for i=1,4 do
-			get_hud():AddCustomStatic("hud_blur"..i)
-			blurs[i]=get_hud():GetCustomStatic("hud_blur"..i):wnd()
-			blurs[i]:SetWidth(0)
-			sm:call("on_hud_show")
-		end
-	end
-	if not enabled then
-		for i=1,4 do
-			blurs[i]:SetWidth(0)
-		end
-		return
-	end
--- Циклы в зависимости от силы дыхания: 0->1->0 0->1->2->4->5->0 0->1->2->3->4->5->0 5->4->3->4->5 4->3->4
-	local power=db.actor.power
-	local period=1.0+power*power*1.0 -- текущая частота дыхания от 30 до 120 циклов в минуту
-	local expirt=0.3
-	local breathpower=3
-	local delta=(time_global()-blurlt)/1000 -- дельта в секундах
-	local phase=(time_global()-blurcyctime)/1000 -- фаза дыхательного цикла в сек.
-	blurlt=time_global()
-	if phase>period then
-		phase=phase%period
-		blurcyctime=blurlt-phase*1000
-	end
-	if blurlastphase>phase then
-		blurlastphase=0
-	end
-	local blurdelta=delta*-0.7 -- работа вентилляции
-	if blurlastphase<expirt and phase<expirt then
-		blurdelta=blurdelta+(phase-blurlastphase)*breathpower
-	elseif blurlastphase<expirt then
-		blurdelta=blurdelta+(expirt-blurlastphase)*breathpower
-	end
-	blurlastphase=phase
-	blurval=blurval+blurdelta
-	if blurval>0.999 then
-		blurval=0.999
-	elseif blurval<0 then
-		blurval=0
-	end
-	local tm=math.floor(blurval*3)
-	local tmn=(tm+1)
-	local v=blurval*3-math.floor(blurval*3)
-	v=1-v
-	local v1=1-v
-	if tm~=0 then
-		blurs[tm]:SetColor(GetARGB(v*255,255,255,255))
-	end
-	if tmn~=0 then
-		blurs[tmn]:SetColor(GetARGB(v1*255,255,255,255))
-	end
-	for i=1,4 do
-		if i==tm or i==tmn then
-			blurs[i]:SetWndRect(Frect():set(rect.x,rect.y,rect.w,rect.h))
-		else
-			blurs[i]:SetWndRect(Frect():set(rect.x,rect.y,0,0))
-		end
-	end
+
+local blurs
+local blurval       = 0 -- уровень запотевания от 0 до 1
+local blurlt        = 0 -- время последнего обновления
+local blurcyctime   = 0 -- время начала последнего цикла дыхания (выдох)
+local blurlastphase = 0
+
+function set_blurs( enabled, rect )
+  if ( not blurs ) or ( not get_hud():GetCustomStatic( "hud_blur1" ) ) then
+    blurs = {}
+    for i = 1, 4 do
+      get_hud():AddCustomStatic( "hud_blur" .. i )
+      blurs[ i ] = get_hud():GetCustomStatic( "hud_blur" .. i ):wnd()
+      blurs[ i ]:SetWidth( 0 )
+      sm:call( "on_hud_show" )
+    end
+  end
+  if not enabled then
+    for i = 1, 4 do
+      blurs[ i ]:SetWidth( 0 )
+    end
+    return
+  end
+  -- Циклы в зависимости от силы дыхания: 0->1->0 0->1->2->4->5->0 0->1->2->3->4->5->0 5->4->3->4->5 4->3->4
+  local power  = db.actor.power
+  -- текущая частота дыхания от 30 до 120 циклов в минуту
+  local period = 1.0 + power * power * 1.0
+  local expirt = 0.3
+  local breathpower = 3
+  local delta  = ( time_global() - blurlt     ) / 1000 -- дельта в секундах
+  local phase  = ( time_global() -blurcyctime ) / 1000 -- фаза дыхательного цикла в сек.
+  blurlt = time_global()
+  if phase > period then
+    phase = phase % period
+    blurcyctime = blurlt - phase * 1000
+  end
+  if blurlastphase > phase then
+    blurlastphase = 0
+  end
+  local blurdelta = delta * -0.7 -- работа вентиляции
+  if blurlastphase < expirt and phase < expirt then
+    blurdelta = blurdelta + ( phase - blurlastphase ) * breathpower
+  elseif blurlastphase < expirt then
+    blurdelta = blurdelta + ( expirt - blurlastphase ) * breathpower
+  end
+  blurlastphase = phase
+  blurval       = blurval + blurdelta
+  if blurval > 0.999 then
+    blurval = 0.999
+  elseif blurval < 0 then
+    blurval = 0
+  end
+  local tm  = math.floor( blurval * 3 )
+  local tmn = tm + 1
+  local v   = 1 - ( blurval * 3 - math.floor( blurval * 3 ) )
+  local v1  = 1 - v
+  if tm ~= 0 then
+    blurs[ tm ]:SetColor( GetARGB( v * 255, 255, 255, 255 ) )
+  end
+  if tmn ~= 0 then
+    blurs[ tmn ]:SetColor( GetARGB( v1 * 255, 255, 255, 255 ) )
+  end
+  for i = 1, 4 do
+    if i == tm or i == tmn then
+      blurs[ i ]:SetWndRect( Frect():set( rect.x, rect.y, rect.w, rect.h ) )
+    else
+      blurs[ i ]:SetWndRect( Frect():set( rect.x, rect.y, 0, 0 ) )
+    end
+  end
 end
 
--- Проверка на М-134 и экзоскелет
-local counter2 = 0
-function remove_m134()
-	if counter2 and counter2 == 0 then
-		local m134 = db.actor:item_in_slot(2)
-		if (m134 and m134:section() == "wpn_m_134") and not is_exo() then
-			db.actor:drop_item(m134)
-			news_text = game.translate_string("dinhud_gatling_text")
-			db.actor:give_game_news(news_text, "ui\\ui_iconsTotal", Frect():set(0,188,83,47), 0, 3000)
-			counter2 = counter2 + 1			
-		end
-	else
-		local m134 = db.actor:item_in_slot(2)
-		if (m134 and m134:section() == "wpn_m_134") and not is_exo() then
-			db.actor:drop_item(m134)
-		end	
-	end
-end
-
-local counter = 0
-function check_remove_gasmask()
-	local bio_belt = db.actor:item_in_slot(10)
-	if have_gasmask() == true and bio_belt then
-		local sect = bio_belt:section()
-		if sect == "af_maska_1" or sect == "af_maska_2" then 
-			db.actor:move_to_ruck(bio_belt)
-			counter = counter + 1
-			inventory.update()
-			if counter and counter == 1 then
-				news_text = game.translate_string("dinhud_gasmask_text")
-				db.actor:give_game_news(news_text, "ui\\ui_iconsTotal", Frect():set(0,188,83,47), 0, 5000)	
-			end				
-		end	
-		return true
-	end
-	return false
-end
-
--- Проверка, в экзе ли мы бегаем
-function is_exo()
-	local bronik = db.actor:get_current_outfit()
-	local bronikname 
-	if bronik ~= nil then bronikname = bronik:section() end 
-	if bronikname ~= nil then
-	 	if 	string.find(bronikname, "_exo") then
-			return true
-		else
-			return false
-		end			
-	end	
-end
-
-function have_gasmask()
-	local armor = db.actor:get_current_outfit()
-	local armorname  
-	if armor ~= nil then armorname = armor:section() end 
-	if armorname ~= nil then		
-		if 	string.find(armorname, "monolit_exoskeleton") or
-			string.find(armorname, "military_outfit") or
-			string.find(armorname, "svoboda_heavy_outfit") or
-			string.find(armorname, "scientific_outfit") or
-			string.find(armorname, "ecolog_outfit") or
-			string.find(armorname, "protection_outfit") or
-			string.find(armorname, "specops_outfit") or
-			string.find(armorname, "outfit_specnaz") or
-			string.find(armorname, "outfit_dolg") or
-			string.find(armorname, "killer_outfit") then
-			return true
-		end		
-	end	
-	return false
-end
 
 function is_sniper_mode()
-	return sniper_mode
+  return sniper_mode
 end
