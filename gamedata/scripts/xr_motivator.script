@@ -649,6 +649,8 @@ function motivator_binder:net_spawn(sobject)
 		self.com_goodwill = relation_registry.community_goodwill(self.object:character_community(), db.actor:id())
 	end
 
+  self.am:call( "on_npc_spawn", self.object, self )
+
   return true
 end
 
@@ -712,32 +714,34 @@ function motivator_binder:clear_callbacks()
 	self.object:set_callback(callback_ex.entity_alive_before_hit, nil)
 end
 
-function motivator_binder:before_hit_callback(p_s_hit, p_ignore_flags)
-	local hit_data = read_hit_data(p_s_hit)
-	if hit_data ~= 0 then
-		local obj = level.object_by_id(hit_data.who_id)
-		if obj then -- если есть виновник хита
-			local obj_id = obj:id()
-			if obj_id ~= db.actor:id() and IsStalker(obj) then -- если не актор и сталкер
-				-- проверяем условия игнорирования урона от дружественного огня
-				if  obj_id ~= self.object:id() and -- если не сам себя
-					obj:general_goodwill(self.object) >= -100 and -- если друг
-					(self.object:relation(obj) ~= game_object.enemy or self.object:character_community() == obj:character_community()) and 
-					not xr_companion.is_companion(obj_id)
-				then
-					-- подстрелил друг, игнорируем
-					write_memory_int(1, p_ignore_flags)
-				end
---[[
-			elseif obj_id == bind_statpkm.pkm_captured and obj:section() == "stationary_pkm" then -- если это турель
-				-- то надо заменить на реального виновника, т.е. ГГ
-				write_memory_int(db.actor:cast_game_object(), p_s_hit, hit_offset.who)
-				write_memory_int16(db.actor:id(), p_s_hit, hit_offset.whoID)
-]]
-			end
-		end
-	end
-	self.am:call( "on_npc_before_hit", self.object, hit_data, p_s_hit, p_ignore_flags )
+
+function motivator_binder:before_hit_callback( p_s_hit, p_ignore_flags )
+  self.last_hit_data = read_hit_data( p_s_hit )
+  if self.last_hit_data ~= 0 then
+    local obj = level.object_by_id( self.last_hit_data.who_id )
+    if obj then -- если есть виновник хита
+      local obj_id = obj:id()
+      if obj_id ~= db.actor:id() and IsStalker( obj ) then -- если не актор и сталкер
+        -- проверяем условия игнорирования урона от дружественного огня
+        if
+          obj_id ~= self.object:id() -- если не сам себя
+          and obj:general_goodwill( self.object ) >= -100 -- если друг
+          and (
+            self.object:relation( obj ) ~= game_object.enemy
+            or self.object:character_community() == obj:character_community()
+          )
+          and not xr_companion.is_companion( obj_id )
+        then
+          -- подстрелил друг, игнорируем
+          write_memory_int( 1, p_ignore_flags )
+        end
+      end
+    end
+  end
+  self.am:call(
+    "on_npc_before_hit",
+    self.object, self.last_hit_data, p_s_hit, p_ignore_flags
+  )
 end
 
 function motivator_binder:hit_callback(obj, amount, local_direction, who, bone_index)
@@ -868,8 +872,6 @@ function motivator_binder:death_callback(victim, who)
 --	ogse_debug.process_npc(victim, "dth", 2)
 
 	ogse.deadmans_table[victim:id()] = tostring(game.time()).."_"..tostring(who:id())
-
-	ogse_hitfx.npc_on_death(victim, who)
 
 	if self.st.death then
 		xr_logic.issue_event(self.object, self.st.death, "death_callback", victim, who)
