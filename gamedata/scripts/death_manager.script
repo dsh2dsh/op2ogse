@@ -1,15 +1,48 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
-local total_debug = false
 
+function attach( sm )
+  sm:subscribe({ signal = "on_npc_spawn", fun = this.on_npc_spawn })
+end
+
+
+local npc_rnd_keys = {
+  "outfit_rnd", "outfit_cond_rnd", "weapon_cond_rnd",
+}
+
+function on_npc_spawn( npc, binder )
+  local sobj = alife():object( npc:id() )
+  if sobj then
+    local pk = xs_netpk.stalker( sobj )
+    if pk:isOk() then
+      local data = pk:get()
+      local cd   = data.custom_data:getTable()
+      local cfg  = cd[ script_name() ]
+      if cfg then
+        binder[ script_name() ] = {}
+        for _, k in ipairs( npc_rnd_keys ) do
+          binder[ script_name() ][ k ] = tonumber( cfg[ k ] )
+        end
+      else
+        cfg = {}
+        for _, k in ipairs( npc_rnd_keys ) do
+          cfg[ k ] = math.random()
+        end
+        binder[ script_name() ] = cfg
+        cd[ script_name() ]     = cfg
+        data.custom_data:set( cd )
+        pk:set( data )
+      end
+    end
+  end
+end
+
+
+local total_debug = false
 function write_log(str)
 	if total_debug then
 		log1(str)
 	end
 end
-
-local math_random = math.random
-local math_ceil = math.ceil
-local string_find = string.find
 
 local ammo_deferred_release = {}
 --' Ключем является группировка персонажа. Значением является таблица, содержашая имена секций предметов.
@@ -24,18 +57,6 @@ local count_by_level = {}
 
 --' Предметы, которые нельзя удалять (квестовые например)
 local always_keep_item = {}
-
--- уникальные стволы, которые не разряжаются и всегда должны быть исправны
-unique_wpn = {
-	["wpn_lr300_m1"] = true,
-	["wpn_beretta_m1"] = true,
-	["wpn_gauss2b"] = true,
-	["wpn_fot"] = true,
-	["wpn_mp5_m1"] = true,
-	["wpn_m4_m1"] = true,
-	["wpn_browningauto5"] = true,
-	["wpn_cz550"] = true
-}
 
 local always_offs_items = {
 	["device_torch"]=true,
@@ -590,7 +611,7 @@ function drop_manager:create_release_item()
       if check_item_dependence( self.npc, k ) == true then
         --' По каждому объекту необходимо получить количество
         local number = math.ceil(
-          math_random( count_by_level[ k ].min, count_by_level[ k ].max )
+          math.random( count_by_level[ k ].min, count_by_level[ k ].max )
         )
         --' Необходимо заспавнить нужное количество.
         create_items( who, k, number, v )
@@ -633,15 +654,21 @@ function drop_manager:create_release_item()
         who = self.npc
       end
       if sect and who then
-        local otf = create_items(
-          who, sect, 1, data.probability_outfit * 10
-        )
+        local otf
+        local rnd = self:get_npc_rnd( "outfit_rnd" )
+        if rnd * 1000 <= data.probability_outfit * 10 then
+          otf = alife():create(
+            sect,
+            who:position(), who:level_vertex_id(), who:game_vertex_id(),
+            who:id()
+          )
+        end
         if otf then
           level.client_spawn_manager():add(
             otf.id, -1, function( id, obj )
-              obj:set_condition(
-                ( math.random( cond.min, cond.max ) + cond_add ) / 100
-              )
+              local rnd = self:get_npc_rnd( "outfit_cond_rnd" )
+              rnd = cond.min + round( rnd * ( cond.max - cond.min ) )
+              obj:set_condition( ( rnd + cond_add ) / 100 )
             end
           )
         end
@@ -657,18 +684,29 @@ function drop_manager:create_release_item()
 end
 
 
+function drop_manager:get_npc_rnd( k )
+  local cfg = self.npc:binded_object()[ script_name() ]
+  ASSERT( cfg, "no cfg found for %s", self.npc:name() )
+  local rnd = cfg[ k ]
+  ASSERT( rnd, "no rnd found for %s using %s", self.npc:name(), k )
+  return rnd
+end
+
+
 function drop_manager:set_weapon_condition( item_in_slot, cond, cond_add )
   local ini
   if self.npc then
     ini = self.npc:spawn_ini()
   end
-  if item_in_slot and not unique_wpn[ item_in_slot:section() ] then
+  if item_in_slot and not is_unique_wpn( item_in_slot:section() ) then
     item_in_slot:unload_magazine()
     if ini and ini:section_exist( "totally_broken_weapon" ) then
       -- нужен полностью убитый ствол
       item_in_slot:set_condition( 0.01 )
     else
-      local rnd_cond = ( math.random( cond.min, cond.max ) + cond_add ) / 100
+      local rnd = self:get_npc_rnd( "weapon_cond_rnd" )
+      rnd = cond.min + round( rnd * ( cond.max - cond.min ) )
+      local rnd_cond = ( rnd + cond_add ) / 100
       if item_in_slot:condition() > rnd_cond then
         item_in_slot:set_condition( rnd_cond )
       end
@@ -780,7 +818,7 @@ function create_items(npc, section, number, rnd)
     else
         for i=1,number do
             --' Проверяем вероятность появить каждый объект в отдельности
-            if math_random(1000) <=  rnd then
+            if math.random(1000) <=  rnd then
 				return alife():create(section, npc:position(), npc:level_vertex_id(), npc:game_vertex_id(), npc:id())
             end
         end
@@ -825,10 +863,10 @@ function drop_manager:npc_clear_spawn( cond_min, cond_max, cond_add )
   local transfer_items = {}
   for _, item in ipairs( items ) do
     local section = item:section()
-    if item:is_weapon() and not unique_wpn[ section ] then
+    if item:is_weapon() and not is_unique_wpn( section ) then
       if who then
         item:unload_magazine()
-        local rnd_cond = ( math_random( cond_min, cond_max ) + cond_add ) / 100
+        local rnd_cond = ( math.random( cond_min, cond_max ) + cond_add ) / 100
         if item:condition() > rnd_cond then
           item:set_condition( rnd_cond )
         end
@@ -857,7 +895,7 @@ function drop_manager:npc_clear_spawn( cond_min, cond_max, cond_add )
     else
       if
         ( not watcher_act.do_not_touch( item ) )
-        and ( not unique_wpn[ section ] )
+        and ( not is_unique_wpn( section ) )
       then
         if who then
           if who:id() ~= npc:id() then
@@ -887,6 +925,11 @@ function drop_manager:npc_clear_spawn( cond_min, cond_max, cond_add )
       create_items( who, v.sect, v.cnt, 1000 )
     end
   end
+end
+
+
+function is_unique_wpn( sect )
+  return get_bool( sect, script_name() .. ".unique_wpn", false )
 end
 
 
