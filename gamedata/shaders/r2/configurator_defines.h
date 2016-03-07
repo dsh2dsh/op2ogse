@@ -12,7 +12,7 @@
 #define VOL_LIGHT_MAX_INTENSITY float(0.015)
 #define SSDO_BLEND_FACTOR float(1.500)
 #define HBAO_BLEND_FACTOR float(0.700)
-#define DDOF_VIGNOUT float(0.020)
+#define DDOF_VIGNOUT float(0.000)
 #define DDOF_GAIN float(1.000)
 #define ZDOF_INTENSITY float(0.600)
 #define RDOF_INTENSITY float(0.400)
