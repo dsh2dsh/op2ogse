@@ -1,6 +1,5 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
-local tname = script_name() .. ".insert_custom_data_delayed"
 function npc_relacion( npc, actor )
   local actor_, npc_
   if db.actor and db.actor:id() == npc:id() then
@@ -11,20 +10,42 @@ function npc_relacion( npc, actor )
     npc_   = npc
   end
   local npc_community = npc_:character_community()
-  local rel = actor:relation( npc )
-  if rel == game_object.friend and npc_community == "stalker" then
-    if ogse_st_mgr.timer_exists( tname ) then return false end
-    if math.random() > 0.8 then
-      return true
-    else
-      dsh.start_gtimerDHMS(
-        tname,
-        0, 0, math.random( 5, 25 ), 0,
-        script_name() .. ".insert_custom_data_delayed"
-      )
-    end
+  local rel = actor:relation( npc_ )
+  return ( rel == game_object.friend and npc_community == "stalker" )
+end
+
+
+function precond( npc, actor )
+  local actor_, npc_
+  if db.actor and db.actor:id() == npc:id() then
+    actor_ = npc
+    npc_   = actor
+  else
+    actor_ = actor
+    npc_   = npc
   end
-  return false
+  return have_treasure( npc_ ) > get_lucky_num()
+end
+
+
+function get_lucky_num()
+  local n = ogse.load_var( script_name() .. ".lucky_num" )
+  if not n then
+    n = change_lucky_num()
+  end
+  return n
+end
+
+
+function change_lucky_num()
+  local n = math.random( 50, 90 )
+  ogse.save_var( script_name() .. ".lucky_num", n, "u8" )
+  dsh.start_gtimerDHMS(
+    script_name() .. ".change_lucky_num",
+    0, math.random( 12, 20 ), 0, 0,
+    script_name() .. ".change_lucky_num"
+  )
+  return n
 end
 
 
@@ -37,65 +58,68 @@ function insert_custom_data( npc, actor )
     actor_ = actor
     npc_   = npc
   end
+  local binder = npc_:binded_object()
+  ASSERT(
+    binder[ script_name() ],
+    "binder.%s not found for %s", script_name(), npc_:name()
+  )
+  binder[ script_name() ].rnd = 0
   local sobj = alife():object( npc_:id() )
   if sobj then
     local pk = xs_netpk.stalker( sobj )
     if pk:isOk() then
       local data = pk:get()
       local cd   = data.custom_data:getTable()
-      if not cd.npc then 
-        cd.npc = {} 
-      end
-      if not cd.npc.vv then 
-        cd.npc.vv = 0 
-      end
+      local cfg  = cd[ script_name() ]
+      ASSERT( cfg, "cd.%s not found for %s", script_name(), npc_:name() )
+      cfg.rnd = binder[ script_name() ].rnd
       data.custom_data:set( cd )
       pk:set( data )
     end
   end
-  dsh.start_gtimerDHMS(
-    tname,
-    0, math.random( 1, 8 ), 0, 0,
-    script_name() .. ".insert_custom_data_delayed"
-  )
 end
+
 function insert_custom_data_delayed() end
 
 
-function precond( npc, actor )
-  local actor_, npc_
-  if db.actor and db.actor:id() == npc:id() then
-    actor_ = npc
-    npc_   = actor
-  else
-    actor_ = actor
-    npc_   = npc
-  end
-  local zz   = true
-  local sobj = alife():object( npc_:id() )
-  if sobj then
-    local pk = xs_netpk.stalker( sobj )
-    if pk:isOk() then
-      local data = pk:get()
-      local cd   = data.custom_data:getTable()
-      if cd.npc and cd.npc.vv and tonumber( cd.npc.vv ) == 0 then
-        zz = false
-      end
-    end
-  end
-  return zz
-end
-
-
 function actor_has_money_2()
-  return db.actor:money() >= 30000
+  return dsh.actor_has_art_abs()
 end
-
 
 function give_money_2( t1, t2 )
-  local npc = t1
-  if npc:id() == db.actor:id() then
-    npc = t2
+  dsh.actor_get_art_abs()
+end
+
+
+function have_treasure( npc )
+  local binder = npc:binded_object()
+  if not binder[ script_name() ] then
+    local rnd  = 0
+    local sobj = alife():object( npc:id() )
+    if sobj then
+      local pk = xs_netpk.stalker( sobj )
+      if pk:isOk() then
+        local data = pk:get()
+        local cd   = data.custom_data:getTable()
+        local cfg  = cd[ script_name() ]
+        if cfg then
+          rnd = tonumber( cfg.rnd )
+        else
+          rnd = dsh.get_next_random(
+            script_name() .. ".have_treasure.rnd", 100
+          )
+          cfg = {
+            [ "rnd" ] = rnd,
+          }
+          cd[ script_name() ]     = cfg
+          data.custom_data:set( cd )
+          pk:set( data )
+        end
+      end
+    end
+    binder[ script_name() ] = {
+      [ "rnd" ] = rnd,
+    }
   end
-  dialogs.relocate_money( npc, 30000, "out" )
+  return binder[ script_name() ].rnd
 end
