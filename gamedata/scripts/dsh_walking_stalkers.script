@@ -6,10 +6,21 @@ function attach( sm )
 end
 
 
+local update_signal = { signal = "on_update", fun = this.on_update }
+local update_gogogo
+function on_update()
+  if table.getn( update_gogogo ) > 0 then
+    local sobj = table.remove( update_gogogo )
+    sobj:brain():update()
+  else
+    ogse_signals.get_mgr():unsubscribe( update_signal )
+    update_gogogo = nil
+  end
+end
+
+
 function periodic_job()
-  -- log2( "[%s]: start periodic_job", script_name() )
   local gogogo = {}
-  local cnt    = 0
   smart_terrain.iterate_smart_terrains( function( strn )
     if not is_walking_smart( strn ) then return end
     strn:initialize_if_needed()
@@ -18,7 +29,6 @@ function periodic_job()
       for _, sobj in ipairs( get_walk_npc( strn ) ) do
         table.insert( gogogo, sobj )
       end
-      cnt = cnt + 1
     end
   end )
   local rnd_go = {}
@@ -33,16 +43,14 @@ function periodic_job()
     sobj:brain():can_choose_alife_tasks( true )
     smart_terrain.unregister_npc( sobj )
   end
-  for _, sobj in ipairs( gogogo ) do
-    sobj:brain():update()
-  end
+  update_gogogo = gogogo
+  ogse_signals.get_mgr():subscribe( update_signal )
   local next_m = math.random( 0, 59 )
   dsh.start_gtimerDHMS(
     script_name() .. ".periodic_job",
     0, 1, next_m, 0,
     script_name() .. ".periodic_job"
   )
-  -- log2( "[%s]: stop periodic_job: %s smart_terrains, %s gogogo mobs, next run in 1 hour %s minutes", script_name(), cnt, table.getn( gogogo ), next_m )
 end
 
 
@@ -89,7 +97,6 @@ function get_walk_npc( strn )
   local comed    = gulag:get_population_comed()
   local gogogo   = {}
   if comed < keep_min + 1 then return gogogo end
---  log2( "[%s]: %s has enough comed %s, keep_min = %s", script_name(), name, comed, keep_min )
   local comed_npc = {}
   for id, v in pairs( strn.npc_info ) do
     local npc_sobj = alife():object( id )
@@ -101,7 +108,6 @@ function get_walk_npc( strn )
         diff_sec = game.get_game_time():diffSec( v.stay_end ),
         sobj     = npc_sobj,
       })
---      log2( "[%s]: %s: %s is comed", script_name(), name, npc_sobj:name() )
     end
   end
   if table.getn( comed_npc ) > 0 then
@@ -113,27 +119,19 @@ function get_walk_npc( strn )
     for _, v in ipairs( comed_npc ) do
       if v.diff_sec < 0 then
         table.insert( not_ready_to_go, v )
---        log2( "[%s]: %s: %s is not ready to go", script_name(), name, v.sobj:name() )
       elseif is_too_bad_weather( v.sobj ) then
         table.insert( not_ready_to_go, v )
---        log2( "[%s]: %s: %s is not ready to go, too bad weather", script_name(), name, v.sobj:name() )
       elseif is_too_late( v.sobj ) then
         table.insert( not_ready_to_go, v )
---        log2( "[%s]: %s: %s is not ready to go, too late", script_name(), name, v.sobj:name() )
       else
         table.insert( ready_to_go,     v )
---        log2( "[%s]: %s: %s is ready to go", script_name(), name, v.sobj:name() )
       end
     end
---    log2( "[%s]: %s: ready to go %s", script_name(), name, table.getn( ready_to_go ) )
     local allowed_to_go = comed - keep_min
---    log2( "[%s]: %s: allowed to go %s", script_name(), name, allowed_to_go )
     local walkable      = math.min(
       allowed_to_go, table.getn( ready_to_go )
     )
---    log2( "[%s]: %s: walkable %s", script_name(), name, walkable )
     local num_to_go     = math.random( 0, walkable )
---    log2( "[%s]: %s: num to go %s", script_name(), name, num_to_go )
     if
       keep_min == 0         -- могут уйти все
       and num_to_go > 0
@@ -144,11 +142,9 @@ function get_walk_npc( strn )
       -- да ну нафиг, я тоже тогда пойду с мужиками.
       num_to_go = num_to_go + 1
       table.insert( ready_to_go, table.remove( not_ready_to_go ) )
---      log2( "[%s]: %s: me too", script_name(), name )
     end
     while num_to_go > 0 do
       local npc_sobj = ready_to_go[ num_to_go ].sobj
---      log2( "[%s]: %s: go go go %s", script_name(), name, npc_sobj:name() )
       table.insert( gogogo, npc_sobj )
       num_to_go = num_to_go - 1
     end
@@ -193,23 +189,18 @@ function on_empty_smart( strn )
   if xr_logic.pick_section_from_condlist( db.actor, db.actor, cond ) == nil then
     return
   end
-  -- log2( "dsh: change_on_empty %s", strn:name() )
   local profiles
   if sys_ini:section_exist( sect ) then
     profiles = get_string( sect, "dsh_profiles" )
   end
   ASSERT( profiles, "profiles not found for %s", strn:name() )
-  -- log2( "dsh: profiles for %s: %s", strn:name(), profiles )
   local new_profile = select_prob_name( parse_probs( profiles ) )
-  -- log2( "dsh: new profile for %s: %s", strn:name(), new_profile )
   switch_smart_terrain_profile( strn, new_profile )
   if restrictors then
-    -- log2( "dsh: cleanup restrictors: %s", restrictors )
     for _, k in ipairs( parse_names( restrictors ) ) do
       local sobj = alife():object( k )
       if sobj then
         alife():release( sobj )
-        -- log2( "dsh: %s released", k )
       end
     end
   end
@@ -217,7 +208,6 @@ function on_empty_smart( strn )
   if after_delay then
     local t1, t2 = unpack( parse_nums( after_delay ) )
     local delay  = math.random( t1, t2 )
-    -- log2( "dsh: start delay timer: %s, %s", strn:name(), delay )
     local tname  = "smart_terrain." .. strn:name() .. ".population_locked"
     if ogse_st_mgr.timer_exists( tname ) then
       local t = ogse_st_mgr.get_timer( tname )
@@ -323,7 +313,6 @@ function on_full_smart( strn )
     if
       xr_logic.pick_section_from_condlist( db.actor, db.actor, cond ) ~= nil
     then
-      -- log2( "dsh: dsh_population_locked %s", strn:name() )
       strn:lock_population( true )
     end
   end
