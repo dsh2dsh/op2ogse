@@ -5,27 +5,81 @@ function attach( sm )
 end
 
 
-local last_ammo_n, last_weapon_state
-
+local cur_wpn = {}
 function on_update( delta )
   local wpn = db.actor:active_item()
   if not wpn then return end
   if not wpn:is_weapon() then return end
+  if ( not cur_wpn.id ) or cur_wpn.id ~= wpn:id() then
+    cur_wpn = {
+      [ "ammo_n"       ] = wpn:get_ammo_in_magazine(),
+      [ "has_gl"       ] = has_wpn_gl( wpn ),
+      [ "has_silencer" ] = ( ogse_wpn_utils.get_silencer_status( wpn ) == 2 ),
+      [ "id"           ] = wpn:id(),
+      [ "weapon_state" ] = wpn:get_hud_item_state(),
+      [ "wpn"          ] = wpn,
+    }
+    if cur_wpn.has_gl then
+      cur_wpn.gl_mode = ogse_wpn_utils.get_gl_mode( wpn )
+      cur_wpn.gl_name = get_string( wpn:section(), "grenade_launcher_name" )
+    end
+  end
+  check_silencer( wpn )
   local state = wpn:get_hud_item_state()
-  if state == last_weapon_state then
+  if state == cur_wpn.weapon_state then
     if state == weapon_states.fire then
       local ammo_n = wpn:get_ammo_in_magazine()
-      if ammo_n ~= last_ammo_n then
-        last_ammo_n = ammo_n
-        ogse_signals.get_mgr():call( "on_actor_fire", wpn )
+      if ammo_n ~= cur_wpn.ammo_n then
+        cur_wpn.ammo_n = ammo_n
+        ogse_signals.get_mgr():call( "on_actor_fire", cur_wpn )
       end
     end
   else
+    cur_wpn.weapon_state = state
     if state == weapon_states.fire then
-      last_ammo_n = wpn:get_ammo_in_magazine()
-      ogse_signals.get_mgr():call( "on_actor_fire", wpn )
+      cur_wpn.ammo_n = wpn:get_ammo_in_magazine()
+      ogse_signals.get_mgr():call( "on_actor_fire", cur_wpn )
+    elseif state == weapon_states.switch then
+      if cur_wpn.has_gl then
+        local gl_mode = ogse_wpn_utils.get_gl_mode( wpn )
+        if cur_wpn.gl_mode ~= gl_mode then
+          cur_wpn.gl_mode = gl_mode
+          ogse_signals.get_mgr():call( "on_wpn_gl_mode", cur_wpn )
+        end
+      end
     end
-    last_weapon_state = state
+  end
+end
+
+
+function has_wpn_gl( wpn )
+  return (
+    wpn:is_weapon_gl()
+    and (
+      ogse_wpn_utils.get_grenade_launcher_status( wpn ) == 1
+      or (
+        ogse_wpn_utils.get_grenade_launcher_status( wpn ) == 2
+        and ogse_wpn_utils.get_grenade_launcher_flag( wpn )
+      )
+    )
+  )
+end
+
+
+function check_silencer( wpn )
+  if cur_wpn.has_silencer then
+    local silencer_mode = ogse_wpn_utils.get_silencer_flag( wpn )
+    if cur_wpn.silencer_mode ~= silencer_mode then
+      local def_condition_shot_dec =
+        get_float( wpn:section(), condition_shot_dec )
+      if silencer_mode then
+        ogse_wpn_utils.set_condition_shot_dec( wpn, def_condition_shot_dec / 4 )
+      else
+        ogse_wpn_utils.set_condition_shot_dec( wpn, def_condition_shot_dec )
+      end
+      cur_wpn.silencer_mode = silencer_mode
+      ogse_signals.get_mgr():call( "on_wpn_silencer_mode", cur_wpn )
+    end
   end
 end
 
@@ -46,7 +100,6 @@ function wpn_binder:net_spawn( data )
   if not object_binder.net_spawn( self, data ) then
     return false
   end
-  self:check_gl_mode()
   self.sm:call( "on_wpn_spawn", self.object )
   return true
 end
@@ -61,31 +114,4 @@ end
 function wpn_binder:net_destroy()
   self.sm:call( "on_wpn_destroy", self.object )
   object_binder.net_destroy( self )
-end
-
-
-function wpn_binder:check_gl_mode()
-  if self.check_gl_mode_t and self.check_gl_mode_t > time_global() then
-    return
-  end
-  local has_gl = (
-    self.object:is_weapon_gl()
-    and (
-      ogse_wpn_utils.get_grenade_launcher_status( self.object ) == 1
-      or (
-        ogse_wpn_utils.get_grenade_launcher_status( self.object ) == 2
-        and ogse_wpn_utils.get_grenade_launcher_flag( self.object )
-      )
-    )
-  )
-  if has_gl then
-    local gl_mode = ogse_wpn_utils.get_gl_mode( self.object )
-    if self.last_gl_mode ~= nil then
-      if self.last_gl_mode ~= gl_mode then
-        self.sm:call( "on_wpn_gl_mode", self.object, gl_mode )
-      end
-    end
-    self.last_gl_mode = gl_mode
-  end
-  self.check_gl_mode_t = time_global() + 100
 end
