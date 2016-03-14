@@ -8,8 +8,8 @@ dsh mod для ОП-2
 
 Ссылки для скачивания:
 
-- https://yadi.sk/d/SYCuwHlgq8YFH
-- Зеркало: https://drive.google.com/open?id=0B0h2HnCBW9H1cGxoaEFRS2pFS1U
+- https://yadi.sk/d/3qz6RrL9qAGnp
+- Зеркало: https://drive.google.com/open?id=0B0h2HnCBW9H1eXFMQk5OVkxWNE0
 - Что бы прицельные сетки круглые были: https://yadi.sk/d/1HZMZAn6gEp3W
 - Худ под меня: https://yadi.sk/d/5G_TkvICmB4ty
 - Некоторые текстуры на любителя: https://yadi.sk/d/jQCakrvFkQtk7
@@ -404,6 +404,8 @@ dsh mod для ОП-2
 
   Для зануд. Не надо мне рассказывать, что в реальности изнашивается сам
   глушитель, а не оружие. Идите в реальность играть.
+  
+  - Если перезаряжать оружие на бегу, можно его уронить.
 
 
 Установка:
