@@ -18,26 +18,26 @@ auto_attach = true
 local blurs_enable = monnoroch_options.blurs_enable
 local blood_enable = monnoroch_options.blood_enable
 local bleed_enable = monnoroch_options.bleed_enable
-local suithud      = monnoroch_options.suithud_enable
 
 local blood_intensity  = 0
 local mycurrent_suithud
 local need_sniper_chek = false
 local sniper_mode      = false
 local suit_condition
-local suithud_enable   = suithud
+local suithud, suithud_enable = true, false
 local wotsuittype      = ""
 
 local sm = ogse_signals.get_mgr()
 
 
 function on_spawn()
-  if amk.load_variable( "option_hud", 2 ) > 0 then
-    suithud = 1
-    suithud_enable = 1
+  local have_helmet = ogse.load_var(
+    script_name() .. ".helmet_on_off.status", true
+  )
+  if have_helmet and amk.load_variable( "option_hud", 2 ) > 0 then
+    suithud, suithud_enable = true,  false
   else
-    suithud = 0
-    suithud_enable = 0
+    suithud, suithud_enable = false, false
   end
 end
 
@@ -114,14 +114,12 @@ local on_sniper_mode = false
 function update_hud_elements()
   if db.actor and db.actor:alive() then
     if sniper_mode == true then
-      if suithud_enable == 1 then
-        suithud_enable = 0
+      if suithud_enable then
+        suithud_enable = false
         set_my_suit_hud()
       end
       biodetector.update( "off" )
-      if amk.load_variable( "option_rad", 1 ) > 0 then
-        ui_rad.update( false )
-      end
+      ui_rad.update( false )
       if not on_sniper_mode then
         sak.show_time()
         if not wpn_IsRotatingToZoom( db.actor:active_item() ) then
@@ -130,14 +128,12 @@ function update_hud_elements()
         end
       end
     else
-      if suithud == 1 and suithud_enable == 0 then
-        suithud_enable = 1
+      if suithud and not suithud_enable then
+        suithud_enable = true
         check_my_suit_hud()
       end
       biodetector.update()
-      if amk.load_variable( "option_rad", 1 ) > 0 then
-        ui_rad.update( true )
-      end
+      ui_rad.update( true )
       if on_sniper_mode then
         ogse_night_vision.on_sniper_mode( false )
         sak.show_time()
@@ -145,8 +141,8 @@ function update_hud_elements()
       end
     end
   else
-    if suithud_enable == 1 then
-      suithud_enable = 0
+    if suithud_enable then
+      suithud_enable = false
       set_my_suit_hud()
     end
     biodetector.update( "off" )
@@ -166,18 +162,6 @@ function doabcevents()
   if freemem == 0 then freemem = time_global() + 1000 end
   if chkfreetime > freemem then
     freemem = 0
-    if suithud == 1 then
-      if amk.load_variable( "option_hud", 2 ) < 1 then
-        suithud = 0
-        suithud_enable = 0
-        set_my_suit_hud()
-      end
-    else
-      if amk.load_variable( "option_hud", 2 ) > 0 then
-        suithud = 1
-        if not sniper_mode then suithud_enable = 1 end
-      end
-    end
     check_my_suit_hud()
     bleed_condition()
   end
@@ -201,8 +185,11 @@ end
 
 -- Проверка нажатия клавиш
 function chek_keys( key, bind )
+  if sniper_mode or level.main_input_receiver() then return end
   if bind == key_bindings.kWPN_ZOOM then
     need_sniper_chek = true
+  elseif key == DIK_keys.DIK_NUMPAD0 then
+    helmet_on_off()
   end
 end
 
@@ -217,7 +204,7 @@ end
 
 local smoktime = 0
 function check_my_suit_hud()
-  if suithud_enable == 0 then return end
+  if not suithud_enable then return end
   local gsmktime = time_global()
   if smoktime == 0 then smoktime = time_global() + 4000 end
   if db.actor then
@@ -227,7 +214,7 @@ function check_my_suit_hud()
     local dynamic_hud_enable = false
     if suithudname then
       suit_condition = ""
-      if     csuithud:condition() > 0.87 then
+      if     csuithud:condition() > 0.9 then
         suit_condition = "blue"
       elseif csuithud:condition() > 0.69 then
         suit_condition = "green"
@@ -256,7 +243,7 @@ function check_my_suit_hud()
 end
 
 
-local suitfirstrun = "yes"
+local suitfirstrun = true
 local is_helmet_on = false
 local hidden_hud
 
@@ -264,7 +251,7 @@ function set_my_suit_hud( dynamic_hud_enable, hudtype )
   if not hudtype and not dynamic_hud_enable then
     local wchud = get_hud():GetCustomStatic( mycurrent_suithud )
     if wchud then get_hud():RemoveCustomStatic( mycurrent_suithud ) end
-    suitfirstrun = "yes"
+    suitfirstrun = true
     switch_shader_effects( "off" )
     if sniper_mode then
       hidden_hud = mycurrent_suithud
@@ -288,7 +275,7 @@ function set_my_suit_hud( dynamic_hud_enable, hudtype )
       biodetector.update( "off" )
       if string.find( hudtype, wotsuittype ) then
         if
-          suitfirstrun == "no"
+          ( not suitfirstrun )
           and suit_condition ~= "green"
           and suit_condition ~= "blue"
         then
@@ -299,7 +286,9 @@ function set_my_suit_hud( dynamic_hud_enable, hudtype )
             )
           end
         end
-        if suitfirstrun == "yes" then suitfirstrun = "no" end
+        if suitfirstrun then
+          suitfirstrun = false
+        end
       end
     end
     if not hidden_hud then
@@ -453,4 +442,19 @@ end
 
 function is_sniper_mode()
   return sniper_mode
+end
+
+
+function helmet_on_off()
+  if amk.load_variable( "option_hud", 2 ) == 0 then return end
+  if suithud then
+    suithud, suithud_enable = false, false
+    ogse.save_var( script_name() .. ".helmet_on_off.status", false, "bool" )
+  else
+    suithud, suithud_enable = true, false
+    ogse.save_var( script_name() .. ".helmet_on_off.status", true,  "bool" )
+    dsh_hud_fx.force_on_helmet()
+  end
+  ogse_night_vision.nv_fx( false )
+  set_my_suit_hud()
 end
