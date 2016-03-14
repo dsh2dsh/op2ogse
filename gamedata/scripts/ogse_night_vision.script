@@ -13,6 +13,7 @@ function attach(sm)
   sm:subscribe({ signal = "on_item_to_ruck", fun = this.chek_drop_pnv })
   sm:subscribe({ signal = "on_item_to_slot", fun = this.chek_outfit_double_pnv })
   sm:subscribe({ signal = "on_key_down", fun = this.call_pnv })
+  sm:subscribe({ signal = "on_load", fun = this.on_game_load })
 --  sm:subscribe({ signal = "on_spawn", fun = this.add_nv_fx_faile_hud })
 --  sm:subscribe({ signal = "on_update", fun = this.on_update })
   sm:subscribe({ signal = "on_hit",  fun = this.on_hit   })
@@ -23,6 +24,7 @@ function on_update()
   PNV_noise_update()
 end
 
+local GRIDS
 -- Параметры
 local allow_scopes_nv_cheat = false			-- разрешить включать ПНВ при прицеливании через оптику (true)
 
@@ -675,7 +677,6 @@ function turn_off_scope_sights_lighting(static_off)
 	del_static(static_off)
 	night_vision_scope_fx_on = false
 end
---]=]
 
 --[[ light scopes cop
 -- НЕ ИСПОЛЬЗУЕТСЯ
@@ -709,6 +710,7 @@ end
 
 
 -- EOF k01jan
+--]=]
 
 -- Старт ночника в прицеле (не использовать напрямую)
 local night_vision_scope_fx_eff = false
@@ -871,33 +873,129 @@ function on_destroy()
 end
 
 
-local highlight_wnd
+function get_grids()
+  if not GRIDS then
+    GRIDS = grid_static()
+  end
+  return GRIDS
+end
+
+
+function on_game_load()
+  if GRIDS then
+    GRIDS:reset()
+    GRIDS:update_rects()
+  else
+    GRIDS = grid_static()
+  end
+end
+
+
+function on_main_menu()
+  get_grids():update_rects()
+end
+
+
+class "grid_static" ( CUIScriptWnd )
+function grid_static:__init() super()
+  self.initialized = false
+  self.xml     = CScriptXmlInit()
+  local dev    = device()
+  local ratio  = dev.width / dev.height
+  local width  = math.floor( 1024 * 1.6 / ratio )
+  local offset = math.ceil( ( 1024 - width ) / 2 )
+  local basic  = Frect():set( 0, 0, 1024, 768 )
+  self:Init( basic.x1, basic.y1, basic.x2, basic.y2 )
+  self.xml:ParseFile( "ui_scope_grids.xml" )
+  self.statics = {}
+end
+
+
+function grid_static:reset()
+  local hud = get_hud()
+  if hud and self.initialized then
+    hud:RemoveDialogToRender( self )
+    self.initialized = false
+  end
+end
+
+
+function grid_static:add_to_render()
+  if not self.initialized then
+    local hud = get_hud()
+    if hud then
+      hud:AddDialogToRender( self )
+      self.initialized = true
+    end
+  end
+end
+
+
+function grid_static:update_rects()	
+  local dev    = device()
+  local ratio  = dev.width / dev.height
+  local width  = math.floor( 1024 * 1.6 / ratio )
+  local offset = math.ceil( ( 1024 - width ) / 2 )
+  for k, v in pairs( self.statics ) do
+    self.statics[ k ]:SetWndRect( offset, 0, width, 768 )
+    self.statics[ k ]:Show( false )
+    self.statics[ k ]:SetStretchTexture( true )
+  end
+end
+
+
+function grid_static:is_active()
+  for k, v in pairs( self.statics ) do
+    if self.statics[ k ]:IsShown() then
+      return true
+    end
+  end
+  return false
+end
+
+
+function grid_static:show_static( static, status )
+  if static == "" then return end
+  if not self.statics[ static ] then
+    self.statics[ static ] = self.xml:InitStatic( static, self )
+    self:update_rects()
+  end
+  if status and not self.statics[ static ]:IsShown() then
+    self:add_to_render()
+    self.statics[ static ]:Show( true )
+  end
+end
+
+
+function grid_static:hide_static( static )
+  if not static then
+    for k, v in pairs( self.statics ) do
+      if self.statics[ k ]:IsShown() then
+        static = k
+        break
+      end
+    end
+  end
+  if
+    static ~= ""
+    and self.statics[ static ]
+    and self.statics[ static ]:IsShown()
+  then
+    self.statics[ static ]:Show( false )
+    self:reset()
+  end
+end
+
+
 function turn_on_scope_sights_lighting( scope_sect, texture )
-  highlight_wnd = get_highlight_wnd( texture )
-  get_hud():AddDialogToRender( highlight_wnd )
+  get_grids():show_static( texture, true )
   night_vision_scope_fx_on = true
 end
 
 
 function turn_off_scope_sights_lighting()
-  if highlight_wnd then
-    get_hud():RemoveDialogToRender( highlight_wnd )
-    highlight_wnd = nil
-  end
+  get_grids():hide_static( texture )
   night_vision_scope_fx_on = false
-end
-
-
-local highlight_cache = {}
-function get_highlight_wnd( texture )
-  if not highlight_cache[ texture ] then
-    local wnd = CUIStatic()
-    wnd:SetAutoDelete( true )
-    wnd:Init( texture, 0, 0, 1024, 768 )
-    wnd:SetStretchTexture( true )
-    highlight_cache[ texture ] = wnd
-  end
-  return highlight_cache[ texture ]
 end
 
 
@@ -905,7 +1003,7 @@ function on_take( obj )
   if not obj:is_scope() then return end
   local texture = get_string( obj:section(), "scope_sights_lighting" )
   if texture then
-    get_highlight_wnd( texture )
+    get_grids():show_static( texture, false )
   end
 end
 
@@ -957,7 +1055,7 @@ function on_first_update()
   if scope_sect then
     local texture = get_string( scope_sect, "scope_sights_lighting" )
     if texture then
-      get_highlight_wnd( texture )
+      get_grids():show_static( texture, false )
     end
   end
 end
