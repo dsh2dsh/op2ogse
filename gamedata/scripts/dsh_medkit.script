@@ -1,0 +1,91 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+function attach( sm ) -- для менеджера сигналов
+  sm:subscribe({
+    signal = "on_actor_before_use", fun = this.on_actor_before_use
+  })
+  sm:subscribe({
+    signal = "on_before_actor_conditions_update",
+    fun    = this.on_actor_conditions_update
+  })
+  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
+end
+
+
+local cfg = {
+  [ "eat_health"    ] = {
+    [ "item_offset"   ] = "health_influence",
+    [ "restore_speed" ] = "health_restore_speed",
+  },
+  [ "eat_radiation" ] = {
+    [ "item_offset"   ] = "radiation_influence",
+    [ "restore_speed" ] = "radiation_restore_speed",
+  },
+}
+local how_long = 60
+
+local restore_speeds = {
+  [ "health_restore_speed"    ] = 0,
+  [ "radiation_restore_speed" ] = 0,
+}
+
+
+function on_actor_conditions_update( ext )
+  for k, v in pairs( restore_speeds ) do
+    if v > 0 then
+      ASSERT( ext[ k ], "%s not found", k )
+      ext[ k ] = ext[ k ] + v
+      log2( "dsh: %s = %s", k, v )
+    end
+  end
+end
+
+
+function on_spawn()
+  for k, v in pairs( restore_speeds ) do
+    local tname = script_name() .. "." .. rs_name
+    if ogse_st_mgr.timer_exists( tname ) then
+      restore_speeds[ k ] = ogse.load_var( tname, 0 )
+    end
+  end
+end
+
+
+function on_actor_before_use( obj, sobj )
+  if not sobj then return true end
+  local sect = obj:section()
+  for k, v in pairs( cfg ) do
+    local val = get_float( sect, k )
+    if val and val > 0 then
+      log2( "dsh: found %s = %s for %s", k, val, obj:name() )
+      obj:set_inventory_item_float(
+        nil, 0.0, inventory_item_offsets[ v.item_offset ]
+      )
+      process( val, v.restore_speed )
+    end
+  end
+end
+
+
+function process( v, rs_name )
+  local restore_speed = v / how_long
+  local tname         = script_name() .. "." .. rs_name
+  if ogse_st_mgr.timer_exists( tname ) then
+    local cur = ogse.load_var( tname )
+    log2( "dsh: found %s, cur = %s, restore_speed = %s", tname, cur, restore_speed )
+    if cur < restore_speed then return end
+    ogse_st_mgr.get_timer( tname ):stop()
+  end
+  log2( "dsh: save %s = %s", tname, restore_speed )
+  ogse.save_var( tname, restore_speed, "float" )
+  ogse_st_mgr.delayed_fun_start( tname )
+    :set_gdelay( how_long )
+    :init( script_name() .. ".on_timer_end", rs_name )
+    :start( true )
+end
+
+
+function on_timer_end( rs_name )
+  log2( "dsh: stop %s", rs_name )
+  restore_speeds[ rs_name ] = 0
+  ogse.delete_var( script_name() .. "." .. rs_name )
+end
