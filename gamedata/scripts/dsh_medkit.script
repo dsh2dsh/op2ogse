@@ -1,4 +1,5 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
+
 function attach( sm ) -- для менеджера сигналов
   sm:subscribe({
     signal = "on_actor_before_use", fun = this.on_actor_before_use
@@ -18,33 +19,48 @@ local cfg = {
   },
   [ "eat_radiation" ] = {
     [ "item_offset"   ] = "radiation_influence",
+    [ "negative"      ] = true,
     [ "restore_speed" ] = "radiation_restore_speed",
   },
 }
-local how_long = 60
+local how_long = 120
+local snd_in_use_name = "affects\\heartbeat"
 
 local restore_speeds = {
-  [ "health_restore_speed"    ] = 0,
-  [ "radiation_restore_speed" ] = 0,
+  [ "health_restore_speed"    ] = {
+    [ "apply" ] = false,
+    [ "value" ] = 0,
+  },
+  [ "radiation_restore_speed" ] = {
+    [ "apply" ] = false,
+    [ "value" ] = 0,
+  },
 }
 
 
 function on_actor_conditions_update( ext )
   for k, v in pairs( restore_speeds ) do
-    if v > 0 then
+    if v.apply then
       ASSERT( ext[ k ], "%s not found", k )
-      ext[ k ] = ext[ k ] + v
-      log2( "dsh: %s = %s", k, v )
+      ext[ k ] = ext[ k ] + v.value
     end
   end
 end
 
 
+local snd_in_use
 function on_spawn()
   for k, v in pairs( restore_speeds ) do
-    local tname = script_name() .. "." .. rs_name
+    local tname = script_name() .. "." .. k
     if ogse_st_mgr.timer_exists( tname ) then
-      restore_speeds[ k ] = ogse.load_var( tname, 0 )
+      restore_speeds[ k ].apply = true
+      restore_speeds[ k ].value = ogse.load_var( tname )
+      if not snd_in_use then
+        snd_in_use = sound_object( snd_in_use_name )
+        snd_in_use:play(
+          db.actor, 0, sound_object.s2d + sound_object.looped
+        )
+      end
     end
   end
 end
@@ -55,37 +71,63 @@ function on_actor_before_use( obj, sobj )
   local sect = obj:section()
   for k, v in pairs( cfg ) do
     local val = get_float( sect, k )
-    if val and val > 0 then
-      log2( "dsh: found %s = %s for %s", k, val, obj:name() )
+    if
+      val
+      and (
+        ( val > 0 and not v.negative )
+        or ( val < 0  and v.negative )
+      )
+    then
       obj:set_inventory_item_float(
         nil, 0.0, inventory_item_offsets[ v.item_offset ]
       )
-      process( val, v.restore_speed )
+      process( val, v.restore_speed, v.negative )
     end
   end
 end
 
 
-function process( v, rs_name )
+function process( v, rs_name, use_negative )
   local restore_speed = v / how_long
   local tname         = script_name() .. "." .. rs_name
   if ogse_st_mgr.timer_exists( tname ) then
     local cur = ogse.load_var( tname )
-    log2( "dsh: found %s, cur = %s, restore_speed = %s", tname, cur, restore_speed )
-    if cur < restore_speed then return end
+    if
+      ( restore_speed < cur and not use_negative )
+      or ( restore_speed > cur  and use_negative )
+    then 
+      return
+    end
     ogse_st_mgr.get_timer( tname ):stop()
   end
-  log2( "dsh: save %s = %s", tname, restore_speed )
+  restore_speeds[ rs_name ].apply = true
+  restore_speeds[ rs_name ].value = restore_speed
   ogse.save_var( tname, restore_speed, "float" )
   ogse_st_mgr.delayed_fun_start( tname )
     :set_gdelay( how_long )
     :init( script_name() .. ".on_timer_end", rs_name )
     :start( true )
+  if snd_in_use then
+    snd_in_use:stop()
+  else
+    snd_in_use = sound_object( snd_in_use_name )
+  end
+  snd_in_use:play( db.actor, 0, sound_object.s2d )
 end
 
 
 function on_timer_end( rs_name )
-  log2( "dsh: stop %s", rs_name )
-  restore_speeds[ rs_name ] = 0
+  restore_speeds[ rs_name ].apply = false
+  restore_speeds[ rs_name ].value = 0
   ogse.delete_var( script_name() .. "." .. rs_name )
+  local stop_snd = true
+  for k, v in pairs( restore_speeds ) do
+    if v.apply then
+      stop_snd = false
+      break
+    end
+  end
+  if stop_snd then
+    snd_in_use:stop()
+  end
 end
