@@ -12,7 +12,9 @@ local addl_weight = 20
 
 
 function attach( sm )
-  sm:subscribe({ signal = "on_spawn",   fun = this.on_spawn  })
+  sm:subscribe({ signal = "on_inventory_open", fun = this.on_inv_open })
+  sm:subscribe({ signal = "on_exo_control_clicked", fun = this.show_autodoc })
+  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
   sm:subscribe({
     signal = "on_before_actor_conditions_update",
     fun    = this.on_update
@@ -50,7 +52,7 @@ function on_update()
         news_manager.send_tip(
           db.actor,
           "Активирован режим потребления энергии.",
-          nil, "nano", 10000
+          nil, "nano", 5000
         )
         warn_use = true
       end
@@ -79,7 +81,7 @@ function use_art_acumm( dt )
             news_manager.send_tip(
               db.actor,
               "Внимание, низкий уровень энергии!",
-              nil, "nano", 10000
+              nil, "nano", 5000
             )
             warn_low = true
           end
@@ -90,13 +92,193 @@ function use_art_acumm( dt )
         news_manager.send_tip(
           db.actor,
           "Внимание, критический уровень энергии!",
-          nil, "nano", 10000
+          nil, "nano", 5000
         )
         ogse.remove_item_from_inventory( item )
         inventory.forced_inventory_update( false )
         warn_low = false
       end
       break
+    end
+  end
+end
+
+
+class "exo_control" ( CUIScriptWnd )
+function exo_control:__init() super()
+  local xml = CScriptXmlInit()
+  xml:ParseFile( "ui_ogse_exo_control.xml" )
+  -- само скриптовое окно размещаем там, где должна быть кнопка
+  self:Init( 880, 264, 32, 32 )
+  -- кнопка, ради которой всё и делается
+  self.btn = xml:Init3tButton( "ui_ogse_exo_control", self )
+  self:Register( self.btn,"btn_exo_control" )
+  self:AddCallback(
+    "btn_exo_control", ui_events.BUTTON_CLICKED, self.btn_action, self
+  )
+  self:Show( true ) -- без этого не увидим
+end
+
+
+function exo_control:AttachToInventory( inventory_window )
+  self.inv = inventory_window
+  inventory_window:AttachChild( self )
+end
+
+
+function exo_control:__finalize()
+  self.inv:DetachChild( self )
+end
+
+
+function exo_control:btn_action()
+  ogse_signals.get_mgr():call( "on_exo_control_clicked" )
+end
+
+
+local inv_exo_btn = exo_control() -- создаём один раз
+function on_inv_open()
+  if not inv_exo_btn.inv then
+    inv_exo_btn:AttachToInventory( level.main_input_receiver() )
+  end
+  local outfit = db.actor:get_current_outfit()
+  inv_exo_btn.btn:Enable(
+    outfit and get_bool(
+      outfit:section(), script_name() .. ".has_control_btn", false
+    )
+  )
+end
+
+
+class "autodoc" ( CUIScriptWnd )
+function autodoc:__init() super()
+  self.ui_bars = {}
+  self:InitControls()
+  self:InitCallBacks()
+end
+
+
+function autodoc:InitControls()
+  self.xml = CScriptXmlInit()
+  self.xml:ParseFile( "ui_autodoc_wnd.xml" )
+  self.xml:InitWindow( "main_wnd", 0, self )
+  self.xml:InitStatic( "background", self ) -- коробка
+  -- светодиод. Изображение зависит от вкл/выкл автодока
+  self.led = self.xml:InitStatic( "led", self )
+  self.btn_main_static = self.xml:InitStatic( "btn_main_static", self )
+  self.btn_main = self.xml:Init3tButton( "btn_main", self ) -- Вкл/выкл автодока
+  self:Register( self.btn_main, "btn_main" )
+  local t = {
+    'h', -- вкл/выкл лечилки
+    's', -- вкл/выкл стимулятора
+    'r', -- вкл/выкл антирада
+  }
+  for _, k in ipairs( t ) do
+    local btn_name        = "btn_" .. k
+    local btn_static_name = btn_name .. "_static"
+    self[ btn_static_name ] = self.xml:InitStatic( btn_static_name, self )
+    self[ btn_name ] = self.xml:InitButton( btn_name, self )
+    self:Register( self[ btn_name ], btn_name )
+    local b = {}
+    self.ui_bars[ k ] = b
+    b.bar_empty  = self.xml:InitStatic( "bar_empty_" .. k, self )
+    b.bar_transp = self.xml:InitStatic( "bar_transp", b.bar_empty )
+    b.bar_full   = self.xml:InitStatic( "bar_full", b.bar_transp )
+    b.SetValue = function( self, v )
+      if v > 0 then
+        b.bar_full:Show( true )
+        local max_width = b.bar_transp:GetWidth()
+        b.bar_full:SetWidth( max_width * v )
+      else
+        b.bar_full:Show( false )
+      end
+    end
+  end
+end
+
+
+
+function autodoc:InitCallBacks()
+  self:AddCallback(
+    "btn_main", ui_events.BUTTON_CLICKED, self.switch_ad, self
+  )
+  self:AddCallback( "btn_h", ui_events.BUTTON_CLICKED, self.switch_h, self )
+  self:AddCallback( "btn_s", ui_events.BUTTON_CLICKED, self.switch_s, self )
+  self:AddCallback( "btn_r", ui_events.BUTTON_CLICKED, self.switch_r, self )
+end
+
+
+
+function autodoc:Update()
+  CUIScriptWnd.Update( self ) -- обязательно вызвать метод базового класса
+  local cfg = meceniy_outfit.cfg
+  local tex = cfg.enabled and "ui_ad_btn_main_t" or "ui_ad_btn_main_e"
+  self.btn_main_static:InitTexture( tex )
+  tex = cfg.enabled and "ui_ad_led_t" or "ui_ad_led_e"
+  self.led:InitTexture( tex )
+  tex = cfg.health and "ui_ad_btn_kind_t" or "ui_ad_btn_kind_e"
+  self.btn_h_static:InitTexture( tex )
+  self.ui_bars.h:SetValue( 1.0 )
+  tex = cfg.power and "ui_ad_btn_kind_t" or "ui_ad_btn_kind_e"
+  self.btn_s_static:InitTexture( tex )
+  self.ui_bars.s:SetValue( 1.0 )
+  tex = cfg.radiation and "ui_ad_btn_kind_t" or "ui_ad_btn_kind_e"
+  self.btn_r_static:InitTexture( tex )
+  self.ui_bars.r:SetValue( 1.0 )
+end
+
+
+function autodoc:play_click()
+  local snd = sound_object( "device\\nlc6\\pda\\dairy_click_1" )
+  snd:play( db.actor, 0, sound_object.s2d )
+end
+
+
+function autodoc:switch_ad()
+  meceniy_outfit.cfg.enabled = not meceniy_outfit.cfg.enabled
+  self.play_click()
+end
+function autodoc:switch_h()
+  meceniy_outfit.cfg.health = not meceniy_outfit.cfg.health
+  self.play_click()
+end
+function autodoc:switch_s()
+  meceniy_outfit.cfg.power = not meceniy_outfit.cfg.power
+  self.play_click()
+end
+function autodoc:switch_r()
+  meceniy_outfit.cfg.radiation = not meceniy_outfit.cfg.radiation
+  self.play_click()
+end
+
+
+function autodoc:on_quit()
+  meceniy_outfit.save_cfg()
+  self:GetHolder():start_stop_menu( self, true )
+end
+
+
+function autodoc:OnKeyboard( dik, keyboard_action )
+  CUIScriptWnd.OnKeyboard(self,dik,keyboard_action)
+  if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
+    if dik == DIK_keys.DIK_ESCAPE then
+      self:on_quit()-- на выход повесим Esc
+    end
+  end
+  return true
+end
+
+
+
+function show_autodoc()
+  local outfit = db.actor:get_current_outfit()
+  if outfit then
+    local use_autodoc_ui = get_bool(
+      outfit:section(), script_name() .. ".use_autodoc_ui", false
+    )
+    if use_autodoc_ui then
+	local spwn = autodoc()
+	level.start_stop_menu( spwn, true )
     end
   end
 end
