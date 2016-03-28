@@ -209,6 +209,7 @@ function configure_schemes(npc, ini, ini_filename, stype, section_logic, gulag_n
 			-- Рекурсивно обработать конфигурационный файл, на который ссылается поле cfg
 			actual_ini_filename = filename
 			actual_ini = dsh.cached_ini_file(filename)
+			ASSERT(actual_ini, "no file with external logic for %s", npc:name())
 			return configure_schemes(npc, actual_ini, actual_ini_filename, stype, section_logic, gulag_name)
 			--[[
 			if actual_ini:line_count(section_logic) == 0 then
@@ -1591,6 +1592,26 @@ function save_obj(obj, packet)
 	pstor_save_all(obj, packet)
 end
 
+
+function get_object_logic_file_name(id)
+	if not id then return "" end
+	local sobj = alife():object(id)
+	if sobj then
+		local tbl = m_net_utils.get_destroyable_data(sobj)
+		local cd = tbl.custom
+		cd = m_net_utils.parse_custom_data(cd)
+		if cd and cd.logic and cd.logic.cfg then
+			return cd.logic.cfg
+		end
+	end
+	return ""
+end
+
+local emergency_reload = {
+
+
+}
+
 function load_obj(obj, reader)
   -- printf("load_obj: obj:name()='%s'", obj:name())
 	local npc_id = obj:id()
@@ -1600,15 +1621,20 @@ function load_obj(obj, reader)
 	local ini_filename = reader:r_stringZ()
 	
 	--log1("!!LOGIC_LOAD ["..obj:name().."] log=["..tostring(ini_filename).."]")
-	
+
 	if ini_filename == "" then
+		config = get_object_logic_file_name(npc_id)
+		if config ~= "" and config ~= "nil" then
+			log1("!!WARNING! object ["..obj:name().."] can't load logic properly, using alternate way. File=["..tostring(config).."]")
+			emergency_reload[obj:name()] = true
+		end
 		ini_filename = nil
 	end
 
 	local section_logic = reader:r_stringZ()
 	
 	--log1("!!LOGIC_LOAD_SECT ["..obj:name().."] log=["..tostring(section_logic).."]")
-	
+
 	if section_logic == "" then
 		section_logic = nil
 	end
@@ -1627,11 +1653,6 @@ function load_obj(obj, reader)
 --[=[
 	if ini_filename then
 		local ini = ini_file(ini_filename)
-		
-		--! Удалить это безобразие в релизе - затычка квестовых проблем, с новой игры не нужно
---[[	if ini and string.find(obj:name(), "strange_zone") and not ini:section_exist(active_section) then
-			active_section = "sr_idle@inactive"
-		end]]
 	end
 --]=]
 
@@ -1702,6 +1723,10 @@ end
 
 
 function initialize_obj( obj, st, loaded, actor, stype, inifile )
+  if emergency_reload[ obj:name() ] then
+    loaded = false
+    emergency_reload[ obj:name() ] = nil
+  end
   if not loaded then
     local ini_filename = inifile or "<customdata>"
     local ini = get_customdata_or_ini_file( obj, ini_filename )

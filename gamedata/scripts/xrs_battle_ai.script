@@ -105,6 +105,18 @@ local forbidden_profiles = {		-- запретные профили и имена
 	["bandit_trader_spawn"]			=	true,	
 	["dik_the_drifter"]				=	true,
 	["major_wounded"]				=	true,
+	["gen_monolit_sniper"]			=	true,
+	["aes_Monolit_rpg"]				=	true,
+	["hohol"]						=	true,
+	["esc_lekar"]					=	true,
+	["first_neutral"]				=	true,
+	["esc_buharik"]					=	true,
+	["esc_guns_remontnik"]			=	true,
+	-- пацаны в саркофаге должны быть под движковой боевкой
+	["sar_monolith_exo"]			=	true,
+	["sar_monolith_exo_crystal"]	=	true,
+	["sar_monolith_specnaz"]		=	true,
+	["sar_monolith_commander"]		=	true,
 }
 
 function attach( sm )
@@ -558,7 +570,7 @@ function evaluator_check_altcombat:evaluate()
 		bw = act_item
 	end
 	local npc_rank = ranks.get_obj_rank_name(self.object)
---[[	if not bw then
+	if not bw then
 		local knife = self.object:object("wpn_knife")
 		if not knife then
 			if not need_knife[self.object:id()] then
@@ -574,11 +586,11 @@ function evaluator_check_altcombat:evaluate()
 	end
 	if bw and isKnife(bw) and (npc_rank == "veteran" or npc_rank == "master") then
 		knife_scheme[self.object:id()] = true
+		self.object:set_mental_state(anim.danger)
 	else	
 		knife_scheme[self.object:id()] = nil
-	end]]
-	-- ножевой бой временно отключен
-	knife_scheme[self.object:id()] = nil
+	end
+
 	if self.st.script_combat_type == "zombied"  then
 		-- monolith[self.object:id()] = true
 		campers[self.object:id()] = nil
@@ -870,17 +882,15 @@ function action_altcombat:execute()
 	end
 	
 	if npc:see(be) and not is_armor(be) and knife_scheme[npc:id()] then
-		write_log("!!XRS_BATTLE_AI: NPC_WITH_KNIFE!!! "..npc:name())
+		npc:set_mental_state(anim.danger)
 		assist_point = select_enemy_pos_fanatic(npc, be)
+		write_log("!!XRS_BATTLE_AI: NPC_WITH_KNIFE!!! "..npc:name().." SENT ["..tostring(assist_point).."]")		
 		last_algorythm = "enemy_vertex"
 		if assist_point then
 			xr_sound.set_sound(npc, nil)
 			set_combat_sight(npc, be, bw)
 			set_escape_state(npc, be)
-			set_weapons_fire( npc, be, bw, false, npc_rank )
-			if npc:level_vertex_id() == assist_point then
-				-- self.object:movement_enabled(false)
-			else
+			if npc:level_vertex_id() ~= assist_point then
 				if hit_timeout[npc:id()] and hit_timeout[npc:id()] > time_global() then
 					self.object:movement_enabled(false)
 				elseif hit_timeout[npc:id()] then	
@@ -1274,7 +1284,7 @@ function action_altcombat:check_npc_on_fire_line(obj)
 			
 			local friend_pos = obj:bone_position("bip01_spine")
 			local radius = 3
-			local friend_dist=npc_pos:distance_to(be_pos)-radius
+	--		local friend_dist=npc_pos:distance_to(be_pos)-radius
 			
 			if IsRPG(weapon) then
 				local effective_radius = be_pos:distance_to(friend_pos)
@@ -1287,14 +1297,27 @@ function action_altcombat:check_npc_on_fire_line(obj)
 
 			if be_dist > 5 then --and friend_dist < be_dist then -- убрано чтобы не стреляли не только когда непись между врагом но и за ним непосредственно
 				local dir_aim = utils.vector_copy_by_val(be_pos):sub(npc_pos)
-				--считаем попадает ли текущий солдат в сектор обстрела
 				local dir_obj = utils.vector_copy_by_val(friend_pos):sub(npc_pos)
-				local x=dir_obj.x*dir_aim.x+dir_obj.z*dir_aim.z
+				
+				-- половинный угловой размер друга
+				local friend_dist = npc_pos:distance_to(friend_pos)
+				local cos_angle = 1/sqrt(1 + radius*radius/(friend_dist*friend_dist*4))
+				
+				-- угол между направлениями на врага и друга
+				dir_aim:normalize()
+				dir_obj:normalize()
+				local cos_aim_obj = dir_aim:dotproduct(dir_obj)
+				
+				-- проверяем попадание в друга
+				if cos_aim_obj > cos_angle then
+					return true
+				end
+	--[[			local x=dir_obj.x*dir_aim.x+dir_obj.z*dir_aim.z
 				local y=-dir_obj.z*dir_aim.x+dir_obj.x*dir_aim.z -- повернули систему координат     
 				local angle=math.atan2(y,x) -- угол доворота от -180 до 180   
 				
 				local div=radius/friend_dist
-				if angle >= -div and angle <= div then return true end
+				if angle >= -div and angle <= div then return true end]]
 			end
 		end
 	
@@ -1802,7 +1825,7 @@ function we_are_under_attack(npc, enemy)
 		local danger_by_engine = enemy:best_danger()
 		local best_danger_object = nil
 		local bd_type = nil
-		if danger_by_engine and check_is_enemy(npc, enemy) then
+		if danger_by_engine and check_is_enemy(npc, enemy) and xr_danger.check_in_danger(npc) then
 			best_danger_object = danger_by_engine:object()
 		end
 		if not target and best_danger_object then
@@ -1816,7 +1839,9 @@ function we_are_under_attack(npc, enemy)
 			(IsStalker(target) and 
 			target:alive() and
 			(npc:relation(target) == game_object.friend or 
-			npc:character_community() == target:character_community()))
+			npc:character_community() == target:character_community()) and
+			(npc:see(target) or target:see(npc))
+			)
 			then
 				return true
 			else	
@@ -1827,17 +1852,27 @@ function we_are_under_attack(npc, enemy)
 		end
 	else
 		if check_is_enemy(npc, db.actor) then
+		
+			local raytrace_see = false
+			local see_actor = npc:see(db.actor)
+			local fps_check = ogse_benchmark.get_fps()
+			if use_raytrace and fps_check > raytrace_fps_limit then
+				raytrace_see = actor_see_raytrace(npc)
+			else
+				raytrace_see = actor_see(npc)
+			end		
+		
 			local be 		= npc:best_enemy()
 			local bd 		= npc:best_danger()
 			local bd_obj 	= nil
-			if bd then
+			if bd and xr_danger.check_in_danger(npc) then
 				bd_obj = bd:object()
 			end
-			if be and be:id() == db.actor:id() then
+			if be and be:id() == db.actor:id() and (raytrace_see or see_actor) then
 				return true
 			elseif bd_obj and bd_obj:id() == db.actor:id() then
 				local bd_type = bd:type()
-				if needed_dangers[bd_type] then
+				if needed_dangers[bd_type] and (raytrace_see or see_actor) then
 					return true
 				end
 			else	
@@ -2133,7 +2168,7 @@ function refresh_targets(npc)
 	end
 	-- добавление нападающего денжера
 	local danger_by_engine = npc:best_danger()
-	if danger_by_engine then
+	if danger_by_engine and xr_danger.check_in_danger(npc) then
 		local best_danger_object = danger_by_engine:object()
 		if best_danger_object then
 			local bd_type = danger_by_engine:type()		
@@ -3234,7 +3269,9 @@ function set_combat_sight(npc, enemy, weapon)
 		end
 	end
 	
-	if (npc:see(enemy) and enemy:alive()) or (is_armor(enemy) and armor_alive(enemy)) then
+	if (npc:see(enemy) and enemy:alive()) or (is_armor(enemy) and armor_alive(enemy))
+	or knife_scheme[npc:id()]
+	then
 		npc:set_desired_direction()
 		if weapon then
 			npc:set_sight(look.fire_point,look_pos)
@@ -3729,7 +3766,7 @@ function select_enemy_pos_fanatic(npc, enemy)
 	local known_enemy_vtx = enemy:level_vertex_id()
 	
 	if not known_enemy_vtx then
-		known_enemy_vtx = npc:level_vertex_id()	
+		known_enemy_vtx = randomize_position(npc)
 	end	
 	
 	local dist_to_point = npc:position():distance_to(level.vertex_position(known_enemy_vtx))
