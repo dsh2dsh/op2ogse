@@ -5198,9 +5198,17 @@ local battles = {
 }
 
 -- ќсновной обработчик. ¬ызывает сам себ€ через таймер. » первый запуск нужно делать тоже через таймер.
-function show_must_go_on(params_string)
-	local data = amk.unpack_array_from_string(params_string)
-	local lvl, btl, wave = data[1], tonumber(data[2]), tonumber(data[3])
+function show_must_go_on( params_string )
+  local data = amk.unpack_array_from_string( params_string )
+  local lvl, btl, wave = data[ 1 ], tonumber( data[ 2 ] ), tonumber( data[ 3 ] )
+  show_must_go_on_real( lvl, btl, wave )
+end
+
+function show_must_go_on_delayed( lvl, btl, wave )
+  show_must_go_on_real( lvl, tonumber( btl ), tonumber( wave ) )
+end
+
+function show_must_go_on_real( lvl, btl, wave )
 	local cur_wave = battles[lvl][btl][wave]
 	local pos, lv, sector
 	--get_console():execute("load ~~~ lvl: "..lvl..", btl: "..tostring(btl)..", wave: "..tostring(wave))
@@ -5216,12 +5224,12 @@ function show_must_go_on(params_string)
 
 	-- провер€ем, не заныкалс€ ли где гг в закутке - можно ли заспавнить на нормальном рассто€нии от него
 	if cur_wave.dist then
-		pos, lv = get_pos(cur_wave.dist, sector)
-		if pos:distance_to(db.actor:position()) < min_good_distance then
-			-- заныкалс€ - откладываем спавн, пока гг не выйдет из укрыти€
-			amk.start_timer("battle", min_good_distance_timeout, {lvl, btl, wave})
-			return
-		end
+          pos, lv = get_pos( cur_wave.dist, sector )
+          if pos:distance_to( db.actor:position() ) < min_good_distance then
+            -- заныкалс€ - откладываем спавн, пока гг не выйдет из укрыти€
+            battle_timer( min_good_distance_timeout, lvl, btl, wave )
+            return
+          end
 	end
 	
 	-- спавн монстров/неписей
@@ -5236,16 +5244,17 @@ function show_must_go_on(params_string)
 	end
 
 	if cur_wave.rest then
-		-- есть перерыв
-
-		if cur_wave.rukzak then
-			-- есть тайник - спавним
-			amk.start_timer("battle_rest", math.random(cur_wave.timeout*0.8, cur_wave.timeout*1.2), {lvl, btl, wave, monster_cnt})
-		end
-
-		-- даем передышку
-		cur_wave.timeout = cur_wave.timeout+rest_timeout
-		monster_cnt = 0
+          -- есть перерыв
+          if cur_wave.rukzak then
+            -- есть тайник - спавним
+            reinforcement_timer(
+              math.random( cur_wave.timeout * 0.8, cur_wave.timeout * 1.2 ),
+              lvl, btl, wave, monster_cnt
+            )
+          end
+          -- даем передышку
+          cur_wave.timeout = cur_wave.timeout + rest_timeout
+          monster_cnt = 0
 	end
 
 	if cur_wave.info then
@@ -5258,26 +5267,33 @@ function show_must_go_on(params_string)
 	end
 	if cur_wave.tip then
 		-- выдаем смс
-		news_manager.send_tip(db.actor, cur_wave.tip, nil, nil, 15000)
+		news_manager.send_tip(db.actor, cur_wave.tip, nil, nil, 5000)
 	end
 
 	-- следующа€ волна
 	wave = wave+1
 	if battles[lvl][btl][wave] then
-		-- есть следующа€ волна - запускаем
-		--get_console():execute("load ~~~ lvl: "..lvl..", btl: "..tostring(btl)..", wave: "..tostring(wave))
-		amk.start_timer("battle", math.random(cur_wave.timeout*0.8, cur_wave.timeout*1.2), {lvl, btl, wave})
+          -- есть следующа€ волна - запускаем
+          battle_timer(
+            math.random( cur_wave.timeout * 0.8, cur_wave.timeout * 1.2 ),
+            lvl, btl, wave
+          )
 	else
-		-- конец битвы
-		show_off()
+          -- конец битвы
+          show_off()
 	end
 end
 
 -- подкрепление в виде рюкзака
 -- текуща€ волна должна идти параметром приватно, т.к. наверху уже следующа€ волна на очереди
-function reinforcement(params_string)
+function reinforcement_delayed( lvl, btl, wave, last_monster_cnt )
+  reinforcement(
+    lvl, tonumber( btl ), tonumber( wave ), tonumber( last_monster_cnt )
+  )
+end
+
+function reinforcement( lvl, btl, wave, last_monster_cnt )
 	local data = amk.unpack_array_from_string(params_string)
-	local lvl, btl, wave, last_monster_cnt = data[1], tonumber(data[2]), tonumber(data[3]), tonumber(data[4])
 	local cur_wave = battles[lvl][btl][wave]
 	local pos, lv
 
@@ -5460,4 +5476,20 @@ end
 function no_anomaly_in(pos)
 	local anom_id,anom_pos,anom_radius,dist = amk_anoms.get_nearest_anomaly_for_pos(pos)
 	return not anom_id or dist-anom_radius > 5
+end
+
+
+function battle_timer( time, ... )
+  return ogse_st_mgr.delayed_fun_start( script_name() .. ".battle_timer" )
+    :set_delay( time )
+    :init( script_name() .. ".show_must_go_on_delayed", ... )
+    :start( true )
+end
+
+
+function reinforcement_timer( time, ... )
+  return ogse_st_mgr.delayed_fun_start( script_name() .. ".reinforcement_timer" )
+    :set_delay( time )
+    :init( script_name() .. ".reinforcement_delayed", ... )
+    :start( true )
 end
