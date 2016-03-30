@@ -123,6 +123,7 @@ function gulag:validate_jobs()
 	end
 end
 
+
 -- подготовка гулага к работе
 function gulag:initialize()
   self.ObjectJobPathName = {} --' по id. имя патрульного пути места работы персонажа
@@ -147,6 +148,7 @@ function gulag:initialize()
 
   self.JobLoaded = nil
 end
+
 
 -- подготовить работы.
 -- подготовить данные о местоположении каждой работы; о объекте, который на ней занят.
@@ -416,22 +418,19 @@ end
 
 -- Обновление гулага.
 function gulag:update()
-	if not self.stateBegin then
-		self.stateBegin = game.get_game_time()
-	end
-
-	self:update_objs()
-	self:update_beginning_jobs()
-
-	if self.calculateStates ~= nil and db.actor then
-		self:changeState(self.calculateStates(self))
-	end
-
-	self:updateJob()
-	self:update_beginning_jobs()
-
-	--self:print()
+  if not self.stateBegin then
+    self.stateBegin = game.get_game_time()
+  end
+  self:update_objs()
+  self:update_beginning_jobs()
+  if self.calculateStates ~= nil and db.actor then
+    self:changeState( self.calculateStates( self ) )
+  end
+  self:updateJob()
+  self:update_beginning_jobs()
+--  self:print()
 end
+
 
 -- убирает мёртвых.
 -- следит, кто прыгнул в офлайн и не сообщил об этом (случается при переходе с уровня на уровень
@@ -480,6 +479,14 @@ end
 -- а) в офлайне: персонаж пришёл на нужную точку графа
 -- б) в онлайне: персонаж продошёл на расстояние job_position_threshold
 function gulag:can_obj_begin_job( obj_id, obj )
+  if self:dsh_is_free_logic() then
+    local sobj = alife():object( obj_id )
+    if sobj and dsh.is_free_logic_mob( sobj ) then
+      -- в прошлом уже дошел до места работы и был освобожден. Значит
+      -- всегда будет считаться дошедшим до работы.
+      return true
+    end
+  end
   local jobN = self.ObjectJob[ obj_id ]
   if jobN and not self.Object_begin_job[ obj_id ] then
     local job = self.Job[ jobN ]
@@ -505,14 +512,14 @@ end
 
 -- сменить состояние гулага.
 -- Возобновляем все работы, доступные для наполнения только один раз.
-function gulag:changeState(state)
-	if self.state ~= state then
-		self.state      = state
-		self.stateBegin = game.get_game_time()
-
-		self:prepare_jobs_for_new_state()
-	end
+function gulag:changeState( state )
+  if self.state ~= state then
+    self.state      = state
+    self.stateBegin = game.get_game_time()
+    self:prepare_jobs_for_new_state()
+  end
 end
+
 
 -- есть ли в текущем состоянии для объекта хоть одна подходящая работа?
 -- если персонаж НЕ эксклюзивный, то ищет только свободные работы,
@@ -716,84 +723,84 @@ function gulag:assign_jobs_using_distance_table( jobs, objs, dists )
 	end
 end
 
+
 -- найти занятых персонажей, которые могут занять заданную работу.
 -- поиск ведётся начиная с самых низкоприоритетных работ
 function gulag:find_obj_on_jobLow_for_jobHigh( Job_avail, job_high )
-	local n = #Job_avail
-	local i = n
+  local n = #Job_avail
+  local i = n
 
-	local job_low
-	local job_high_num = job_high.num
-	local predicate    = job_high.predicate
-	local priority     = nil
-	local obj_suitable = nil
+  local job_low
+  local job_high_num = job_high.num
+  local predicate    = job_high.predicate
+  local priority     = nil
+  local obj_suitable = nil
 
-    if not job_high_num or not i then
-        return nil
+  if not job_high_num or not i then
+    return nil
+  end
+
+  while
+    i > job_high_num
+    and ( not priority or priority == Job_avail[ i ].prior )
+    and ( Job_avail[ i ].prior < job_high.prior )
+  do
+    job_low = Job_avail[ i ]
+    if
+      job_low.object ~= nil
+      and ( not predicate or predicate( self.npc_info[ job_low.object ], self ) )
+    then
+      if not obj_suitable then
+        priority     = job_low.prior
+        obj_suitable = {}
+      end
+      obj_suitable[job_low.object] = true
     end
+    i = i - 1
+  end
 
-	while i > job_high_num and (not priority or priority == Job_avail[i].prior) and (Job_avail[i].prior < job_high.prior) do
-		job_low = Job_avail[i]
-
-		if job_low.object ~= nil and ( not predicate or predicate(self.npc_info[job_low.object], self) ) then
-			if not obj_suitable then
-				priority     = job_low.prior
-				obj_suitable = {}
-			end
-
-			obj_suitable[job_low.object] = true
-		end
-
-		i = i - 1
-	end
-
-	if obj_suitable then
-		return self:find_nearest_suitable_obj( obj_suitable, job_high )
-	else
-		return nil
-	end
+  if obj_suitable then
+    return self:find_nearest_suitable_obj( obj_suitable, job_high )
+  else
+    return nil
+  end
 end
+
 
 -- для всех свободных работ заданного приоритета попытаться найти и назначить персонажей с работ с более низким приоритетом
 function gulag:try_to_fill_free_high_prior_jobs( jobs, prior_block_start, prior_block_end )
-	local obj_id
-
-	for i = prior_block_start, prior_block_end do
-		if not jobs[i].object then
-			obj_id = self:find_obj_on_jobLow_for_jobHigh( jobs, jobs[i] )
-
-			if obj_id then
-				self:free_obj_and_reinit( obj_id )
-
-				self:setJob( obj_id, jobs[i] )
-			end			
-		end
-	end
+  for i = prior_block_start, prior_block_end do
+    if not jobs[ i ].object then
+      local obj_id = self:find_obj_on_jobLow_for_jobHigh( jobs, jobs[ i ] )
+      if obj_id then
+        self:free_obj_and_reinit( obj_id )
+        self:setJob( obj_id, jobs[ i ] )
+      end			
+    end
+  end
 end
+
 
 -- распределение работ.
 -- при распределении недошедшие персонажи приравниваются к свободным.
 -- работы с одинаковым приоритетом объединяются в блоки
 function gulag:updateJob()
-	local Job_avail = self:prepare_available_jobs()
-
-	local obj_avail = self:get_available_objs()
-
-	local prior_block_start = 1
-	local prior_block_end
-
-	while prior_block_start <= #Job_avail do
-		dists, prior_block_end = self:calc_distance_table( Job_avail, obj_avail, prior_block_start )
-
-		table_sort( dists, function(a,b) return a.dist < b.dist end )
-
-		self:assign_jobs_using_distance_table( Job_avail, obj_avail, dists )
-
-		self:try_to_fill_free_high_prior_jobs( Job_avail, prior_block_start, prior_block_end )
-
-		prior_block_start = prior_block_end + 1
-	end
+  local Job_avail = self:prepare_available_jobs()
+  local obj_avail = self:get_available_objs()
+  local prior_block_start = 1
+  while prior_block_start <= #Job_avail do
+    local dists, prior_block_end = self:calc_distance_table(
+      Job_avail, obj_avail, prior_block_start
+    )
+    table_sort( dists, function( a, b ) return a.dist < b.dist end )
+    self:assign_jobs_using_distance_table( Job_avail, obj_avail, dists )
+    self:try_to_fill_free_high_prior_jobs(
+      Job_avail, prior_block_start, prior_block_end
+    )
+    prior_block_start = prior_block_end + 1
+  end
 end
+
 
 -- вывод текущего состояния гулага (работы, объекты, состояние, население)
 function gulag:print()
@@ -914,15 +921,16 @@ end
 
 -- установить npc работу, к ней рестрикторы, настроить логику, поменять squad, group
 function gulag:setJob( obj_id, job )
-  --log2( "[smart_terrain %s] gulag: setJob: obj=%s job=%d %s", self.name, self.npc_info[obj_id].name, job.num, job.section )
+--  log2( "[smart_terrain %s] gulag: setJob: obj=%s job=%d %s", self.name, self.npc_info[obj_id].name, job.num, job.section )
   job.object = obj_id
   job.idle_after_death_end = nil
 
-  if not (
-    self:dsh_is_free_logic()
-    and
-    self.Object_begin_job[ obj_id ]
-  ) then
+  if
+    not (
+      self:dsh_is_free_logic()
+      and self.Object_begin_job[ obj_id ]
+    )
+  then
     self.Object_begin_job[ obj_id ] = false
   end
   self.ObjectJob        [ obj_id ] = job.num
