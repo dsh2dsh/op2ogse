@@ -21,13 +21,13 @@ always_keep_item = {}
 
 local wpn_fp = {}
 -- Пора апдейт делать
-local bFlag = false
+local bFlag       = false
 -- Номер последнего отработанного обьекта
-local iCounter = 0
+local iCounter    = 0
 -- Время последнего глобального апдейта
-local iTime = -1
+local iTime       = -1
 -- Как часто делать апдейты, игровые минуты
-local iFreq = 60
+local iFreq       = 60
 local initialized = false
 
 local monster_params = {}
@@ -151,32 +151,30 @@ local stalkers_comm = {
 
 
 function init()
-  if ( initialized == false ) then
+  if initialized == false then
     build_tables()
-    iTime = ( amk.game_minutes() - iFreq ) + 3
+    iTime       = amk.game_minutes() - iFreq + 3
     initialized = true
   end
 end
 
+
 function update()
-  if ( bFlag == false and iTime ~= -1 ) then
-    if ( amk.game_minutes() - iTime > iFreq ) then
-      bFlag = true
-      off_npcs={}
-      items={}
+  if bFlag == false and iTime ~= -1 then
+    if amk.game_minutes() - iTime > iFreq then
+      bFlag    = true
+      off_npcs = {}
+      items    = {}
       iCounter = 1
-      amk.mylog( "Updating offline-ALife started" )
     end
   end
-  if ( bFlag == true ) then
-    if ( iCounter >= 65535 ) then
-      bFlag = false
-      iTime = amk.game_minutes()
+  if bFlag == true then
+    if iCounter >= 65535 then
+      bFlag    = false
+      iTime    = amk.game_minutes()
       iCounter = 1
-      amk.mylog( "Updating offline-ALife finished" )
     else
-      local obj
-      obj = alife():object( iCounter )
+      local obj = alife():object( iCounter )
       add_fresh_meat( obj )
       iCounter = iCounter + 1
     end
@@ -400,15 +398,29 @@ function update_npc_tables()
 end
 
 
+local weapon_repair_allowed = false
 function update_trade()
-  local sim = alife()
-  local obj
+  if
+    ogse_st_mgr.timer_exists(
+      script_name() .. ".weapon_repair.forbidden"
+    )
+  then
+    weapon_repair_allowed = false
+  else
+    weapon_repair_allowed = true
+  end
   for a = 1, 65534 do
-    obj = sim:object( a )
+    local obj = alife():object( a )
     if obj then
       process_trade( obj )
     end
   end
+  dsh.start_gtimerDHMS(
+    script_name() .. ".weapon_repair.forbidden",
+    0, math.random( 20, 24 ), 0, 0,
+    script_name() .. ".process_weapon_repair_allowed"
+  )
+  weapon_repair_allowed = false
 end
 
 
@@ -1670,337 +1682,447 @@ function dbg_show_team(team)
         end
 end
 
---[[
-        Уникальные предметы НЕ ПРОДАЕМ. Максимум - в новости.   
-        Отсортировали оружие по firepower (можем еще ef_weapon_type добавить.)
-        Оставили себе то, для которого есть патроны. (а) - wpn..ammo_class + item_dependence
-        Оставили одно, которое лучше (а), но патронов нет (б) (%)
-        Одно, которое лучше (а), но хуже (б) - в новости на продажу
-        Остальное на продажу
-        Патроны оставили только те, что подходят к (а), остальные на продажу
-        Для вояк - только родной калаш надо бы... Не продавать вобще?
-        Оставляем не более 2 аптечек и бинтов, антирада
-        Оставляем 1-2 гранаты (%)
-        Оставляем не более 1 шт: фонарик, рация, ПДА, бинокль, нож, детекторы
-        Еда, водка - не более 1-2 шт (%)        
-        Броники наверное продаем...
-        Части монстров? Тоже продаем наверное, максимум 1-2 оставим.
-]]
-function process_trade(npc)
-        local item_list = {}
-        local sell_list = {}
-        local sim = alife()
-        local tb_ilist_size = #item_list
-        -- Имеет смысл проверять на наличие trade в секции [logic]...
-        if npc and IAmAStalker[npc:clsid()] and npc:alive() and npc.m_story_id~=nil and npc.m_story_id == 4294967296 and not xr_companion.is_companion(npc.id) and items[npc.id] and #(items[npc.id])>0 and not protected_items.is_no_offline_alife_npc(npc:section_name()) then
-                local m_comm = npc:community()
-                local b_stalker = false         
-                if stalkers_comm[ m_comm ] then
-                        if (npc.name and npc:name() ~= "agr_ratcatcher") then
-                                b_stalker = true
-                        end
-                elseif m_comm == "zombied" then
-                        return
-                end
-                        
-                --Фильтруем квестовые items - always_keep_item, sell_table      
-                local obj, v_obj
-                for ok,ov in pairs(items[npc.id]) do
-                        obj = alife():object(ov.id)
-                        if obj and obj:name()==ov.name then
---                              if always_keep_item[obj:section_name()] or sell_table[obj:section_name()] == nil or protected_items.actor_items_keep(obj:section_name()) then
-                                if always_keep_item[obj:section_name()] or protected_items.actor_items_keep(obj:section_name()) then
-                                        -- Это нам не надо.
-                                        --news_main.trace("Process_trade: "..npc:name().." ["..m_comm.."] filtered "..obj:section_name().." ["..obj:name().."]")
-                                else
-                                        table.insert(item_list, obj)
-                                        --item_list[v.id] = obj
-                                        --news_main.trace("Process_trade: "..npc:name().." ["..m_comm.."] have "..obj:section_name().." ["..obj:name().."]")
-                                end
-                        end
-                end
-                if item_list and #item_list > 0 then
-                        --news_main.trace("Process_trade: "..npc:name().." ["..m_comm.."] have "..tostring(#item_list).." items.")
-                        table_sort(item_list, function(a,b) return get_item_cost(a) > get_item_cost(b) end)             
-                        -- Выберем, что за оружие оставит себе NPC.
-                        local cnt_medkit = 0
-                        local cnt_antirad = 0
-                        local cnt_bandage = 0
-                        local cnt_grenade = 0
-                        local cnt_food = 0
-                        local cnt_drink = 0
-                        local cnt_torch = 0
-                        local cnt_pda = 0
-                        local cnt_radio = 0
-                        local cnt_guitar = 0
-                        local cnt_harmonica = 0
-                        local cnt_binocular = 0
-                        local cnt_knife = 0
-                        local cnt_arts = 0
-                        local cnt_detector = 0
-                        local cnt_addons = 0
-                        local cnt_mparts = 0
-                        
-                        local weapons = {}
-                        local ammo = {}
-                        for k,v in pairs(item_list) do                  
-                                local sect = v:section_name()
-                                --news_main.trace("Process_trade: first pass - "..npc:name().." ["..m_comm.."] have "..sect.." ["..v:name().."]")
-                                if IAmAWeapon[v:clsid()] and not (sect == "grenade_f1" or sect =="grenade_gd-05" or sect == "grenade_rgd5" or sect == "grenade_flash" or sect == "wpn_knife") then
-                                        local bOk = false
-                                        if m_comm == "military" then
---                                              if sect == "wpn_ak74" or sect =="wpn_ak74u" or sect =="wpn_abakan" or sect =="wpn_pm" or sect =="wpn_usp" or sect =="wpn_val" or sect =="wpn_walther" or sect =="wpn_svu" or sect =="wpn_sig550" or sect =="wpn_fn2000" or sect =="wpn_vintorez" or sect =="wpn_groza" then
-                                                        bOk = true
---                                              end
-                                        else
-                                                bOk = true
-                                        end
-                                        if bOk == true then
-                                                local ac = utils.cfg_get_string(system_ini(), sect, "ammo_class", v, false, "")
-                                                if ac and ac ~= "" then
-                                                        local vvv = str_explode(",", ac, true)
-                                                        local ammo_classes = {}
-                                                        for ak,av in pairs(vvv) do
-                                                                table.insert(ammo_classes, av)
-                                                        end
-                                                        table.insert(weapons, {obj = v, ammo = ammo_classes})
-                                                else
-                                                        table.insert(weapons, {obj = v, ammo = nil})
-                                                end
-                                        end
-                                elseif string_find(sect, "^ammo_") then
-                                        if ammo[sect] then 
-                                                table.insert( ammo[ sect ], v )
-                                        else
-                                                ammo[sect] = { v }
-                                        end
-                                elseif string_find(sect, "^af_") then
-                                        -- 3 самых хороших арта оставили себе (+здоровье), остальные на продажу (фильтруем булыжник)                            
-                                        if sect ~= "af_buliz" then
-                                                cnt_arts = cnt_arts + 1
-                                                if cnt_arts > 3 then
-                                                        table.insert(sell_list, v)
-                                                end                             
-                                        end
-                                elseif sect == "device_torch" then
-                                        cnt_torch = cnt_torch + 1
-                                        if cnt_torch > 1 then
-                                                table.insert(sell_list, v)
-                                        end
-                                elseif sect == "device_pda" then
-                                        cnt_pda = cnt_pda + 1
-                                        if cnt_pda > 1 then
-                                                table.insert(sell_list, v)
-                                        end
-                                elseif sect == "hand_radio" then
-                                        cnt_radio = cnt_radio + 1
-                                        if cnt_radio > 1 then
-                                                table.insert(sell_list, v)
-                                        end
-                                elseif sect == "harmonica_a" then
-                                        cnt_harmonica = cnt_harmonica + 1
-                                        if cnt_harmonica > 1 then
-                                                table.insert(sell_list, v)
-                                        end
-                                elseif sect == "guitar_a" then
-                                        cnt_guitar = cnt_guitar + 1
-                                        if cnt_guitar > 1 then
-                                                table.insert(sell_list, v)
-                                        end
-                                elseif sect == "binocular_a" or sect == "wpn_binoc" then
-                                        cnt_binocular = cnt_binocular + 1
-                                        if cnt_binocular > 1 then
-                                                table.insert(sell_list, v)
-                                        end
-                                elseif sect == "wpn_knife" then
-                                        cnt_knife = cnt_knife + 1
-                                        if cnt_knife > 1 then
-                                                table.insert(sell_list, v)
-                                        end
-                                elseif sect == "medkit" or sect == "medkit_army" or sect == "medkit_scientic" then
-                                        cnt_medkit = cnt_medkit + 1
-                                        if cnt_medkit > 4 then
-                                                table.insert(sell_list, v)
-                                        end
-                                elseif sect == "antirad" then
-                                        cnt_antirad = cnt_antirad + 1
-                                        if cnt_antirad > 3 then
-                                                table.insert(sell_list, v)
-                                        end
-                                elseif sect == "bandage" then
-                                        cnt_bandage = cnt_bandage + 1
-                                        if cnt_bandage > 3 then
-                                                table.insert(sell_list, v)
-                                        end
-                                elseif sect == "grenade_f1" or sect =="grenade_gd-05" or sect == "grenade_rgd5" then -- or sect == "grenade_flash" then
-                                        cnt_grenade = cnt_grenade + 1
-                                        if cnt_grenade > 2 then
-                                                table.insert(sell_list, v)
-                                        end
-                                elseif sect == "bread_a" or sect =="bread" or sect == "kolbasa" or sect == "kolbasa_a" or sect == "conserva" then
-                                        cnt_food = cnt_food + 1
-                                        if cnt_food > 4 then
-                                                table.insert(sell_list, v)
-                                        end
-                                elseif sect == "vodka_a" or sect =="vodka" or sect == "energy_drink" then
-                                        cnt_drink = cnt_drink + 1
-                                        if cnt_drink > 3 then
-                                                table.insert(sell_list, v)
-                                        end
-                                elseif sect == "detector_simple" or sect =="detector_advances" or sect == "detector_elite" then
-                                        cnt_detector = cnt_detector + 1
-                                        if cnt_detector > 1 then
-                                                table.insert(sell_list, v)
-                                        end
-                                elseif sect == "wpn_addon_scope" or sect =="wpn_addon_scope_susat" or sect == "wpn_addon_silencer" or sect == "wpn_addon_grenade_launcher" or sect == "wpn_addon_grenade_launcher_m203" then
-                                        cnt_addons = cnt_addons + 1
-                                        if cnt_addons > 2 then
-                                                table.insert(sell_list, v)
-                                        end
-                                elseif sect =="mutant_flesh_eye" or sect == "mutant_boar_leg" or sect =="mutant_dog_tail" or sect == "mutant_psevdodog_tail" or sect =="mutant_krovosos_jaw" or sect == "mutant_burer_hand" or sect =="mutant_zombie_hand" or sect == "mutant_snork_leg" or sect =="mutant_spleen_rat" or sect =="mutant_flesh_eye" or sect =="mutant_face_tushkano" or sect =="mutant_fracture_hand" or sect =="mutant_hand_kontroler" or sect =="mutant_poltergeist_glas" or sect =="mutant_psevdogigant_hand" or sect =="mutant_tail_cat" or sect =="mutant_chimera_kogot" then
-                                        cnt_mparts = cnt_mparts + 1
-                                        if cnt_mparts > 2 then
-                                                table.insert(sell_list, v)
-                                        end
-                                elseif string.find( sect, "outfit" ) or string.find( sect, "exo" ) then
-                                        table.insert( sell_list, v )
-                                else
-                                        --news_main.trace("Process trade - unknown - "..sect.." "..v:name())
-                                end                     
-                        end
-                        process_ammo_trade( sell_list, ammo )
 
-                        local modes = rx_wmgr.read_wm_modes(npc:community(),ranks.get_obj_rank_name(npc),npc:section_name())
-                        local weapons_types = {}
-                        for z,i in ipairs(modes.types) do
-                                weapons_types[i.t] = {}
-                        end
-                        for i,w in ipairs(weapons) do
-                                local sect = w.obj:section_name()                               
-                                local params = rx_wmgr.read_wpn_params(sect)
-                                local prm = 0
-                                if modes.mode1 == "1" then
-                                        prm = params.cst + modes.addcost
-                                elseif modes.mode1 == "2" then
-                                        local kf = rx_wmgr.wm_modes.koeffs[modes.koeffs]
-                                        prm = (params.dmg*kf.dmg)+(params.rpm*kf.rpm)+(params.dst*kf.dst)+((100/params.dsp)*kf.dsp)
-                                elseif modes.mode1 == "3" then
-                                        prm = rx_wmgr.wm_modes.priors[modes.priors][sect] or 0
-                                end
-                                for k,v in ipairs(modes.types) do
-                                        if v.t == params.typ then
-                                                prm = prm + prm*v.p/100
-                                                break
-                                        end
-                                end
-                                if weapons_types[params.typ] then
-                                        table.insert(weapons_types[params.typ],{obj = w.obj,ammo = w.ammo,prm = prm})
-                                else
-                                        weapons_types[params.typ] = { {obj = w.obj,ammo = w.ammo,prm = prm} }
-                                end
-                        end
-                        for k,v in pairs(weapons_types) do
-                                table_sort( v, function( a, b )
-                                  return get_weapon_firepower( a.obj ) > get_weapon_firepower( b.obj )
-                                end)
--- Так, теперь у нас отсортированны все пушки НПС. Найдем ту, для которой есть патроны...
-                                local cnt = 0
-                                local b_self = false
-                                local b_best = false
-                                local s_self = ""
-                                for i,w in ipairs(v) do
-                                        cnt = cnt + 1
-                                        local b_ammo = false
-                                        local vac = w.ammo
-                                        if vac and table.getn( vac ) > 0 then
-                                          for kk, vv in ipairs( vac ) do
-                                            if ammo[ vv ] and table.getn( ammo[ vv ] ) > 0 then
--- Так, патроны есть.
-                                              b_ammo = true
-                                              break
-                                            end
-                                          end
-                                        end
-                                        if is_broken_wpn( w.obj ) then
-                                          table.insert( sell_list, w.obj )
-                                        elseif b_self == false and b_ammo == true then
-                                                b_self = true
-                                        --      news_main.trace("Process_trade: second pass - "..npc:name().." ["..m_comm.."] SELF weapon is  "..w.obj:section_name().." ["..w.obj:name().."]")
-                                                s_self = w.obj:section_name()
-                                        elseif b_best == false then
-                                                if s_self ~= "" then
-                                                        if w.obj:section_name() ~= s_self then
-                                                                b_best = true
-                                                        --      news_main.trace("Process_trade: second pass - "..npc:name().." ["..m_comm.."] BEST weapon is  "..w.obj:section_name().." ["..w.obj:name().."]")
-                                                        else
-                                                                table.insert(sell_list, w.obj)
-                                                        end
-                                                else
-                                                        b_best = true
-                                                --      news_main.trace("Process_trade: second pass - "..npc:name().." ["..m_comm.."] BEST weapon is  "..w.obj:section_name().." ["..w.obj:name().."]")
-                                                end
-                                        else
-                                                table.insert(sell_list, w.obj)
-                                        end
-                                end
-                        end
-
-                        -- Так, с оружием закончили...
-                        -- Все, что осталось - надо продать.
-                        -- 1 самое дорогое можно попробовать через новости...
-                        item_list = nil
-                        local money = 0
-                        if sell_list and #sell_list>0 then
-                                table_sort(sell_list, function(a,b) return get_item_cost(a) > get_item_cost(b) end)             
-                                local zz = sell_list[1]
-                                if zz and b_stalker == true and (get_item_cost(zz) >= sell_limit) then
-                                        -- Продадим через новости.
-                                        --news_main.trace("Offline: "..npc:name().." собирается продать через новости "..zz:name())
-                                        --amk.mylog("Offline: "..npc:name().." собирается продать через новости "..vv:name())
-                                        news_main.on_offline_trade(npc, zz)
---                                      table_remove(sell_list, 1)
-                                end
-                        end
-                        for kk,vv in pairs(sell_list) do
-                                --news_main.trace("Process_trade: final pass - "..npc:name().." ["..m_comm.."] sells "..vv:section_name().." ["..vv:name().."]")
-                                local cost = get_item_cost(vv)
-                                if (cost > 0) then
 --[=[
-                                        s_name = utils.cfg_get_string(system_ini(), vv:section_name(), "inv_name", vv, false, "", "")
-                                        if (s_name == nil) then s_name = "" end
-                                        s_name = game.translate_string(s_name)
---]=]
-                                        local coeff = math_random(30,50) / 100
-                                        local price = math_floor(cost * coeff)
-                                        money = money + price
-                                        --news_main.trace("Offline: "..npc:name().." продает "..s_name.." ["..vv:name().."] торговцу за "..price)
-                                        --amk.mylog("Offline: "..npc:name().." продает "..s_name.." ["..vv:name().."] торговцу за "..price)
-                                        -- Почистим items
-                                        if (items[npc.id] and #items[npc.id]>0) then
-                                                for z=1, #items[npc.id] do
-                                                        if (items[npc.id][z] and items[npc.id][z].id == vv.id) then
-                                                                table_remove(items[npc.id], z)
-gps_habar.remove_item(npc.id, items[npc.id][z]) -- Idler++-- корректируем хабар в помеченных тайниках
-                                                                break
-                                                        end
-                                                end
-                                        end
-                                        sim:release(sim:object(vv.id), true)
-                                end                             
-                        end
-                        if (money > 0) then
-                                local tbl = amk.read_stalker_params(npc)
-                                local old_money = tbl.money
-                                if (old_money == nil) then old_money = 0 end
-                                tbl.money = old_money + money
-                                amk.write_stalker_params(tbl, npc)
-                                --amk.mylog("Offline: "..npc:name().." было денег - "..old_money..", стало - "..old_money + money)
-                                --news_main.trace("Offline: "..npc:name().." было денег - "..old_money..", стало - "..old_money + money)
-                        end
-                end
-                --news_main.flushlog()
+Уникальные предметы НЕ ПРОДАЕМ. Максимум - в новости.
+Отсортировали оружие по firepower (можем еще ef_weapon_type добавить.)
+Оставили себе то, для которого есть патроны. (а) - wpn..ammo_class + item_dependence
+Оставили одно, которое лучше (а), но патронов нет (б) (%)
+Одно, которое лучше (а), но хуже (б) - в новости на продажу
+Остальное на продажу
+Патроны оставили только те, что подходят к (а), остальные на продажу
+Для вояк - только родной калаш надо бы... Не продавать вобще?
+Оставляем не более 2 аптечек и бинтов, антирада
+Оставляем 1-2 гранаты (%)
+Оставляем не более 1 шт: фонарик, рация, ПДА, бинокль, нож, детекторы
+Еда, водка - не более 1-2 шт (%)
+Броники наверное продаем...
+Части монстров? Тоже продаем наверное, максимум 1-2 оставим.
+]=]
+function process_trade( npc )
+  local item_list = {}
+  local sell_list = {}
+  local tb_ilist_size = table.getn( item_list )
+  -- Имеет смысл проверять на наличие trade в секции [logic]...
+  if
+    npc and IAmAStalker[npc:clsid()] and npc:alive()
+    and npc.m_story_id ~= nil and npc.m_story_id == 4294967296
+    and ( not xr_companion.is_companion( npc.id ) )
+    and items[ npc.id ] and table.getn( items[ npc.id ] ) > 0
+    and ( not protected_items.is_no_offline_alife_npc(n pc:section_name() ) )
+  then
+    local m_comm = npc:community()
+    local b_stalker = false
+    if stalkers_comm[ m_comm ] then
+      if npc.name and npc:name() ~= "agr_ratcatcher" then
+        b_stalker = true
+      end
+    elseif m_comm == "zombied" then
+      return
+    end
+
+    --Фильтруем квестовые items - always_keep_item, sell_table
+    for _, ov in ipairs( items[ npc.id ] ) do
+      local obj = alife():object( ov.id )
+      if obj and obj:name() == ov.name then
+        if
+          not (
+            always_keep_item[ obj:section_name() ]
+            or protected_items.actor_items_keep( obj:section_name() )
+          )
+        then
+          table.insert( item_list, obj )
         end
+      end
+    end
+
+    if item_list and table.getn( item_list ) > 0 then
+      table_sort(
+        item_list,
+        function( a, b ) return get_item_cost( a ) > get_item_cost( b ) end
+      )
+      -- Выберем, что за оружие оставит себе NPC.
+      local cnt_medkit    = 0
+      local cnt_antirad   = 0
+      local cnt_bandage   = 0
+      local cnt_grenade   = 0
+      local cnt_food      = 0
+      local cnt_drink     = 0
+      local cnt_torch     = 0
+      local cnt_pda       = 0
+      local cnt_radio     = 0
+      local cnt_guitar    = 0
+      local cnt_harmonica = 0
+      local cnt_binocular = 0
+      local cnt_knife     = 0
+      local cnt_arts      = 0
+      local cnt_detector  = 0
+      local cnt_addons    = 0
+      local cnt_mparts    = 0
+      local weapons       = {}
+      local ammo          = {}
+      for _, v in ipairs( item_list ) do
+        local sect = v:section_name()
+        if
+          IAmAWeapon[ v:clsid() ]
+          and not (
+            sect == "grenade_f1"
+            or sect =="grenade_gd-05"
+            or sect == "grenade_rgd5"
+            or sect == "grenade_flash"
+            or sect == "wpn_knife"
+          )
+        then
+          local ac = get_string( sect, "ammo_class" )
+          if ac and ac ~= "" then
+            local vvv = parse_names( ac )
+            local ammo_classes = {}
+            for _, av in ipairs( vvv ) do
+              table.insert( ammo_classes, av )
+            end
+            table.insert( weapons, { obj = v, ammo = ammo_classes } )
+          else
+            table.insert( weapons, { obj = v } )
+          end
+        elseif string.find( sect, "^ammo_" ) then
+          if ammo[ sect ] then
+            table.insert( ammo[ sect ].objs, v )
+          else
+            ammo[ sect ] = { objs = { v } }
+          end
+        elseif string.find( sect, "^af_" ) then
+          -- 3 самых хороших арта оставили себе (+здоровье), остальные
+          -- на продажу ( фильтруем булыжник )
+          if sect ~= "af_buliz" then
+            cnt_arts = cnt_arts + 1
+            if cnt_arts > 3 then
+              table.insert( sell_list, v )
+            end
+          end
+        elseif sect == "device_torch" then
+          cnt_torch = cnt_torch + 1
+          if cnt_torch > 1 then
+            table.insert( sell_list, v )
+          end
+        elseif sect == "device_pda" then
+          cnt_pda = cnt_pda + 1
+          if cnt_pda > 1 then
+            table.insert( sell_list, v )
+          end
+        elseif sect == "hand_radio" then
+          cnt_radio = cnt_radio + 1
+          if cnt_radio > 1 then
+            table.insert( sell_list, v )
+          end
+        elseif sect == "harmonica_a" then
+          cnt_harmonica = cnt_harmonica + 1
+          if cnt_harmonica > 1 then
+            table.insert( sell_list, v )
+          end
+        elseif sect == "guitar_a" then
+          cnt_guitar = cnt_guitar + 1
+          if cnt_guitar > 1 then
+            table.insert( sell_list, v )
+          end
+        elseif sect == "binocular_a" or sect == "wpn_binoc" then
+          cnt_binocular = cnt_binocular + 1
+          if cnt_binocular > 1 then
+            table.insert( sell_list, v )
+          end
+        elseif sect == "wpn_knife" then
+          cnt_knife = cnt_knife + 1
+          if cnt_knife > 1 then
+            table.insert( sell_list, v )
+          end
+        elseif
+          sect == "medkit"
+          or sect == "medkit_army"
+          or sect == "medkit_scientic"
+        then
+          cnt_medkit = cnt_medkit + 1
+          if cnt_medkit > 4 then
+            table.insert( sell_list, v )
+          end
+        elseif sect == "antirad" then
+          cnt_antirad = cnt_antirad + 1
+          if cnt_antirad > 3 then
+            table.insert( sell_list, v )
+          end
+        elseif sect == "bandage" then
+          cnt_bandage = cnt_bandage + 1
+          if cnt_bandage > 3 then
+            table.insert( sell_list, v )
+          end
+        elseif
+          sect == "grenade_f1"
+          or sect =="grenade_gd-05"
+          or sect == "grenade_rgd5"
+        then
+          cnt_grenade = cnt_grenade + 1
+          if cnt_grenade > 2 then
+            table.insert( sell_list, v )
+          end
+        elseif
+          sect == "bread_a"
+          or sect =="bread"
+          or sect == "kolbasa"
+          or sect == "kolbasa_a"
+          or sect == "conserva"
+        then
+          cnt_food = cnt_food + 1
+          if cnt_food > 4 then
+            table.insert( sell_list, v )
+          end
+        elseif
+          sect == "vodka_a"
+          or sect =="vodka"
+          or sect == "energy_drink"
+        then
+          cnt_drink = cnt_drink + 1
+          if cnt_drink > 3 then
+            table.insert( sell_list, v )
+          end
+        elseif
+          sect == "detector_simple"
+          or sect =="detector_advances"
+          or sect == "detector_elite"
+        then
+          cnt_detector = cnt_detector + 1
+          if cnt_detector > 1 then
+            table.insert( sell_list, v )
+          end
+        elseif
+          string.find( sect, "^wpn_addon_scope" )
+          or string.find( sect, "^wpn_addon_silencer" )
+          or string.find( sect, "^wpn_addon_grenade_launcher" )
+        then
+          cnt_addons = cnt_addons + 1
+          if cnt_addons > 2 then
+            table.insert( sell_list, v )
+          end
+        elseif string.find( sect, "^mutant_" ) then
+          cnt_mparts = cnt_mparts + 1
+          if cnt_mparts > 2 then
+            table.insert( sell_list, v )
+          end
+        elseif string.find( sect, "outfit" ) or string.find( sect, "exo" ) then
+          table.insert( sell_list, v )
+        end
+      end
+
+      local modes = rx_wmgr.read_wm_modes(
+        npc:community(), ranks.get_obj_rank_name( npc ), npc:section_name()
+      )
+      local weapons_types = {}
+      for _, i in ipairs( modes.types ) do
+        weapons_types[ i.t ] = {}
+      end
+      for _, w in ipairs( weapons ) do
+        local sect   = w.obj:section_name()
+        local params = rx_wmgr.read_wpn_params( sect )
+        local prm    = 0
+        if modes.mode1 == "1" then
+          prm = params.cst + modes.addcost
+        elseif modes.mode1 == "2" then
+          local kf = rx_wmgr.wm_modes.koeffs[ modes.koeffs ]
+          prm = ( params.dmg * kf.dmg )
+            + ( params.rpm * kf.rpm )
+            + ( params.dst * kf.dst )
+            + ( ( 100 / params.dsp ) * kf.dsp )
+        elseif modes.mode1 == "3" then
+          prm = rx_wmgr.wm_modes.priors[ modes.priors ][ sect ] or 0
+        end
+        for _, v in ipairs( modes.types ) do
+          if v.t == params.typ then
+            prm = prm + prm * v.p / 100
+            break
+          end
+        end
+        if weapons_types[ params.typ ] then
+          table.insert(
+            weapons_types[ params.typ ],
+            { obj = w.obj, ammo = w.ammo, prm = prm }
+          )
+        else
+          weapons_types[ params.typ ] = {
+            { obj = w.obj, ammo = w.ammo, prm = prm }
+          }
+        end
+      end
+
+      local our_weapons = {}
+      for k, v in pairs( weapons_types ) do
+        table_sort(
+          v, function( a, b ) return a.prm > b.prm end
+        )
+        -- Так, теперь у нас отсортированны все пушки НПС. Найдем ту,
+        -- для которой есть патроны...
+        local b_self = false
+        local b_best = false
+        local s_self = ""
+        for _, w in ipairs( v ) do
+          local b_ammo = false
+          local vac    = w.ammo
+          if vac and table.getn( vac ) > 0 then
+            for kk, vv in ipairs( vac ) do
+              if ammo[ vv ] and table.getn( ammo[ vv ].objs ) > 0 then
+                -- Так, патроны есть.
+                b_ammo = true
+                break
+              end
+            end
+          end
+          if is_broken_wpn( w.obj ) then
+            table.insert( sell_list, w.obj )
+          elseif b_self == false and b_ammo == true then
+            b_self = true
+            s_self = w.obj:section_name()
+            table.insert( our_weapons, w )
+          elseif b_best == false then
+            if s_self ~= "" then
+              if w.obj:section_name() ~= s_self then
+                b_best = true
+                table.insert( our_weapons, w )
+              else
+                table.insert( sell_list, w.obj )
+              end
+            else
+              b_best = true
+              table.insert( our_weapons, w )
+            end
+          else
+            table.insert( sell_list, w.obj )
+          end
+        end
+      end
+      process_ammo_trade( sell_list, ammo, npc, our_weapons )
+      if weapon_repair_allowed then
+        process_weapon_repair( our_weapons )
+      end
+
+      -- Так, с оружием закончили...
+      -- Все, что осталось - надо продать.
+      -- 1 самое дорогое можно попробовать через новости...
+      local money = 0
+      if sell_list and table.getn( sell_list ) > 0 then
+        table_sort(
+          sell_list,
+          function( a, b ) return get_item_cost( a ) > get_item_cost( b ) end
+        )
+        local zz = sell_list[ 1 ]
+        if zz and b_stalker == true and get_item_cost( zz ) >= sell_limit then
+          -- Продадим через новости.
+          news_main.on_offline_trade( npc, zz )
+          table.remove( sell_list, 1 )
+        end
+      end
+      for _, vv in ipairs( sell_list ) do
+        local cost = get_item_cost( vv )
+        if cost > 0 then
+          local coeff = math.random( 30, 50 ) / 100
+          local price = math.floor( cost * coeff )
+          money = money + price
+          -- Почистим items
+          if items[ npc.id ] and table.getn( items[ npc.id ] > 0 ) then
+            for z, item in ipairs( items[ npc.id ] ) do
+              if item.id == vv.id then
+                table.remove( items[ npc.id ], z )
+                -- Idler++-- корректируем хабар в помеченных тайниках
+                gps_habar.remove_item( npc.id, item )
+                break
+              end
+            end
+          end
+          alife():release( alife():object( vv.id ), true )
+        end
+      end
+      if money > 0 then
+        local pk = xs_netpk.stalker( sobj )
+        if pk:isOk() then
+          local data = pk:get()
+          if data.money then money = money + data.money end
+          data.money = money
+          pk:set( data )
+        end
+      end
+    end
+  end
 end
+
+
+function process_ammo_trade( sell_list, ammo, npc, our_weapons )
+  for _, w in ipairs( our_weapons ) do
+    local vac = w.ammo
+    if vac and table.getn( vac ) > 0 then
+      for _, vv in ipairs( vac ) do
+        if ammo[ vv ] and table.getn( ammo[ vv ].objs ) > 0 then
+          ammo[ vv ].inuse = true
+        end
+      end
+    end
+  end
+  for sect, v in pairs( ammo ) do
+    if table.getn( v.objs ) > 2 then
+      table.sort(
+        v.objs,
+        function( a, b )
+          return get_ammo_size( a ) > get_ammo_size( b )
+        end
+      )
+      while table.getn( v.objs ) > 2 do
+        table.insert( sell_list, table.remove( v.objs ) )
+      end
+    end
+    if table.getn( v.objs ) > 0 then
+      if v.inuse then
+        local box_size = get_u32( sect, "box_size" )
+        for _, sobj in ipairs( v.objs ) do
+          local data = m_net_utils.get_ammo_data( sobj )
+          if data.ammo_left < box_size then
+            data.ammo_left = box_size
+            m_net_utils.set_ammo_data( data, sobj )
+          end
+        end
+      end
+    end
+  end
+end
+
+
+function get_ammo_size( sobj )
+  local data = m_net_utils.get_ammo_data( sobj )
+  return data.ammo_left
+end
+
+
+function is_broken_wpn( sobj )
+  local pk = xs_netpk.weapon( sobj )
+  if pk:isOk() then
+    local data = pk:get()
+    ASSERT( data.condition, "is_broken_wpn: %s has no condition", sobj:name() )
+    return data.condition < rx_wmgr.wm_modes.min_cond
+  end
+  return false
+end
+
+
+function process_weapon_repair( our_weapons )
+  for _, w in ipairs( our_weapons ) do
+    local pk = xs_netpk.weapon( w.obj )
+    if pk:isOk() then
+      local data = pk:get()
+      ASSERT( data.condition, "is_broken_wpn: %s has no condition", w.obj:name() )
+      if data.condition < 1.0 then
+        data.condition = data.condition + 0.1
+        if data.condition > 1.0 then data.condition = 1.0 end
+        pk:set( data )
+      end
+    end
+  end
+end
+
+function process_weapon_repair_allowed() end
+
 
 -- Строим таблицы, если надо.
 -- В них - макс. скорость, сила атаки, дистанция атаки.
@@ -2235,38 +2357,4 @@ function str_explode(div,str,clear)
                 table.insert(t, str)
         end
         return t
-end
-
-
-function process_ammo_trade( sell_list, ammo )
-  for sect, ammo_objs in pairs( ammo ) do
-    if table.getn( ammo_objs ) > 2 then
-      table.sort(
-        ammo_objs,
-        function( a, b )
-          return get_ammo_size( a ) > get_ammo_size( b )
-        end
-      )
-      while table.getn( ammo_objs ) > 2 do
-        table.insert( sell_list, table.remove( ammo_objs ) )
-      end
-    end
-  end
-end
-
-
-function get_ammo_size ( sobj )
-  local data = m_net_utils.get_ammo_data( sobj )
-  return data.ammo_left
-end
-
-
-function is_broken_wpn( sobj )
-  local pk = xs_netpk.weapon( sobj )
-  if pk:isOk() then
-    local data = pk:get()
-    ASSERT( data.condition, "is_broken_wpn: %s has no condition", sobj:name() )
-    return data.condition < rx_wmgr.wm_modes.min_cond
-  end
-  return false
 end
