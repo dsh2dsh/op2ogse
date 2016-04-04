@@ -1764,7 +1764,7 @@ function process_trade( npc )
       for _, v in ipairs( item_list ) do
         local sect = v:section_name()
         if
-          IAmAWeapon[ v:clsid() ]
+          isWeapon( v )
           and not (
             sect == "grenade_f1"
             or sect =="grenade_gd-05"
@@ -1920,33 +1920,53 @@ function process_trade( npc )
       for _, w in ipairs( weapons ) do
         local sect   = w.obj:section_name()
         local params = rx_wmgr.read_wpn_params( sect )
-        local prm    = 0
+        local t      = { obj = w.obj, ammo = w.ammo, prm = 0 }
         if modes.mode1 == "1" then
-          prm = params.cst + modes.addcost
+          t.prm = params.cst + modes.addcost
         elseif modes.mode1 == "2" then
           local kf = rx_wmgr.wm_modes.koeffs[ modes.koeffs ]
-          prm = ( params.dmg * kf.dmg )
+          t.prm = ( params.dmg * kf.dmg )
             + ( params.rpm * kf.rpm )
             + ( params.dst * kf.dst )
             + ( ( 100 / params.dsp ) * kf.dsp )
         elseif modes.mode1 == "3" then
-          prm = rx_wmgr.wm_modes.priors[ modes.priors ][ sect ] or 0
+          t.prm = rx_wmgr.wm_modes.priors[ modes.priors ][ sect ] or 0
+        end
+        local pk = xs_netpk.weapon( w.obj )
+        if pk:isOk() then
+          local data = pk:get()
+          t.cond   = data.condition
+          t.has_gl = bit_and(
+            data.addon_flags, ogse_wpn_utils.addons_flags.gl
+          ) ~= 0
+          t.has_scope = bit_and(
+            data.addon_flags, ogse_wpn_utils.addons_flags.scope
+          ) ~= 0
+          t.has_silencer = bit_and(
+            data.addon_flags, ogse_wpn_utils.addons_flags.silencer
+          ) ~= 0
+        end
+        local pr = 0
+        if t.has_gl then
+          pr = pr + t.prm * modes.grenadelauncher / 100
+        end
+        if t.has_scope then
+          pr = pr + t.prm * modes.scope / 100
+        end
+        if t.has_silencer then
+          pr = pr + t.prm * modes.silencer / 100
         end
         for _, v in ipairs( modes.types ) do
           if v.t == params.typ then
-            prm = prm + prm * v.p / 100
+            pr = pr + t.prm * v.p / 100
             break
           end
         end
+        t.prm = t.prm + pr + w.obj.id / 100000 + ( t.cond or 1 ) * t.prm / 50
         if weapons_types[ params.typ ] then
-          table.insert(
-            weapons_types[ params.typ ],
-            { obj = w.obj, ammo = w.ammo, prm = prm }
-          )
+          table.insert( weapons_types[ params.typ ], t )
         else
-          weapons_types[ params.typ ] = {
-            { obj = w.obj, ammo = w.ammo, prm = prm }
-          }
+          weapons_types[ params.typ ] = { t }
         end
       end
 
@@ -1972,7 +1992,7 @@ function process_trade( npc )
               end
             end
           end
-          if is_broken_wpn( w.obj ) then
+          if is_broken_wpn( w ) then
             table.insert( sell_list, w.obj )
           elseif b_self == false and b_ammo == true then
             b_self = true
@@ -2095,14 +2115,9 @@ function get_ammo_size( sobj )
 end
 
 
-function is_broken_wpn( sobj )
-  local pk = xs_netpk.weapon( sobj )
-  if pk:isOk() then
-    local data = pk:get()
-    ASSERT( data.condition, "is_broken_wpn: %s has no condition", sobj:name() )
-    return data.condition < rx_wmgr.wm_modes.min_cond
-  end
-  return false
+function is_broken_wpn( w )
+  local cond = w.cond
+  return ( cond and cond < rx_wmgr.wm_modes.min_cond ) or false
 end
 
 
