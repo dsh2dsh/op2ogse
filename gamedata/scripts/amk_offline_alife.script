@@ -415,12 +415,14 @@ function update_trade()
       process_trade( obj )
     end
   end
-  dsh.start_gtimerDHMS(
-    script_name() .. ".weapon_repair.forbidden",
-    0, math.random( 20, 24 ), 0, 0,
-    script_name() .. ".process_weapon_repair_allowed"
-  )
-  weapon_repair_allowed = false
+  if weapon_repair_allowed then
+    dsh.start_gtimerDHMS(
+      script_name() .. ".weapon_repair.forbidden",
+      0, math.random( 20, 24 ), 0, 0,
+      script_name() .. ".process_weapon_repair_allowed"
+    )
+    weapon_repair_allowed = false
+  end
 end
 
 
@@ -1709,7 +1711,7 @@ function process_trade( npc )
     and npc.m_story_id ~= nil and npc.m_story_id == 4294967296
     and ( not xr_companion.is_companion( npc.id ) )
     and items[ npc.id ] and table.getn( items[ npc.id ] ) > 0
-    and ( not protected_items.is_no_offline_alife_npc(n pc:section_name() ) )
+    and ( not protected_items.is_no_offline_alife_npc( npc:section_name() ) )
   then
     local m_comm = npc:community()
     local b_stalker = false
@@ -1764,23 +1766,35 @@ function process_trade( npc )
       for _, v in ipairs( item_list ) do
         local sect = v:section_name()
         if
-          isWeapon( v )
-          and not (
-            sect == "grenade_f1"
-            or sect =="grenade_gd-05"
-            or sect == "grenade_rgd5"
-            or sect == "grenade_flash"
-            or sect == "wpn_knife"
-          )
+          sect == "grenade_f1"
+          or sect =="grenade_gd-05"
+          or sect == "grenade_rgd5"
+          or sect == "grenade_flash"
+          or sect == "grenade_f1_double"
+          or sect == "grenade_m61"
         then
+          cnt_grenade = cnt_grenade + 1
+          if cnt_grenade > 2 then
+            table.insert( sell_list, v )
+          end
+        elseif
+          string.find( sect, "^wpn_addon_scope" )
+          or string.find( sect, "^wpn_addon_silencer" )
+          or string.find( sect, "^wpn_addon_grenade_launcher" )
+        then
+          cnt_addons = cnt_addons + 1
+          if cnt_addons > 2 then
+            table.insert( sell_list, v )
+          end
+        elseif sect == "wpn_knife" then
+          cnt_knife = cnt_knife + 1
+          if cnt_knife > 1 then
+            table.insert( sell_list, v )
+          end
+        elseif isWeapon( v ) then
           local ac = get_string( sect, "ammo_class" )
           if ac and ac ~= "" then
-            local vvv = parse_names( ac )
-            local ammo_classes = {}
-            for _, av in ipairs( vvv ) do
-              table.insert( ammo_classes, av )
-            end
-            table.insert( weapons, { obj = v, ammo = ammo_classes } )
+            table.insert( weapons, { obj = v, ammo = parse_names( ac ) } )
           else
             table.insert( weapons, { obj = v } )
           end
@@ -1829,11 +1843,6 @@ function process_trade( npc )
           if cnt_binocular > 1 then
             table.insert( sell_list, v )
           end
-        elseif sect == "wpn_knife" then
-          cnt_knife = cnt_knife + 1
-          if cnt_knife > 1 then
-            table.insert( sell_list, v )
-          end
         elseif
           sect == "medkit"
           or sect == "medkit_army"
@@ -1851,15 +1860,6 @@ function process_trade( npc )
         elseif sect == "bandage" then
           cnt_bandage = cnt_bandage + 1
           if cnt_bandage > 3 then
-            table.insert( sell_list, v )
-          end
-        elseif
-          sect == "grenade_f1"
-          or sect =="grenade_gd-05"
-          or sect == "grenade_rgd5"
-        then
-          cnt_grenade = cnt_grenade + 1
-          if cnt_grenade > 2 then
             table.insert( sell_list, v )
           end
         elseif
@@ -1889,15 +1889,6 @@ function process_trade( npc )
         then
           cnt_detector = cnt_detector + 1
           if cnt_detector > 1 then
-            table.insert( sell_list, v )
-          end
-        elseif
-          string.find( sect, "^wpn_addon_scope" )
-          or string.find( sect, "^wpn_addon_silencer" )
-          or string.find( sect, "^wpn_addon_grenade_launcher" )
-        then
-          cnt_addons = cnt_addons + 1
-          if cnt_addons > 2 then
             table.insert( sell_list, v )
           end
         elseif string.find( sect, "^mutant_" ) then
@@ -1932,20 +1923,22 @@ function process_trade( npc )
         elseif modes.mode1 == "3" then
           t.prm = rx_wmgr.wm_modes.priors[ modes.priors ][ sect ] or 0
         end
-        local pk = xs_netpk.weapon( w.obj )
-        if pk:isOk() then
-          local data = pk:get()
-          t.cond   = data.condition
-          t.has_gl = bit_and(
-            data.addon_flags, ogse_wpn_utils.addons_flags.gl
-          ) ~= 0
-          t.has_scope = bit_and(
-            data.addon_flags, ogse_wpn_utils.addons_flags.scope
-          ) ~= 0
-          t.has_silencer = bit_and(
-            data.addon_flags, ogse_wpn_utils.addons_flags.silencer
-          ) ~= 0
-        end
+        local pk = xs_netpk.weapon( t.obj )
+        ASSERT(
+          pk:isOk(), "[%s]: can't parse netpk: %s",
+          script_name(), t.obj:name()
+        )
+        local data = pk:get()
+        t.cond   = data.condition
+        t.has_gl = bit_and(
+          data.addon_flags, ogse_wpn_utils.addons_flags.gl
+        ) ~= 0
+        t.has_scope = bit_and(
+          data.addon_flags, ogse_wpn_utils.addons_flags.scope
+        ) ~= 0
+        t.has_silencer = bit_and(
+          data.addon_flags, ogse_wpn_utils.addons_flags.silencer
+        ) ~= 0
         local pr = 0
         if t.has_gl then
           pr = pr + t.prm * modes.grenadelauncher / 100
@@ -1962,7 +1955,7 @@ function process_trade( npc )
             break
           end
         end
-        t.prm = t.prm + pr + w.obj.id / 100000 + ( t.cond or 1 ) * t.prm / 50
+        t.prm = t.prm + pr + w.obj.id / 100000 + t.cond * t.prm / 50
         if weapons_types[ params.typ ] then
           table.insert( weapons_types[ params.typ ], t )
         else
@@ -2043,7 +2036,7 @@ function process_trade( npc )
           local price = math.floor( cost * coeff )
           money = money + price
           -- Почистим items
-          if items[ npc.id ] and table.getn( items[ npc.id ] > 0 ) then
+          if items[ npc.id ] and table.getn( items[ npc.id ] ) > 0 then
             for z, item in ipairs( items[ npc.id ] ) do
               if item.id == vv.id then
                 table.remove( items[ npc.id ], z )
@@ -2116,22 +2109,21 @@ end
 
 
 function is_broken_wpn( w )
-  local cond = w.cond
-  return ( cond and cond < rx_wmgr.wm_modes.min_cond ) or false
+  return w.cond < rx_wmgr.wm_modes.min_cond
 end
 
 
 function process_weapon_repair( our_weapons )
   for _, w in ipairs( our_weapons ) do
-    local pk = xs_netpk.weapon( w.obj )
-    if pk:isOk() then
-      local data = pk:get()
-      ASSERT( data.condition, "is_broken_wpn: %s has no condition", w.obj:name() )
-      if data.condition < 1.0 then
+    if w.cond < 1 then
+      local data = m_net_utils.get_weapon_data( w.obj )
+      if data.condition < 0.9 then
         data.condition = data.condition + 0.1
-        if data.condition > 1.0 then data.condition = 1.0 end
-        pk:set( data )
+      else
+        data.condition = 1
       end
+      m_net_utils.set_weapon_data( data, w.obj )
+      w.cond = data.condition
     end
   end
 end
