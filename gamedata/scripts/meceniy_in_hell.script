@@ -157,273 +157,381 @@ local tabl_horror_by_level = {-- Нету уровня - нету ЧУ. На уровне указано средне
 }
 
 local random_news_number = 1
-horror_begin_time = {h = 21, m = 54}
-local horror_time = {h = 22, m = 0}
-horror_end_time = {h = 22, m = (horror_time.m + 7)}
+horror_begin_time = { h = 21, m = 54 }
+local horror_time = { h = 22, m =  0 }
+horror_end_time   = { h = 22, m = horror_time.m + 7 }
 local game_reloaded = true -- во время ЧУ после перезагрузки игры спецэффекты будут продолжены
 
-local last_sound_t
-function horortime()
-	if (meceniy_utils.hell == 0) or (not tabl_horror_by_level[level.name()]) then return end
-	if db.actor:has_info( "pre_blowout" ) then return end
-	
-	local timeh =level.get_time_hours()
-	local timem =level.get_time_minutes()
-	local panic_minute
 
-	--побудка, сирена и автосейв
-	if (timeh == horror_begin_time.h) and (timem == horror_begin_time.m) then
-		if db.actor:dont_has_info("horror_time_begin") then
-			db.actor:give_info_portion("horror_time_begin")
-			
-			if sleep_manager.is_sleep_active() then
-				sleep_manager.stopper()
-			else
-				amk.start_timer("autosave_hell", 0.2, "") -- не спал - autosave
-			end
-			local snd_obj = xr_sound.get_safe_sound_object([[meceniy\hell\hellsilent_hill_alarm]])
-			snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 2.5)
-			last_sound_t = time_global()
-		end
-	end
-
-	-- звук обратного отсчета
-	if timeh == horror_begin_time.h
-	   and
-	   timem >= horror_begin_time.m
-	   and
-	   timem <= horror_begin_time.m + 2
-	   and
-	   time_global() >= ( last_sound_t or 0 ) + 30000
-	then
-		local snd_obj = xr_sound.get_safe_sound_object([[meceniy\hell\hellsilent_hill_alarm]])
-		snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 2.5)
-		last_sound_t = time_global()
-	end
-
-	-- неписи становятся в стойку с выставленным стволом
-	if timeh == horror_begin_time.h
-	   and
-	   timem >= horror_begin_time.m
-	   and
-	   timem <= 59
-	then
-		if panic_minute ~= timem then
-			panic_minute = timem
-
-			-- тревожим неписей только на территории, где есть ЧУ
-			if tabl_horror_by_level[level.name()] then
-				local npc, npc_position, position
-				for k, v in pairs (db.storage) do
-					npc = level.object_by_id(k)
-					if npc and npc:alive() and IsStalker(npc) and tabl_npc_ignore[npc:name()] ~= true then
-						npc_position = npc:position()
-						position = vector():set(npc_position.x + math.random(-5,5), npc_position.y, npc_position.z + math.random(-5,5))
-						state_mgr.set_state(npc, "hide_s_right", nil, nil, {look_position = position})
-					end
-				end
-			end
-		end
-	end
-
-	--сообщение о старте
-	if timeh == horror_begin_time.h and timem == (horror_begin_time.m + 1) then
-		if db.actor:dont_has_info("random_pre_news") then
-			db.actor:give_info_portion("random_pre_news")
-			random_news_number = math.random(table.getn(tabl_mess_begin))
-			presoobj()
-		end
-	end
-	
-	--включение установки или её сбой
-	if (timeh == horror_time.h and timem == horror_time.m)  then
-		if db.actor:dont_has_info("horror") then
-			game_reloaded = false
-			db.actor:give_info_portion("horror")
-
-			-- расслабляем неписей только на территории, где есть ЧУ
-			if tabl_horror_by_level[level.name()] then
-				local npc, npc_position
-				for k, v in pairs (db.storage) do
-					npc = level.object_by_id(k)
-					if npc and npc:alive() and IsStalker(npc) and tabl_npc_ignore[npc:name()] ~= true then
-						state_mgr.set_state(npc, "idle", nil, nil, nil, {animation = true})
-					end
-				end
-			end
-	       
-			if
-			  dsh.get_next_random(
-			    script_name() .. ".horortime.rnd"
-			  ) <= 0.7
-			-- удача запуска 70/30 = 0.7
-			then
-				local level_name = level.name()
-				local level_info = tabl_horror_by_level[level_name]
-				if level_info then
-					level.add_cam_effector("camera_effects\\earthquake.anm", 77777775, true, "")
-					level.add_pp_effector("dead_zone.ppe", 77777774, false)
-					level.add_pp_effector("nano.ppe", 77777773, false)
-					level.add_pp_effector("nightvision.ppe", 77777772, false) 
-					level.add_pp_effector("psy_antenna.ppe", 77777771, true, "")
-					effects()
-					news()
-					horrorspawn(level_name)
-					hit_actor(level_name)
-					spawn_phantom()
-					horror_sound()
-					random_reaction()
-				end
-			else -- неудачный запуск
-				db.actor:give_info_portion("horror_fail")
-				presoobjFAIL()
-			end
-			--meceniy_dinrad.disable() -- может это делать перед выбросом ?
-			--meceniy_dinrad.level_spawn() -- может это делать после выброса ?
-		end
-	end
-
-	-- перезапуск спецэффектов в случае перезапуска игры
-	if timeh == horror_time.h and timem >= horror_time.m and timem < horror_end_time.m and game_reloaded and db.actor:dont_has_info("horror_fail") then
-		game_reloaded = false
-		-- возвращаем спецэффекты только на территории, где есть ЧУ
-		if tabl_horror_by_level[level.name()] then
-			level.add_cam_effector("camera_effects\\earthquake.anm", 77777775, true, "")
-			level.add_pp_effector("psy_antenna.ppe", 77777771, true, "")
-			horror_sound()
-		end
-	end
-	
-	--окончание ЧУ
-	if (timeh == horror_end_time.h and timem == horror_end_time.m) then
-		if db.actor:dont_has_info("horror_time_end") then
-			db.actor:give_info_portion("horror_time_end")
-			
-			if db.actor:dont_has_info("horror_fail") then
-				-- вспышка окончания ЧУ только на территории, где есть ЧУ
-				if tabl_horror_by_level[level.name()] then
-				level.add_pp_effector ("teleport.ppe", 77777777, false)
-				end
-				level.remove_pp_effector(77777774)
-				level.remove_pp_effector(77777773)
-				level.remove_pp_effector(77777772)
-				level.remove_pp_effector(77777771)
-				level.remove_pp_effector(77777776)
-				level.remove_cam_effector(77777775)
-				remove_horror_mutant()
-				archievements.acv_count_2event("acv_hell", 15, "Неустрашимый", "acv_hell2", 50, "Стивен Кинг")
-			end
-		end
-	end
-	
-	--убираем за доктором
-	if timeh == horror_end_time.h and timem >= (horror_end_time.m + 1) then
-		db.actor:disable_info_portion("horror_time_begin")
-		db.actor:disable_info_portion("random_pre_news")
-		db.actor:disable_info_portion("horror")
-		if db.actor:has_info("horror_fail") then
-			db.actor:disable_info_portion("horror_fail")
-			level.remove_pp_effector(77777777)
-		end
-		db.actor:disable_info_portion("horror_time_end")
-	end
+function attach( sm )
+  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
 end
+
+
+function on_spawn()
+  local tname = script_name() .. ".horrortime_cleanup1"
+  if ogse_st_mgr.timer_exists( tname ) then
+    subscribe_update()
+  end
+end
+
+
+function horrortime_begin( startup )
+  ogse_st_mgr.delayed_fun_start( script_name() .. ".horrortime_begin" )
+    :set_HMS_of_day( horror_begin_time.h, horror_begin_time.m, 0 )
+    :init( script_name() .. ".horrortime_begin" )
+    :start( true )
+  if not startup then
+    horortime()
+  end
+end
+
+
+local update_signal
+function subscribe_update()
+  update_signal = { signal = "on_update", fun = this.on_update }
+  ogse_signals.get_mgr():subscribe( update_signal )
+end
+
+local update_t
+function on_update()
+  if update_t and update_t > time_global() then return end
+  horortime()
+  update_t = time_global() + 1000
+end
+
+
+local last_sound_t, panic_minute
+function horortime()
+  if meceniy_utils.hell == 0 or not tabl_horror_by_level[ level.name() ] then
+    return
+  end
+  if db.actor:has_info( "pre_blowout" ) then return end
+  if ogse_sleep_mgr.is_sleep_active() then return end
+
+  local tname = script_name() .. ".horrortime_cleanup1"
+  if not ogse_st_mgr.timer_exists( tname ) then
+    ogse_st_mgr.delayed_fun_start( tname )
+      :set_HMS_of_day( horror_end_time.h, horror_end_time.m, 0 )
+      :init( tname )
+      :start( true )
+    subscribe_update()
+  end
+
+  local timeh = level.get_time_hours()
+  local timem = level.get_time_minutes()
+
+  --побудка, сирена и автосейв
+  if timeh == horror_begin_time.h and timem == horror_begin_time.m then
+    if db.actor:dont_has_info( "horror_time_begin" ) then
+      db.actor:give_info_portion( "horror_time_begin" )
+      local snd_obj = xr_sound.get_safe_sound_object(
+        [[meceniy\hell\hellsilent_hill_alarm]]
+      )
+      snd_obj:play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 2.5 )
+      last_sound_t = time_global()
+    end
+  end
+
+  -- звук обратного отсчета
+  if
+    timeh == horror_begin_time.h
+    and timem >= horror_begin_time.m
+    and timem <= horror_begin_time.m + 2
+    and time_global() >= ( last_sound_t or 0 ) + 30000
+  then
+    local snd_obj = xr_sound.get_safe_sound_object(
+      [[meceniy\hell\hellsilent_hill_alarm]]
+    )
+    snd_obj:play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 2.5 )
+    last_sound_t = time_global()
+  end
+
+  -- неписи становятся в стойку с выставленным стволом
+  if
+    timeh == horror_begin_time.h
+    and timem >= horror_begin_time.m
+    and timem <= 59
+  then
+    if panic_minute ~= timem then
+      panic_minute = timem
+      -- тревожим неписей только на территории, где есть ЧУ
+      if tabl_horror_by_level[ level.name() ] then
+        for k, is_npc in pairs ( db.creature ) do
+          local npc = level.object_by_id( k )
+          if npc and npc:alive() and not tabl_npc_ignore[ npc:name() ] then
+            local npc_position = npc:position()
+            local position     = vector():set(
+              npc_position.x + math.random( -5, 5 ),
+              npc_position.y,
+              npc_position.z + math.random( -5, 5 )
+            )
+            state_mgr.set_state(
+              npc, "hide_s_right", nil, nil, { look_position = position }
+            )
+          end
+        end
+      end
+    end
+  end
+
+  --сообщение о старте
+  if
+    timeh == horror_begin_time.h
+    and timem == horror_begin_time.m + 1
+  then
+    if db.actor:dont_has_info( "random_pre_news" ) then
+      db.actor:give_info_portion( "random_pre_news" )
+      random_news_number = math.random( table.getn( tabl_mess_begin ) )
+      presoobj()
+    end
+  end
+	
+  --включение установки или её сбой
+  if timeh == horror_time.h and timem == horror_time.m then
+    if db.actor:dont_has_info( "horror" ) then
+      game_reloaded = false
+      db.actor:give_info_portion( "horror" )
+      -- расслабляем неписей только на территории, где есть ЧУ
+      if tabl_horror_by_level[ level.name() ] then
+        for k, is_npc in pairs( db.creature ) do
+          local npc = level.object_by_id( k )
+          if npc and npc:alive() and not tabl_npc_ignore[ npc:name() ] then
+            state_mgr.set_state(
+              npc, "idle", nil, nil, nil, { animation = true }
+            )
+          end
+        end
+      end
+      if
+        dsh.get_next_random(
+          script_name() .. ".horortime.rnd"
+        ) <= 0.7
+        -- удача запуска 70/30 = 0.7
+      then
+        local level_name = level.name()
+        local level_info = tabl_horror_by_level[ level_name ]
+        if level_info then
+          level.add_cam_effector(
+            "camera_effects\\earthquake.anm", 77777775, true, ""
+          )
+          level.add_pp_effector( "dead_zone.ppe",   77777774, false )
+          level.add_pp_effector( "nano.ppe",        77777773, false )
+          level.add_pp_effector( "nightvision.ppe", 77777772, false )
+          level.add_pp_effector( "psy_antenna.ppe", 77777771, true, "" )
+          effects()
+          news()
+          horrorspawn( level_name )
+          hit_actor( level_name )
+          spawn_phantom()
+          horror_sound()
+          random_reaction()
+        end
+      else -- неудачный запуск
+        db.actor:give_info_portion( "horror_fail" )
+        presoobjFAIL()
+      end
+    end
+  end
+
+  -- перезапуск спецэффектов в случае перезапуска игры
+  if
+    timeh == horror_time.h
+    and timem >= horror_time.m
+    and timem < horror_end_time.m
+    and game_reloaded
+    and db.actor:dont_has_info( "horror_fail" )
+  then
+    game_reloaded = false
+    -- возвращаем спецэффекты только на территории, где есть ЧУ
+    if tabl_horror_by_level[ level.name() ] then
+      level.add_cam_effector(
+        "camera_effects\\earthquake.anm", 77777775, true, ""
+      )
+      level.add_pp_effector( "psy_antenna.ppe", 77777771, true, "" )
+      horror_sound()
+    end
+  end
+end
+
+
+function horrortime_cleanup1()
+  if update_signal then
+    ogse_signals.get_mgr():unsubscribe( update_signal )
+    update_signal = nil
+  end
+  if db.actor:dont_has_info( "horror_time_end" ) then
+    db.actor:give_info_portion( "horror_time_end" )
+    if db.actor:dont_has_info( "horror_fail" ) then
+      -- вспышка окончания ЧУ только на территории, где есть ЧУ
+      if tabl_horror_by_level[ level.name() ] then
+        level.add_pp_effector( "teleport.ppe", 77777777, false )
+      end
+      level.remove_pp_effector( 77777774 )
+      level.remove_pp_effector( 77777773 )
+      level.remove_pp_effector( 77777772 )
+      level.remove_pp_effector( 77777771 )
+      level.remove_pp_effector( 77777776 )
+      level.remove_cam_effector( 77777775 )
+      remove_horror_mutant()
+      archievements.acv_count_2event(
+        "acv_hell", 15, "Неустрашимый", "acv_hell2", 50, "Стивен Кинг"
+      )
+    end
+  end
+  ogse_st_mgr.delayed_fun_start( script_name() .. ".horrortime_cleanup2" )
+    :set_HMS_of_day( horror_end_time.h, horror_end_time.m + 1, 0 )
+    :init( script_name() .. ".horrortime_cleanup2" )
+    :start( true )
+end
+
+
+function horrortime_cleanup2()
+  db.actor:disable_info_portion( "horror_time_begin" )
+  db.actor:disable_info_portion( "random_pre_news" )
+  db.actor:disable_info_portion( "horror" )
+  if db.actor:has_info( "horror_fail" ) then
+    db.actor:disable_info_portion( "horror_fail" )
+    level.remove_pp_effector( 77777777 )
+  end
+  db.actor:disable_info_portion("horror_time_end")
+end
+
 
 -- Выбор Реакции НПС
 function random_reaction()
-	local npc
-	for k, v in pairs (db.storage) do
-		npc = level.object_by_id(k)
-		if npc and npc:alive() and IsStalker(npc) and tabl_npc_ignore[npc:name()] ~= true then
-			state_mgr.set_state(npc, tabl_reaction[math.random(table.getn(tabl_reaction))])
-		end
-	end
+  for k, is_npc in pairs ( db.creature ) do
+    if is_npc then
+      local npc = level.object_by_id( k )
+      if npc and npc:alive() and not tabl_npc_ignore[ npc:name() ] then
+        state_mgr.set_state(
+          npc, tabl_reaction[ math.random( table.getn( tabl_reaction ) ) ]
+        )
+      end
+    end
+  end
 end
+
 
 -- Выбираем Рандомное Сообщение о ЧУ
 function news()
-	news_manager.send_tip(db.actor, tabl_news[math.random(table.getn(tabl_news))], nil, nil, 5000)
+  news_manager.send_tip(
+    db.actor,
+    tabl_news[ math.random( table.getn( tabl_news ) ) ],
+    nil, nil, 5000
+  )
 end
+
 
 -- Выбираем Рандомное Сообщение перед часом ужаса
 function presoobj()
-	news_manager.send_tip(db.actor, tabl_mess_begin[random_news_number]["normal"], nil, nil, 5000)
+  news_manager.send_tip(
+    db.actor, tabl_mess_begin[ random_news_number ].normal, nil, nil, 5000
+  )
 end
+
 
 -- Выбираем Рандомное Сообщение перед часом ужаса при неудачном старте
 function presoobjFAIL()
-	news_manager.send_tip(db.actor, tabl_mess_begin[random_news_number]["fail"], nil, nil, 5000)
+  news_manager.send_tip(
+    db.actor, tabl_mess_begin[ random_news_number ].fail, nil, nil, 5000
+  )
 end
+
 
 -- Выбираем Рандомный звук
 function horror_sound()
-	local snd_obj = xr_sound.get_safe_sound_object(tabl_sound_spawn[math.random(table.getn(tabl_sound_spawn))])
-snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 2.5)
+  local snd_obj = xr_sound.get_safe_sound_object(
+    tabl_sound_spawn[ math.random( table.getn( tabl_sound_spawn ) ) ]
+  )
+  snd_obj:play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 2.5 )
 end
+
 
 -- Наносим хит с учётом территории
-function hit_actor(level_name)
-	local horror_hit = hit()
-	horror_hit.direction = vector():set(0,0,0)
-	horror_hit.impulse = 0.3
-	horror_hit.power = 0.4
-	horror_hit.type = hit.telepatic
-	horror_hit.draftsman = db.actor
-	horror_hit:bone("bip01_spine")
-	db.actor:hit(horror_hit)
-
-	horror_hit.impulse = 0
-	
-	horror_hit.power = tabl_horror_by_level[level_name]["actor_hit_power"]["radiation"]
-	horror_hit.type = hit.radiation
-	db.actor:hit(horror_hit)
-	
-	horror_hit.power = tabl_horror_by_level[level_name]["actor_hit_power"]["shock"]
-	horror_hit.type = hit.shock
-	db.actor:hit(horror_hit)
+function hit_actor( level_name )
+  local horror_hit = hit()
+  horror_hit.direction = vector():set( 0, 0, 0 )
+  horror_hit.impulse   = 0.3
+  horror_hit.power     = 0.4
+  horror_hit.type      = hit.telepatic
+  horror_hit.draftsman = db.actor
+  horror_hit:bone( "bip01_spine" )
+  db.actor:hit( horror_hit )
+  horror_hit.impulse   = 0
+  horror_hit.power     =
+    tabl_horror_by_level[ level_name ].actor_hit_power.radiation
+  horror_hit.type      = hit.radiation
+  db.actor:hit( horror_hit )
+  horror_hit.power     =
+    tabl_horror_by_level[ level_name ].actor_hit_power.shock
+  horror_hit.type      = hit.shock
+  db.actor:hit( horror_hit )
 end
+
 
 -- Выбор Эффектора
 function effects()
-	level.add_pp_effector(tabl_pp_effectors[math.random(table.getn(tabl_pp_effectors))], 77777776, false)
+  level.add_pp_effector(
+    tabl_pp_effectors[ math.random( table.getn( tabl_pp_effectors ) ) ],
+    77777776, false
+  )
 end
 
+
 -- Основной Спавн с Учётом Территории
-function horrorspawn(level_name)
-	local ap = db.actor:position()
-	local lv = db.actor:level_vertex_id()
-	local gv = db.actor:game_vertex_id()
-	
-	for i=1,math.random(tabl_horror_by_level[level_name]["spawn"]-2,tabl_horror_by_level[level_name]["spawn"]+2) do
-		-- секци для ЧУ zombie_hell1 ... zombie_hell15
-		alife():create("zombie_hell"..tostring(math.random(15)), vector():set(ap.x+math.random(-50,50), ap.y, ap.z+math.random(-50,50)), lv, gv)
-	end
+function horrorspawn( level_name )
+  local ap = db.actor:position()
+  local lv = db.actor:level_vertex_id()
+  local gv = db.actor:game_vertex_id()
+  local cnt = math.random(
+    tabl_horror_by_level[ level_name ].spawn - 2,
+    tabl_horror_by_level[ level_name ].spawn + 2
+  )
+  for i = 1, cnt do
+    -- секци для ЧУ zombie_hell1 ... zombie_hell15
+    alife():create(
+      "zombie_hell" .. tostring( math.random( 15 ) ),
+      vector():set(
+        ap.x + math.random( -50, 50 ),
+        ap.y,
+        ap.z + math.random( -50, 50 )
+      ),
+      lv, gv
+    )
+  end
 end
+
 
 -- Фантомы 
 function spawn_phantom()
-local a_pos = db.actor:position()
-	local pos
-	for i = 1, math.random(5,15) do
-		pos = vector():set(math.random(-30, 30) + a_pos.x, a_pos.y + 2.5 * math.random(), math.random(-30, 30) + a_pos.z)
-		phantom_manager.spawn_phantom(pos)
-	end
+  local a_pos = db.actor:position()
+  for i = 1, math.random( 5, 15 ) do
+    local pos = vector():set(
+      math.random( -30, 30 ) + a_pos.x,
+      a_pos.y + 2.5 * math.random(),
+      math.random( -30, 30 ) + a_pos.z
+    )
+    phantom_manager.spawn_phantom( pos )
+  end
 end
+
 
 -- уборка оставшихся живых монстров
 function remove_horror_mutant()
-	if not remove_horror then return end
-	
-	local horror_m
-	for k, is_npc in pairs (db.creature) do
-	  if not is_npc then
-		horror_m = level.object_by_id(k)
-		if horror_m and horror_m:alive() and string.find(horror_m:name(), "_hell") then
-			horror_m:kill( horror_m )
-			alife():release(alife():object(horror_m:id()))
-		end
-	  end
-	end
+  if not remove_horror then return end
+  for k, is_npc in pairs ( db.creature ) do
+    if not is_npc then
+      local horror_m = level.object_by_id( k )
+      if
+        horror_m and horror_m:alive()
+        and string.find( horror_m:name(), "_hell" )
+      then
+        horror_m:kill( horror_m )
+        alife():release( alife():object( horror_m:id() ) )
+      end
+    end
+  end
 end
 
 

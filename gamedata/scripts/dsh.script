@@ -168,8 +168,7 @@ end
 function is_artefact( sect )
   return (
     string.find( sect, "^af_" )
-    or
-    get_bool( sect, "dsh_is_artefact", false )
+    or get_bool( sect, "dsh_is_artefact", false )
   )
 end
 
@@ -179,21 +178,21 @@ function get_creatable_arts()
   local arts = {}
   for anomaly, info in pairs( amk_mod.anom_recept_komp.anomalii ) do
     for info_key, recept in pairs( info.recepti ) do
-      if recept.cel and recept.komp then
+      if recept.cel and recept.komp and not recept.remove_anomaly then
         local targets = {}
         local parts   = {}
         for k, _ in pairs( recept.cel  ) do
+          ASSERT( not recept.komp[ k ], "found cel %s in komp", k )
           table.insert( targets, k )
         end
         for k, _ in pairs( recept.komp ) do
+          ASSERT( not recept.cel[ k ], "found komp %s in cel", k )
           table.insert( parts, k   )
         end
         if
           table.getn( targets ) == 1
-          and
-          is_artefact( targets[ 1 ] )
-          and
-          table.getn( parts ) > 0
+          and is_artefact( targets[ 1 ] )
+          and table.getn( parts ) > 0
         then
           local tgt = targets[ 1 ]
           arts[ tgt ] = {
@@ -221,6 +220,7 @@ function get_art_levels()
     local process   = { data.prev[ 1 ] }
     while table.getn( process ) > 0 do
       local af_prev = table.remove( process, 1 )
+      ASSERT( af ~= af_prev, "loop found: %s == %s", af, af_prev )
       if arts[ af_prev ] then
         for _, k in ipairs( next_arts ) do
           table.insert( arts[ af_prev ].next, k )
@@ -659,6 +659,22 @@ function begin_af_transform( d, h, m, t )
     t.remove_anomaly_id,
     level.name()
   )
+  if table.getn( result ) > 0 and t.udacha and not t.remove_anomaly then
+    local cnt = ogse.load_var( script_name() .. ".begin_af_transform.cnt", 0 )
+    ogse.save_var( script_name() .. ".begin_af_transform.cnt", cnt + 1, "u32" )
+    local tname = script_name() .. ".begin_af_transform.cnt.reset"
+    if ogse_st_mgr.timer_exists( tname ) then
+      ogse_st_mgr.get_timer( tname ):stop()
+    end
+    ogse_st_mgr.delayed_fun_start( tname )
+      :set_gdelayDHMS( d, h + math.random( 20 ), m, 0 )
+      :init( script_name() .. ".reset_af_transform_cnt" )
+      :start()
+  end
+end
+
+function reset_af_transform_cnt()
+  ogse.delete_var( script_name() .. ".begin_af_transform.cnt" )
 end
 
 
@@ -687,7 +703,21 @@ function end_af_transform( result, udacha, x, y, z, gv, lv, info, komp, rm_anom,
   else
     t.komp = {}
   end
-  amk_mod.af_transform_universal_end( t )
+  local sobj = amk_mod.af_transform_universal_end( t )
+  if sobj and udacha and not rm_anom then
+    local pk = xs_netpk.net_alife_item( sobj )
+    if pk:isOk() then
+      local data = pk:get()
+      local cond = data.condition
+      local step = ( 1 + level.get_game_difficulty() ) / 10
+      cond = cond - math.random() * step
+      local cnt = ogse.load_var(
+        script_name() .. ".begin_af_transform.cnt", 1
+      )
+      data.condition = cond / cnt
+      pk:set( data )
+    end
+  end
 end
 
 
