@@ -261,6 +261,58 @@ function change_inv_item_weight( id, weight )
 end
 
 
+function actor_get_art_simpliest()
+  for i = 0, db.actor:object_count() - 1 do
+    local obj  = db.actor:object( i )
+    local sect = obj:section()
+    if get_bool( sect, script_name() .. ".simpliest_art", false ) then
+      if db.actor:is_in_ruck( obj ) then return obj end
+    end
+  end
+end
+
+function actor_has_art_simpliest()
+  if actor_get_art_simpliest() then return true else return false end
+end
+
+function actor_give_art_simpliest()
+  local obj = actor_get_art_simpliest()
+  if obj then
+    ogse.remove_item_from_inventory( obj )
+    news_manager.relocate_item( db.actor, "out", obj:section() )
+  end
+end
+
+
+function actor_get_art_l0()
+  local l0_arts = {}
+  for k, v in pairs( get_art_levels() ) do
+    if table.getn( v.prev ) == 1 and table.getn( v.next ) > 0 then
+      l0_arts[ v.prev[ 1 ] ] = true
+    end
+  end
+  for i = 0, db.actor:object_count() - 1 do
+    local obj  = db.actor:object( i )
+    local sect = obj:section()
+    if l0_arts[ sect ] then
+      if db.actor:is_in_ruck( obj ) then return obj end
+    end
+  end
+end
+
+function actor_has_art_l0()
+  if actor_get_art_l0() then return true else return false end
+end
+
+function actor_give_art_l0()
+  local obj = actor_get_art_l0()
+  if obj then
+    ogse.remove_item_from_inventory( obj )
+    news_manager.relocate_item( db.actor, "out", obj:section() )
+  end
+end
+
+
 function actor_get_art_check( f )
   local arts = get_art_levels()
   for i = 0, db.actor:object_count() - 1 do
@@ -710,7 +762,10 @@ function end_af_transform( result, udacha, x, y, z, gv, lv, info, komp, rm_anom,
       local data = pk:get()
       local cond = data.condition
       local step = ( 1 + level.get_game_difficulty() ) / 10
-      cond = cond - math.random() * step
+      local rnd  = get_next_random(
+        script_name() .. ".end_af_transform.rnd"
+      )
+      cond = cond - rnd * step
       local cnt = ogse.load_var(
         script_name() .. ".begin_af_transform.cnt", 1
       )
@@ -1074,4 +1129,88 @@ function get_cur_wpn_ammo( wpn )
     end
   end
   return ammo_sect
+end
+
+
+function find_capsule()
+  local obj = db.actor:object( "af_capsule" )
+  if not obj then
+    db.actor:iterate_inventory(
+      function( npc, item )
+        if not obj and item:section() == "arc_art_box_1basic" then
+          local idx  = arc_1containers.get_inv_index( item:id() )
+          local arts = arc_1containers.get_inv_container_arts( idx )
+          for _, n in pairs( arts ) do
+            if n > 0 then
+              local sect = arc_arts.get_art_section( n )
+              if sect == "af_capsule" then
+                obj = item
+                break
+              end
+            end
+          end
+        end
+      end,
+      db.actor
+    )
+  end
+  return obj
+end
+
+function have_capsule()
+  return find_capsule() ~= nil
+end
+
+function transfer_any_capsule( info, minutes )
+  local obj = find_capsule()
+  if obj then
+    if obj:section() == "arc_art_box_1basic" then
+      news_manager.relocate_item( db.actor, "out", "af_capsule" )
+      ogse.remove_item_from_inventory( obj )
+      ogse.spawn_item_in_inv( "arc_art_box_1basic" )
+    else
+      news_manager.relocate_item( db.actor, "out", obj:section() )
+      ogse.remove_item_from_inventory( obj )
+    end
+    local tname = script_name() .. "." .. info
+    start_gtimerDHMS(
+      script_name() .. "." .. info,
+      0, 0, minutes, 0,
+      script_name() .. ".transfer_any_capsule_done",
+      info
+    )
+  end
+end
+
+function transfer_any_capsule_done( info )
+  db.actor:give_info_portion( info )
+end
+
+function transfer_any_capsule_barman()
+  transfer_any_capsule( "barman_capsule_ready", 50 )
+end
+
+function transfer_any_capsule_sidor()
+  transfer_any_capsule( "capsule_ready", 65 )
+end
+
+function transfer_any_capsule_sakharov()
+  transfer_any_capsule( "sakharov_capsule_ready", 15 )
+end
+
+
+function add_art_capsule()
+  local arts = get_art_levels()
+  local possible_arts = {}
+  for sect, v in pairs( arts ) do
+    if table.getn( v.prev ) > 0 and table.getn( v.next ) == 0 then
+      table.insert( possible_arts, sect )
+    end
+  end
+  local rnd  = get_next_random(
+    script_name() .. ".add_art_capsule.rnd", table.getn( possible_arts )
+  )
+  local sect = possible_arts[ rnd ]
+  ogse.spawn_item_in_inv( sect )
+  news_manager.relocate_item( db.actor, "in",  sect )
 end
