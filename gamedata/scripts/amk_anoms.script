@@ -1712,8 +1712,20 @@ function init()
   end
   pre_blow_off()
   ogse_signals.get_mgr():subscribe({
-    signal = "on_before_first_update", fun = this.generate_anoms
+    signal = "on_before_first_update", fun = this.on_before_first_update
   })
+end
+
+
+function on_before_first_update()
+  generate_anoms()
+  if
+    level_arts[ level.name() ]
+    and not has_alife_info( "testsak_" .. level.name() )
+  then
+    generate_arts()
+    db.actor:give_info_portion( "testsak_" .. level.name() )
+  end
 end
 
 
@@ -1817,12 +1829,25 @@ function cleanup_arts()
 end
 
 
+local forbidden_lvids = {}
+
 function generate_anoms()
+  forbidden_lvids = {}
+  for id, is_npc in pairs( db.creature ) do
+    local obj = level.object_by_id( id )
+    if obj then
+      local lvid = obj:level_vertex_id()
+      if lvid then
+        forbidden_lvids[ lvid ] = true
+      end
+    end
+  end
   local lname = level.name()
   local v     = level_anoms[ lname ]
   if v then
     local cnt = 0
-    local mxx = math_random( v[ 1 ], v[ 2 ] ) * anoms_difficulty_koef[ level.get_game_difficulty() ]
+    local mxx = math.random( v[ 1 ], v[ 2 ] )
+      * anoms_difficulty_koef[ level.get_game_difficulty() ]
     while cnt < mxx do
       if generate_anomaly() then cnt = cnt + 1 end
     end
@@ -1842,8 +1867,8 @@ function generate_arts( need_cnt )
       local min_cnt, max_cnt = v[ 1 ], v[ 2 ]
       local blowout_count    = ogse_surge_mgr.get_blowout_count()
       min_cnt = min_cnt - math.floor(
-        blowout_cnt / ( 10 * ( 4 - level.get_game_difficulty() ) )
-                                    )
+        blowout_count / ( 10 * ( 4 - level.get_game_difficulty() ) )
+      )
       if min_cnt < 0 then min_cnt = 0 end
       cnt, mxx = 0, math.random( min_cnt, max_cnt )
     end
@@ -1865,13 +1890,8 @@ function generate_anomaly()
     level_vertexes[ lname ]
   local new_lv = math_random( 1, lvx )
   local pos    = level.vertex_position( new_lv )
+  if forbidden_lvids[ new_lv ] then return false end
   if not check_coordinates( pos, lname ) then return false end
-  for id, is_npc in pairs( db.creature ) do
-    local obj = level.object_by_id( id )
-    if obj then
-      if obj:position():distance_to( pos ) < 5 then return false end
-    end
-  end
   local new_gv   = 0
   local min_dist = 100000
   for a = gvn, gvx do
@@ -1882,6 +1902,7 @@ function generate_anomaly()
     end
   end
   if game_graph():valid_vertex_id( new_gv ) then
+    forbidden_lvids[ new_lv ] = true
     return spawn_rand_anom( pos, new_gv, new_lv )
   end
 end
@@ -1893,6 +1914,7 @@ function generate_art( lname, section, pre_check_coords_func )
     script_name() .. ".generate_art", 1, lvx
   )
   local pos = level.vertex_position( new_lv )
+  if forbidden_lvids[ new_lv ] then return false end
   if not check_coordinates( pos, lname ) then return false end
   if pre_check_coords_func then
     if not pre_check_coords_func( pos ) then return false end
@@ -1914,6 +1936,7 @@ function generate_art( lname, section, pre_check_coords_func )
       sobj = spawn_rand_arts( pos, new_gv, new_lv, lname )
     end
     dsh.mark_art_as_handmade( sobj, false )
+    forbidden_lvids[ new_lv ] = true
   end
   return sobj
 end
