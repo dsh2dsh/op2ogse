@@ -1669,9 +1669,8 @@ function init()
   if not level_anoms[ lname ] then return end
   local anoms_sect = "amk_anoms." .. lname
   if sys_ini:section_exist( anoms_sect ) then
-    local result, id, value = nil, nil, nil 
     for a = 0, sys_ini:line_count( anoms_sect ) - 1 do
-      result, id, value = sys_ini:r_line( anoms_sect, a, "", "" )
+      local result, id, value = sys_ini:r_line( anoms_sect, a, "", "" )
       if id and amk.trim( id ) ~= "" and amk.trim( id ) then
         local s = amk.str_explode( ",", id, true )
         if s[ 1 ] == nil or s[ 2 ] == nil or s[ 3 ] == nil or s[ 4 ] == nil then 
@@ -1702,6 +1701,7 @@ function init()
     return
   end
   pre_blow_off()
+  randomize_arts()
   ogse_signals.get_mgr():subscribe({
     signal = "on_before_first_update", fun = this.on_before_first_update
   })
@@ -1710,6 +1710,11 @@ end
 
 function on_before_first_update()
   generate_anoms()
+  generate_new_arts()
+end
+
+
+function generate_new_arts()
   if
     level_arts[ level.name() ]
     and not has_alife_info( "testsak_" .. level.name() )
@@ -1721,34 +1726,23 @@ end
 
 
 function after_blow_on()
+  sak.off_testobj()
   local lname = level.name()
-  if not level_vertexes[ lname ] then return end
-  if not level_anoms[ lname ] then return end
-  generate_anoms()
-  move_mgr.invalidate_pp_accessibility()
+  if level_vertexes[ lname ] and level_anoms[ lname ] then
+    generate_anoms()
+    move_mgr.invalidate_pp_accessibility()
+  end
+  generate_new_arts()
 end
 
 
---[=[
-function pre_blow_off()
--- уточнить нужна ли проверка на существование гейм вертекса по гейм вертексу объекта, который уже заспавнен и готовится к удалению
-local sim=alife()
-local ggraph=game_graph()
-        for i=0,65534 do
-local sobj=sim:object(i)
-                if sobj then
-if is_anomaly(sobj:clsid()) and ggraph:valid_vertex_id(sobj.m_game_vertex_id) then
-local map=sim:level_name(ggraph:vertex(sobj.m_game_vertex_id):level_id())
-                                if not check_exclusion(sobj,map) then
-                                local status=get_anomaly_status(sobj)
-if status=="" or status=="on" then set_anomaly_status(sobj,"del") alife():release(sobj,true) end
-end end end end end
---]=]
-
+local forbidden_lvids, forbidden_pos
 
 function pre_blow_off()
-  for i = 0, 65534 do
-    local sobj = alife():object(i)
+  forbidden_lvids = {}
+  forbidden_pos   = {}
+  for id = 1, 65534 do
+    local sobj = alife():object( id )
     if sobj then
       if is_anomaly( sobj:clsid() ) then
         local map = alife():level_name(
@@ -1784,29 +1778,17 @@ function cleanup_arts()
       end
     end
   end
-  for i = 0, 65534 do
-    local sobj = alife():object( i )
+  for id = 1, 65534 do
+    local sobj = alife():object( id )
     if sobj and sobj.parent_id == 65535 then
       local sect = sobj:section_name()
       if known_sects[ sect ] then
-        local handmade = true
-        local pk = xs_netpk.net_alife_item( sobj )
-        if pk:isOk() then
-          local data = pk:get()
-          local cd   = data.custom_data:getString()
-          if cd and cd ~= "" then
-            local ini = create_ini_file( cd )
-            if ini:section_exist( "dsh" ) then
-              handmade = ( get_bool( "dsh", "handmade", nil, ini ) ~= false )
-            end
-          end
-        end
         local lname = object_level_name( sobj )
         if
           sect == "af_buliz"
           or (
             known_arts[ lname ] and known_arts[ lname ][ sect ]
-            and not handmade
+            and not dsh.is_handmade_artefact( sobj )
           )
         then
           alife():release( sobj, true )
@@ -1820,16 +1802,14 @@ function cleanup_arts()
 end
 
 
-local forbidden_lvids = {}
-
 function generate_anoms()
-  forbidden_lvids = {}
   for id, is_npc in pairs( db.creature ) do
     local obj = level.object_by_id( id )
     if obj then
       local lvid = obj:level_vertex_id()
       if lvid then
         forbidden_lvids[ lvid ] = true
+        table.insert( forbidden_pos, obj:position() )
       end
     end
   end
@@ -1867,69 +1847,129 @@ function generate_arts( need_cnt )
       if generate_art( lname ) then cnt = cnt + 1 end
     end
  end
--- переделано на поршни - при выбросе снимаем все поршни, при спавне
--- артов на локе выдаем - это больше не нужно
-  --generate_test(lname)
 end
 
 
-function generate_anomaly()
-  local lname = level.name()
+function calc_new_free_pos( lname, pre_check_coords_func )
   local gvn, gvx, lvx =
     game_vertexes[ lname ][ 1 ],
     game_vertexes[ lname ][ 2 ],
     level_vertexes[ lname ]
-  local new_lv = math_random( 1, lvx )
+  local new_lv = math.random( lvx )
   local pos    = level.vertex_position( new_lv )
-  if forbidden_lvids[ new_lv ] then return false end
-  if not check_coordinates( pos, lname ) then return false end
-  local new_gv   = 0
-  local min_dist = 100000
-  for a = gvn, gvx do
-    local tmp = game_graph():vertex( a ):level_point()
-    if tmp:distance_to( pos ) < min_dist then
-      min_dist = tmp:distance_to( pos )
-      new_gv   = a
+  if
+    ( not forbidden_lvids[ new_lv ] )
+    and check_coordinates( pos, lname )
+    and (
+      ( not pre_check_coords_func )
+      or pre_check_coords_func( pos )
+    )
+  then
+    forbidden_lvids[ new_lv ] = true
+    local new_gv   = 0
+    local min_dist = 100000
+    for a = gvn, gvx do
+      local tmp = game_graph():vertex( a ):level_point()
+      if tmp:distance_to( pos ) < min_dist then
+        min_dist = tmp:distance_to( pos )
+        new_gv   = a
+      end
+    end
+    if game_graph():valid_vertex_id( new_gv ) then
+      return pos, new_gv, new_lv
     end
   end
-  if game_graph():valid_vertex_id( new_gv ) then
-    forbidden_lvids[ new_lv ] = true
+  forbidden_lvids[ new_lv ] = true
+end
+
+
+function generate_anomaly()
+  local pos, new_gv, new_lv = calc_new_free_pos( level.name() )
+  if pos then
+    table.insert( forbidden_pos, pos )
     return spawn_rand_anom( pos, new_gv, new_lv )
   end
 end
 
 
-function generate_art( lname, section, pre_check_coords_func )
-  local gvn, gvx, lvx = game_vertexes[ lname ][ 1 ], game_vertexes[ lname ][ 2 ], level_vertexes[ lname ]
-  local new_lv = dsh.get_next_random(
-    script_name() .. ".generate_art", 1, lvx
-  )
-  local pos = level.vertex_position( new_lv )
-  if forbidden_lvids[ new_lv ] then return false end
-  if not check_coordinates( pos, lname ) then return false end
-  if pre_check_coords_func then
-    if not pre_check_coords_func( pos ) then return false end
-  end
-  local new_gv   = 0
-  local min_dist = 100000
-  for a = gvn, gvx, 1 do
-    local tmp = game_graph():vertex( a ):level_point()
-    if tmp:distance_to( pos ) < min_dist then
-      min_dist = tmp:distance_to( pos )
-      new_gv   = a
+function randomize_arts()
+  local known_arts = {}
+  for lname, alist in pairs( level_arts ) do
+    if not known_arts[ lname ] then
+      known_arts[ lname ] = {}
+    end
+    for k, v in pairs( alist[ 3 ] ) do
+      local sect = arts_sections[ k ]
+      if sect then
+        known_arts[ lname ][ sect ] = true
+      end
     end
   end
-  local sobj
-  if game_graph():valid_vertex_id( new_gv ) then
+  for id = 1, 65534 do
+    local sobj = alife():object( id )
+    if sobj and sobj.parent_id == 65535 then
+      local sect  = sobj:section_name()
+      local lname = object_level_name( sobj )
+      if lname == level.name() then
+        if
+          known_arts[ lname ] and known_arts[ lname ][ sect ]
+          and not dsh.is_handmade_artefact( sobj )
+        then
+          local orig_dist = sobj.position:distance_to( db.actor:position() )
+          log2(
+            "dsh: [%s]: found %s: dist to actor = %s",
+            script_name(), sobj:name(), orig_dist
+          )
+          local cur_lv  = sobj.m_level_vertex_id
+          local cur_pos = sobj.position
+          for i = 1, 10 do
+            local pos, new_gv, new_lv = calc_new_free_pos(
+              lname,
+              function( np )
+                return (
+                  np:distnace_to( db.actor:position() ) >= orig_dist
+                  and np:distnace_to( sobj.position   ) >= 10
+                )
+              end
+            )
+            if pos then
+              log2(
+                "dsh: [%s]: [%s] found new pos: dist to actor = %s, dist to old = %s",
+                script_name(), i,
+                pos:distance_to( db.actor:position() ),
+                pos:distance_to( cur_pos )
+              )
+              alife():teleport_object( "", pos, new_lv, new_gv, sobj.id )
+              cur_lv  = new_lv
+              cur_pos = pos
+              break
+            end
+          end
+          forbidden_lvids[ cur_lv ] = true
+          table.insert( forbidden_pos, cur_pos )
+        elseif dsh.is_artefact( sobj:section_name() ) then
+          forbidden_lvids[ sobj.m_level_vertex_id ] = true
+          table.insert( forbidden_pos, sobj.position )
+        end
+      end
+    end
+  end
+end
+
+
+function generate_art( lname, section, pre_check_coords_func )
+  local pos, new_gv, new_lv = calc_new_free_pos( lname, pre_check_coords_func )
+  if pos then
+    local sobj
     if section then
-      sobj = spawn_art( section, pos, gv, lv )
+      sobj = spawn_art( section, pos, new_gv, new_lv )
     else
       sobj = spawn_rand_arts( pos, new_gv, new_lv, lname )
     end
     dsh.mark_art_as_handmade( sobj, false )
-    forbidden_lvids[ new_lv ] = true
+    table.insert( forbidden_pos, pos )
+    return sobj
   end
-  return sobj
 end
 
 
@@ -2124,6 +2164,9 @@ function check_coordinates( pos, lname )
   end
   for k, v in ipairs( anti_spawn_zones ) do
     if pos:distance_to( v[ 1 ] ) <= v[ 2 ] then return false end
+  end
+  for _, fp in ipairs( forbidden_pos ) do
+    if pos:distance_to( fp ) <= 5 then return false end
   end
   return true
 end
