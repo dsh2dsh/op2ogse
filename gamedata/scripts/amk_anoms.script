@@ -278,7 +278,7 @@ level_anoms={
     }
   },
   l05_bar = {
-    35, 45, 150,
+    60, 80, 150,
     {
       buzz          =   5,
       electra       =   1,
@@ -326,7 +326,7 @@ level_anoms={
     }
   },
   l07_military = {
-    22, 30, 100,
+    80, 110, 400,
     {
       buzz          = 10,
       electra       = 12,
@@ -1820,7 +1820,16 @@ function generate_anoms()
     local mxx = math.random( v[ 1 ], v[ 2 ] )
       * anoms_difficulty_koef[ level.get_game_difficulty() ]
     while cnt < mxx do
-      if generate_anomaly() then cnt = cnt + 1 end
+      local res = generate_anomaly()
+      if res then
+        cnt = cnt + 1
+      elseif res == false then
+        log2(
+          "dsh: [%s]: I give up here: %s, %s / %s anomalies generated",
+          script_name(), lname, cnt, mxx
+        )
+        break
+      end
     end
   end
 end
@@ -1844,7 +1853,16 @@ function generate_arts( need_cnt )
       cnt, mxx = 0, math.random( min_cnt, max_cnt )
     end
     while cnt < mxx do
-      if generate_art( lname ) then cnt = cnt + 1 end
+      local res = generate_art( lname )
+      if res then
+        cnt = cnt + 1
+      elseif res == false then
+        log2(
+          "dsh: [%s]: I give up here: %s, %s / %s artefacts generated",
+          script_name(), lname, cnt, mxx
+        )
+        break
+      end
     end
  end
 end
@@ -1856,16 +1874,42 @@ function calc_new_free_pos( lname, pre_check_coords_func )
     game_vertexes[ lname ][ 2 ],
     level_vertexes[ lname ]
   local new_lv = math.random( lvx )
-  local pos    = level.vertex_position( new_lv )
+  if forbidden_lvids[ new_lv ] then
+    local found
+    if new_lv < lvx then
+      for i = new_lv + 1, lvx do
+        if not forbidden_lvids[ i ] then
+          found = i
+          break
+        end
+      end
+    end
+    if not found and new_lv > 1 then
+      for i = 1, new_lv - 1 do
+        if not forbidden_lvids[ i ] then
+          found = i
+          break
+        end
+      end
+    end
+    if not found then
+      log2(
+        "dsh: [%s]: can't find any free level vertex for %s",
+        script_name(), lname
+      )
+      return false
+    end
+    new_lv = found
+  end
+  forbidden_lvids[ new_lv ] = true
+  local pos = level.vertex_position( new_lv )
   if
-    ( not forbidden_lvids[ new_lv ] )
-    and check_coordinates( pos, lname )
+    check_coordinates( pos, lname )
     and (
       ( not pre_check_coords_func )
       or pre_check_coords_func( pos )
     )
   then
-    forbidden_lvids[ new_lv ] = true
     local new_gv   = 0
     local min_dist = 100000
     for a = gvn, gvx do
@@ -1879,7 +1923,6 @@ function calc_new_free_pos( lname, pre_check_coords_func )
       return pos, new_gv, new_lv
     end
   end
-  forbidden_lvids[ new_lv ] = true
 end
 
 
@@ -1888,6 +1931,8 @@ function generate_anomaly()
   if pos then
     table.insert( forbidden_pos, pos )
     return spawn_rand_anom( pos, new_gv, new_lv )
+  elseif pos == false then
+    return false
   end
 end
 
@@ -1905,12 +1950,13 @@ function randomize_arts()
       end
     end
   end
+  local is_relocating = true
   for id = 1, 65534 do
     local sobj = alife():object( id )
     if sobj and sobj.parent_id == 65535 then
       local sect  = sobj:section_name()
       local lname = object_level_name( sobj )
-      if lname == level.name() then
+      if lname and lname == level.name() then
         if
           known_arts[ lname ] and known_arts[ lname ][ sect ]
           and not dsh.is_handmade_artefact( sobj )
@@ -1922,27 +1968,36 @@ function randomize_arts()
           )
           local cur_lv  = sobj.m_level_vertex_id
           local cur_pos = sobj.position
-          for i = 1, 10 do
-            local pos, new_gv, new_lv = calc_new_free_pos(
-              lname,
-              function( np )
-                return (
-                  np:distnace_to( db.actor:position() ) >= orig_dist
-                  and np:distnace_to( sobj.position   ) >= 10
-                )
-              end
-            )
-            if pos then
-              log2(
-                "dsh: [%s]: [%s] found new pos: dist to actor = %s, dist to old = %s",
-                script_name(), i,
-                pos:distance_to( db.actor:position() ),
-                pos:distance_to( cur_pos )
+          if is_relocating then
+            for i = 1, 100 do
+              local pos, new_gv, new_lv = calc_new_free_pos(
+                lname,
+                function( np )
+                  return (
+                    np:distance_to( db.actor:position() ) >= orig_dist
+                    and np:distance_to( sobj.position   ) >= 10
+                  )
+                end
               )
-              alife():teleport_object( "", pos, new_lv, new_gv, sobj.id )
-              cur_lv  = new_lv
-              cur_pos = pos
-              break
+              if pos then
+                log2(
+                  "dsh: [%s]: [%s] found new pos: dist to actor = %s, dist to old = %s",
+                  script_name(), i,
+                  pos:distance_to( db.actor:position() ),
+                  pos:distance_to( cur_pos )
+                )
+                alife():teleport_object( "", pos, new_lv, new_gv, sobj.id )
+                cur_lv  = new_lv
+                cur_pos = pos
+                break
+              elseif pos == false then
+                log2(
+                  "dsh: [%s]: stop relocation process here: %s, current art is %s",
+                  script_name(), lname, sobj:name()
+                )
+                is_relocating = false
+                break
+              end
             end
           end
           forbidden_lvids[ cur_lv ] = true
@@ -2137,6 +2192,12 @@ end
 
 
 function check_coordinates( pos, lname )
+  for k, v in ipairs( anti_spawn_zones ) do
+    if pos:distance_to( v[ 1 ] ) <= v[ 2 ] then return false end
+  end
+  for _, fp in ipairs( forbidden_pos ) do
+    if pos:distance_to( fp ) <= 5 then return false end
+  end
   local hides = amk_hideouts.hide[ lname ]
   if hides then
     for i, o in ipairs( hides ) do
@@ -2161,12 +2222,6 @@ function check_coordinates( pos, lname )
         end
       end
     end
-  end
-  for k, v in ipairs( anti_spawn_zones ) do
-    if pos:distance_to( v[ 1 ] ) <= v[ 2 ] then return false end
-  end
-  for _, fp in ipairs( forbidden_pos ) do
-    if pos:distance_to( fp ) <= 5 then return false end
   end
   return true
 end
