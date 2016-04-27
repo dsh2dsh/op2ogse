@@ -4,6 +4,7 @@ local update_signal
 function attach( sm )
   sm:subscribe({ signal = "on_empty_smart_terrain", fun = this.on_empty_smart })
   sm:subscribe({ signal = "on_full_smart_terrain",  fun = this.on_full_smart })
+  sm:subscribe({ signal = "on_monster_spawn",       fun = this.on_monster_spawn })
   update_signal = { signal = "on_update", fun = this.on_update }
 end
 
@@ -64,9 +65,8 @@ function periodic_job()
 end
 
 
-function is_walking_smart( strn )
+function get_smart_ini_section( strn )
   local name     = strn:name()
-  local res      = get_bool( "dsh.gulag.free_logic", name, false )
   local dsh_sect = "dsh.gulag.override." .. name
   local profile  = strn.dsh_active_profile
   local sect
@@ -75,6 +75,14 @@ function is_walking_smart( strn )
   else
     sect = dsh_sect
   end
+  return sect
+end
+
+
+function is_walking_smart( strn )
+  local name = strn:name()
+  local res  = get_bool( "dsh.gulag.free_logic", name, false )
+  local sect = get_smart_ini_section( strn )
   if
     sys_ini:section_exist( sect )
     and sys_ini:line_exist( sect, "dsh_walking" )
@@ -90,16 +98,8 @@ end
 
 
 function get_walk_npc( strn )
-  local name     = strn:name()
-  local gulag    = strn.gulag
-  local dsh_sect = "dsh.gulag.override." .. name
-  local profile  = strn.dsh_active_profile
-  local sect
-  if profile then
-    sect = dsh_sect .. "." .. profile
-  else
-    sect = dsh_sect
-  end
+  local gulag = strn.gulag
+  local sect  = get_smart_ini_section( strn )
   local keep_min = 0
   if sys_ini:section_exist( sect ) then
     keep_min = get_u32( sect, "dsh_walking_keep_min", keep_min )
@@ -179,14 +179,7 @@ end
 
 
 function on_empty_smart( strn )
-  local dsh_sect = "dsh.gulag.override." .. strn:name()
-  local profile  = strn.dsh_active_profile
-  local sect
-  if profile then
-    sect = dsh_sect .. "." .. profile
-  else
-    sect = dsh_sect
-  end
+  local sect = get_smart_ini_section( strn )
   local change_on_empty, restrictors
   if sys_ini:section_exist( sect ) then
     change_on_empty = get_string( sect, "dsh_change_profile_on_empty" )
@@ -304,14 +297,7 @@ end
 
 
 function on_full_smart( strn )
-  local dsh_sect = "dsh.gulag.override." .. strn:name()
-  local profile  = strn.dsh_active_profile
-  local sect
-  if profile then
-    sect = dsh_sect .. "." .. profile
-  else
-    sect = dsh_sect
-  end
+  local sect = get_smart_ini_section( strn )
   local population_locked
   if sys_ini:section_exist( sect ) then
     population_locked = get_string( sect, "dsh_population_locked" )
@@ -352,5 +338,54 @@ function check_too_slow_npc( strn )
         )
       end
     end
+  end
+end
+
+
+local walking_directions = {}
+
+function walk_on_location( obj, cache_k, walk_together )
+  local dist    = math.random( 10, 200 )
+  local new_dir = walking_directions[ cache_k ]
+  if not new_dir then
+    local dir = obj:direction()
+    dir.y = 0
+    dir:normalize()
+    local angle = math.random( 8 ) * 45
+    new_dir = vector_rotate_y( dir, angle )
+    if walk_together then
+      walking_directions[ cache_k ] = new_dir
+    end
+  end
+  for i = 1, 8 do
+    local lvid = level.vertex_in_direction(
+      obj:level_vertex_id(), new_dir, dist
+    )
+    if lvid ~= obj:level_vertex_id() and obj:accessible( lvid ) then
+      obj:set_dest_level_vertex_id( lvid )
+      break
+    end
+    new_dir = vector_rotate_y( new_dir, 45 )
+  end
+end
+
+
+function on_monster_spawn( obj, binder )
+  if not obj:alive() then return end
+  local sobj = alife():object( obj:id() )
+  if not sobj then return end
+  local strn_id = dsh.is_free_logic_mob( sobj )
+  if not strn_id then return end
+  local strn = alife():object( strn_id )
+  ASSERT( strn, "smart_terrain not found: %s", strn_id )
+  if not is_walking_smart( strn ) then return end
+  local walk_on, walk_together = true, true
+  local sect = get_smart_ini_section( strn )
+  if sys_ini:section_exist( sect ) then
+    walk_on       = get_bool( sect, "dsh_walk_on_location", walk_on )
+    walk_together = get_bool( sect, "dsh_walk_together",    walk_together )
+  end
+  if walk_on then
+    walk_on_location( obj, script_name() .. "." .. strn:name(), walk_together )
   end
 end
