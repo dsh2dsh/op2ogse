@@ -94,8 +94,29 @@ function dsh_respawner:init_respawn_params()
     self.m_game_vertex_id  = get_u32( sect, "game_vertex_id"  )
   end
 
+  xyzlg = ogse.load_var( script_name() .. "." .. self.name .. ".xyzlg", {} )
+  if table.getn( xyzlg ) == 5 then
+    local x, y, z, l, g = unpack( xyzlg )
+    self.xyzlg = {
+      vector():set( tonumber( x ), tonumber( y ), tonumber( z ) ),
+      tonumber( l ), tonumber( g )
+    }
+    log2(
+      "dsh: [%s.init_respawn_params]: %s: use saved xyzlg",
+      script_name(), self.name
+    )
+  else
+    self.xyzlg = {
+      self.position, self.m_level_vertex_id, self.m_game_vertex_id
+    }
+  end
+
   self.walk_on_location = get_bool( sect, "dsh_walk_on_location", false )
   self.walk_together    = get_bool( sect, "dsh_walk_together", true )
+
+  self.moveable = get_bool( sect, "dsh_moveable", false )
+  self.move_radius_min = get_float( sect, "dsh_move_radius.min",  10 )
+  self.move_radius_max = get_float( sect, "dsh_move_radius.max", 200 )
 end
 
 
@@ -144,7 +165,47 @@ function dsh_respawner:remove_spawned( id )
     end
   end
   all_spawned_obj[ id ] = nil
+  if
+    self.moveable
+    and table.getn( self.spawned_obj ) >= self.min_count
+    and (
+      table.getn( filtered ) == 0
+      or table.getn( filtered ) < self.min_count
+    )
+  then
+    self:walk_respawner()
+  end
   self.spawned_obj = filtered
+end
+
+
+function dsh_respawner:walk_respawner()
+  ASSERT(
+    game_graph():valid_vertex_id( self.m_game_vertex_id ),
+    "[%s]: invalid gvid: %s", self.name, self.m_game_vertex_id
+  )
+  local lid = game_graph():vertex( self.m_game_vertex_id ):level_id()
+  if alife():level_name( lid ) ~= level.name() then
+    log2(
+      "dsh: [%s.walk_respawner]: %s: not current level: %s",
+      script_name(), self.name, level.name()
+    )
+    return
+  end
+  local pos, lvid, gvid = dsh.find_random_lvid_in_radius(
+    level.name(), self.m_level_vertex_id,
+    math.random( self.move_radius_min, self.move_radius_max )
+  )
+  local tname = script_name() .. "." .. self.name .. ".xyzlg"
+  if pos then
+    self.xyzlg = { pos, lvid, gvid }
+    ogse.save_var( tname, { pos.x, pos.y, pos.z, lvid, gvid }, "array" )
+  else
+    self.xyzlg = {
+      self.position, self.m_level_vertex_id, self.m_game_vertex_id
+    }
+    ogse.delete_var( tname )
+  end
 end
 
 
@@ -273,10 +334,7 @@ function dsh_respawner:create( prob )
         end
       end
     end
-    local sobj = alife():create(
-      spawn_section,
-      self.position, self.m_level_vertex_id, self.m_game_vertex_id
-    )
+    local sobj = alife():create( spawn_section, unpack( self.xyzlg ) )
 
     local tt = self.sectSpawnProps[ spawn_section ]
     if tt.check == true and not self.creature_binded_logic then
@@ -317,7 +375,11 @@ end
 
 function on_timer( name )
   local respawn = active[ name ]
-  respawn:refresh_spawned_obj()
+  if respawn then
+    respawn:refresh_spawned_obj()
+  else
+    cleanup_spawned_obj( name )
+  end
 end
 
 
@@ -335,6 +397,7 @@ function cleanup_spawned_obj( name )
     all_spawned_obj[ id ] = nil
   end
   ogse.delete_var( tname )
+  ogse.delete_var( script_name() .. "." .. name .. ".xyzlg" )
 end
 
 
