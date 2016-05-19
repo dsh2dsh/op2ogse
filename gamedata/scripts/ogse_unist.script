@@ -277,7 +277,32 @@ function on_load()
 end
 
 
-function on_save(--[[packet]]) -- аргумент не используем
+function on_save()
+  local st_count_key = "ST_COUNT_" .. storage_guid
+  local items = {}
+  for name, item in pairs( storage ) do
+    if name ~= st_count_key then
+      table.insert( items, item )
+    end
+    table.sort( items, function( a, b ) return a.size > b.size end )
+  end
+  table.insert( items, 1, storage[ st_count_key ] )
+  for i = 1, st_count_item.value do
+    st_objects[ i ]:clear()
+  end
+  for _, item in ipairs( items ) do
+    local st
+    for i = 1, st_count_item.value do
+      if st_objects[ i ]:free_space() >= item.size then
+        st = st_objects[ i ]
+        break
+      end
+    end
+    -- если не найдено, то добавляем новое хранилище
+    st = st or add_storage()    -- если не нашли, то надо создать
+    -- добавляем элемент в хранилище
+    st:add_item( item )
+  end
   for i = 1, st_count_item.value do
     st_objects[ i ]:save()
   end
@@ -307,6 +332,12 @@ function base_single_storage:__init( num ) -- аргумент, номер объекта хранилища
   end
   self.end_pos = r_packet:r_tell()
   self:merge_data_to( storage )
+end
+
+
+function base_single_storage:clear()
+  self.data      = {}
+  self.data_size = 0
 end
 
 
@@ -355,24 +386,10 @@ function base_single_storage:add_item( item )
     "base_single_storage:add_item: dude, you can't save it here. No space for the element:\nname: %s\ntype: %d\nsize: %s\nin the storage:\nnumber: %dtotal space: %d\nfree space: %d",
     item.name, item.type, item.size, self.st_num, self.total_space, self:free_space()
   )
-  -- оптимизация для быстрого поиска хранилища по элементу
-  item.st_num = self.st_num
   -- добавить элемент в локальную таблицу
   self.data[ item.name ] = item
   -- обновить размер данных
   self.data_size = self.data_size + item.size
-end
-
-
-function base_single_storage:remove_item( name )
-  local item = self.data[ name ]
-  ASSERT(
-    item, "base_single_storage:remove_item: no item with name '%s'", name
-  )
-  -- убираем элемент из локальной таблицы хранилища
-  self.data[ name ] = nil
-  -- обновить размер данных
-  self.data_size = self.data_size - item.size
 end
 
 
@@ -814,6 +831,7 @@ item_types_registry = {
 
 
 --------------| Публичный интерфейс модуля |------------------------------------
+
 function value_exist( name )
   return ( storage[ name ] ~= nil )
 end
@@ -827,19 +845,6 @@ function set_value( name, value, typ )
   end
   -- создаём элемент
   local item = create_item( name, value, typ )
-  -- ищем первое из локальных хранилищ, где достаточно свободного
-  -- места для сохранения элемента
-  local st
-  for i = 1, st_count_item.value do
-    if st_objects[ i ]:free_space() >= item.size then
-      st = st_objects[ i ]
-      break
-    end
-  end
-  -- если не найдено, то добавляем новое хранилище
-  st = st or add_storage()      -- если не нашли, то надо создать
-  -- добавляем элемент в хранилище
-  st:add_item( item )
   -- сохраняем в глобальном хранилище
   storage[ item.name ] = item
 end
@@ -880,13 +885,11 @@ function remove_value( name )
     -- надо подумать, насколько это безобидная ситуация
     -- пока ставлю просто игнор
     return
-      -- но возможно стоит поставить вылет
-      -- break(string.format("ogse_unist.remove_value: trying to remove nonexistent value '%s'", name))
+    -- но возможно стоит поставить вылет
+    -- break(string.format("ogse_unist.remove_value: trying to remove nonexistent value '%s'", name))
   end
   -- удалить значение из общего хранилища
   storage[ name ] = nil
-  -- удалить из физического хранилища
-  st_objects[ item.st_num ]:remove_item( name )
 end
 
 
