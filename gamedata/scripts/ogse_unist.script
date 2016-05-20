@@ -172,9 +172,6 @@ function create_item( name, value, typ )
         )
       )
     else
-      abort(
-        "ogse_unist.create_item: can't deal with type '" .. lua_type .. "'"
-      )
     end
   end
 end
@@ -290,18 +287,30 @@ function on_save()
   for i = 1, st_count_item.value do
     st_objects[ i ]:clear()
   end
+  local total_space = 8000
   for _, item in ipairs( items ) do
-    local st
+    local frags
+    if item.size > total_space then
+      frags = item:fragment_value( total_space )
+    else
+      frags = { item }
+    end
     for i = 1, st_count_item.value do
-      if st_objects[ i ]:free_space() >= item.size then
-        st = st_objects[ i ]
-        break
+      if st_objects[ i ]:free_space() >= frags[ 1 ].size then
+        -- добавляем элемент в хранилище
+        st_objects[ i ]:add_item( frags[ 1 ] )
+        table.remove( frags, 1 )
+        if table.getn( frags ) == 0 then break end
       end
     end
-    -- если не найдено, то добавляем новое хранилище
-    st = st or add_storage()    -- если не нашли, то надо создать
-    -- добавляем элемент в хранилище
-    st:add_item( item )
+    if table.getn( frags ) > 0 then
+      -- если не найдено, то добавляем новые хранилища
+      for i = 1, table.getn( frags ) do
+        local st = add_storage()
+        -- добавляем элемент в хранилище
+        st:add_item( frags[ i ] )
+      end
+    end
   end
   for i = 1, st_count_item.value do
     st_objects[ i ]:save()
@@ -366,7 +375,11 @@ end
 
 function base_single_storage:merge_data_to( t )
   for name, item in pairs( self.data ) do
-    t[ name ] = item
+    if t[ name ] then
+      t[ name ]:append_data_from( item )
+    else
+      t[ name ] = item
+    end
   end
 end
 
@@ -406,8 +419,8 @@ end
 
 class "u8_element"
 function u8_element:__init( name, value )
-  self.type = types.u8
   self.name = name
+  self.type = types.u8
   if value ~= nil then
     self.value = value
     self:update_size()
@@ -422,6 +435,11 @@ end
 
 function u8_element:data_size()
   return 1
+end
+
+function u8_element:header_size()
+  -- длина имени + 1 байт на завершитель строки имени + 1 байт на тип
+  return self.name:len() + 2
 end
 
 function u8_element:get_string()
@@ -441,8 +459,15 @@ end
 -- выдаёт полный размер элемента в байтах в нетпакете, включая поле
 -- имени и типа
 function u8_element:update_size()
-  -- размер данных + длина имени + 1 байт на завершитель строки имени + 1 байт на тип
-  self.size = self:data_size() + self.name:len() + 2
+  self.size = self:header_size() + self:data_size()
+end
+
+function u8_element:fragment_value( max_size )
+  abort( "not implemented" )
+end
+
+function u8_element:append_data_from( item )
+  abort( "not implemented" )
 end
 
 
@@ -517,11 +542,38 @@ function string_element:__init( name, value ) super( name, value )
 end
 
 function string_element:get_string()
-  return self.value
+  return self:get_value()
 end
 
 function string_element:data_size()
   return self.value:len() + 1
+end
+
+function string_element:fragment_value( max_size )
+  local fragments     = {}
+  local max_value_len = max_size - self:header_size() - 1
+  local sum_len       = 0
+  for i = 1, self.value:len(), max_value_len do
+    local end_pos = i + max_value_len - 1
+    local str
+    if end_pos < self.value:len() then
+      str = self.value:sub( i, end_pos )
+    else
+      str = self.value:sub( i )
+    end
+    table.insert( fragments, string_element( self.name, str ) )
+    sum_len = sum_len + str:len()
+  end
+  ASSERT(
+    sum_len == self.value:len(),
+    "sum_len != self.value:len(): %s != %s", sum_len, self.value:len()
+  )
+  return fragments
+end
+
+function string_element:append_data_from( item )
+  self.value = self.value .. item:get_value()
+  self:update_size()
 end
 
 
@@ -673,6 +725,47 @@ function array_element:get_value()
   return t
 end
 
+function array_element:fragment_value( max_size )
+  local fragments     = {}
+  local max_value_len = max_size - self:header_size() - 2
+  local tmp, sz       = {}, 0
+  local check_sz      = 0
+  for _, v in ipairs( self.value ) do
+    if sz + v.size > max_value_len then
+      local t = {}
+      for _, v2 in ipairs( tmp ) do
+        table.insert( t, v2:get_value() )
+      end
+      table.insert( fragments, array_element( self.name, t ) )
+      check_sz = check_sz + sz
+      tmp, sz  = { v }, v.size
+    else
+      table.insert( tmp, v )
+      sz = sz + v.size
+    end
+  end
+  if table.getn( tmp ) > 0 then
+    local t = {}
+    for _, v2 in ipairs( tmp ) do
+      table.insert( t, v2:get_value() )
+    end
+    table.insert( fragments, array_element( self.name, t ) )
+    check_sz = check_sz + sz
+  end
+  ASSERT(
+    check_sz + 2 == self:data_size(),
+    "check_sz + 2 != self:data_size(): %s, %s", check_sz, self:data_size()
+  )
+  return fragments
+end
+
+function array_element:append_data_from( item )
+  for _, v in ipairs( item.value ) do
+    table.insert( self.value, v )
+  end
+  self:update_size()
+end
+
 
 class "table_element" ( array_element )
 function table_element:__init( name, value ) super( name, value )
@@ -731,6 +824,14 @@ function table_element:get_value()
     t[ v[ 1 ].value ] = v[ 2 ].value
   end
   return t
+end
+
+function table_element:fragment_value( max_size )
+  abort( "not implemented" )
+end
+
+function table_element:append_data_from( item )
+  abort( "not implemented" )
 end
 
 
