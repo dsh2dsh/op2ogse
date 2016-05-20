@@ -65,22 +65,18 @@ function clear_personal_records( npc_id )
 --      )
 --    end
   end
-  relation_seen[ npc_id ] = nil
+  relation_seen[ npc_id  ] = nil
   relation_table[ npc_id ] = nil
 end
 
 
 function save()
-  local pk = net_packet()
-  pk:w_begin( 123 ) -- двухбайтовая заглушка
-  pk:r_seek( 2 )    -- чтобы пропустить эти два байта при чтении
-  local rel_table_size = 0
+  local chunks = {}
   for k, v in pairs( relation_table ) do
-    rel_table_size = rel_table_size + 1
-  end
-  pk:w_u16( rel_table_size )
---  log1( "[RELATIONS] RELATION TABLE SIZE IS " .. tostring( rel_table_size ) )
-  for k, v in pairs( relation_table ) do
+    local pk = net_packet()
+    pk:w_begin( 123 )     -- двухбайтовая заглушка
+    pk:r_seek( 2 )        -- чтобы пропустить эти два байта при чтении
+    table.insert( chunks, pk )
     local table_size = table.getn( v )
 --    log1(
 --      "[RELATIONS] SAVING RELATION TABLE RECORD "
@@ -100,19 +96,56 @@ function save()
 --      )
     end
   end
---  log1(
---    "[RELATIONS] RELATION TABLE SAVED! Packet length = "
---      .. tostring( pk:w_tell() )
---  )
-  ogse.save_var( "dsh_ogse_relations", pk, "chunk" )
+  log2( "[RELATIONS] RELATION TABLE SIZE IS %s", table.getn( chunks ) )
+  ogse.save_var( script_name() .. ".chunks", chunks, "array", "chunk" )
+  ogse.delete_var( "dsh_ogse_relations" )
 end
 
 
 function load()
-  local pk = ogse.load_var_safe( "dsh_ogse_relations" )
+  local old = ogse.load_var_safe( "dsh_ogse_relations" )
+  if old then
+    return load_old( old )
+  end
+  local chunks = ogse.load_var_safe( script_name() .. ".chunks" )
+  if chunks then
+    log2( "[RELATIONS] RELATION TABLE SIZE IS %s", table.getn( chunks ) )
+    for _, pk in ipairs( chunks ) do
+      local to_id   = pk:r_u16()
+      local to_size = pk:r_u16()
+--      log1(
+--        "[RELATIONS] LOADING RELATION TABLE RECORD "
+--          .. tostring( to_id ) .. " WITH SIZE " .. tostring( to_size )
+--      )
+      if to_id == 0 then
+        to_id = "actor"
+      end
+      relation_seen[ to_id  ] = {}
+      relation_table[ to_id ] = {}
+      for j = 1, to_size do
+        local curr_id = pk:r_u16()
+        ASSERT(
+          ( not relation_seen[ to_id ][ curr_id ] ),
+          "[RELATIONS] FOUND SECOND RECORD TO %s FROM %s",
+          tostring( to_id ), tostring( curr_id )
+        )
+        table.insert( relation_table[ to_id ], curr_id )
+        relation_seen[ to_id ][ curr_id ] = true
+--        log1(
+--          "[RELATIONS] LOADING RELATION TO "
+--            .. tostring( to_id ) .. " FROM " .. tostring( curr_id )
+--        )
+      end
+    end
+    log1( "[RELATIONS] RELATION TABLE LOADED!" )
+  end
+end
+
+
+function load_old( pk )
   if pk then
     local table_size = pk:r_u16()
---    log1( "[RELATIONS] RELATION TABLE SIZE IS ".. tostring( table_size ) )
+    log2( "[RELATIONS] OLD RELATION TABLE SIZE IS %s", tostring( table_size ) )
     for i = 1, table_size do
       local to_id   = pk:r_u16()
       local to_size = pk:r_u16()
@@ -140,7 +173,7 @@ function load()
 --        )
       end
     end
---    log1( "[RELATIONS] RELATION TABLE LOADED!" )
+    log1( "[RELATIONS] OLD RELATION TABLE LOADED!" )
   end
 end
 
@@ -149,9 +182,9 @@ local attitude_neutal_threshold = get_float(
   "game_relations", "attitude_neutal_threshold"
 )
 local fix_rel_exceptions = {
-  [ "crazy_doctor_npc"  ] = true, -- сумасшедший доктор в X-16
-  [ "mil_dolg"          ] = true, -- группа Черепа
-  [ "val_bandit_krisyk" ] = true, -- Крысюк
+  [ "crazy_doctor_npc"    ] = true, -- сумасшедший доктор в X-16
+  [ "mil_dolg"            ] = true, -- группа Черепа
+  [ "val_bandit_krisyk"   ] = true, -- Крысюк
   -- Гавр и телохранители
   [ "mil_trader_gavr"     ] = true,
   [ "mil_gavr_bodyguard1" ] = true,
