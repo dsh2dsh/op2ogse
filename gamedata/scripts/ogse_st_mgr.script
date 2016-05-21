@@ -120,29 +120,59 @@ end
 function timer_exists(id)
 	return registry[id] ~= nil
 end
+
+
 -- загрузка всех таймеров
 function on_load()
-	local timers_list = ogse.load_var(root_guid, {}, "array")
-	for _,timer_id in ipairs(timers_list) do
-		local timer_chunk = ogse.load_var(storage_guid.."_"..timer_id)
-		local timer_class = timer_chunk:r_stringZ()
-		
-		local f, msg = loadstring("return "..timer_class.."(...)")
-		ASSERT(f, msg)
-		local timer = f(timer_id)
-		timer:_aux_load(timer_chunk)
-		timer:start(timer._high_priority)
-		ogse.delete_var(storage_guid.."_"..timer_id)
-	end
+  local chunks = ogse.load_var_safe( script_name() .. ".chunks" )
+  if not chunks then return on_load_old() end
+  for _, pk in ipairs( chunks ) do
+    local timer_id    = pk:r_stringZ()
+    local timer_class = pk:r_stringZ()
+    local f, msg = loadstring( "return " .. timer_class .. "(...)" )
+    ASSERT( f, msg )
+    local timer = f( timer_id )
+    timer:_aux_load( pk )
+    timer:start( timer._high_priority )
+  end
+  log2( "[%s]: %s timers loaded", script_name(), table.getn( chunks ) )
 end
+
+
+function on_load_old()
+  local timers_list = ogse.load_var( root_guid, {}, "array" )
+  for _, timer_id in ipairs( timers_list ) do
+    local timer_chunk = ogse.load_var( storage_guid .. "_" .. timer_id )
+    local timer_class = timer_chunk:r_stringZ()
+    local f, msg = loadstring( "return " .. timer_class .. "(...)" )
+    ASSERT( f, msg )
+    local timer = f( timer_id )
+    timer:_aux_load( timer_chunk )
+    timer:start( timer._high_priority )
+    ogse.delete_var( storage_guid .. "_" .. timer_id )
+  end
+  ogse.delete_var( root_guid )
+  log2(
+    "[%s]: %s old timers loaded", script_name(), table.getn( timers_list )
+  )
+end
+
+
 -- сохранение состояния всех таймеров
 function on_save()
-	local timers_list = {}
-	for timer_id,timer in pairs(registry) do
-		table.insert(timers_list, timer_id)
-	end
-	ogse.save_var(root_guid, timers_list, "array")
+  local chunks = {}
+  for timer_id, timer in pairs( registry ) do
+    local pk = net_packet()
+    pk:w_begin( 123 )     -- двухбайтовая заглушка
+    pk:r_seek( 2 )        -- чтобы пропустить эти два байта при чтении
+    table.insert( chunks, pk )
+    pk:w_stringZ( timer_id )
+    timer:_aux_save( pk )
+  end
+  ogse.save_var( script_name() .. ".chunks", chunks, "array", "chunk" )
+  log2( "[%s]: %s timers saved", script_name(), table.getn( chunks ) )
 end
+
 
 ---------------------------------------------------------------------------------
 --< базовый класс сохраняемого таймера для отслеживания произвольного события >--
@@ -193,10 +223,7 @@ function savable_timer:_aux_load(packet)
 		self:load(packet)
 	end
 end
-function savable_timer:_aux_save()
-	local timer_chunk = net_packet()
-	timer_chunk:w_begin(123)
-	timer_chunk:r_seek(2)
+function savable_timer:_aux_save( timer_chunk )
 	timer_chunk:w_stringZ(self._class)
 	timer_chunk:w_bool(self._high_priority)
 	-- сохранение времени срабатывания по шкале реального и игрового времени
@@ -228,7 +255,6 @@ function savable_timer:_aux_save()
 	
 	-- теперь сохраняем данные пользователя, если есть
 	self:save(timer_chunk)
-	ogse.save_var(storage_guid.."_"..self._id, timer_chunk, "chunk")
 end
 -- задать точное время срабатывания в терминах игрового времени
 function savable_timer:set_gtime(t) -- аргумент - объект типа game.CTime
@@ -288,22 +314,15 @@ function savable_timer:start(high_priority)
 	self._start_time = self._start_time or game.get_game_time()
 	self._high_priority = high_priority
 	self._cond_slot_desc = {signal = "on_update", self = self, fun = self._aux_cond, queued = not high_priority}
-	self._save_slot_desc = {signal = "on_save", self = self, fun = self._aux_save}
 	local sm = ogse_signals.get_mgr()
 	sm:subscribe(self._cond_slot_desc)
-	sm:subscribe(self._save_slot_desc)
 	registry[self._id] = self
 	return self
 end
 -- останов таймера
 function savable_timer:stop()
 	ogse_signals.get_mgr():unsubscribe(self._cond_slot_desc)
-	ogse_signals.get_mgr():unsubscribe(self._save_slot_desc)
 	registry[self._id] = nil
-	local timer_storage_name = storage_guid.."_"..self._id
-	if ogse.var_exists(timer_storage_name) then
-		ogse.delete_var(timer_storage_name)
-	end
 end
 -- метод для внутреннего использования таймером
 function savable_timer:_aux_cond()
