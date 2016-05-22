@@ -94,13 +94,24 @@ function dsh_respawner:init_respawn_params()
     self.m_game_vertex_id  = get_u32( sect, "game_vertex_id"  )
   end
 
-  xyzlg = ogse.load_var( script_name() .. "." .. self.name .. ".xyzlg", {} )
-  if table.getn( xyzlg ) == 5 then
-    local x, y, z, l, g = unpack( xyzlg )
-    self.xyzlg = {
-      vector():set( tonumber( x ), tonumber( y ), tonumber( z ) ),
-      tonumber( l ), tonumber( g )
-    }
+  xyzlg = ogse.load_var_safe( script_name() .. "." .. self.name .. ".xyzlg" )
+  if xyzlg then
+    if type( xyzlg ) == "table" then
+      if table.getn( xyzlg ) == 5 then
+        local x, y, z, l, g = unpack( xyzlg )
+        self.xyzlg = {
+          vector():set( tonumber( x ), tonumber( y ), tonumber( z ) ),
+          tonumber( l ), tonumber( g )
+        }
+      else
+        self.xyzlg = {
+          self.position, self.m_level_vertex_id, self.m_game_vertex_id
+        }
+        ogse.delete_var( script_name() .. "." .. self.name .. ".xyzlg" )
+      end
+    else -- chunk
+      self.xyzlg = { xyzlg:r_vec3(), xyzlg:r_u32(), xyzlg:r_u32() }
+    end
   else
     self.xyzlg = {
       self.position, self.m_level_vertex_id, self.m_game_vertex_id
@@ -195,7 +206,13 @@ function dsh_respawner:walk_respawner()
   local tname = script_name() .. "." .. self.name .. ".xyzlg"
   if pos then
     self.xyzlg = { pos, lvid, gvid }
-    ogse.save_var( tname, { pos.x, pos.y, pos.z, lvid, gvid }, "array" )
+    local pk = net_packet()
+    pk:w_begin( 123 )     -- двухбайтовая заглушка
+    pk:r_seek( 2 )        -- чтобы пропустить эти два байта при чтении
+    pk:w_vec3( pos )
+    pk:w_u32( lvid )
+    pk:w_u32( gvid )
+    ogse.save_var( tname, pk, "chunk" )
   else
     self.xyzlg = {
       self.position, self.m_level_vertex_id, self.m_game_vertex_id
