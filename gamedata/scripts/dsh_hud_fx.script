@@ -42,6 +42,38 @@ local hud_pp = {
   [ "hud_sci"  ] = "helm_scientific.ppe",
 }
 
+local nlc7_hud_sound_t = {
+  [ "hud_exo"  ] = "mil",
+  [ "hud_gaz"  ] = "gas",
+  [ "hud_merc" ] = "gas",
+  [ "hud_mil"  ] = "mil",
+  [ "hud_nano" ] = "scn",
+  [ "hud_sci"  ] = "scn",
+}
+
+local nlc7_act_breath = {
+  [ "wht" ] = {
+    { "actor\\nlc7\\without_mask_1_",  2, 1.2 },
+    { "actor\\nlc7\\without_mask_2_",  2, 1.1 },
+    { "actor\\nlc7\\without_mask_3_",  6, 1   },
+  },
+  [ "gas" ] = {
+    { "actor\\nlc7\\gas_mask_1_",      6, 1.0 },
+    { "actor\\nlc7\\gas_mask_2_",     10, 0.9 },
+    { "actor\\nlc7\\gas_mask_3_",     10, 0.8 },
+  },
+  [ "mil" ] = {
+    { "actor\\nlc7\\exo_mask_1_",      9, 1.5 },
+    { "actor\\nlc7\\exo_mask_2_",      9, 1.3 },
+    { "actor\\nlc7\\exo_mask_3_",      8, 1.1 },
+  },
+  [ "scn" ] = {
+    { "actor\\nlc7\\scient_mask_1_",   2, 1.6 },
+    { "actor\\nlc7\\scient_mask_2_",   2, 1.4 },
+    { "actor\\nlc7\\scient_mask_3_",   6, 1.2 },
+  },
+}
+
 
 local wpn_fx = {
   -- 9x18
@@ -278,27 +310,15 @@ local wpn_fx = {
 }
 
 
-local sm_attached
 function attach( sm )
+  sm:subscribe({ signal = "on_actor_before_helmet_off", fun = this.on_helmet_off })
   sm:subscribe({ signal = "on_actor_fire", fun = this.on_actor_fire })
-  if not ui_mm_opt_main.GetOption( "hud_plus_enabled" ) then return end
-  sm_attached = {
-    { signal = "on_actor_helmet_off", fun = this.on_helmet_off },
-    { signal = "on_actor_helmet_on",  fun = this.on_helmet_on  },
-    { signal = "on_update",           fun = this.on_update     },
-  }
-  for _, v in ipairs( sm_attached ) do
-    sm:subscribe( v )
-  end
-end
-function detach( sm )
-  for _, v in ipairs( sm_attached ) do
-    sm:unsubscribe( v )
-  end
+  sm:subscribe({ signal = "on_actor_helmet_on", fun = this.on_helmet_on  })
+  sm:subscribe({ signal = "on_update", fun = this.on_update     })
 end
 
 
-local upd_time = 0
+local upd_time, upd_time2 = 0, 0
 function on_update()
   if not ( db.actor and db.actor:alive() ) then return end
   local tg = time_global()
@@ -306,11 +326,14 @@ function on_update()
     upd_time = tg + 180
     hud_condition()
   end
+  if tg > upd_time2 then
+    upd_time2 = tg + 113
+    nlc7_actor_heart()
+  end
 end
 
 
 local actor_speed_time = 0
-
 function hud_condition()
   local radiation = db.actor.radiation
   if radiation > 1 then radiation = 1 end
@@ -332,7 +355,7 @@ function hud_condition()
       end
     end
   end
-  if db.actor:is_actor_sprinting() then
+  if db.actor:is_actor_sprinting() or db.actor:is_actor_climbing() then
     actor_speed_time = actor_speed_time + opt_speed.inc
   elseif actor_speed_time > opt_speed.dec then
     actor_speed_time = actor_speed_time - opt_speed.dec
@@ -341,85 +364,31 @@ function hud_condition()
   actor_speed_time = math.min(
     32, actor_speed_time + db.actor:get_bleeding() * opt_speed.k_bleed
   )
-  local cur_helmet = ogse_dynamic_hud.get_current_helmet()
-  if cur_helmet then
-    breath_inside_mask()
-  else
-    breath_no_mask()
-  end
-end
-
-
-local health_play = 0
-local run_play    = 0
-local snd_tg      = 0
-
-function breath_no_mask()
-  local tg     = time_global()
-  local health = db.actor.health
-  if tg < snd_tg or health < 0 then return end
-
-  if health > opt_health.level2 then
-    if
-      actor_speed_time > opt_speed.time_mini
-      or math.min(
-        db.actor.power,
-        ogse_actor_conditions_mgr.get_overweight_power()
-      ) < opt_speed.stamina
-      or run_play == 1
-    then
-      run_play = run_play + 1
-      if run_play > 2 then run_play = 1 end
-      local run_koef = math.ceil( 3 * actor_speed_time / 44 )
-      if run_koef == 0 then run_koef = 3 end
-      local snd_fname = "actor\\run_" .. run_koef .. "_" .. run_play
-      local snd = sound_object( snd_fname )
-      snd:play( db.actor, 0, sound_object.s2d )
-      snd_tg = tg + snd:length() * 1.15
-    else
-      run_play = 2
-    end
-    return
-  end
-
-  if health <= opt_health.level1 then
-    health = 1
-    if math.random() < 0.1 then
-      health_play = 0
-    else
-      health_play = health_play + 1
-      if health_play > 4 then health_play = 1 end
-    end
-  else
-    health = 2
-    health_play = health_play + 1
-    if health_play > 4 then health_play = 1 end
-  end
-  local snd = sound_object( "actor\\health_" .. health .. health_play )
-  snd:play( db.actor, 0, sound_object.s2d )
-  snd_tg = tg + opt_health.injury_snd[ "_" .. health .. "_" .. health_play ]
 end
 
 
 local gas_play = 0
-function breath_inside_mask()
+local snd_tg   = 0
+
+function breath_inside_mask( run_koef )
   local tg = time_global()
   if tg < snd_tg then return end
   gas_play = gas_play + 1
   if gas_play > 8 then gas_play = 1 end
-  local run_koef
-  if db.actor.health > 0.2 then
-    run_koef = math.ceil(
-      (
-        1.01 - math.min(
-          db.actor.power,
-          db.actor.health,
-          ogse_actor_conditions_mgr.get_overweight_power()
-        )
-      ) * 3 + actor_speed_time / 8
-    )
-  else
-    run_koef = 8
+  if not run_koef then
+    if db.actor.health > 0.2 then
+      run_koef = math.ceil(
+        (
+          1.01 - math.min(
+            db.actor.power,
+            db.actor.health,
+            ogse_actor_conditions_mgr.get_overweight_power()
+          )
+        ) * 3 + actor_speed_time / 8
+      )
+    else
+      run_koef = 8
+    end
   end
   local snd_fname = "actor\\gas_breath_" .. run_koef .. "_" .. gas_play
   local snd = sound_object( snd_fname )
@@ -431,45 +400,6 @@ end
 local startup = true
 function force_on_helmet()
   startup = false
-end
-
-
-function on_helmet_off()
-  add_helmet_effector( false )
-  if startup then
-    startup = false
-  else
-    local tg = time_global()
-    local snd
-    if tg < ( snd_tg - 400 ) then
-      snd = sound_object( "actor\\gasmask_nobreath" )
-    else
-      snd = sound_object( "actor\\gasmask_off" )
-    end
-    snd:play( db.actor, 0, sound_object.s2d )
-    snd_tg = tg + snd:length() + 120
-    gas_play = 0
-    helmet_on_off_effect()
-  end
-end
-
-
-function on_helmet_on()
-  add_helmet_effector( true )
-  if startup then
-    startup = false
-  else
-    local tg = time_global()
-    local snd
-    if tg < snd_tg then
-      snd = sound_object( "actor\\gasmask_nobreath" )
-    else
-      snd = sound_object( "actor\\gasmask_on" )
-    end
-    snd:play( db.actor, 0, sound_object.s2d )
-    snd_tg = tg + snd:length() + 120
-    helmet_on_off_effect()
-  end
 end
 
 
@@ -497,12 +427,12 @@ function get_cur_helmet_pp()
 end
 
 
-function helmet_on_off_effect()
-  level.disable_input()
+function helmet_on_off_effect( delay )
+--  level.disable_input()
   db.actor:hide_weapon()
-  dsh.timeout( 2000, function()
+  dsh.timeout( ( delay or 2000 ), function()
     db.actor:restore_weapon()
-    level.enable_input()
+--    level.enable_input()
   end )
 end
 
@@ -586,4 +516,106 @@ function on_actor_fire( cur_wpn )
   end
   shotc = shotc + 1
   shott = time_global() + 100
+end
+
+
+local delt   = 0
+local delt_h = 0
+
+function nlc7_actor_heart( helmet )
+  local npc = db.actor
+  if not npc then return end
+  local hb = npc.health
+  if hb <= 0 or not npc:alive() then return end
+  local time_curr = time_global()
+  local time_delt = 0
+  local step      = 1
+  if hb < 0.3 then
+    time_delt = time_curr - delt_h
+    if time_delt >= math.log( hb * 200 ) * 200 then
+      if     hb < 0.05 then
+        step = 3
+      elseif hb < 0.15 then
+        step = 2
+      else
+        step = 1
+      end
+      local snd_fname = "actor\\nlc7\\heartbeat_" .. step .. "_" .. math.random( 4 )
+      local snd = sound_object( snd_fname )
+      snd.volume = 1.5 - 5 * hb
+      snd:play( db.actor, 0, sound_object.s2d )
+      delt_h = time_curr
+    end
+  end
+  local r_h = math.min(
+    npc.power,
+    ( 1 - actor_speed_time / 32 ),
+    ogse_actor_conditions_mgr.get_overweight_power()
+  )
+  local hud, helmet = ogse_dynamic_hud.get_current_helmet()
+  local tip = helmet
+    and ( nlc7_hud_sound_t[ helmet ] or "wht" )
+    or "wht"
+  if r_h < 0.79 then
+    time_delt = time_curr - delt
+    if time_delt >= r_h * 1500 + 800 then
+      if     r_h < 0.25 then
+        step = 3
+      elseif r_h < 0.5  then
+        step = 2
+      else
+        step = 1
+      end
+      local snd_fname = nlc7_act_breath[ tip ][ step ][ 1 ]
+        .. math.random( nlc7_act_breath[ tip ][ step ][ 2 ] )
+      local snd = sound_object( snd_fname )
+      snd.volume = 2.5 - nlc7_act_breath[ tip ][ step ][ 3 ] - r_h
+      snd:play( db.actor, 0, sound_object.s2d )
+      delt = time_curr
+    end
+  elseif ui_mm_opt_main.GetOption( "hud_plus_enabled" ) then
+    if tip ~= "wht" then
+      breath_inside_mask( 1 )
+    end
+  end
+end
+
+
+function on_helmet_off()
+  add_helmet_effector( false )
+  if startup then
+    startup = false
+  else
+    helmet_on_off_effect( 1350 )
+    local hud, helmet = ogse_dynamic_hud.get_current_helmet()
+    if helmet then
+      local tip = helmet
+        and ( nlc7_hud_sound_t[ helmet ] or "wht" )
+        or "wht"
+      local snd_fname = "device\\masks\\" .. tip .. "_off"
+      local snd = sound_object( snd_fname )
+      dsh.timeout( 50, function()
+        snd:play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 0.5 )
+      end )
+    end
+  end
+end
+
+
+function on_helmet_on()
+  add_helmet_effector( true )
+  if startup then
+    startup = false
+  else
+    helmet_on_off_effect( 2050 )
+    local hud, helmet = ogse_dynamic_hud.get_current_helmet()
+    if helmet then
+      local tip = helmet
+        and ( nlc7_hud_sound_t[ helmet ] or "wht" )
+        or "wht"
+      local snd_fname = "device\\masks\\" .. tip .. "_on"
+      local snd = sound_object( snd_fname )
+      snd:play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 1 )
+    end
+  end
 end
