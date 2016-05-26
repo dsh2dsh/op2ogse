@@ -62,19 +62,25 @@ function on_spawn()
     if ogse_st_mgr.timer_exists( tname ) then
       restore_speeds[ k ].apply = true
       restore_speeds[ k ].value = ogse.load_var( tname )
-      if not snd_in_use then
-        snd_in_use = sound_object( snd_in_use_name )
-        snd_in_use:play(
-          db.actor, 0, sound_object.s2d + sound_object.looped
-        )
-      end
     end
+  end
+  local pp = ogse.load_var_safe( script_name() .. ".pp" )
+  if pp then
+    level.add_pp_effector( pp .. ".ppe", 1021, true )
+  end
+  local snd = ogse.load_var_safe( script_name() .. ".snd" )
+  if snd then
+    snd_in_use = sound_object( snd )
+    snd_in_use:play(
+      db.actor, 0, sound_object.s2d + sound_object.looped
+    )
   end
 end
 
 
 function on_actor_before_use( obj )
-  local sect = obj:section()
+  local sect    = obj:section()
+  local applied = false
   for k, v in pairs( cfg ) do
     local val = get_float( sect, k )
     if
@@ -89,7 +95,24 @@ function on_actor_before_use( obj )
           nil, 0.0, inventory_item_offsets[ v.item_offset ]
         )
       end
-      process( sect, val, v.restore_speed, v.negative )
+      if process( sect, val, v.restore_speed, v.negative ) then
+        applied = true
+      end
+    end
+  end
+  if applied then
+    local pp = get_string( sect, script_name() .. ".pp" )
+    if pp then
+      level.add_pp_effector( pp .. ".ppe", 1021, true )
+      ogse.save_var( script_name() .. ".pp", pp, "string" )
+    end
+    local snd = get_string( sect, script_name() .. ".snd" )
+    if snd then
+      if snd_in_use then
+        snd_in_use:stop()
+      end
+      snd_in_use = sound_object( snd_in_use_name )
+      snd_in_use:play( db.actor, 0, sound_object.s2d )
     end
   end
 end
@@ -105,7 +128,7 @@ function process( sect, v, rs_name, use_negative )
       ( restore_speed < cur and not use_negative )
       or ( restore_speed > cur  and use_negative )
     then 
-      return
+      return false
     end
     ogse_st_mgr.get_timer( tname ):stop()
   end
@@ -116,12 +139,7 @@ function process( sect, v, rs_name, use_negative )
     :set_gdelay( how_long )
     :init( script_name() .. ".on_timer_end", rs_name )
     :start( true )
-  if snd_in_use then
-    snd_in_use:stop()
-  else
-    snd_in_use = sound_object( snd_in_use_name )
-  end
-  snd_in_use:play( db.actor, 0, sound_object.s2d )
+  return true
 end
 
 
@@ -129,15 +147,21 @@ function on_timer_end( rs_name )
   restore_speeds[ rs_name ].apply = false
   restore_speeds[ rs_name ].value = 0
   ogse.delete_var( script_name() .. "." .. rs_name )
-  local stop_snd = true
+  local stop_pp, stop_snd = true, true
   for k, v in pairs( restore_speeds ) do
     if v.apply then
-      stop_snd = false
+      stop_pp, stop_snd = false, false
       break
     end
   end
+  if stop_pp then
+    level.remove_pp_effector( 1021 )
+    ogse.delete_var( script_name() .. ".pp" )
+  end
   if stop_snd then
     snd_in_use:stop()
+    snd_in_use = nil
+    ogse.delete_var( script_name() .. ".snd" )
   end
 end
 
