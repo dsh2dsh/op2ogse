@@ -310,11 +310,179 @@ local wpn_fx = {
 }
 
 
+local hud_fxs = {
+  [ "use_sound" ] = {
+    {
+      [ "use_sound" ] = true,
+    },
+  },
+
+  [ "zvuki" ] = {
+    {
+      [ "func"      ] = function()
+        close_inventory()
+        bind_stalker.hide_weapon()
+      end,
+    },
+    {
+      [ "timeout"   ] = 500,
+      [ "use_sound" ] = true,
+    },
+    {
+      [ "func"      ] = function()
+        bind_stalker.restore_weapon()
+      end,
+    },
+  },
+
+  [ "beer" ] = {
+    {
+      [ "func"      ] = function()
+        close_inventory()
+      end,
+    },
+    {
+      [ "timeout"   ] = 500,
+      [ "func"      ] = function() helmet_hud_fx_off() end,
+      [ "next"      ] = false,
+    },
+    {
+      [ "use_sound" ] = true,
+    },
+    {
+      [ "timeout"   ] = 1000,
+      [ "func"      ] = function()
+        level.add_cam_effector(
+          "camera_effects\\item_use.anm", 8053, false, ""
+        )
+      end,
+    },
+    {
+      [ "timeout"   ] = 6000,
+      [ "func"      ] = function()
+        fx_use_dsh_medkit()
+        helmet_hud_fx_on()
+      end,
+      [ "next"      ] = false,
+    },
+  },
+
+  [ "flaska" ] = {
+    {
+      [ "func"      ] = function()
+        close_inventory()
+      end,
+    },
+    {
+      [ "timeout"   ] = 500,
+      [ "func"      ] = function() helmet_hud_fx_off() end,
+      [ "next"      ] = false,
+    },
+    {
+      [ "use_sound" ] = true,
+    },
+    {
+      [ "timeout"   ] = 1000,
+      [ "func"      ] = function()
+        level.add_cam_effector(
+          "camera_effects\\item_use.anm", 8053, false, ""
+        )
+      end,
+    },
+    {
+      [ "timeout"   ] = 6000,
+      [ "func"      ] = function() helmet_hud_fx_on() end,
+      [ "next"      ] = false,
+    },
+  },
+
+  [ "sigaret" ] = {
+    {
+      [ "func"      ] = function()
+        close_inventory()
+      end,
+    },
+    {
+      [ "timeout"   ] = 500,
+      [ "func"      ] = function() helmet_hud_fx_off() end,
+      [ "next"      ] = false,
+    },
+    {
+      [ "use_sound" ] = true,
+    },
+    {
+      [ "timeout"   ] = 1000,
+      [ "func"      ] = function()
+        level.add_cam_effector(
+          "camera_effects\\item_use_fast.anm",
+           8063, false, ""
+        )
+      end,
+    },
+    {
+      [ "timeout"   ] = 1980,
+      [ "func"      ] = function()
+        level.add_cam_effector(
+          "camera_effects\\item_use.anm", 8064, false, ""
+        )
+      end,
+    },
+    {
+      [ "timeout"   ] = 6500,
+      [ "func"      ] = function() helmet_hud_fx_on() end,
+      [ "next"      ] = false,
+    },
+  },
+
+  [ "vodka" ] = {
+    {
+      [ "func"      ] = function()
+        close_inventory()
+      end,
+    },
+    {
+      [ "timeout"   ] = 500,
+      [ "func"      ] = function() helmet_hud_fx_off() end,
+      [ "next"      ] = false,
+    },
+    {
+      [ "use_sound" ] = true,
+    },
+    {
+      [ "timeout"   ] = 1000,
+      [ "func"      ] = function()
+        level.add_cam_effector(
+          "camera_effects\\item_use.anm", 8053, false, ""
+        )
+      end,
+    },
+    {
+      [ "timeout"   ] = 2500,
+      [ "func"      ] = function()
+        level.add_cam_effector(
+          "camera_effects\\surge_01.anm", 8054, false, ""
+        )
+      end,
+    },
+    {
+      [ "timeout"   ] = 2100,
+      [ "func"      ] = function()
+        fx_use_dsh_medkit()
+        helmet_hud_fx_on()
+      end,
+      [ "next"      ] = false,
+    },
+  },
+}
+local active_hud_fx_queue, active_hud_fx_sect, active_fx_snd
+
+
 function attach( sm )
   sm:subscribe({ signal = "on_actor_before_helmet_off", fun = this.on_helmet_off })
   sm:subscribe({ signal = "on_actor_fire", fun = this.on_actor_fire })
   sm:subscribe({ signal = "on_actor_helmet_on", fun = this.on_helmet_on  })
   sm:subscribe({ signal = "on_update", fun = this.on_update     })
+  sm:subscribe({ signal = "on_use",    fun = this.on_use       })
 end
 
 
@@ -427,13 +595,22 @@ function get_cur_helmet_pp()
 end
 
 
+local weapon_lock, waiting_for_helmet = false, false
 function helmet_on_off_effect( delay, mode )
---  level.disable_input()
-  bind_stalker.hide_weapon()
+  --level.disable_input()
+  if not weapon_lock then
+    bind_stalker.hide_weapon()
+  end
   dsh.timeout( ( delay or 2000 ), function()
     ogse_signals.get_mgr():call( "on_helmet_on_off_done", mode )
-    bind_stalker.restore_weapon()
---    level.enable_input()
+    if not weapon_lock then
+      bind_stalker.restore_weapon()
+    end
+    if waiting_for_helmet then
+      waiting_for_helmet = false
+      helmet_hud_fx_done()
+    end
+    --level.enable_input()
   end )
 end
 
@@ -618,5 +795,142 @@ function on_helmet_on()
       local snd = sound_object( snd_fname )
       snd:play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 1 )
     end
+  end
+end
+
+
+local active_helmet
+local hud_fx_lock = false
+
+function helmet_hud_fx_off()
+  level.disable_input()
+  level.hide_indicators()
+  bind_stalker.hide_weapon()
+  hud_fx_lock = true
+  local hud, helmet = ogse_dynamic_hud.get_current_helmet()
+  if helmet then
+    active_helmet      = helmet
+    weapon_lock        = true
+    waiting_for_helmet = true
+    ogse_dynamic_hud.helmet_on_off()
+  else
+    helmet_hud_fx_done()
+  end
+end
+
+
+function helmet_hud_fx_on()
+  hud_fx_lock = false
+  level.show_indicators()
+  if active_helmet then
+    active_helmet      = nil
+    weapon_lock        = true
+    waiting_for_helmet = true
+    ogse_dynamic_hud.helmet_on_off()
+  else
+    helmet_hud_fx_done()
+  end
+end
+
+
+function helmet_hud_fx_done()
+  weapon_lock = false
+  if not hud_fx_lock then
+    bind_stalker.restore_weapon()
+    level.enable_input()
+  end
+  process_fx_next()
+end
+
+
+local active_fx_t
+function on_use( obj )
+  if has_alife_info( "biznes_remove_special_item" ) then return end
+  local sect = obj:section()
+  local fx   = get_string( sect, script_name() .. ".fx" )
+  if fx then
+    if
+      get_bool( sect, "dsh_medkit.dsh_hud_fx", false )
+      and db.actor:dont_has_info( "ui_inventory" )
+    then
+      fx = "use_sound"
+    end
+  end
+  if fx then
+    ASSERT( hud_fxs[ fx ], "unknown fx for %s", sect )
+    if active_fx_t then
+      active_fx_t:stop()
+      active_fx_t = nil
+    end
+    if active_fx_snd then
+      if active_fx_snd:playing() then
+        active_fx_snd:stop()
+      end
+      active_fx_snd = nil
+    end
+    active_hud_fx_queue = {}
+    for _, item in ipairs( hud_fxs[ fx ] ) do
+      table.insert( active_hud_fx_queue, item )
+    end
+    active_hud_fx_sect = obj:section()
+    process_fx_next()
+  end
+end
+
+
+function process_fx_next( timeout )
+  if active_hud_fx_queue and table.getn( active_hud_fx_queue ) > 0 then
+    local item = table.remove( active_hud_fx_queue, 1 )
+    local func = item.func
+      or ( item.use_sound and this.fx_use_sound )
+    ASSERT( func, "can't find func for %s", active_hud_fx_sect )
+    if item.timeout then timeout = item.timeout end
+    if timeout and timeout > 0 then
+      active_fx_t = dsh.timeout( timeout, function()
+        local timeout = func( item )
+        if item.next ~= false then
+          process_fx_next( timeout )
+        end
+      end )
+    else
+      active_fx_t = nil
+      local timeout = func( item )
+      if item.next ~= false then
+        process_fx_next( timeout )
+      end
+    end
+  else
+    active_fx_t         = nil
+    active_hud_fx_queue = nil
+    active_hud_fx_sect  = nil
+  end
+end
+
+
+function fx_use_sound( item )
+  local use_sound = get_string(
+    active_hud_fx_sect, script_name() .. ".use_sound"
+  )
+  ASSERT( use_sound, "use_sound not found for %s", active_hud_fx_sect )
+  if active_fx_snd and active_fx_snd:playing() then
+    active_fx_snd:stop()
+  end
+  local snd_names = parse_names( use_sound )
+  active_fx_snd   = sound_object(
+    snd_names[ math.random( table.getn( snd_names ) ) ]
+  )
+  active_fx_snd:play( db.actor, 0, sound_object.s2d )
+  return active_fx_snd:length()
+end
+
+
+function fx_use_dsh_medkit()
+  dsh_medkit.apply_item( active_hud_fx_sect )
+end
+
+
+function close_inventory()
+  if db.actor:has_info( "ui_inventory" ) then
+    level.start_stop_menu( level.main_input_receiver(), true )
   end
 end
