@@ -1,0 +1,218 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+function attach( sm ) -- для менеджера сигналов
+  sm:subscribe({ signal = "on_before_sleep",   fun = this.on_before_sleep   })
+  sm:subscribe({ signal = "on_sleep_finished", fun = this.on_sleep_finished })
+  sm:subscribe( {signal = "on_spawn",          fun = this.on_spawn          })
+  sm:subscribe( {signal = "on_use",            fun = this.on_item_use       })
+end
+
+
+function on_before_sleep( hours )
+  stop_gg_need_sleep_timer()
+end
+
+
+function on_sleep_finished( sleep_seconds )
+  local sleep_minutes = math.floor( sleep_seconds / 60 )
+  reduce_need_sleep( sleep_minutes )
+end
+
+
+function on_spawn()
+  test_sleep_pp()
+end
+
+
+function on_item_use( obj )
+  local section = obj:section()
+  if section == "matras" then
+    test_for_need_sleep_matras()
+    return true -- матрас больше никому не надо использовать
+  end
+end
+
+
+function reduce_need_sleep( minutes )
+  local gg_need_sleep = get_gg_need_sleep()
+  gg_need_sleep = gg_need_sleep - minutes / 2 * restore_coef()
+  if gg_need_sleep < 0 then gg_need_sleep = 0 end
+  set_gg_need_sleep( gg_need_sleep )
+  test_sleep_pp()
+end
+
+
+function restore_coef()
+  local coef = 1
+  -- вещи в слотах мешают выспаться быстрее
+  if db.actor:item_in_slot( 1 ) then coef = coef * 0.90 end
+  if db.actor:item_in_slot( 2 ) then coef = coef * 0.90 end
+  if db.actor:item_in_slot( 6 ) then coef = coef * 0.85 end
+  if ogse_actor_conditions_mgr.has_overweight then coef = coef * 0.85 end
+--  if get_shadow_inv():update_storage() then coef = coef * 0.85 end
+  return coef
+end
+
+
+function get_gg_need_sleep()
+  return ogse.load_var( script_name() .. ".gg_need_sleep", 0 )
+end
+
+function set_gg_need_sleep( v )
+  ogse.save_var( script_name() .. ".gg_need_sleep", v, "u16" )
+end
+
+function change_gg_need_sleep( v )
+  set_gg_need_sleep( get_gg_need_sleep() + v )
+  test_sleep_pp()
+end
+
+
+local zevota_flag = 0
+function test_sleep_pp()
+  local gg_need_sleep = get_gg_need_sleep()
+  if gg_need_sleep > 250 then
+    ogse_sleep_mgr.begin_sleep( 8 + dsh_energy_drink.get_energy_drink_n() )
+--    if sak.cats_near() then return db.actor:kill(db.actor) end
+  elseif gg_need_sleep > 244 then
+    zevota()
+    level.add_pp_effector( "black.ppe", 105, false )
+    if zevota_flag ~= 3 then
+      zevota_flag = 3
+      level.add_pp_effector( "yantar_underground_psi.ppe", 999, true )
+      level.set_pp_effector_factor( 999, 7.5 )
+    end
+  elseif gg_need_sleep > 190 then
+    if zevota_flag ~= 2 then
+      zevota()
+      level.add_pp_effector( "black.ppe", 105, false )
+      zevota_flag = 2
+      level.add_pp_effector( "yantar_underground_psi.ppe", 999, true )
+      level.set_pp_effector_factor( 999, 5.0 )
+    end
+  elseif gg_need_sleep > 185 then
+    if zevota_flag ~= 1 then
+      zevota()
+      zevota_flag = 1
+      level.remove_pp_effector( 999 )
+    end
+  else
+    if zevota_flag ~= 0 then
+      zevota_flag = 0
+      level.remove_pp_effector( 999 )
+    end
+  end
+end
+
+
+function test_for_need_sleep( add )
+  set_gg_need_sleep( get_gg_need_sleep() + ( add or 1 ) )
+  test_sleep_pp()
+  if not add then
+    run_gg_need_sleep_timer()
+  end
+end
+
+
+function run_gg_need_sleep_timer()
+  ogse_st_mgr.delayed_fun_start( script_name() .. ".test_for_need_sleep" )
+    :set_gdelay( 360 ) -- 6 minutes
+    :init( script_name() .. ".test_for_need_sleep" )
+    :start( true )
+end
+
+
+function stop_gg_need_sleep_timer()
+  local tname = script_name() .. ".test_for_need_sleep"
+  if ogse_st_mgr.timer_exists( tname ) then
+    ogse_st_mgr.get_timer( tname ):stop()
+  end
+end
+
+
+function test_for_need_sleep_matras()
+  if
+    db.actor:has_info( "horror_time_begin" )
+    and db.actor:dont_has_info( "horror_fail" )
+  then
+    if not meceniy_utils.check_for_horror_time() then
+      db.actor:disable_info_portion( "horror_time_begin" )
+    end
+  end
+  local actorPos      = db.actor:position()
+  local enemy         = false
+  local friends_count = 0
+  for npcId, is_stalker in pairs( db.storage ) do
+    local obj = level.object_by_id( npcId )
+    if obj and obj:alive() then
+      local dist = obj:position():distance_to( actorPos )
+      local is_enemy_to_actor = ogse.get_npc_relation(
+        obj, db.actor
+      ) == "enemy"
+      if is_enemy_to_actor and ( dist < 20 or obj:see( actor ) ) then
+        enemy = true
+        break
+      elseif is_stalker and dist < 40 then
+        friends_count = friends_count + 1
+      end
+    end
+  end
+  if enemy then
+    ogse.autohiding_msg(
+      game.translate_string( "not_need_sleep_enemy" ), 1500
+    )
+  elseif
+    amk.load_variable( "blowout", -1 ) > -1
+    and amk.load_variable( "blowout", -1 ) < 5
+  then
+    ogse.autohiding_msg( game.translate_string( "blowout_not_sleep" ), 1500 )
+  elseif
+    db.actor:has_info( "horror_time_begin" )
+    and db.actor:dont_has_info( "horror_fail" )
+  then
+    ogse.autohiding_msg(
+      game.translate_string( "not_need_sleep_in_hell" ), 1500
+    )
+  elseif dsh_energy_drink.is_energy_drink_in_use() then
+    ogse.autohiding_msg(
+      game.translate_string( "not_need_sleep_nrg" ), 1500
+    )
+  else
+    if
+      get_gg_need_sleep() > 10
+      or (
+        has_alife_info( "snp_shadows_start" )
+        and not has_alife_info( "snp_shadows_done" )
+      )
+    then
+      -- звуковое сопровождение
+      local snd = xr_sound.get_safe_sound_object( "zwuk\\inv_sleeping" )
+      snd:play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 2.0 )
+      -- закрываем инвентарь
+      local wnd = level.main_input_receiver()
+      if wnd then
+        wnd:GetHolder():start_stop_menu( wnd, true )
+      end
+      -- открываем диалог сна
+      level.start_stop_menu( ui_sleep.sleep(), true )
+      -- запоминаем, делать ли подлянку
+      ogse_sleep_mgr.actor_need_surprise = (
+        friends_count == 0 and math.random() < 0.8
+      )
+    else
+      ogse.autohiding_msg( game.translate_string( "not_need_sleep" ), 1500 )
+    end
+  end
+end
+
+
+local zevota_sound = {
+  "characters_voice\\human_06\\newbie\\states\\idle\\idle_34",
+  "characters_voice\\human_03\\stalker\\states\\idle\\idle_33"
+}
+
+function zevota()
+  local sound   = zevota_sound[ math.random( table.getn( zevota_sound ) ) ]
+  local snd_obj = sound_object( sound )
+  snd_obj:play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 1.0 )
+end
