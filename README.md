@@ -8,8 +8,8 @@ dsh mod для ОП-2
 
 Ссылки для скачивания:
 
-- https://yadi.sk/d/s-x-gXBHs6qZc
-- Зеркало: https://drive.google.com/open?id=0B0h2HnCBW9H1WFhfcktJT3JnNDA
+- https://yadi.sk/d/qcioeW55sFq7E
+- Зеркало: https://drive.google.com/open?id=0B0h2HnCBW9H1VkRBbHVEZ2U5cEk
 - Худ под меня: https://yadi.sk/d/5G_TkvICmB4ty
 - Некоторые текстуры на любителя: https://yadi.sk/d/jQCakrvFkQtk7
 
