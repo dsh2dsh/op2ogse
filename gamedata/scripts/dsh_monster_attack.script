@@ -42,8 +42,11 @@ function on_update( obj )
         chimera_attack( obj )
       elseif obj:clsid() == clsid.dog_s then
         dog_attack( obj )
+        dog_attack_phantom( obj )
       elseif obj:clsid() == clsid.poltergeist_s then
         poltergeist_attack( obj )
+      elseif obj:clsid() == clsid.pseudodog_s then
+        pseudodog_attack( obj )
       elseif obj:clsid() == clsid.tushkano_s then
         tushkano_attack( obj )
       elseif obj:clsid() == clsid.zombie_s then
@@ -68,7 +71,6 @@ end
 
 function master_koef()
   return 1 / ( 4 - level.get_game_difficulty() )
-    * dsh.get_this_level_difficulty()
 end
 
 
@@ -85,9 +87,9 @@ function bloodsucker_attack( obj )
   local binder = obj:binded_object()
   set_custom_panic( obj, binder, enemy )
   if binder.attack2_t and binder.attack2_t > time_global() then return end
-  local distance = obj:position():distance_to( enemy:position() )
-  local attack_dist = 15
-  binder.attack2_t  = time_global() + 1000
+  binder.attack2_t   = time_global() + 1000
+  local distance     = obj:position():distance_to( enemy:position() )
+  local attack_dist  = 15
   local need_phantom = false
   if distance < attack_dist then
     if math.random() < 0.5 then
@@ -222,6 +224,9 @@ end
 
 
 function dog_attack( obj )
+  local binder = obj:binded_object()
+  if binder.attack_t and binder.attack_t > time_global() then return end
+  binder.attack_t = time_global() + 1513
   if obj.health < 0.05 then return end
   local enemy = obj:get_enemy()
   if not (
@@ -229,56 +234,64 @@ function dog_attack( obj )
   ) then
     return
   end
-  local binder = obj:binded_object()
-  if binder.attack_t and binder.attack_t > time_global() then return end
   local dist = obj:position():distance_to( enemy:position() )
-  if dist > 20 then return end
-  local need_phantom, need_telepatic_hit = false, false
-  if
+  if dist > 8 then return end
+  if math.random() > dsh.get_this_level_difficulty() then return end
+  level.add_pp_effector( "radiation.ppe", 2012, false )
+  local h = hit()
+  h.type      = hit.telepatic
+  h.power     = 0.01 + 0.01 * master_koef() * dsh.get_this_level_difficulty()
+  h.impulse   = 0.0
+  h:bone( "bip01_spine" ) -- чтобы учитывалась броня
+  h.draftsman = obj
+  h.direction = obj:direction()
+  db.actor:hit( h )
+  local dog_shield = inventory.on_belt( "af_idol_monolita" ) and 0 or 1
+  local drop       = (
+    0.05 + ( 0.03 * level.get_game_difficulty() )
+  ) * dog_shield
+  if math.random() < drop then
+    local active_slot = db.actor:active_slot()
+    if active_slot and ( active_slot == 1 or active_slot == 2 ) then
+      db.actor:drop_item( db.actor:active_item() )
+      archievements.acv_count_event( "acv_drop", 10, "Маша-растеряша" )
+    end
+  end
+end
+
+
+function dog_attack_phantom( obj )
+  if not (
     obj:section() == "dog_strong" or obj:section() == "dog_habaruch"
-  then
-    if not (
-      binder.phantom_spawned_id
-      and level.object_by_id( binder.phantom_spawned_id )
-    ) then
-      binder.phantom_spawned_id = nil
-      local distance = obj:position():distance_to( enemy:position() )
-      if distance > 2 and math.random() < 0.3 then
-        need_phantom       = true
-      else
-        need_telepatic_hit = true
-      end
-    end
-  else
-    need_telepatic_hit = true
+  ) then
+    return
   end
-  if need_phantom then
-    local sobj = alife():create(
-      "phantom_dog_" .. math.random( 2 ),
-      obj:position(),
-      enemy:level_vertex_id(), enemy:game_vertex_id()
-    )
-    binder.phantom_spawned_id = sobj.id
+  local binder = obj:binded_object()
+  if binder.attack_t2 and binder.attack_t2 > time_global() then return end
+  binder.attack_t2 = time_global() + 5000
+  if obj.health < 0.05 then return end
+  local enemy = obj:get_enemy()
+  if not (
+    enemy and enemy:id() == db.actor:id() and obj:see( enemy )
+  ) then
+    return
   end
-  if need_telepatic_hit then
-    level.add_pp_effector( "radiation.ppe", 2012, false )
-    local h = hit()
-    h.type      = hit.telepatic
-    h.power     = 0.02 + 0.02 * master_koef()
-    h.impulse   = 0.0
-    h:bone( "bip01_spine" ) -- чтобы учитывалась броня
-    h.draftsman = obj
-    h.direction = obj:direction()
-    db.actor:hit( h )
-    if math.random() < 0.02 and not inventory.on_belt( "af_idol_monolita" ) then
-      local active_slot = db.actor:active_slot()
-      if active_slot and ( active_slot == 1 or active_slot == 2 ) then
-        db.actor:drop_item( db.actor:active_item() )
-        archievements.acv_count_event( "acv_drop", 10, "Маша-растеряша" )
-      end
+  local dist = obj:position():distance_to( enemy:position() )
+  if dist < 8 then return end
+  if not (
+    binder.phantom_spawned_id
+    and level.object_by_id( binder.phantom_spawned_id )
+  ) then
+    binder.phantom_spawned_id = nil
+    if math.random() < 0.3 then
+      local sobj = alife():create(
+        "phantom_dog_" .. math.random( 2 ),
+        obj:position(),
+        enemy:level_vertex_id(), enemy:game_vertex_id()
+      )
+      binder.phantom_spawned_id = sobj.id
     end
   end
-  binder.attack_t = time_global() + 5000
 end
 
 
@@ -294,6 +307,74 @@ function poltergeist_attack( obj )
   )
   if dist > attack_dist then return end
   charge_tushkano( obj, enemy )
+end
+
+
+function pseudodog_attack( obj )
+  if obj:section() == "volkodav" then return end
+  local enemy = obj:best_enemy()
+  if not (
+    enemy and enemy:id() == db.actor:id()
+    and obj:see( enemy ) and enemy:see( obj )
+  ) then
+    return
+  end
+  local binder = obj:binded_object()
+  local time_next_attack = 2500
+  local time_cam_effect  = 700
+  if binder.attack_t and binder.attack_t < time_global() then
+    local v1 = obj:direction()
+    local v2 = db.actor:direction()
+    if
+      ( v1.x * v2.x ) + ( v1.z * v2.z ) < -0.6
+      and obj:position():distance_to( db.actor:position() ) < 20
+    then
+      binder.attack_n = true
+      for _, n in ipairs({ 1, 2 }) do
+        level.add_cam_effector(
+          "build_1935_pseudodog_effect_" .. n .. ".anm", 990 + n, false,
+          ""
+        )
+      end
+      level.add_pp_effector ( "psy_antenna.ppe", 395, false )
+      local h = hit()
+      h.draftsman = obj
+      h.type      = hit.telepatic
+      h.direction = vector():set( 0, 0, 0 )
+      h:bone( "bip01_spine" ) --/ для учета 'брони'
+      h.power     = 0.05 * master_koef()
+      h.impulse   = 0.0
+      db.actor:hit( h )
+      local snd = xr_sound.get_safe_sound_object(
+        "monsters\\pseudodog\\psy_affect_0", sound_object.s2d
+      )
+      snd:play_at_pos( db.actor, db.actor:position() )
+      local aitem = db.actor:active_item()
+      if
+        aitem and math.random() < level.get_game_difficulty() / 40
+        and ( db.actor:active_slot() == 1 or db.actor:active_slot() == 2 )
+      then
+        if
+          ( not inventory.on_belt( "af_idol_monolita" ) ) or math.random() < 0.5
+        then
+          db.actor:drop_item( aitem )
+          archievements.acv_count_event( "acv_drop", 10, "Маша-растеряша" )
+        end
+      end
+      binder.attack_t = time_global()
+        + time_next_attack * ( 1 + math.random( -0.2, 0.2 ) )
+        + time_cam_effect
+    end
+  elseif
+    binder.attack_n
+    and binder.attack_t < time_global() + time_next_attack
+  then
+    level.remove_pp_effector( 395 )
+    for _, n in pairs({ 1, 2 }) do
+      level.remove_cam_effector( 990 + n )
+    end
+    binder.attack_n = false
+  end
 end
 
 
