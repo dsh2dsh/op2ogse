@@ -392,27 +392,28 @@ end
 
 class "CTreasure"
 function CTreasure:__init()
-  --' На конструкторе вычитываем LTX и создаем заготовки квестов.
-  self.ini = sys_ini --ini_file("misc\\treasure_manager.ltx")
-
   --' Итерируемся по всем настройкам фраз
   ASSERT(
-    self.ini:section_exist( "treasure_manager.list" ),
+    sys_ini:section_exist( "treasure_manager.list" ),
     "There is no section [list] in treasure_manager.ltx"
   )
 
-  local n = self.ini:line_count( "treasure_manager.list" )
+  local n = sys_ini:line_count( "treasure_manager.list" )
   local result, id, value = 0, "", ""
 
   --' начальная установка
   self.treasure_info = {}
   for i = 0, n - 1 do
-    result, id, value = self.ini:r_line( "treasure_manager.list", i, "", "" )
-    local info    = {}
+    result, id, value = sys_ini:r_line( "treasure_manager.list", i, "", "" )
+    local info  = {}
     local id_sect = "treasure_manager." .. id
-    info.target = utils.cfg_get_number( self.ini, id_sect, "target", nil, true )
-    info.named  = utils.cfg_get_bool( self.ini, id_sect, "named", nil, false )
-    info.name   = utils.cfg_get_string( self.ini, id_sect, "name", nil, true, "" )
+    info.target = get_u32( id_sect, "target" )
+    info.named  = get_bool( id_sect, "named", false )
+    info.name   = get_string( id_sect, "name" )
+    info.cond   = xr_logic.parse_condlist(
+      db.actor, "treasure_manager", "condlist",
+      get_string( id_sect, "condlist", "" )
+    )
     --' Отметим тайник как новый
     info.active = false
     info.done   = false
@@ -437,7 +438,7 @@ function CTreasure:use( npc )
     lootmoney.lootmoney( npc )
   end
   --lootmoney end
-
+  
   if npc then
     n_rank = npc:character_rank()
   else
@@ -459,18 +460,12 @@ function CTreasure:use( npc )
   for k, v in pairs( self.treasure_info ) do
     if v.done == false and v.active == false then
       local treasure_prob = xr_logic.pick_section_from_condlist(
-        db.actor, npc,
-        xr_logic.parse_condlist(
-          db.actor, "treasure_manager", "condlist",
-          utils.cfg_get_string(
-            self.ini, "treasure_manager." .. k, "condlist", nil, true, ""
-          )
-        )
+        db.actor, npc, v.cond
       )
       if treasure_prob == "" or treasure_prob == nil then
         treasure_prob = 0
       end
-      if tonumber( treasure_prob ) >= 0 and v.active == false then
+      if tonumber( treasure_prob ) > 0 and v.active == false then
         if tonumber( treasure_prob ) == 100 then
           self:give_treasure( k )
         else
@@ -480,13 +475,7 @@ function CTreasure:use( npc )
       end
     end
   end
-
-  if
-    tr_sum == 0
---    or dsh.get_next_random( script_name() .. ".rnd", 100 ) < 50
-  then
-    return
-  end
+  if tr_sum == 0 then return end
 
   local tr_w = dsh.get_next_random( script_name() .. ".rnd", tr_sum )
   for k, v in pairs( avail ) do
@@ -542,7 +531,11 @@ function CTreasure:give_treasure( k )
     news_manager.send_treasure( v.name )
 
     --' Пометить на карте
-    local text = "%c[255,238,155,23]" .. game.translate_string( v.name ) .. "\\n" .. "%c[default]" .. game.translate_string( utils.cfg_get_string( self.ini, "treasure_manager." .. k, "description", nil, true, "" ) )
+    local text = "%c[255,238,155,23]"
+      .. game.translate_string( v.name ) .. "\\n"
+      .. "%c[default]" .. game.translate_string(
+        get_string( "treasure_manager." .. k, "description", "" )
+    )
     dsh.map_add_treasure( obj.id, "treasure", text )
 
     -- проверка, какой тип тайника выбран
@@ -551,9 +544,7 @@ function CTreasure:give_treasure( k )
       v.items = self:give_item_list()
     else
       v.items = parse_spawns(
-        utils.cfg_get_string(
-          self.ini, "treasure_manager." .. k, "items", nil, true, ""
-        )
+        get_string( "treasure_manager." .. k, "items", "" )
       )
     end
 
@@ -723,7 +714,7 @@ end
 
 
 function take_item_from_box( box, box_story_id )
-  log2( "!!! take item from box %s", tostring( box:is_inv_box_empty() ) )
+  -- log2( "!!! take item from box %s", tostring( box:is_inv_box_empty() ) )
   get_treasure_manager():treasure_empty( box, box_story_id )
 end
 
@@ -753,17 +744,12 @@ function CTreasure:dialog( npc )
   for k, v in pairs( self.treasure_info ) do
     if v.done == false and v.active == false then
       local treasure_prob = xr_logic.pick_section_from_condlist(
-        db.actor, npc, xr_logic.parse_condlist(
-          db.actor, "treasure_manager", "condlist",
-          utils.cfg_get_string(
-            self.ini, "treasure_manager." .. k, "condlist", nil, true, ""
-          )
-        )
+        db.actor, npc, v.cond
       )
       if treasure_prob == "" or treasure_prob == nil then
         treasure_prob = 0
       end
-      if tonumber( treasure_prob ) >= 0 and v.active == false then
+      if tonumber( treasure_prob ) > 0 and v.active == false then
         if tonumber( treasure_prob ) == 100 then
           self:give_treasure( k )
         else
