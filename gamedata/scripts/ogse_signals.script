@@ -1,13 +1,17 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
 -------------------------------------------------------------------------------
 --| ogse_signals.script                                                     |--
 --| signals and slots system                                                |--
 --| Malandrinus, OGS Evolution Team, 2011                                   |--
 --| version 1.1                                                             |--
 -------------------------------------------------------------------------------
---[[
+
+--[=[
 Можно подписывать на события глобальные функции, методы классов, "методы" таблиц, 
 функциональные объекты.
+
 ------------===< Пример для глобальной функции: >===------------------------------
+
 function some_global_function(arg1, arg2)
 end
 local slot_desc = {signal = "signal_name", fun = some_global_function, queued = true}
@@ -20,10 +24,11 @@ local sm = ogse_signals.get_mgr()
 sm.call("signal_name", arg1, arg2)
 
 ------------===< Пример для функционального объекта: >===-------------------------
+
 class "some_luabind_class"
 function some_luabind_class:__init()
-	local mt = getmetatable(self)
-	mt.__call = self.method_to_call
+  local mt = getmetatable(self)
+  mt.__call = self.method_to_call
 end
 function some_luabind_class:method_to_call()
 end
@@ -55,203 +60,245 @@ local slot_desc = {signal = "signal_name", self = obj, fun = obj.method_to_call}
 ogse_signals.get_mgr():subscribe(slot_desc) -- подписали в высокоприоритетную очередь
 --...
 ogse_signals.get_mgr():unsubscribe(slot_desc) -- отписали
-]]
-local mgr = nil
+--]=]
 
+
+local mgr
 function get_mgr()
-	if not this.mgr then
-		-- this.mgr инициализируется внутри конструтора. См. комментарии там.
-		signals_mgr("global", ogse_signals_addons_list.addons, true)
-	end
-	return this.mgr
+  if not this.mgr then
+    -- this.mgr инициализируется внутри конструтора. См. комментарии там.
+    signals_mgr("global", ogse_signals_addons_list.addons, true)
+  end
+  return this.mgr
 end
 
-local unfinished_count = {} -- таблица счётчиков незавершённых вызовов для всех менеджеров
+
+-- таблица счётчиков незавершённых вызовов для всех менеджеров
+local unfinished_count     = {}
 local checking_initialized = false
 
-class "signals_mgr" -- менеджер сигналов
-
-function signals_mgr:__init(name, modules_list, scan_for_autoattaching_modules)
-	-- следующая строка предотвращает повторное создание экземпляра менеджера событий в том случае, 
-	-- когда функция get_mgr() вызывается в глобальной области одного из подписываемых модулей.
-	-- код в глобальной области срабатывает во время prefetch() далее в этой функции
-	-- т.е., в этом случае этот вызов происходит до того, как отработает конструктор __init и тогда 
-	-- вариант this.mgr = this.mgr or signals_mgr() не успевает отработать, что приводит к повторному
-	-- вызову конструктора. Теоретически это не приводит к проблемам, поскольку экземпляров менеджера
-	-- сигналов может быть несколько, но лучше от такого застраховаться.
-	this.mgr = self -- а так ссылку прописываем ещё до завершения конструктора
-	self.mgr_name = name
-	self.signals = {}
-	if modules_list then -- если задали список модулей, то начинаем их подключение
-		local registered_modules = {}
-		if scan_for_autoattaching_modules then -- только если вообще подключаем модули, тогда проверяем опцию автоподключения 
-			-- ищем и регистрируем все автоподключаемые плагины
-			local fs = getFS()
-			local flist = fs:file_list_open_ex("$game_scripts$", FS.FS_ListFiles + FS.FS_ClampExt, "ogse_*.script")
-			for i=0,flist:Size()-1 do
-				local file = flist:GetAt(i)
-				local fname = file:NameFull()
-				prefetch(fname)
-				local module = _g[fname]
-				if module and type(module) == "table" and type(module.attach) == "function" and module.auto_attach == true then
-					self:subscribe_module(fname)
-					registered_modules[fname] = true
-				end
-			end
-		end
-		-- регистрируем все явно подключаемые плагины
-		for _,fname in ipairs(modules_list) do
-			if not registered_modules[fname] then
-				self:subscribe_module(fname)
-			end
-		end
-	end
-	unfinished_count[self.mgr_name] = 0
-	if not checking_initialized then -- больше одного цикла проверки не нужно
-		--self.unfinished_count = 0
-		local function hanged_calls_check()
-			for mgr_name, count in pairs(unfinished_count) do
-				--if self.unfinished_count > 0 then -- если есть незавершённые вызовы
-				if count > 0 then -- если есть незавершённые вызовы
-					--abort("Signal manager '"..self.mgr_name.."' crushed:\nOne of the calls hung! See stack dump for details.") -- RIP
-					log1(debug.traceback())
-					abort("Signal manager '"..mgr_name.."' crushed:\nOne of the calls hung! See stack dump for details.") -- RIP
-				end
-			end
-		end
-		level.add_call(hanged_calls_check, function()end) -- сторожевой таймер
-		checking_initialized = true
-	end
-end
-local function compare_safe(a,b)
-	local function a_eq_b(a,b) return a == b end
-	local err,res = pcall(a_eq_b, a, b)
-	if err then return res end
-	local function a_neq_b(a,b) return a ~= b end
-	local err,res = pcall(a_neq_b, a, b)
-	if err then return not res end
-	
-	abort("compare_safe: neither == nor ~= not working for compared objects")
-end
-local function slots_equal(slot1, slot2)
-	return 
-		rawequal(slot1.self, slot2.self) and
-		rawequal(slot1.fun, slot2.fun)
-end
-function signals_mgr:is_already_subscribed(slot_in_question)
-	local slots = self.signals[slot_in_question.signal]
-	if not slots then return false end
-	for i,slot in ipairs(slot_in_question.queued and slots.queue or slots.normal) do
-		if slots_equal(slot, slot_in_question) then
-			return true
-		end
-	end
-	return false
-end
-function signals_mgr:subscribe(slot_to_subscribe)
-	ASSERT(not self:is_already_subscribed(slot_to_subscribe),
-		"signals_mgr:subscribe: can't subscrabe signal '"..slot_to_subscribe.signal.."', it's already subscribed")
-	ASSERT(slot_to_subscribe.fun, 
-		"signals_mgr:subscribe: 'fun' is a nil reference while attempting to subscribe signal '"..slot_to_subscribe.signal.."'")
-	local signal = slot_to_subscribe.signal
-	self.signals[signal] = self.signals[signal] or {normal = {}, queue = {}, next_in_queue = 1}
-	if slot_to_subscribe.queued then
-		table.insert(self.signals[signal].queue, slot_to_subscribe)
-	else
-		table.insert(self.signals[signal].normal, slot_to_subscribe)
-	end
-end
-function signals_mgr:unsubscribe(slot_to_unsubscribe)
-	ASSERT(self:is_already_subscribed(slot_to_unsubscribe),
-		"signals_mgr:unsubscribe: can't unsubscrabe signal '"..slot_to_unsubscribe.signal.."', id= "..(slot_to_unsubscribe.id or '')..", which is not previously subscribed")
-	--if self.unfinished_count > 0 then
-	if unfinished_count[self.mgr_name] > 0 then
-		-- если находимся в процессе выполнения вызова, то физически удалять слоты из очередей нельзя
-		-- надо просто промаркировать их на удаление, чтобы не менять размер очереди
-		-- в дальнейшем промаркированные на удаление слоты не будут вызываться, а при ближайшем
-		-- выходе из рекурсивного цикла будут удалены физически
-		self.to_unsubscribe = self.to_unsubscribe or {}
-		self.to_unsubscribe[slot_to_unsubscribe.signal] = 
-			self.to_unsubscribe[slot_to_unsubscribe.signal] or {}
-		table.insert(self.to_unsubscribe[slot_to_unsubscribe.signal], slot_to_unsubscribe)
-		slot_to_unsubscribe.unsubscribed = true -- маркируем его, чтобы игнорировался при вызовах
-	else
-		-- нет незавершённых вызовов, просто удаляем слот
-		local slots = self.signals[slot_to_unsubscribe.signal]
-		for i,slot in ipairs(slots.normal) do
-			if slots_equal(slot, slot_to_unsubscribe) then
-				table.remove(slots.normal, i)
-				return
-			end
-		end
-		for i,slot in ipairs(slots.queue) do
-			if slots_equal(slot, slot_to_unsubscribe) then
-				table.remove(slots.queue, i)
-				if slots.next_in_queue > i then
-					slots.next_in_queue = slots.next_in_queue - 1
-				end
-				return
-			end
-		end
-	end
-end
-function signals_mgr:subscribe_module(module_name)
-	prefetch(module_name)
-	local res, msg = check_module(module_name)
-	--ASSERT(res, "signals_mgr:subscribe_module: Failed to compile module '"..module_name.."'\nerror description:\n"..msg)
-	local module = _g[module_name]
-	ASSERT(module, "signals_mgr:subscribe_module: Failed to subscribe module '"..module_name.."'")
-	ASSERT(type(module) == "table", "signals_mgr:subscribe_module: Failed to subscribe module '"..module_name.."', must be a table")
-	ASSERT(type(module.attach) == "function", "signals_mgr:subscribe_module: Failed to subscribe module '"..module_name.."', has no 'attach' function")
-	module.attach(self)
+class "signals_mgr"             -- менеджер сигналов
+function signals_mgr:__init( name, modules_list, scan_for_autoattaching_modules )
+  -- следующая строка предотвращает повторное создание экземпляра
+  -- менеджера событий в том случае, когда функция get_mgr()
+  -- вызывается в глобальной области одного из подписываемых модулей.
+  --
+  -- код в глобальной области срабатывает во время prefetch() далее в
+  -- этой функции т.е., в этом случае этот вызов происходит до того,
+  -- как отработает конструктор __init и тогда вариант this.mgr =
+  -- this.mgr or signals_mgr() не успевает отработать, что приводит к
+  -- повторному вызову конструктора.
+  --
+  -- Теоретически это не приводит к проблемам, поскольку экземпляров
+  -- менеджера сигналов может быть несколько, но лучше от такого
+  -- застраховаться.
+  this.mgr      = self -- а так ссылку прописываем ещё до завершения конструктора
+  self.mgr_name = name
+  self.signals  = {}
+  if modules_list then -- если задали список модулей, то начинаем их подключение
+    local registered_modules = {}
+    if scan_for_autoattaching_modules then
+      -- только если вообще подключаем модули, тогда проверяем опцию
+      -- автоподключения.
+      -- ищем и регистрируем все автоподключаемые плагины
+      local fs    = getFS()
+      local flist = fs:file_list_open_ex(
+        "$game_scripts$", FS.FS_ListFiles + FS.FS_ClampExt, "ogse_*.script"
+      )
+      for i = 0, flist:Size() - 1 do
+        local file  = flist:GetAt( i )
+        local fname = file:NameFull()
+        prefetch( fname )
+        local module = _g[ fname ]
+        if
+          module and type( module ) == "table"
+          and type( module.attach ) == "function" and module.auto_attach == true
+        then
+          self:subscribe_module( fname )
+          registered_modules[ fname ] = true
+        end
+      end
+    end
+    -- регистрируем все явно подключаемые плагины
+    for _, fname in ipairs( modules_list ) do
+      if not registered_modules[ fname ] then
+        self:subscribe_module( fname )
+      end
+    end
+  end
+  unfinished_count[ self.mgr_name ] = 0
+  if not checking_initialized then -- больше одного цикла проверки не нужно
+    local function hanged_calls_check()
+      for mgr_name, count in pairs( unfinished_count ) do
+        if count > 0 then       -- если есть незавершённые вызовы
+          log1( debug.traceback() )
+          abort( "Signal manager '"..mgr_name.."' crushed:\nOne of the calls hung! See stack dump for details." ) -- RIP
+        end
+      end
+    end
+    level.add_call( hanged_calls_check, function() end ) -- сторожевой таймер
+    checking_initialized = true
+  end
 end
 
-function signals_mgr:call(signal_name, ...)
-	-- сперва срабатывают все высокоприоритетные сигналы
-	local slots = self.signals[signal_name]
-	if slots then
-		--self.unfinished_count = self.unfinished_count + 1
-		unfinished_count[self.mgr_name] = unfinished_count[self.mgr_name] + 1
-		for _,slot in ipairs(slots.normal) do
-			 -- при рекурсивных вызовах отписанные, но ещё не удалённые слоты, необходимо пропустить
-			if not slot.unsubscribed then
-				local result
-				if slot.self then
-					result = slot.fun(slot.self, ...)
-				else
-					result = slot.fun(...)
-				end
-				if result then break end -- вызов заявил, что он финальный в цепочке вызовов
-			end
-		end
-		-- затем срабатывает очередной сигнал в очереди, если имеется
-		local slot  = slots.queue[slots.next_in_queue]
-		if slot then
-			if not slot.unsubscribed then -- очень маловероятно, но на всякий случай
-				if slot.self then
-					slot.fun(slot.self, ...)
-				else
-					slot.fun(...)
-				end
-			end
-			slots.next_in_queue = slots.next_in_queue + 1
-			if slots.next_in_queue > #slots.queue then
-				slots.next_in_queue = 1
-			end
-		end
-		--self.unfinished_count = self.unfinished_count - 1
-		unfinished_count[self.mgr_name] = unfinished_count[self.mgr_name] - 1
-		--if self.to_unsubscribe and self.unfinished_count == 0 then
-		if self.to_unsubscribe and unfinished_count[self.mgr_name] == 0 then
-			-- если нет незавершённых вызовов, то можно
-			-- по-настоящему удалять промаркированные для отписки слоты
-			for signal,slots in pairs(self.to_unsubscribe) do
-				for _,slot in ipairs(slots) do
-					self:unsubscribe(slot)
-				end
-			end
-			self.to_unsubscribe = nil
-		end
-	end
+
+local function compare_safe( a, b )
+  local function a_eq_b( a, b ) return a == b end
+  local err, res = pcall( a_eq_b, a, b )
+  if err then return res end
+  local function a_neq_b( a, b ) return a ~= b end
+  local err, res = pcall( a_neq_b, a, b )
+  if err then return not res end
+  abort( "compare_safe: neither == nor ~= not working for compared objects" )
 end
 
+
+local function slots_equal( slot1, slot2 )
+  return
+    rawequal( slot1.self, slot2.self )
+    and rawequal( slot1.fun, slot2.fun )
+end
+
+
+function signals_mgr:is_already_subscribed( slot_in_question )
+  local slots = self.signals[ slot_in_question.signal ]
+  if not slots then return false end
+  for i, slot in ipairs(
+    slot_in_question.queued and slots.queue or slots.normal
+  ) do
+    if slots_equal( slot, slot_in_question ) then
+      return true
+    end
+  end
+  return false
+end
+
+
+function signals_mgr:subscribe( slot_to_subscribe )
+  ASSERT(
+      not self:is_already_subscribed( slot_to_subscribe ),
+    "signals_mgr:subscribe: can't subscrabe signal '"..slot_to_subscribe.signal.."', it's already subscribed"
+  )
+  ASSERT(
+    slot_to_subscribe.fun,
+    "signals_mgr:subscribe: 'fun' is a nil reference while attempting to subscribe signal '"..slot_to_subscribe.signal.."'"
+  )
+  local signal = slot_to_subscribe.signal
+  self.signals[ signal ] = self.signals[ signal ]
+    or { normal = {}, queue = {}, next_in_queue = 1 }
+  if slot_to_subscribe.queued then
+    table.insert( self.signals[ signal ].queue, slot_to_subscribe )
+  else
+    table.insert( self.signals[ signal ].normal, slot_to_subscribe )
+  end
+end
+
+
+function signals_mgr:unsubscribe( slot_to_unsubscribe )
+  ASSERT(
+    self:is_already_subscribed( slot_to_unsubscribe ),
+    "signals_mgr:unsubscribe: can't unsubscrabe signal '"..slot_to_unsubscribe.signal.."', id= "..(slot_to_unsubscribe.id or '')..", which is not previously subscribed"
+  )
+  if unfinished_count[ self.mgr_name ] > 0 then
+    -- если находимся в процессе выполнения вызова, то физически
+    -- удалять слоты из очередей нельзя надо просто промаркировать их
+    -- на удаление, чтобы не менять размер очереди.  в дальнейшем
+    -- промаркированные на удаление слоты не будут вызываться, а при
+    -- ближайшем выходе из рекурсивного цикла будут удалены физически.
+    self.to_unsubscribe = self.to_unsubscribe or {}
+    self.to_unsubscribe[ slot_to_unsubscribe.signal ] =
+      self.to_unsubscribe[ slot_to_unsubscribe.signal ] or {}
+    table.insert(
+      self.to_unsubscribe[ slot_to_unsubscribe.signal ], slot_to_unsubscribe
+    )
+    -- маркируем его, чтобы игнорировался при вызовах
+    slot_to_unsubscribe.unsubscribed = true
+  else
+    -- нет незавершённых вызовов, просто удаляем слот
+    local slots = self.signals[ slot_to_unsubscribe.signal ]
+    for i, slot in ipairs( slots.normal ) do
+      if slots_equal( slot, slot_to_unsubscribe ) then
+        table.remove( slots.normal, i )
+        return
+      end
+    end
+    for i, slot in ipairs( slots.queue ) do
+      if slots_equal( slot, slot_to_unsubscribe ) then
+        table.remove( slots.queue, i )
+        if slots.next_in_queue > i then
+          slots.next_in_queue = slots.next_in_queue - 1
+        end
+        return
+      end
+    end
+  end
+end
+
+
+function signals_mgr:subscribe_module( module_name )
+  prefetch( module_name )
+  local res, msg = check_module( module_name )
+  local module = _g[ module_name ]
+  ASSERT(
+    module,
+    "signals_mgr:subscribe_module: Failed to subscribe module '"..module_name.."'"
+  )
+  ASSERT(
+    type( module ) == "table",
+    "signals_mgr:subscribe_module: Failed to subscribe module '"..module_name.."', must be a table"
+  )
+  ASSERT(
+    type( module.attach ) == "function",
+    "signals_mgr:subscribe_module: Failed to subscribe module '"..module_name.."', has no 'attach' function"
+  )
+  module.attach( self )
+end
+
+
+function signals_mgr:call( signal_name, ... )
+  -- сперва срабатывают все высокоприоритетные сигналы
+  local slots = self.signals[ signal_name ]
+  if slots then
+    unfinished_count[ self.mgr_name ] = unfinished_count[ self.mgr_name ] + 1
+    for _, slot in ipairs( slots.normal ) do
+      -- при рекурсивных вызовах отписанные, но ещё не удалённые
+      -- слоты, необходимо пропустить
+      if not slot.unsubscribed then
+        local result
+        if slot.self then
+          result = slot.fun( slot.self, ... )
+        else
+          result = slot.fun( ... )
+        end
+        -- вызов заявил, что он финальный в цепочке вызовов
+        if result then break end
+      end
+    end
+    -- затем срабатывает очередной сигнал в очереди, если имеется
+    local slot  = slots.queue[ slots.next_in_queue ]
+    if slot then
+      if not slot.unsubscribed then -- очень маловероятно, но на всякий случай
+        if slot.self then
+          slot.fun( slot.self, ... )
+        else
+          slot.fun( ... )
+        end
+      end
+      slots.next_in_queue = slots.next_in_queue + 1
+      if slots.next_in_queue > table.getn( slots.queue ) then
+        slots.next_in_queue = 1
+      end
+    end
+    unfinished_count[ self.mgr_name ] = unfinished_count[ self.mgr_name ] - 1
+    if self.to_unsubscribe and unfinished_count[ self.mgr_name ] == 0 then
+      -- если нет незавершённых вызовов, то можно по-настоящему
+      -- удалять промаркированные для отписки слоты
+      for signal, slots in pairs( self.to_unsubscribe ) do
+        for _, slot in ipairs( slots ) do
+          self:unsubscribe( slot )
+        end
+      end
+      self.to_unsubscribe = nil
+    end
+  end
+end
