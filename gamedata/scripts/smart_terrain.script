@@ -295,6 +295,18 @@ function se_smart_terrain:read_params()
   self.rank_inc_max = get_string( "smart_terrain_rank_change", "max" )
   self.accepted_communities = nil
   self.communities = get_string( sect, "communities", nil, ini )
+
+  if sys_ini:section_exist( "dsh.gulag.idle" ) then
+    self.idle_time_stalker = get_string( "dsh.gulag.idle", "stalker" )
+    if self.idle_time_stalker then
+      self.idle_time_stalker = parse_nums( self.idle_time_stalker )
+    end
+    self.idle_time_monster = get_string( "dsh.gulag.idle", "monster" )
+    if self.idle_time_monster then
+      self.idle_time_monster = parse_nums( self.idle_time_monster )
+    end
+  end
+
   self:dsh_override_params()
 
   if gp.cond then
@@ -788,12 +800,7 @@ function se_smart_terrain:unregister_npc( obj )
   obj:clear_smart_terrain()
   dsh.remember_mobs_smart_terrain( obj.id, self, false )
 
-  local is_empty = true
-  for id, v in pairs( self.npc_info ) do
-    is_empty = false
-    break
-  end
-  if is_empty and db.actor then
+  if self:is_empty() and db.actor then
     local sm = ogse_signals.get_mgr()
     sm:call( "on_empty_smart_terrain", self )
   end
@@ -801,6 +808,14 @@ function se_smart_terrain:unregister_npc( obj )
   --   "[smart_terrain %s] removed %s from gulag type=%s, strn_id=%s",
   --   self:name(), obj:name() or "<<<nil>>>", self.gparams.type, obj:smart_terrain_id()
   -- )
+end
+
+
+function se_smart_terrain:is_empty()
+  for id, v in pairs( self.npc_info ) do
+    return false
+  end
+  return true
 end
 
 
@@ -1131,41 +1146,86 @@ function se_smart_terrain:dsh_begin_job( id )
 end
 
 
-function se_smart_terrain:set_idle_timer( hours )
+function se_smart_terrain:set_idle_timer( hours, not_exists )
   local tname  = "smart_terrain." .. self:name() .. ".population_locked"
   if ogse_st_mgr.timer_exists( tname ) then
+    if not_exists then
+      log2( "dsh: [%s]: already locked, do nothing", self:name() )
+      return false
+    end
     local t = ogse_st_mgr.get_timer( tname )
     t:stop()
   end
   dsh.start_gtimerDHMS(
     tname, 0, hours, 0, 0, script_name() .. ".on_after_idle_timer"
   )
+  return true
 end
 function on_after_idle_timer() end
 
 
-function on_death( obj_id )
-  -- log2( "on_death obj_id=%d", obj_id )
-  local sim = alife()
-  if sim then
-    local obj = sim:object( obj_id )
-    if obj and obj.smart_terrain_id then
-      local strn_id       = obj:smart_terrain_id()
-      local free_logic_id = dsh.is_free_logic_mob( obj )
+function se_smart_terrain:try_set_idle_timer( last_sobj )
+  if self.idle_time_monster or self.idle_time_stalker then
+    ASSERT(
+      ( IsStalker( last_sobj ) or IsMonster( last_sobj ) ),
+      "unknown last_sobj: %s", last_sobj:name()
+    )
+    local t_min, t_max
+    if IsStalker( last_sobj ) then
+      if self.idle_time_stalker then
+        t_min, t_max = unpack( self.idle_time_stalker )
+      end
+    else
+      if self.idle_time_monster then
+        t_min, t_max = unpack( self.idle_time_monster )
+      end
+    end
+    if t_min and t_max then
+      local hours = math.random( t_min, t_max )
+      if hours > 0 then
+        log2( "dsh: [%s]: hours = %s", self:name(), hours )
+        -- блокировать смарт на hours часов, если он еще не заблокирован.
+        self:set_idle_timer( hours, true )
+      end
+    end
+  end
+end
+
+
+function on_death( id )
+  -- log2( "on_death id=%d", id )
+  if alife() then
+    local sobj = alife():object( id )
+    if sobj and sobj.smart_terrain_id then
+      local strn_id       = sobj:smart_terrain_id()
+      local free_logic_id = dsh.is_free_logic_mob( sobj )
       if free_logic_id then
         strn_id = free_logic_id
       end
       if strn_id ~= 65535 then
         -- обертка дл€ фикса кривых smart_terrain
-        local strn = sim:object( strn_id )
+        local strn = alife():object( strn_id )
         if strn then
           if strn:clsid() == clsid.smart_terrain then
-            strn.gulag:clear_dead( obj_id )
+            strn.gulag:clear_dead( id )
+            if strn:is_empty() then
+              -- clear_dead() вызовет strn:unregister_npc(), а он
+              -- вызовет событие on_empty_smart_terrain, обработчик
+              -- которого тоже может заблокировать этот смарт на
+              -- врем€. ѕоэтому, здесь смарт будет блокироватьс€
+              -- только в том случае, если его еще никто другой не
+              -- заблокировал.
+              log2(
+                "dsh: [%s]: last mob ( %s ) is dead, lets lock it",
+                strn:name(), sobj:name()
+              )
+              strn:try_set_idle_timer( sobj )
+            end
           else
             log1(
-              "load ~~~ smart_terrain.on_death: ќбнаружена прив€зка к несуществующему smart_terrain: "..obj:name()..", smart_terrain_id: "..tostring(strn_id)..". ѕрив€зка удалена."
+              "load ~~~ smart_terrain.on_death: ќбнаружена прив€зка к несуществующему smart_terrain: "..sobj:name()..", smart_terrain_id: "..tostring(strn_id)..". ѕрив€зка удалена."
             )
-            obj:clear_smart_terrain()
+            sobj:clear_smart_terrain()
           end
         end
       end
