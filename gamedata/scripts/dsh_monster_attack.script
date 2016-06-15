@@ -1,9 +1,10 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
-  sm:subscribe({ signal = "on_monster_hit",    fun = this.on_hit    })
-  sm:subscribe({ signal = "on_monster_update", fun = this.on_update })
-  sm:subscribe({ signal = "on_update",         fun = this.on_actor_update })
+  sm:subscribe({ signal = "on_monster_death",  fun = this.on_death         })
+  sm:subscribe({ signal = "on_monster_hit",    fun = this.on_hit           })
+  sm:subscribe({ signal = "on_monster_spawn",  fun = this.on_monster_spawn })
+  sm:subscribe({ signal = "on_update",         fun = this.on_actor_update  })
 end
 
 
@@ -16,6 +17,15 @@ function on_actor_update()
     level.set_snd_volume( s_nd )
   end
   update_t = time_global() + 8538
+end
+
+
+function on_monster_spawn( obj, binder )
+  binder.am:subscribe({
+      [ "signal" ] = "on_monster_update." .. obj:id(),
+      [ "fun"    ] = this.on_update,
+      [ "queued" ] = true,
+  })
 end
 
 
@@ -36,10 +46,23 @@ function on_update( obj )
     ) then
       if obj:clsid() == clsid.bloodsucker_s then
         bloodsucker_attack( obj )
+      elseif obj:clsid() == clsid.boar_s then
+        if
+          obj:section() == "boar_weak"
+          or obj:section() == "boar_normal"
+          or obj:section() == "boar_strong"
+          or obj:section() == "boar_kachok"
+        then
+          boar_attack( obj )
+        end
+      elseif obj:clsid() == clsid.burer_s then
+        burer_attack( obj )
       elseif obj:clsid() == clsid.cat_s then
         cat_attack( obj )
       elseif obj:clsid() == clsid.chimera_s then
         chimera_attack( obj )
+      elseif obj:clsid() == clsid.controller_s then
+        controller_attack( obj )
       elseif obj:clsid() == clsid.dog_s then
         dog_attack( obj )
         dog_attack_phantom( obj )
@@ -50,7 +73,13 @@ function on_update( obj )
       elseif obj:clsid() == clsid.tushkano_s then
         tushkano_attack( obj )
       elseif obj:clsid() == clsid.zombie_s then
-        zombie_attack( obj )
+        if obj:section() == "zombie_plague" then
+          zombie_plague_attack( obj )
+        elseif obj:section() == "zombie_plague_komar" then
+          zombie_plague_komar_attack( obj )
+        else
+          zombie_attack( obj )
+        end
       end
     end
   end
@@ -63,7 +92,6 @@ function on_hit( obj, amount, local_direction, who, bone_index )
     if chk_dist > obj:range() then
       obj:set_range( chk_dist * 1.1 )
     end
-    obj:set_fov( 270 )
     obj:make_object_visible_somewhen( who )
   end
 end
@@ -139,6 +167,44 @@ function bloodsucker_attack( obj )
 end
 
 
+function boar_attack( obj )
+  local enemy = obj:best_enemy()
+  if
+    not (
+      enemy and enemy:id() == db.actor:id() and obj:see( enemy )
+    )
+  then
+    return
+  end
+  local binder = obj:binded_object()
+  if binder.attack_t and binder.attack_t > time_global() then return end
+  local dist = obj:position():distance_to( db.actor:position() )
+  local attack_dist = 2
+  binder.attack_t   = time_global() + (
+    dist < ( attack_dist * 3 ) and 0 or 1000
+  )
+  if dist < attack_dist then
+    local v1 = obj:direction()
+    local v2 = db.actor:direction()
+    if ( v1.x * v2.x ) + ( v1.z * v2.z ) < -0.6 then
+      local h = hit()
+      h.draftsman = obj
+      h.type      = hit.wound
+      h.direction = vector():set(
+        math.random( -10, 10 ) / 10,
+        math.random(   0, 30 ) / 10,
+        math.random( -10, 10 ) / 10
+      )
+      h:bone( "bip01_spine" ) --/ для учета 'брони'
+      h.power     = 0
+      h.impulse   = 1000
+      db.actor:hit( h )
+      binder.attack_t = time_global() + 400
+    end
+  end
+end
+
+
 function boar_body_attack( obj )
   local binder = obj:binded_object()
   if binder.attack_t and binder.attack_t > time_global() then return end
@@ -186,6 +252,48 @@ function boar_body_attack( obj )
 end
 
 
+function burer_attack( obj )
+  local enemy = obj:best_enemy()
+  if
+    not (
+      enemy and enemy:id() == db.actor:id() and obj:see( enemy )
+    )
+  then
+    return
+  end
+  local binder = obj:binded_object()
+  if binder.attack_t and binder.attack_t > time_global() then return end
+  local dist = obj:position():distance_to( enemy:position() )
+  local attack_dist = 25
+  binder.attack_t   = time_global() + (
+    dist < attack_dist and 0 or 1000
+  )
+  if dist > attack_dist then return end
+  local v1 = obj:direction()
+  local v2 = db.actor:direction()
+  if ( v1.x * v2.x ) + ( v1.z * v2.z ) < -0.6 then
+    local diff = level.get_game_difficulty()
+    if math.random() < diff / 10 then
+      db.actor.power = -1.0
+    end
+    local aitem = db.actor:active_item()
+    if
+      aitem and math.random() < diff / 20
+      and ( db.actor:active_slot() == 1 or db.actor:active_slot() == 2 )
+    then
+      if
+        ( not inventory.on_belt( "af_idol_monolita" ) )
+        or math.random() < 0.5
+      then
+        db.actor:drop_item( aitem )
+        archievements.acv_count_event( "acv_drop", 10, "Маша-растеряша" )
+      end
+    end
+    binder.attack_t = time_global() + ( 6000 * ( 1 + math.random( -0.2, 0.2 ) ) )
+  end
+end
+
+
 function cat_attack( obj )
   if obj.health < 0.05 then return end
   local enemy = obj:best_enemy()
@@ -219,6 +327,63 @@ function chimera_attack( obj )
     local snd_obj = sound_object( "monsters\\chimera\\attack_2" )
     snd_obj:play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 5.0 )
     db.actor.power = -0.05
+  end
+end
+
+
+-- Удар контролёра руками из Зова Припяти (Автор: demover123)
+function controller_attack( obj )
+  local target = self.object:best_enemy()
+  if
+    target and self.object:see( target )
+    and target:id() == db.actor:id()
+  then
+    local binder = obj:binded_object()
+    if not binder.attack_get_hit then
+      binder.attack_get_hit             = time_global() + 100
+      binder.attack_start_anim_hit_cont = true
+    elseif binder.attack_get_hit <= time_global() then
+      local dist = obj:position():distance_to( target:position() )
+      if dist <= 1.7 then
+        if binder.attack_start_anim_hit_cont then
+          if obj:animation_count() > 0 then
+            obj:clear_animations()
+          end
+          obj:add_animation(
+            "stand_walk_fwd_" .. math.random( 0, 1 ), true
+          )
+          obj:play_cycle( "stand_attack_1", true )
+          local song_start = xr_sound.get_safe_sound_object(
+            "monsters\\controller\\controller_hit_2"
+          )
+          song_start:play_at_pos(
+            obj, obj:position(), sound_object.s3d
+          )
+          binder.attack_start_anim_hit_cont = false
+        end
+        if not binder.attack_hit_to_enemy then
+          binder.attack_hit_to_enemy = time_global() + 300
+        elseif binder.attack_hit_to_enemy <= time_global() then
+          level.add_cam_effector(
+            "camera_effects\\hit_back_left.anm", 777, false, ""
+          )
+          local h = hit()
+          h.draftsman = obj
+          h.direction = vector():set( 0, 0, 0 )
+          h:bone( "bip01_spine" )
+          h.power     = 0.4
+          h.impulse   = 1
+          h.type      = hit.wound
+          target:hit( h )
+          binder.attack_hit_to_enemy = nil
+          binder.attack_get_hit      = nil
+        end
+      end
+    end
+  end
+  if obj:animation_count() < 1 then
+    local i = math.random( 0, 5 )
+    obj:add_animation( "stand_walk_fwd_" .. i, true )
   end
 end
 
@@ -435,7 +600,7 @@ function zombie_attack( obj )
   binder.attack_t   = time_global() + 1000
   if dist > attack_dist then return end
   if math.random() < 0.2 + 0.1 * level.get_game_difficulty() then
-    if math.random() < 0.4 then 
+    if math.random() < 0.4 then
       local snd_obj=xr_sound.get_safe_sound_object(
         "monsters\\zombie\\zombi_attack2"
       )
@@ -445,6 +610,97 @@ function zombie_attack( obj )
     if db.actor.satiety >= 0.1 then
       db.actor.satiety = -0.1
     end
+  end
+end
+
+
+-- Атака насекомых при приближении к чумному зомби
+local insect_particle = particles_object( "ogsm\\ogsm_flies_00" )
+local insect_sound    = xr_sound.get_safe_sound_object( [[anomaly\flies]] )
+
+function zombie_plague_attack( obj )
+  local binder = obj:binded_object()
+  if binder.attack_t and binder.attack_t > time_global() then return end
+  local dist = obj:position():distance_to( db.actor:position() )
+  local attack_dist = 10
+  binder.attack_t   = time_global() + (
+    dist < ( attack_dist * 2 ) and 100 or 1000
+  )
+  if dist < 10 then
+    level.add_pp_effector( "dead_zone.ppe", 1001, true )
+    level.set_pp_effector_factor( 1001, 0.1 )
+    local actor = db.actor:position()
+    if not insect_particle:playing() then
+      insect_particle:play_at_pos(
+        vector():set( actor.x, actor.y + 1.8, actor.z )
+      )
+    else
+      insect_particle:move_to(
+        vector():set( actor.x, actor.y + 1.8, actor.z ),
+        vector():set( actor.x, actor.y + 1.8, actor.z )
+      )
+    end
+    if not insect_sound:playing() then
+      insect_sound:play_at_pos( db.actor, actor )
+      local zh = hit()
+      zh.draftsman = obj
+      zh.type      = hit.chemical_burn
+      zh.direction = obj:position():sub( actor )
+      zh:bone( "bip01_spine" )
+      zh.power     = 5
+      zh.impulse   = 1.0
+      db.actor:hit( zh )
+    else
+      insect_sound:set_position( actor )
+    end
+  else
+    level.remove_pp_effector( 1001 )
+    insect_particle:stop()
+  end
+end
+
+
+-- Атака насекомых при приближении к комариному зомби
+local komar_sound = xr_sound.get_safe_sound_object( [[anomaly\komar]] )
+
+function zombie_plague_komar_attack( obj )
+  local binder = obj:binded_object()
+  if binder.attack_t and binder.attack_t > time_global() then return end
+  local dist = obj:position():distance_to( db.actor:position() )
+  local attack_dist = 12
+  binder.attack_t   = time_global() + (
+    dist < ( attack_dist * 2 ) and 100 or 1000
+  )
+  if dist < 12 then
+    level.add_pp_effector( "total_recall.ppe", 1002, true )
+    level.set_pp_effector_factor( 1002, 0.1 )
+    local actor = db.actor:position()
+    if not insect_particle:playing() then
+      insect_particle:play_at_pos(
+        vector():set( actor.x, actor.y + 1.8, actor.z )
+      )
+    else
+      insect_particle:move_to(
+        vector():set( actor.x, actor.y + 1.8, actor.z ),
+        vector():set( actor.x, actor.y + 1.8, actor.z )
+      )
+    end
+    if not komar_sound:playing() then
+      komar_sound:play_at_pos( db.actor, actor )
+      local zh = hit()
+      zh.draftsman = obj
+      zh.type      = hit.chemical_burn
+      zh.direction = obj:position():sub( actor )
+      zh:bone( "bip01_spine" )
+      zh.power     = 8
+      zh.impulse   = 2.0
+      db.actor:hit( zh )
+    else
+      komar_sound:set_position( actor )
+    end
+  else
+    level.remove_pp_effector( 1002 )
+    insect_particle:stop()
   end
 end
 
@@ -466,5 +722,16 @@ function charge_tushkano( obj, enemy )
     zh.power     = 0.075 + 0.025 * level.get_game_difficulty()
     zh.impulse   = 0.05
     enemy:hit(zh)
+  end
+end
+
+
+function on_death( obj, who )
+  if obj:section() == "zombie_plague" then
+    level.remove_pp_effector( 1001 )
+    insect_particle:stop()
+  elseif obj:section() == "zombie_plague_komar" then
+    level.remove_pp_effector( 1002 )
+    insect_particle:stop()
   end
 end
