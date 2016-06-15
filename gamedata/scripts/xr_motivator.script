@@ -11,9 +11,6 @@ local warn_check_timer = {}
 local snd_check_timer  = {}
 local armor_check      = {}
 
-local watchdog     = {}
-local watchdog_max = 8
-
 local exclude_check_sound_gulag = {
   -- костёр на Кордоне, где Шустрый сидит, недалеко от насыпи
   [ "esc2_bandit_les" ] = true,
@@ -492,6 +489,24 @@ function motivator_binder:net_spawn( sobject )
     self.object:set_callback(
       callback.sound, motivator_binder.hear_callback, self
     )
+  end
+
+  -- выполнять по одному за апдейт
+  local update_subscribers = {
+    self.check_light,
+    self.trade_manager_update,
+    self.xrs_ai_npc_update,
+    self.rx_ai_npc_update,
+    self.check_art_weapon,
+    self.amkii_equip,
+  }
+  for _, fun in ipairs( update_subscribers ) do
+    self.am:subscribe({
+        [ "signal" ] = "on_npc_update." .. self.object:id(),
+        [ "self"   ] = self,
+        [ "fun"    ] = fun,
+        [ "queued" ] = true,
+    })
   end
 
   --' Загрузка историй для лагеря.
@@ -998,10 +1013,6 @@ function motivator_binder:update( delta )
   end
   if self.object == nil then return end
 
-  if not watchdog[ self.object:id() ] then
-    watchdog[ self.object:id() ] = 0
-  end
-
   local self_object_id = self.object:id()
   db.storage[ self_object_id ].us = 100
   db.storage[ self_object_id ].us =  99
@@ -1068,83 +1079,6 @@ function motivator_binder:update( delta )
 
   event( "npc_update" ):trigger({ obj = self.object })
 
-  if watchdog[self.object:id()] == 1 then
-    -- Апдейт включения/выключения фонарика
-    if self.object:alive() then
-      if time_global() - self.last_update > 1000 then
-        if
-          amk.get_npc_relation( self.object,db.actor ) == "enemy"
-          and self.object.health > 0.01
-        then
-          if self.object:see( db.actor ) then
-            amk.enemy_see_actor( self.object, "npc" )
-          end
-          if db.actor:see( self.object ) then
-            amk.actor_see_enemy( self.object, "npc" )
-          end
-        end
-        sr_light.check_light( self.object )
-        self.last_update = time_global()
-      end
-    end
-    -- Апдейт включения/выключения фонарика
-  end
-
-  if watchdog[ self.object:id() ] == 2 then
-    -- Апдейт торговли
-    if self.object:alive() then
-      trade_manager.update( self.object )
-    end
-    -- Апдейт торговли
-  end
-
-  if watchdog[ self.object:id() ] == 3 then
-  end
-
-  if watchdog[ self.object:id() ] == 4 then
-    -- Обновление схем гранатометания, медика и переодевания
-    if self.object:alive() then
-      if xrs_ai then xrs_ai.npc_update( self ) end
-    end
-    -- Обновление схем гранатометания, медика и переодевания
-  end
-
-  if watchdog[ self.object:id() ] == 5 then
-    -- Обновление оружейного менеджера
-    if self.object:alive() then
-      if rx_ai then rx_ai.npc_update( self.object, self.st ) end
-    end
-    -- Обновление оружейного менеджера
-  end
-
-  if watchdog[ self.object:id() ] == 6 then
-    -- Проверка артефакта в руках
-    if self.object:alive() then
-      check_art_weapon( self.object )
-    end
-    -- Проверка артефакта в руках
-  end
-
-  if watchdog[ self.object:id() ] == 7 then
-    -- Проверка брони
-    if self.object:alive() then
-      if
-        ( not armor_check[ self.object:id() ] )
-        or time_global() > armor_check[ self.object:id() ]
-      then
-        armor_check[ self.object:id() ] = time_global()
-          + math.random( 10000, 30000 )
-        amkii_equip.CAmkDisguise():PeriodicalUpdate( self.object )
-      end
-    end
-    -- Проверка брони
-  end
-
-  watchdog[ self.object:id() ] = watchdog[ self.object:id() ] + 1
-  if watchdog[ self.object:id() ] >= watchdog_max then
-    watchdog[ self.object:id() ] = 0
-  end
-
   local wpn = utils.wpn_info_get( self.object )
   if wpn[ "ammo" ] ~= nil then
     local enemy = self.object:best_enemy()
@@ -1161,6 +1095,76 @@ function motivator_binder:update( delta )
   db.storage[ self_object_id ].us =  0
 
   self.am:call( "on_npc_update", self.object, delta )
+  self.am:call( "on_npc_update." .. self.object:id(), self.object, delta )
+end
+
+
+-- Апдейт включения/выключения фонарика
+function motivator_binder:check_light()
+  if self.object:alive() then
+    if time_global() - self.last_update > 1000 then
+      if
+        amk.get_npc_relation( self.object,db.actor ) == "enemy"
+        and self.object.health > 0.01
+      then
+        if self.object:see( db.actor ) then
+          amk.enemy_see_actor( self.object, "npc" )
+        end
+        if db.actor:see( self.object ) then
+          amk.actor_see_enemy( self.object, "npc" )
+        end
+      end
+      sr_light.check_light( self.object )
+      self.last_update = time_global()
+    end
+  end
+end
+
+
+-- Апдейт торговли
+function motivator_binder:trade_manager_update()
+  if self.object:alive() then
+    trade_manager.update( self.object )
+  end
+end
+
+
+-- Обновление схем гранатометания, медика и переодевания
+function motivator_binder:xrs_ai_npc_update()
+  if self.object:alive() then
+    if xrs_ai then xrs_ai.npc_update( self ) end
+  end
+end
+
+
+-- Обновление оружейного менеджера
+function motivator_binder:rx_ai_npc_update()
+  if self.object:alive() then
+    if rx_ai then rx_ai.npc_update( self.object, self.st ) end
+  end
+end
+
+
+-- Проверка артефакта в руках
+function motivator_binder:check_art_weapon()
+  if self.object:alive() then
+    check_art_weapon( self.object )
+  end
+end
+
+
+-- Проверка брони
+function motivator_binder:amkii_equip()
+  if self.object:alive() then
+    if
+      ( not armor_check[ self.object:id() ] )
+      or time_global() > armor_check[ self.object:id() ]
+    then
+      armor_check[ self.object:id() ] = time_global()
+        + math.random( 10000, 30000 )
+      amkii_equip.CAmkDisguise():PeriodicalUpdate( self.object )
+    end
+  end
 end
 
 
