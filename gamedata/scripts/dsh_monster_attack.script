@@ -20,68 +20,102 @@ function on_actor_update()
 end
 
 
+function are_all_attacks_disabled()
+  if
+    has_alife_info( "volna_goodwill" ) or has_alife_info( "peshera_go" )
+  then
+    return true
+  end
+  return false
+end
+
+
 function on_monster_spawn( obj, binder )
-  binder.am:subscribe({
+  local subscribe = false
+  local workers   = get_update_workers( obj )
+  if obj:alive() then
+    local k = script_name() .. ".workers"
+    if table.getn( workers.alive ) > 0 then
+      binder[ k ] = workers
+      subscribe   = true
+    end
+  else
+    if table.getn( workers.dead ) > 0 then
+      binder[ k ] = workers
+      subscribe   = true
+    end
+  end
+  if subscribe then
+    local s = {
       [ "signal" ] = "on_monster_update." .. obj:id(),
       [ "fun"    ] = this.on_update,
       [ "queued" ] = true,
-  })
+    }
+    binder[ script_name() .. ".subscribed" ] = s
+    ogse_signal.get_mgr():subscribe( s )
+  end
+end
+
+
+function get_update_workers( obj )
+  local t = {
+    [ "alive" ] = {},
+    [ "dead"  ] = {},
+  }
+  if obj:clsid() == clsid.bloodsucker_s then
+    table.insert( t.alive, this.bloodsucker_attack )
+  elseif obj:clsid() == clsid.boar_s then
+    if
+      obj:section() == "boar_weak"
+      or obj:section() == "boar_normal"
+      or obj:section() == "boar_strong"
+      or obj:section() == "boar_kachok"
+    then
+      table.insert( t.alive, this.boar_attack )
+    end
+    table.insert( t.alive, boar_body_attack )
+    table.insert( t.dead,  boar_body_attack )
+  elseif obj:clsid() == clsid.burer_s then
+    table.insert( t.alive, this.burer_attack )
+  elseif obj:clsid() == clsid.cat_s then
+    table.insert( t.alive, this.cat_attack )
+  elseif obj:clsid() == clsid.chimera_s then
+    table.insert( t.alive, this.chimera_attack )
+  elseif obj:clsid() == clsid.controller_s then
+    table.insert( t.alive, this.controller_attack )
+  elseif obj:clsid() == clsid.dog_s then
+    table.insert( t.alive, this.dog_attack )
+    table.insert( t.alive, this.dog_attack_phantom )
+  elseif obj:clsid() == clsid.poltergeist_s then
+    table.insert( t.alive, this.poltergeist_attack )
+  elseif obj:clsid() == clsid.pseudodog_s then
+    table.insert( t.alive, this.pseudodog_attack )
+  elseif obj:clsid() == clsid.tushkano_s then
+    table.insert( t.alive, this.tushkano_attack )
+  elseif obj:clsid() == clsid.zombie_s then
+    if obj:section() == "zombie_plague" then
+      table.insert( t.alive, this.zombie_plague_attack )
+    elseif obj:section() == "zombie_plague_komar" then
+      table.insert( t.alive, this.zombie_plague_komar_attack )
+    else
+      table.insert( t.alive, this.zombie_attack )
+    end
+  end
+  return t
 end
 
 
 function on_update( obj )
-  if not (
-    has_alife_info( "volna_goodwill" ) or has_alife_info( "peshera_go" )
-  ) then
-    if obj:clsid() == clsid.boar_s then
-      boar_body_attack( obj )
-    end
-  end
+  if are_all_attacks_disabled() then return end
+  local binder  = obj:binded_object()
+  local workers = binder[ script_name() .. ".workers" ]
   if obj:alive() then
-    -- все эффекты отключаем
-    --   в Волне
-    --   во время сна в Пещере
-    if not (
-      has_alife_info( "volna_goodwill" ) or has_alife_info( "peshera_go" )
-    ) then
-      if obj:clsid() == clsid.bloodsucker_s then
-        bloodsucker_attack( obj )
-      elseif obj:clsid() == clsid.boar_s then
-        if
-          obj:section() == "boar_weak"
-          or obj:section() == "boar_normal"
-          or obj:section() == "boar_strong"
-          or obj:section() == "boar_kachok"
-        then
-          boar_attack( obj )
-        end
-      elseif obj:clsid() == clsid.burer_s then
-        burer_attack( obj )
-      elseif obj:clsid() == clsid.cat_s then
-        cat_attack( obj )
-      elseif obj:clsid() == clsid.chimera_s then
-        chimera_attack( obj )
-      elseif obj:clsid() == clsid.controller_s then
-        controller_attack( obj )
-      elseif obj:clsid() == clsid.dog_s then
-        dog_attack( obj )
-        dog_attack_phantom( obj )
-      elseif obj:clsid() == clsid.poltergeist_s then
-        poltergeist_attack( obj )
-      elseif obj:clsid() == clsid.pseudodog_s then
-        pseudodog_attack( obj )
-      elseif obj:clsid() == clsid.tushkano_s then
-        tushkano_attack( obj )
-      elseif obj:clsid() == clsid.zombie_s then
-        if obj:section() == "zombie_plague" then
-          zombie_plague_attack( obj )
-        elseif obj:section() == "zombie_plague_komar" then
-          zombie_plague_komar_attack( obj )
-        else
-          zombie_attack( obj )
-        end
-      end
-    end
+    workers = workers.alive
+  else
+    workers = workers.dead
+  end
+  for _, fun in ipairs( workers ) do
+    fun( obj )
   end
 end
 
@@ -727,6 +761,19 @@ end
 
 
 function on_death( obj, who )
+  local binder     = obj:binded_object()
+  local subscribed = binder[ script_name() .. ".subscribed" ]
+  if subscribed then
+    local workers = binder[ script_name() .. ".workers" ]
+    if workers then
+      if table.getn( workers.alive ) > 0 then workers.alive = {} end
+      if table.getn( workers.dead  ) == 0 then
+        ogse_signal.get_mgr():unsubscribe( subscribed )
+      end
+    else
+      ogse_signal.get_mgr():unsubscribe( subscribed )
+    end
+  end
   if obj:section() == "zombie_plague" then
     level.remove_pp_effector( 1001 )
     insect_particle:stop()
