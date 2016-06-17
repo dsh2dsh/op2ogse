@@ -10,12 +10,12 @@ local freq = 100
 
 
 function attach( sm )
-  sm:subscribe({ signal = "on_monster_death",  fun = this.on_npc_death     })
+  sm:subscribe({ signal = "on_monster_death",  fun = this.on_monster_death })
   sm:subscribe({ signal = "on_monster_spawn",  fun = this.on_monster_spawn })
-  sm:subscribe({ signal = "on_npc_death",  fun = this.on_npc_death })
-  sm:subscribe({ signal = "on_npc_update", fun = this.on_npc_update })
-  sm:subscribe({ signal = "on_physic_obj_update", fun = this.on_ph_update })
-  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
+  sm:subscribe({ signal = "on_npc_death",      fun = this.on_npc_death     })
+  sm:subscribe({ signal = "on_npc_spawn",      fun = this.on_npc_spawn     })
+  sm:subscribe({ signal = "on_ph_spawn",       fun = this.on_ph_spawn      })
+  sm:subscribe({ signal = "on_spawn",          fun = this.on_spawn         })
 end
 
 
@@ -30,17 +30,63 @@ end
 
 
 function on_monster_spawn( obj, binder )
-  ogse_signals.get_mgr():subscribe({
-      [ "signal" ] = "on_monster_update." .. obj:id(),
-      [ "fun"    ] = this.on_monster_update,
-      [ "queued" ] = true,
-  })
+  if obj:alive() then return end
+  local s = {
+    [ "signal" ] = "on_monster_update." .. obj:id(),
+    [ "fun"    ] = this.on_monster_update,
+    [ "queued" ] = true,
+  }
+  binder[ script_name() .. ".subscribed" ] = s
+  ogse_signals.get_mgr():subscribe( s )
 end
 
 
-function on_npc_death( victim, who )
-  victim:set_tip_text_default()
-  victim:set_nonscript_usable( true )
+function on_npc_spawn( obj, binder )
+  if obj:alive() then return end
+  local s = {
+    [ "signal" ] = "on_npc_update." .. obj:id(),
+    [ "fun"    ] = this.on_npc_update,
+    [ "queued" ] = true,
+  }
+  binder[ script_name() .. ".subscribed" ] = s
+  ogse_signals.get_mgr():subscribe( s )
+end
+
+
+function on_monster_death( obj, who )
+  local binder = obj:binded_object()
+  on_monster_spawn( obj, binder )
+  obj:set_tip_text_default()
+  obj:set_nonscript_usable( true )
+end
+
+
+function on_npc_death( obj, who )
+  local binder = obj:binded_object()
+  on_npc_spawn( obj, binder )
+  obj:set_tip_text_default()
+  obj:set_nonscript_usable( true )
+end
+
+
+function on_ph_spawn( obj, binder )
+  if not (
+    obj:is_inventory_box() or obj:section() == "dsh_treasure_item"
+  ) then
+    return
+  end
+  local s = {
+    [ "signal" ] = "on_ph_update." .. obj:id(),
+    [ "fun"    ] = this.on_ph_update,
+    [ "queued" ] = true,
+  }
+  binder[ script_name() .. ".subscribed" ] = s
+  ogse_signals.get_mgr():subscribe( s )
+end
+
+
+function on_ph_update( obj )
+  process_npc( obj, "st_search_treasure" )
 end
 
 
@@ -48,7 +94,7 @@ function on_monster_update( obj )
   if monsters_like_npc[ obj:section() ] then
     return on_npc_update( obj )
   end
-  if db.actor and db.actor:alive() and not obj:alive() then
+  if db.actor then
     local binder = obj:binded_object()
     if binder.dsh_busy_hands_t and binder.dsh_busy_hands_t > time_global() then
       return
@@ -88,7 +134,7 @@ end
 
 
 function process_npc( obj, tip_text_def )
-  if db.actor and db.actor:alive() and not obj:alive() then
+  if db.actor then
     local binder = obj:binded_object()
     if binder.dsh_busy_hands_t and binder.dsh_busy_hands_t > time_global() then
       return
@@ -129,12 +175,4 @@ function actor_has_free_hands()
     or
     ( not active_item )
   )
-end
-
-
-function on_ph_update( obj )
-  if obj:is_inventory_box() or obj:section() == "dsh_treasure_item" then
-    local binder = obj:binded_object()
-    process_npc( obj, "st_search_treasure" )
-  end
 end

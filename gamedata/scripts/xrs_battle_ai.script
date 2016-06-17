@@ -120,15 +120,14 @@ local forbidden_profiles = {		-- запретные профили и имена
 	["sar_monolith_commander"]		=	true,
 }
 
+
 function attach( sm )
-  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
+  sm:subscribe({ signal = "on_npc_death", fun = this.death_place  })
+  sm:subscribe({ signal = "on_npc_hit",   fun = this.hit_callback })
+  sm:subscribe({ signal = "on_npc_net_destroy", fun = go_offline  })
+  sm:subscribe({ signal = "on_spawn",     fun = this.on_spawn     })
 end
 
-function init()
-	event("npc_hit"):register(hit_callback)
-	event("npc_death"):register(death_place)
-	event("npc_net_destroy"):register(go_offline)
-end
 
 --- время входа в бой
 
@@ -1501,25 +1500,22 @@ local crit_anims = {
 	},
 }
 
-function hit_fx(e)
+function hit_fx( obj, amount, who, bone_index )
 
-	if not e.victim or xr_wounded.is_wounded(e.victim) or not e.victim:alive() then
+	if not obj or xr_wounded.is_wounded(obj) or not obj:alive() then
 		return
 	end
 	
-	local active_item = e.victim:item_in_slot(e.victim:active_slot())
+	local active_item = obj:item_in_slot(obj:active_slot())
 	if not active_item or active_item:section() == "bolt" then
 		return
 	end
 	
-	if hit_timeout[e.victim:id()] and hit_timeout[e.victim:id()] > time_global() then
+	if hit_timeout[obj:id()] and hit_timeout[obj:id()] > time_global() then
 		return
-	elseif hit_timeout[e.victim:id()] then	
-		hit_timeout[e.victim:id()] = nil
+	elseif hit_timeout[obj:id()] then	
+		hit_timeout[obj:id()] = nil
 	end		
-	
-	local amount = e.amount
-	local bone_index = e.bone	
 	
 	local ini = system_ini()
 	local sect = active_item:section()
@@ -1547,22 +1543,22 @@ function hit_fx(e)
 	if amount > 0.1 then
 		if amount > 0.1 and amount <= 0.15 then
 			key_2 = "light"
-			hit_timeout[e.victim:id()] = time_global() + 1000
+			hit_timeout[obj:id()] = time_global() + 1000
 		elseif amount > 0.15 and amount <= 0.25 then
 			key_2 = "medium"
-			hit_timeout[e.victim:id()] = time_global() + 1500
+			hit_timeout[obj:id()] = time_global() + 1500
 		elseif amount > 0.25 then
 			key_2 = "heavy"
-			hit_timeout[e.victim:id()] = time_global() + 2000
+			hit_timeout[obj:id()] = time_global() + 2000
 		end	
 	end
 	
-	local obj = alife():object(e.victim:id())
+	local obj = alife():object(obj:id())
 	local exo_flag = false
 	
 	if obj then
 		local vis = table.remove(
-		  amk.str_explode( "\\", e.victim:get_visual_name() )
+		  amk.str_explode( "\\", obj:get_visual_name() )
 		)
 		if string.find( vis, "exo" ) or string.find( vis, "tank" ) then exo_flag = true end
 	end
@@ -1602,137 +1598,135 @@ function hit_fx(e)
 	
 	if exo_flag then
 		key_2 = "light"
-		hit_timeout[e.victim:id()] = time_global() + 1000	
+		hit_timeout[obj:id()] = time_global() + 1000	
 		need_drop = false
 	end
 	
 	if key_1 and key_2 and key_3 then
 		local anim = crit_anims[key_1][key_2][key_3]
 		if anim then
-			e.victim:add_animation(anim, true, false)
+			obj:add_animation(anim, true, false)
 		end
 	end	
 	
-	if need_drop and e.who:id() == db.actor:id() then
+	if need_drop and who:id() == db.actor:id() then
 		active_item:set_condition(math.random(30,65)/100)
-		e.victim:drop_item(active_item)
+		obj:drop_item(active_item)
 	end	
 	
 end
 
-function hit_callback(e)
-	e:setFingerprint("xrs_battle_ai_hit_callback")
+function hit_callback(  obj, amount, local_direction, who, bone_index )
 	-- если объект был ранее забыт - очухиваем его, если нету в табличке - записываем в табличку
 	-- данная функция помещается в xr_motivator.hit_callback
-	local npc = e.victim
+	local npc = obj
 	
-	if e.who and e.victim and e.who:id() == e.victim:id() then
+	if who and obj and who:id() == obj:id() then
 		return
 	end
 	
-	hit_fx(e)
+	hit_fx( obj, amount, who, bone_index )
 	
-	if e.amount and e.amount > 0.01 and npc:alive() and not xr_wounded.is_wounded(npc) then
+	if amount and amount > 0.01 and npc:alive() and not xr_wounded.is_wounded(npc) then
 	
-		if IsStalker(e.who) then
-			if e.who:alive() then
-				if targets_list[npc:id()] and not targets_list[npc:id()][e.who:id()] then
-					if e.who:id() == db.actor:id() then
-						enable_object(e.victim, e.who)
-						if check_is_enemy(e.victim, e.who) then
-							write_log("!!XRS_BATTLE_AI REG_TARG_1 NPC ["..e.victim:name().."] ENEMY ["..e.who:name().."]")
-							register_as_target(e.victim, e.who)
+		if IsStalker(who) then
+			if who:alive() then
+				if targets_list[npc:id()] and not targets_list[npc:id()][who:id()] then
+					if who:id() == db.actor:id() then
+						enable_object(obj, who)
+						if check_is_enemy(obj, who) then
+							write_log("!!XRS_BATTLE_AI REG_TARG_1 NPC ["..obj:name().."] ENEMY ["..who:name().."]")
+							register_as_target(obj, who)
 						else
-							if not damage_from_actor[e.victim:id()] then
-								damage_from_actor[e.victim:id()] = e.amount
+							if not damage_from_actor[obj:id()] then
+								damage_from_actor[obj:id()] = amount
 							else	
-								damage_from_actor[e.victim:id()] = damage_from_actor[e.victim:id()] + e.amount
-								if damage_from_actor[e.victim:id()] > 0.2 then
-									write_log("!!XRS_BATTLE_AI REG_TARG_2 NPC ["..e.victim:name().."] ENEMY ["..e.who:name().."]")
-									register_as_target(e.victim, e.who)
-								end
+								damage_from_actor[obj:id()] = damage_from_actor[obj:id()] + amount
 							end							
+							if damage_from_actor[obj:id()] > 0.2 then
+								write_log("!!XRS_BATTLE_AI REG_TARG_2 NPC ["..obj:name().."] ENEMY ["..who:name().."]")
+								register_as_target(obj, who)
+							end
 						end
-						e.victim:make_object_visible_somewhen(e.who)
+						obj:make_object_visible_somewhen(who)
 					else
-						enable_object(e.victim, e.who)
-						process_enemy(e.victim, e.who)
-						e.victim:make_object_visible_somewhen(e.who)
+						enable_object(obj, who)
+						process_enemy(obj, who)
+						obj:make_object_visible_somewhen(who)
 					end
-				elseif targets_list[npc:id()] and targets_list[npc:id()][e.who:id()] then
-					local enemy_record = targets_list[npc:id()][e.who:id()]
+				elseif targets_list[npc:id()] and targets_list[npc:id()][who:id()] then
+					local enemy_record = targets_list[npc:id()][who:id()]
 					enemy_record.last_time_seen = time_global()
-					enemy_record.vertex = e.who:level_vertex_id()
+					enemy_record.vertex = who:level_vertex_id()
 				end
-				if not ((e.victim:relation(e.who) ~= game_object.enemy or e.victim:character_community() == e.who:character_community()) and not e.who:id() == db.actor:id() and not xr_companion.is_companion(e.who:id())) then
-					if not hit_memory[e.victim:id()] then
-						hit_memory[e.victim:id()] = {}
+				if not ((obj:relation(who) ~= game_object.enemy or obj:character_community() == who:character_community()) and not who:id() == db.actor:id() and not xr_companion.is_companion(who:id())) then
+					if not hit_memory[obj:id()] then
+						hit_memory[obj:id()] = {}
 					end
-					local mem = hit_memory[e.victim:id()]
-					mem[e.who:id()] = true
-					if e.amount > 0.1 then
-						write_log("--XRS_BATTLE_AI: Выставляем врага по сильному хиту для "..e.victim:name().." TARG "..e.who:name())
-						primary_target[e.victim:id()] = e.who:id()
+					local mem = hit_memory[obj:id()]
+					mem[who:id()] = true
+					if amount > 0.1 then
+						write_log("--XRS_BATTLE_AI: Выставляем врага по сильному хиту для "..obj:name().." TARG "..who:name())
+						primary_target[obj:id()] = who:id()
 					end
-				elseif e.victim:relation(e.who) ~= game_object.enemy or e.victim:character_community() == e.who:character_community() then	
+				elseif obj:relation(who) ~= game_object.enemy or obj:character_community() == who:character_community() then	
 					set_sound_event(npc, "ff")
 				end				
 			end
-		elseif IsMonster(e.who) then
-			if e.who:alive() then
-				if targets_list[npc:id()] and not targets_list[npc:id()][e.who:id()] then
-					enable_object(e.victim, e.who)
-					process_enemy(e.victim, e.who)
-					e.victim:make_object_visible_somewhen(e.who)
-				elseif targets_list[npc:id()] and targets_list[npc:id()][e.who:id()] then
-					local enemy_record = targets_list[npc:id()][e.who:id()]
+		elseif IsMonster(who) then
+			if who:alive() then
+				if targets_list[npc:id()] and not targets_list[npc:id()][who:id()] then
+					enable_object(obj, who)
+					process_enemy(obj, who)
+					obj:make_object_visible_somewhen(who)
+				elseif targets_list[npc:id()] and targets_list[npc:id()][who:id()] then
+					local enemy_record = targets_list[npc:id()][who:id()]
 					enemy_record.last_time_seen = time_global()
-					enemy_record.vertex = e.who:level_vertex_id()					
+					enemy_record.vertex = who:level_vertex_id()					
 				end	
 			end
-		elseif is_armor(e.who) and armor_alive(e.who) then
-			if targets_list[npc:id()] and not targets_list[npc:id()][e.who:id()] then
-				enable_object(e.victim, e.who)
-				process_enemy(e.victim, e.who)
-				e.victim:make_object_visible_somewhen(e.who)
-			elseif targets_list[npc:id()] and targets_list[npc:id()][e.who:id()] then
-				local enemy_record = targets_list[npc:id()][e.who:id()]
+		elseif is_armor(who) and armor_alive(who) then
+			if targets_list[npc:id()] and not targets_list[npc:id()][who:id()] then
+				enable_object(obj, who)
+				process_enemy(obj, who)
+				obj:make_object_visible_somewhen(who)
+			elseif targets_list[npc:id()] and targets_list[npc:id()][who:id()] then
+				local enemy_record = targets_list[npc:id()][who:id()]
 				enemy_record.last_time_seen = time_global()
-				enemy_record.vertex = e.who:level_vertex_id()					
+				enemy_record.vertex = who:level_vertex_id()					
 			end				
 		end
 		
-		if in_hideout(e.victim) then
-			if last_hideout[e.victim:id()] then
-				locked_vertexes[0] = last_hideout[e.victim:id()].vtx
-				bad_hide[last_hideout[e.victim:id()].vtx] = time_global() + 15000
-				last_hideout[e.victim:id()] = nil
-				last_time_send[e.victim:id()] = nil
-				last_sent_vertex[e.victim:id()] = nil
+		if in_hideout(obj) then
+			if last_hideout[obj:id()] then
+				locked_vertexes[0] = last_hideout[obj:id()].vtx
+				bad_hide[last_hideout[obj:id()].vtx] = time_global() + 15000
+				last_hideout[obj:id()] = nil
+				last_time_send[obj:id()] = nil
+				last_sent_vertex[obj:id()] = nil
 			end
 		end
 
-		local deadman = have_fresh_deadman(e.victim)
+		local deadman = have_fresh_deadman(obj)
 		if deadman ~= false then
-			last_target[e.victim:id()][deadman] = nil
-			last_time_send[e.victim:id()] = nil
-			last_enemy[e.victim:id()] = nil
-			last_enemy_id[e.victim:id()] = nil
-			primary_target[e.victim:id()] = nil
-			last_reprioritize[e.victim:id()] = nil
+			last_target[obj:id()][deadman] = nil
+			last_time_send[obj:id()] = nil
+			last_enemy[obj:id()] = nil
+			last_enemy_id[obj:id()] = nil
+			primary_target[obj:id()] = nil
+			last_reprioritize[obj:id()] = nil
 		end	
 		
 	end
 end
 
-function death_place(e)
-	e:setFingerprint("xrs_battle_ai_death_place")
-	local npc = e.victim
+function death_place( obj, who )
+	local npc = obj
 	local vertex = npc:level_vertex_id()
 	local community = npc:character_community() 
 	death_places[vertex] = {
 		comm = community,
-		killer = e.who:id()	
+		killer = who:id()	
 	}
 	local check = active_grenades[npc:id()]
 	if check then
@@ -1740,11 +1734,11 @@ function death_place(e)
 		escape_point[npc:id()] = nil
 		active_grenades[npc:id()] = nil
 	end
-	reset_everything(e.victim)
+	reset_everything(obj)
 end
 
-function go_offline(e)
-	reset_everything(e.victim)
+function go_offline( obj )
+	reset_everything( obj )
 end
 
 function reset_everything(npc)
