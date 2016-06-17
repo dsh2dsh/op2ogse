@@ -7,120 +7,136 @@
 -----------------------------------------------------------------------
 --- Настройки схемы
 -----------------------------------------------------------------------
-local debug_flag = false
-local monsters_too = true
-local turn_off_restrictors = false      -- выключить рестрикторную часть
-local turn_off_path_around = true       -- выключить часть обхода по путям
-local transit_coeff = 1.4       -- Коэффициент, на который умножается радиус аномалии для получения транзитных точек. Нельзя выставлять менее 1.2 - будет зацеплять аномалию
---local exit_coeff = 7          -- Коэффициент, на который умножается радиус аномалии для получения точки выхода из маршрута. Имеет смысл ставить побольше, чтобы непись не отирался около аномалии на выходе.
-local timeout = 3000            -- Время в миллисекундах, на которое NPC забывает об аномалии после успешного её обхода. Нужно обязательно, чтобы непись не застрял вокруг аномалии, иначе схема может отправить его обходить её бесконечно.
-local timeout_to_evade = 20000 -- Время на обход, предельное
------------------------------------------------------------------------
-local count_update                      = 0     -- Счетчик апдейтов. Нельзя чтобы схема стартовала включенной сразу же, иначе 
-local engage_after_update       = 15 -- будут глюки на переключении схем и выборе оружия
-
-local anomaly_to_evade = {}
-local anomaly_to_ignore_timeout = {}
-local anomaly_timeout = {}
-local rdelta = {}
-local ready = {}
-local escape_paths = {}
-
 local excluded_npc = {
-        [29] = true,            -- учебная плоть блин
-        ["bar_ecolog_professor"] = true,
-        ["dik_the_drifter"] = true,
-        ["zona_brother1"] = true,
-        ["zona_brother2"] = true,
-        ["val_escort_captive"] = true,
-        ["val_escort_nap1"] = true,
-        ["bandit_trader"] =     true,
-        ["bandit_trader_spawn"] = true,         
---      ["ros_soldier"] = true,
-        ["peshera_plennyi"] = true,
+  [ 29 ] = true,                -- учебная плоть блин
+  [ "bar_ecolog_professor"] = true,
+  [ "dik_the_drifter"     ] = true,
+  [ "zona_brother1"       ] = true,
+  [ "zona_brother2"       ] = true,
+  [ "val_escort_captive"  ] = true,
+  [ "val_escort_nap1"     ] = true,
+  [ "bandit_trader"       ] = true,
+  [ "bandit_trader_spawn" ] = true,
+  [ "peshera_plennyi"     ] = true,
 }
 
 local excluded_sect = {
-        ["burning_fuzz"] = true,
-        ["zone_rad"] = true,
+  [ "burning_fuzz" ] = true,
+  [ "zone_rad"     ] = true,
 }
 
-local excluded_comms = {                        -- запретные коммунити
-        ["zombied"] = true,
-        ["trader"] = true
+local excluded_comms = {        -- запретные коммунити
+  [ "zombied" ] = true,
+  [ "trader"  ] = true,
 }
 
 local excluded_locations = {
-        --["l03u_agr_underground"] = true,
+  -- [ "l03u_agr_underground" ] = true,
 }
-
-local added_restrictions = {}
-local last_position      = {}
 
 
 function attach( sm )
+  sm:subscribe({ signal = "on_monster_death",        fun = this.on_death   })
+  sm:subscribe({ signal = "on_monster_net_destroy",  fun = this.on_destroy })
+  sm:subscribe({ signal = "on_monster_spawn", fun = this.on_monster_spawn  })
+  sm:subscribe({ signal = "on_npc_death",            fun = this.on_death   })
+  sm:subscribe({ signal = "on_npc_net_destroy",      fun = this.on_destroy })
+  sm:subscribe({ signal = "on_npc_spawn",     fun = this.on_npc_spawn      })
   sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
   sm:subscribe({ signal = "on_save",  fun = this.on_save  })
 end
 
 
-function init()
-  event( "npc_death"       ):register( death )
-  event( "npc_net_destroy" ):register( death )
-  event( "npc_update"      ):register( update_norm )
-  if monsters_too then
-    event( "monster_death"       ):register( death )
-    event( "monster_net_destroy" ):register( death )
-    event( "monster_update"      ):register( update_norm )
+function on_monster_spawn( obj, binder )
+  if not obj:alive() then return end
+  local s = {
+    [ "signal" ] = "on_monster_update." .. obj:id(),
+    [ "fun"    ] = this.update_norm,
+    [ "queued" ] = true,
+  }
+  binder[ script_name() .. ".subscribed" ] = s
+  ogse_signals.get_mgr():subscribe( s )
+end
+
+
+function on_npc_spawn( obj, binder )
+  if not obj:alive() then return end
+  local s = {
+    [ "signal" ] = "on_npc_update." .. obj:id(),
+    [ "fun"    ] = this.update_norm,
+    [ "queued" ] = true,
+  }
+  binder[ script_name() .. ".subscribed" ] = s
+  ogse_signals.get_mgr():subscribe( s )
+end
+
+
+function on_death( obj )
+  local binder     = obj:binded_object()
+  local subscribed = binder[ script_name() .. ".subscribed" ]
+  if subscribed then
+    ogse_signals.get_mgr():unsubscribe( subscribed )
+  end
+  cleanup( obj )
+end
+
+
+function on_destroy( obj )
+  cleanup( obj )
+end
+
+
+local added_restrictions = {}
+local last_position      = {}
+
+
+function remove_restriction( npc, anomid )
+  if npc and anomid and not isIndoor( level.name() ) then
+    local npc_id    = npc:id()
+    local obj       = level.object_by_id( anomid )
+    local anom_sect = ""
+    if obj then
+      anom_sect = obj:section()
+      if
+        ogse_anomaly.chek_exclusion_anomaly( anomid )
+        and not string.find( anom_sect, "handmade_" )
+      then
+        obj:disable_anomaly()
+      end
+    else
+      obj       = alife():object( anomid )
+      anom_sect = obj:section_name()
+    end
+    if
+      ogse_anomaly.chek_exclusion_anomaly( anomid )
+      and not string.find( anom_sect, "handmade_" )
+    then
+      ogse_anomaly.set_anomaly_mode( anomid, "del" )
+      ogse_anomaly.remove_anomaly( anomid )
+    end
+    if added_restrictions[ npc_id ]
+      and added_restrictions[ npc_id ][ anomid ]
+    then
+      added_restrictions[ npc_id ][ anomid ] = nil
+      npc:remove_restrictions( "", obj:name() )
+    end
   end
 end
 
 
-function remove_restriction(npc, anomid)
-        if npc and anomid and not isIndoor(level.name()) then
-                local npc_id = npc:id()
-                local obj = level.object_by_id(anomid)
-                local anom_sect = ""
-                if obj then
-                        anom_sect = obj:section()
-                        if ogse_anomaly.chek_exclusion_anomaly(anomid) and not string.find(anom_sect, "handmade_") then
-                                obj:disable_anomaly()
-                        end
-                else
-                        obj = alife():object(anomid)
-                        anom_sect = obj:section_name()
-                end
-                
-                if ogse_anomaly.chek_exclusion_anomaly(anomid) and not string.find(anom_sect, "handmade_") then
-                        ogse_anomaly.set_anomaly_mode(anomid, "del")
-                        ogse_anomaly.remove_anomaly(anomid)     
---                      ogse_anomaly.delete_anom(level.name(), anomid)
-                end
-                if added_restrictions[npc_id] and added_restrictions[npc_id][anomid] then
-                        added_restrictions[npc_id][anomid] = nil
-                        npc:remove_restrictions("",obj:name())
-                end
-        end
-end
-
-
-function death( e )
-  e:setFingerprint( "ogse_anom_evader_death" )
-  local nid   = e.victim:id()
+function cleanup( obj )
+  local nid   = obj:id()
   local anoms = added_restrictions[ nid ]
   if anoms then
     local restrs = {}
     for k, v in pairs( anoms ) do
       local sobj = alife():object( k )
-      if debug_flag then
-        log1( "!!REMOVE_RESTRICT " .. k .. " FOR " .. e.victim:name() )
-      end
       if sobj then
         table.insert( restrs, sobj:name() )
       end
     end
     if table.getn( restrs ) > 0 then
-        e.victim:remove_restrictions( "", table.concat( restrs, "," ) )
+        obj:remove_restrictions( "", table.concat( restrs, "," ) )
     end
     added_restrictions[ nid ] = nil
     last_position[ nid ]      = nil
@@ -131,10 +147,8 @@ end
 -- как часто выполнять обход аномалий (в мс)
 local freq = 1000
 
-function update_norm( e )
-  e:setFingerprint( "ogse_anom_evader_update" )
-
-  local npc = e.obj
+function update_norm( obj )
+  local npc = obj
   if not npc:alive() then return end
 
   local profile  = npc:profile_name()
@@ -255,525 +269,4 @@ function on_save()
   ogse.save_var(
     script_name() .. ".monster_miss_cnt", monster_miss_cnt, "u8"
   )
-end
-
-
-function update(npc)
-        
-        local profile = npc:profile_name()
-        local name = npc:name()
-        local lev_name = level.name()
-        
-        if
-          excluded_npc[ profile ]
-          or excluded_npc[ name ]
-          or (
-            IsStalker( npc ) and excluded_comms[ npc:character_community() ]
-          )
-        then
-                return
-        end     
-        if excluded_locations[lev_name] then
-                return
-        end     
-        
-        local hasanom, anomid, pos, cls, dist, radius, sect_anom = ogse_anomaly.get_nearest_anomaly_by_point(npc:position())
-        local obj = level.object_by_id(anomid)  
-        if hasanom and obj and ogse_anomaly.get_anomaly_mode(anomid) ~= "del" then
-        
-                for k, v in pairs(excluded_sect) do
-                        if string.find(sect_anom, k) then
-                                return false
-                        end                     
-                end     
-        
-        
-                if dist < 5 then
-                        local an_name = obj:name()
-                        local sobj = alife():object(npc:id())
-                        if not added_restrictions[npc:id()] or (added_restrictions[npc:id()] and not added_restrictions[npc:id()][anomid]) then
-                                if debug_flag then log1("--ADD_RESTRICT "..an_name.." FOR "..npc:name()) end
-                                if not added_restrictions then
-                                        added_restrictions = {}
-                                end
-                                if not added_restrictions[npc:id()] then
-                                        added_restrictions[npc:id()] = {}
-                                end
-                                added_restrictions[npc:id()][anomid] = time_global() + 30000
-                        end
-                end
-        elseif obj then         
-                added_restrictions[npc:id()] = nil
-        end
-        local anoms = added_restrictions[npc:id()]
-        if anoms then
-                local restr = ""
-                local cnt = 0
-                for k, v in pairs(anoms) do
-                        local sobj = alife():object(k)
-                        if sobj then
-                                if cnt == 0 then
-                                        restr = sobj:name()
-                                else
-                                        restr = restr..","..sobj:name()
-                                end
-                        end
-                        cnt = cnt + 1
-                end
-                if restr ~= "" then
-                        if
-                          turn_off_restrictors
-                          or (
-                            IsStalker( npc )
-                            and npc:character_community() == "zombied"
-                          )
-                        then
-                                log1("!!RESTRICT_TURNED_OFF or "..npc:name().." is zombied.")
-                        else
-                                npc:add_restrictions("", restr)
-                                if debug_flag then 
-                                        log1("--ADD_RESTRICT FINISHED ["..restr.."] FOR "..npc:name())
-                                end                     
-                        end
-                end
-        end     
-end
-
------------------------------------------------------------------------
---- Обход по точкам для неписей под управлением idle_alife
------------------------------------------------------------------------
-
-class "evaluator_anomaly" (property_evaluator)
-
-function evaluator_anomaly:__init(storage, npc, name) super(nil, name)
-    self.st = storage
-    self.npc = npc
-    self.called = false
-end
-
-function evaluator_anomaly:evaluate()
-
-        if count_update <= engage_after_update then
-                count_update = count_update + 1
-                return false
-        end     
-
-        local nid = self.npc:id()
-        
-        local profile = self.npc:profile_name()
-        local name = self.npc:name()
-        if
-          excluded_npc[ profile ]
-          or excluded_npc[ name ]
-          or (
-            IsStalker( self.npc )
-            and excluded_comms[ self.npc:character_community() ]
-          )
-        then
-                return false
-        end             
-
-        if
-          turn_off_path_around
-          or (
-            IsStalker( self.npc )
-            and self.npc:character_community() == "zombied"
-          )
-        then
-                return false
-        end
-        
-        local scheme1 = ""                      
-        if db.storage[self.npc:id()] then
-                scheme1 = tostring(db.storage[self.npc:id()].active_section)
-        end     
-        -- if string.find(scheme1, "patrol@") then
-                -- return false
-        -- end  
-        
-        if anomaly_to_evade[nid] then
-                if anomaly_timeout[nid] and anomaly_timeout[nid] > time_global() then
-                        ogse_debug.add_active_eval( self.npc, script_name(), "evaluator_anomaly" )
-                        return true
-                else
-                        anomaly_to_evade[nid] = nil
-                end
-        end
-  
-        if rdelta[nid] == nil then
-                rdelta[nid] = {}
-        end
-
-        local visradius = 0
-        
-        if anomaly_to_evade[nid] == nil then
-        
-                local hasanom, anomid, pos, cls, dist, radius, sect_anom = ogse_anomaly.get_nearest_anomaly(self.npc)
-                
-                local obj = level.object_by_id(anomid)
-                --' Если сталкер уже видел аномалию, увеличим радиус обнаружения на 1 метр,
-                --' чтобы избежать частого переключения схем
-                if hasanom and obj then
-                        if rdelta[nid][anomid] == nil then
-                                rdelta[nid][anomid] = 1
-                        end
-                        visradius = radius + rdelta[nid][anomid]
-                        if anomaly_to_evade[nid] then
-                                visradius = visradius + 1
-                        end
-                end
-                
-                if added_restrictions[nid] and added_restrictions[nid][anomid] then
-                        return false
-                end
-                
-                if hasanom and obj and (dist and dist < visradius) then
-                
-                        for k, v in pairs(excluded_sect) do
-                                if string.find(sect_anom, k) then
-                                        return false
-                                end                     
-                        end
-
-                
-                        local check_id = tostring(nid).."_"..tostring(anomid)
-                
-                        if anomaly_to_ignore_timeout[check_id] and anomaly_to_ignore_timeout[check_id] > time_global() then
-                                return false
-                        elseif anomaly_to_ignore_timeout[check_id] then 
-                                anomaly_to_ignore_timeout[check_id] = nil
-                        end             
-
-                        anomaly_to_evade[nid] = anomid
-                        anomaly_timeout[nid] = time_global() + timeout_to_evade
-                        
-                        ogse_debug.add_active_eval( self.npc, script_name(), "evaluator_anomaly_2" )
-                        return true
-                else
-                        return false
-                end
-        
-        end
-        return false
-end
-
-function proceed_movement(npc, vertex)
-        npc:movement_enabled(true)
-        npc:set_detail_path_type(move.curve)
-        npc:set_path_type(game_object.level_path)
-        npc:set_desired_direction()
-        npc:set_desired_position()
-        npc:set_dest_level_vertex_id( vertex )
-        state_mgr.set_state(npc, "rush")
-end
-
-function check_arrival(npc_position, vertex)
-        local vertex_pos = level.vertex_position(vertex)
-        local dist = npc_position:distance_to(vertex_pos)
-        if dist < 1 then
-                return true
-        else
-                return false
-        end
-end
-
-function is_alife_controlled(npc)
-        return db.storage[npc:id()].active_section == nil or db.storage[npc:id()].active_scheme == "patrol"
-end
-
-function normalize_vertex( npc, v_id )
-        if not npc:accessible( v_id ) then
-                local vtemp = vector()
-                v_id, vtemp = npc:accessible_nearest( level.vertex_position( v_id ), vtemp )
-        end
-        return v_id
-end
-
-class "action_evade_anomaly" (action_base)
-function action_evade_anomaly:__init (npc_name,action_name, storage, char_ini) super (nil, action_name)
-  self.a = storage
-  self.a.added_restrictions = {}
-end
-
-function action_evade_anomaly:initialize()
-        action_base.initialize(self)
-        local flag, anomid, anomaly_position, cls, dist, anomaly_radius = ogse_anomaly.get_nearest_anomaly(self.object)
-        local nid = self.object:id()
-        local check_id = tostring(nid).."_"..tostring(anomid)
-        if anomaly_to_ignore_timeout[check_id] and anomaly_to_ignore_timeout[check_id] > time_global() then
-                self.flag = nil
-                self.anomid = nil
-                self.anpos = nil
-                self.radius = nil
-                anomaly_to_evade[nid] = nil
-                escape_paths[nid] = nil         
-                return
-        end     
-        self.flag = flag
-        self.anomid = anomid
-        self.anpos = anomaly_position
-        self.radius = anomaly_radius
-end
-
-function action_evade_anomaly:execute ()
-
-        action_base.execute(self)
-        
-        update(self.object)
-        
-        local nid = self.object:id()
-        local npc_pos = self.object:position()
-        
-        if not self.anomid then return end
-        
-        local anomaly = level.object_by_id(self.anomid)
-        if not anomaly then return end
-        
-        local an_name = anomaly:name()
-        
-        local check_id = tostring(nid).."_"..tostring(self.anomid)
-        
-        if anomaly_to_ignore_timeout[check_id] and anomaly_to_ignore_timeout[check_id] > time_global() then
-                anomaly_to_evade[nid] = nil
-                escape_paths[nid] = nil
-                progress = nil          
-                return
-        end
-
-        if
-          turn_off_path_around
-          or (
-            IsStalker( self.npc )
-            and self.npc:character_community() == "zombied"
-          )
-        then
-                return
-        end
-        
-        if debug_flag and is_alife_controlled(self.object) then log1("!!UNDER_ALIFE_CONTROL "..self.object:name()) end
-        
-        if escape_paths[nid] then
-                local progress = escape_paths[nid]
-                if progress.stage == 0 then -- следуем к точке входа в маршрут
-                        if progress.route == 0 then
-                                if not check_arrival(npc_pos, progress.transit_1a) then
-                                        proceed_movement(self.object, progress.transit_1a)
-                                        if debug_flag then db.actor:give_game_news(self.object:name().."proceed_movement_0 "..self.anomid, "ui\\ui_iconsTotal", Frect():set(498,47,83,47),0, 1000) end
-                                else
-                                        progress.stage = 1
-                                        if debug_flag then db.actor:give_game_news(self.object:name().."switch_1 "..self.anomid, "ui\\ui_iconsTotal", Frect():set(498,47,83,47),0, 1000) end
-                                end
-                        else
-                                if not check_arrival(npc_pos, progress.transit_1b) then
-                                        proceed_movement(self.object, progress.transit_1b)
-                                        if debug_flag then db.actor:give_game_news(self.object:name().."proceed_movement_0A "..self.anomid, "ui\\ui_iconsTotal", Frect():set(498,47,83,47),0, 1000) end
-                                else
-                                        progress.stage = 1
-                                        if debug_flag then db.actor:give_game_news(self.object:name().."switch_1 "..self.anomid, "ui\\ui_iconsTotal", Frect():set(498,47,83,47),0, 1000) end
-                                end                     
-                        end             
-                elseif progress.stage == 1 then -- следуем к точке обхода
-                        if progress.route == 0 then
-                                if not check_arrival(npc_pos, progress.transit_2a) then
-                                        proceed_movement(self.object, progress.transit_2a)
-                                        if debug_flag then db.actor:give_game_news(self.object:name().."proceed_movement_1 "..self.anomid, "ui\\ui_iconsTotal", Frect():set(498,47,83,47),0, 1000) end
-                                else
-                                        progress.stage = 2
-                                        if debug_flag then db.actor:give_game_news(self.object:name().."switch_2 "..self.anomid, "ui\\ui_iconsTotal", Frect():set(498,47,83,47),0, 1000) end
-                                end                     
-                        else
-                                if not check_arrival(npc_pos, progress.transit_2b) then
-                                        proceed_movement(self.object, progress.transit_2b)
-                                        if debug_flag then db.actor:give_game_news(self.object:name().."proceed_movement_1A "..self.anomid, "ui\\ui_iconsTotal", Frect():set(498,47,83,47),0, 1000) end
-                                else
-                                        progress.stage = 2
-                                        if debug_flag then db.actor:give_game_news(self.object:name().."switch_2 "..self.anomid, "ui\\ui_iconsTotal", Frect():set(498,47,83,47),0, 1000) end
-                                end                             
-                        end                     
-                elseif progress.stage == 2 then -- следуем к точке выхода
-                        -- if not check_arrival(npc_pos, progress.transit_exit) then
-                                -- proceed_movement(self.object, progress.transit_exit)
-                                -- if debug_flag then db.actor:give_game_news(self.object:name().."proceed_movement_exit "..self.anomid, "ui\\ui_iconsTotal", Frect():set(498,47,83,47),0, 1000) end
-                        -- else
-                                anomaly_to_evade[nid] = nil
-                                escape_paths[nid] = nil
-                                progress = nil
-                                anomaly_to_ignore_timeout[check_id] = time_global() + timeout
-                                ready = {}
-                                if debug_flag then db.actor:give_game_news(self.object:name().."EXIT!!! "..self.anomid, "ui\\ui_iconsTotal", Frect():set(498,47,83,47),0, 1000) end
-                                return
-                        -- end          
-                end
-        end
-        
-        if self.flag and anomaly and not escape_paths[nid] then
-        
-                local sobj = alife():object(self.anomid)
-        
-                local vector_to_anomaly = self.object:direction()
-                vector_to_anomaly:invert()
-                
-                vector_to_anomaly.y = 0
-                vector_to_anomaly:normalize()
-                
-                local vector_to_transit_1a = vector_rotate_y(vector_to_anomaly,45)
-                local vector_to_transit_2a = vector_rotate_y(vector_to_anomaly,135)
-                
-                local vector_to_transit_1b = vector_rotate_y(vector_to_anomaly,-45)
-                local vector_to_transit_2b = vector_rotate_y(vector_to_anomaly,-135)    
-                
-                local vector_to_exit = self.object:direction()
-                
-                local transit_point_1a = level.vertex_in_direction(anomaly:level_vertex_id(),vector_to_transit_1a,self.radius*transit_coeff)
-                transit_point_1a = normalize_vertex(self.object,transit_point_1a)
-        
-                local transit_point_2a = level.vertex_in_direction(anomaly:level_vertex_id(),vector_to_transit_2a,self.radius*transit_coeff)
-                transit_point_2a = normalize_vertex(self.object,transit_point_2a)
-                
-                local transit_point_1b = level.vertex_in_direction(anomaly:level_vertex_id(),vector_to_transit_1b,self.radius*transit_coeff)
-                transit_point_1b = normalize_vertex(self.object,transit_point_1b)
-                
-                local transit_point_2b = level.vertex_in_direction(anomaly:level_vertex_id(),vector_to_transit_2b,self.radius*transit_coeff)
-                transit_point_2b = normalize_vertex(self.object,transit_point_2b)
-                
-                -- local exit_point = level.vertex_in_direction(anomaly:level_vertex_id(),vector_to_exit,self.radius*exit_coeff)
-                -- exit_point = normalize_vertex(self.object,exit_point)
-                
-                local dist_to_transit_1 = npc_pos:distance_to(level.vertex_position(transit_point_1a))
-                local dist_to_transit_2 = npc_pos:distance_to(level.vertex_position(transit_point_1b))
-                
-                local route_number = 0
-                
-                if dist_to_transit_2 < dist_to_transit_1 then
-                        route_number = 1
-                end
-                
-                local temp_table = { 
-                        transit_1a = transit_point_1a,
-                        transit_2a = transit_point_2a,
-                        transit_1b = transit_point_1b,
-                        transit_2b = transit_point_2b,
-                        -- transit_exit = exit_point,
-                        stage = 0,
-                        route = route_number
-                }
-                
-                escape_paths[nid] = temp_table
-                
-                if debug_flag then -- пометим дорожку :)
-                                if not ready[1] then
-                                local part_pos = level.vertex_position(transit_point_1a)
-                                _m.play_particle("explosions\\campfire_blowout", part_pos, true, part_pos.x, part_pos.y, part_pos.z, part_pos.x, part_pos.y, part_pos.z)
-                                ready[1] = true
-                        end
-                        if not ready[2] then
-                                local part_pos = level.vertex_position(transit_point_2a)
-                                _m.play_particle("explosions\\campfire_blowout", part_pos, true, part_pos.x, part_pos.y, part_pos.z, part_pos.x, part_pos.y, part_pos.z)                                
-                                ready[2] = true
-                        end             
-                        if not ready[3] then
-                                local part_pos = level.vertex_position(transit_point_1b)
-                                _m.play_particle("explosions\\campfire_blowout", part_pos, true, part_pos.x, part_pos.y, part_pos.z, part_pos.x, part_pos.y, part_pos.z)                                
-                                ready[3] = true
-                        end                     
-                        if not ready[4] then            
-                                local part_pos = level.vertex_position(transit_point_2b)
-                                _m.play_particle("explosions\\campfire_blowout", part_pos, true, part_pos.x, part_pos.y, part_pos.z, part_pos.x, part_pos.y, part_pos.z)                                
-                                ready[4] = true
-                        end                     
-                        -- if not ready[5] then         
-                                -- local part_pos = level.vertex_position(exit_point)
-                                -- _m.play_particle("explosions\\campfire_blowout", part_pos, true, part_pos.x, part_pos.y, part_pos.z, part_pos.x, part_pos.y, part_pos.z)                             
-                                -- ready[5] = true
-                        -- end
-                
-                end
-                
-        end
-        
-end
-
-function action_evade_anomaly:finalize()
-        local nid = self.object:id()
-        local anoms = added_restrictions[nid]
-        if anoms then
-                local npc_sobj = alife():object(nid)
-                for k, v in pairs(anoms) do
-                        local sobj = alife():object(k)
-                        if debug_flag then log1("!!REMOVE_RESTRICT "..k.." FOR "..self.object:name()) end
-                        self.object:remove_restrictions("",sobj:name())
-                end
-                added_restrictions[nid] = nil
-        end
-        action_base.finalize(self)
-end
-
-local base = 1099
-local act_base = 10032
-prop_evade = blowout_scheme.evid_anomaly
-act_evade = blowout_scheme.actid_anomaly
-
-function add_to_binder(object, char_ini, scheme, section, st)
-
-
-        local manager = object:motivation_action_manager()
-  
-        local property_wounded                  = xr_evaluators_id.sidor_wounded_base
-        local state_mgr_to_idle_combat  = xr_actions_id.state_mgr + 1
-        local state_mgr_to_idle_alife   = xr_actions_id.state_mgr + 2
-  
-        -- Evaluators
-        -- manager:remove_evaluator( prop_evade )
-        manager:add_evaluator( prop_evade,              evaluator_anomaly       ( st,object,"evaluator_anomaly" ) )
-  
-        -- Actions
-        local action = action_evade_anomaly(object:name(),"action_evade_anomaly", st, char_ini)
-        action:add_precondition( world_property( stalker_ids.property_alive,     true  ) )
-        action:add_precondition         (world_property(stalker_ids.property_enemy,     false))
-        action:add_precondition( world_property( property_wounded,                               false ) ) 
---[[
-        action:add_precondition (world_property(ogsm_hideout.property_hideout_lost, false))
-        action:add_precondition (world_property(ogsm_hideout.property_inhide, false))
-        action:add_precondition (world_property(ogsm_hideout.property_psyzoned, false))
-]]
-        if xrs_battle_ai then
-                action:add_precondition (world_property(xrs_battle_ai.evid_altcombat, false))
-        end     
-        action:add_precondition   (world_property(prop_evade,    true))
-        action:add_effect (world_property(prop_evade, false))
-        manager:add_action (act_evade, action)
-
-        action = manager:action(state_mgr_to_idle_alife)
-        action:add_precondition(world_property(prop_evade, false))
-        
-        action = manager:action(state_mgr_to_idle_combat)
-        action:add_precondition(world_property(prop_evade, false))      
-
-        action = manager:action(stalker_ids.action_alife_planner)
-        action:add_precondition(world_property(prop_evade, false))
-        
-        action = manager:action(stalker_ids.action_danger_planner)
-        action:add_precondition(world_property(prop_evade, false))
-        
-        action = manager:action(stalker_ids.action_combat_planner)      
-        action:add_precondition(world_property(prop_evade, false))
-
-        action = manager:action(stalker_ids.action_retreat_from_enemy)
-        action:add_precondition(world_property(prop_evade, false))      
-
-end
-
-function set_evade(npc, ini, scheme, section)
-  local st = xr_logic.assign_storage_and_bind(npc, ini, scheme, section)
-end
-
-function enable_scheme(npc, ini, scheme, section)
-        local st = xr_logic.assign_storage_and_bind(npc, ini, scheme, section)
-        st.enabled = true
-end
-function disable_scheme(npc, scheme)
-        local st = db.storage[npc:id()][scheme]
-        if st then
-                st.enabled = false
-        end
 end
