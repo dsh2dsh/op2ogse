@@ -2,6 +2,43 @@
 -- Idler: файл из мода 'Народная солянка 2.0'. Адаптирован для мода 'Метки с хабаром 2.1.2' 30.09.2008 0:08:52
 -- добавлена fenechka by TAG
 
+function attach( sm )
+  sm:subscribe({ signal = "on_npc_death",  fun = this.on_npc_death    })
+  sm:subscribe({ signal = "on_npc_spawn",  fun = this.npc_spawn_event })
+end
+
+
+function npc_spawn_event( obj, binder )
+  if not obj:alive() then return end
+  if protected_items.is_monster_friend( obj:section() ) then return end
+  local subscribed = {}
+  binder[ script_name() .. ".subscribed" ] = subscribed
+  if
+    string.find( obj:name(), "ferma_band", 1, true )
+    or string.find( obj:name(), "xalyava_naem", 1, true )
+  then
+    local s = {
+      [ "signal" ] = "on_npc_update." .. obj:id(),
+      [ "fun"    ] = this.enemy_see_actor,
+      [ "queued" ] = true,
+    }
+    table.insert( subscribed, s )
+    ogse_signals.get_mgr():subscribe( s )
+  end
+end
+
+
+function on_npc_death( obj, who )
+  local binder     = obj:binded_object()
+  local subscribed = binder[ script_name() .. ".subscribed" ]
+  if subscribed then
+    for _, s in ipairs( subscribed ) do
+      ogse_signals.get_mgr():unsubscribe( s )
+    end
+  end
+end
+
+
 local table_sort = table.sort
 local table_remove = table.remove
 local math_floor = math.floor
@@ -1118,21 +1155,23 @@ function make_suicide(npc)
   npc:kill(npc)
 end
 
+
 --узнаем отношение одного непися к другому
-function get_npc_relation(obj,target)
-  local rel = obj:relation(target)
+function get_npc_relation( obj, target )
+  local rel = obj:relation( target )
   local relation
-  if rel==game_object.neutral then
-    relation="neutral"
-  elseif rel==game_object.friend then
-    relation="friend"
-  elseif rel==game_object.enemy then
-    relation="enemy"
+  if rel == game_object.neutral then
+    relation = "neutral"
+  elseif rel == game_object.friend then
+    relation = "friend"
+  elseif rel == game_object.enemy then
+    relation = "enemy"
   else
     return false
   end
   return relation
 end
+
 
 --задаем отношение одного непися к другому
 function set_npc_relation(obj,target,relation)
@@ -1568,19 +1607,8 @@ function on_actor_upade(delta)
 	oau_watchdog=98
   mod_call("check_radar_off")
 	oau_watchdog=97
---  mod_call("check_metka")
---	oau_watchdog=96
---	oau_watchdog=95
---  mod_call("weather_manager")
 	oau_watchdog=94
---  mod_call("check_armor")
 	oau_watchdog=93
-  mod_call("interactive_music")
--- moved to dsh_remove_ammo.script
---  mod_call("firebat_ammo")
-  --!!! alcohol modification by Terrapack
-	--oau_watchdog=931
-  --amk_alcohol.check_alcohol()
 	oau_watchdog=92
   amk_mod.on_blowout_hit_actor()
 	oau_watchdog=91
@@ -1755,92 +1783,36 @@ end
 	mod_call("zomby_blow",victim)
 end
 
-function on_npc_hit(obj, amount, local_direction, who, bone_index)
-	if db.actor and who and who:id()==db.actor:id() and amount>0 then
-		mod_call("calc_adrenaline","actor_hit_enemy",obj,"npc")
-	end
-end
 
-function on_monster_hit(obj, amount, local_direction, who, bone_index)
-	if db.actor and who and who:id()==db.actor:id() and amount>0 then
-		mod_call("calc_adrenaline","actor_hit_enemy",obj,"monster")
-	end
-end
-
-function on_ph_obj_hit(obj, amount, local_direction, who, bone_index)
-end
 
 -- проверка на видимость производится раз в секунду
-function enemy_see_actor(obj,typ)
-	if protected_items.is_monster_friend(obj:section()) then return end
-	
-	danger.enemy_see_actor()
-	db.vbr = drrr.next_vbr()
-
-	if string_find(obj:name(),"^ferma_band") and not has_alife_info("sveeblov_ferma_have") then
-       db.actor:give_info_portion("sveeblov_ferma_fail")
+function enemy_see_actor( obj )
+  local binder = obj:binded_object()
+  local k      = script_name() .. ".enemy_see_actor_t"
+  if binder[ k ] and binder[ k ] > time_global() then return end
+  binder[ k ] = time_global() + 1000
+  if
+    obj:relation( db.actor ) == game_object.enemy
+    and obj.health > 0.01
+    and obj:see( db.actor )
+  then
+    if
+      ( not has_alife_info( "sveeblov_ferma_have" ) )
+      and string.find( obj:name(), "ferma_band", 1, true )
+    then
+      db.actor:give_info_portion("sveeblov_ferma_fail")
+      return
     end
-	if string_find(obj:name(),"^xalyava_naem") and not has_alife_info("xalyava_nebo_next") then
-       db.actor:give_info_portion("xalyava_naemnik_see")
+    if
+      ( not has_alife_info( "xalyava_nebo_next" ) )
+      and string.find( obj:name(), "xalyava_naem", 1, true )
+    then
+      db.actor:give_info_portion( "xalyava_naemnik_see" )
+      return
     end
-	--разницы нет, какой именно бандос (наёмник) увидел ГГ
---[[    if string_find(obj:name(),"ferma_band1") then
-       db.actor:give_info_portion("ferma_band1_see")
-    end 
-	if string_find(obj:name(),"ferma_band2") then
-       db.actor:give_info_portion("ferma_band2_see")
-    end 
-	if string_find(obj:name(),"ferma_band3") then
-       db.actor:give_info_portion("ferma_band3_see")
-    end 
-	if string_find(obj:name(),"ferma_band4") then
-       db.actor:give_info_portion("ferma_band4_see")
-    end 
-	if string_find(obj:name(),"ferma_band5") then
-       db.actor:give_info_portion("ferma_band5_see")
-    end 
-	if string_find(obj:name(),"ferma_band6") then
-       db.actor:give_info_portion("ferma_band6_see")
-    end 
-	if string_find(obj:name(),"ferma_band7") then
-       db.actor:give_info_portion("ferma_band7_see")
-    end ]]
---[[	if string_find(obj:name(),"xalyava_naem1") then
-       db.actor:give_info_portion("xalyava_naem1_see")
-    end 
-	if string_find(obj:name(),"xalyava_naem2") then
-       db.actor:give_info_portion("xalyava_naem2_see")
-    end 
-	if string_find(obj:name(),"xalyava_naem3") then
-       db.actor:give_info_portion("xalyava_naem3_see")
-    end 
-	if string_find(obj:name(),"xalyava_naem4") then
-       db.actor:give_info_portion("xalyava_naem4_see")
-    end 
-	if string_find(obj:name(),"xalyava_naem5") then
-       db.actor:give_info_portion("xalyava_naem5_see")
-    end 
-	if string_find(obj:name(),"xalyava_naem6") then
-       db.actor:give_info_portion("xalyava_naem6_see")
-    end 
-	if string_find(obj:name(),"xalyava_naem7") then
-       db.actor:give_info_portion("xalyava_naem7_see")
-    end 
-	if string_find(obj:name(),"xalyava_naem8") then
-       db.actor:give_info_portion("xalyava_naem8_see")
-    end ]]
-	mod_call("calc_adrenaline","enemy_see_actor",obj,typ)
-end
-function actor_see_enemy(obj,typ) 
-	if protected_items.is_monster_friend(obj:section()) then return end
-
-	mod_call("calc_adrenaline","actor_see_enemy",obj,typ)
+  end
 end
 
--- непись стрелял в гг
-function npc_shot_actor(obj) 
-	mod_call("calc_adrenaline","enemy_hit_actor",obj,"npc")
-end
 
 --загружаем все переменные, которые нужно, вызывается загрузке игры, автоматически; вручную не вызывать
 function on_game_load()

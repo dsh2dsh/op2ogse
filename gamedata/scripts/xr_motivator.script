@@ -401,7 +401,6 @@ class "motivator_binder" ( object_binder )
 function motivator_binder:__init( obj ) super( obj )
   self.loaded             = false
   self.last_update        = 0
-  self.prev_ammo          = -1
   self.first_update       = false
   self.treasure_processed = false
   self.rot_time           = 65535
@@ -491,23 +490,7 @@ function motivator_binder:net_spawn( sobject )
     )
   end
 
-  -- выполнять по одному за апдейт
-  local update_subscribers = {
-    self.check_light,
-    self.trade_manager_update,
-    self.xrs_ai_npc_update,
-    self.rx_ai_npc_update,
-    self.check_art_weapon,
-    self.amkii_equip,
-  }
-  for _, fun in ipairs( update_subscribers ) do
-    self.am:subscribe({
-        [ "signal" ] = "on_npc_update." .. self.object:id(),
-        [ "self"   ] = self,
-        [ "fun"    ] = fun,
-        [ "queued" ] = true,
-    })
-  end
+  self:subscribe_updaters()
 
   --' Загрузка историй для лагеря.
   if self.loaded == false then
@@ -652,6 +635,64 @@ function motivator_binder:net_spawn( sobject )
 
   self.am:call( "on_npc_spawn", self.object, self )
   return true
+end
+
+
+function motivator_binder:subscribe_updaters()
+  -- выполнять по одному за апдейт
+  self.updaters = {
+    [ "list" ] = {
+      {
+        [ "alive" ] = self.check_light,
+      },
+      {
+        [ "alive" ] = self.trade_manager_update,
+      },
+      {
+        [ "alive" ] = self.xrs_ai_npc_update,
+      },
+      {
+        [ "alive" ] = self.rx_ai_npc_update,
+      },
+      {
+        [ "alive" ] = self.check_art_weapon,
+      },
+      {
+        [ "alive" ] = self.amkii_equip,
+      },
+    },
+    [ "subscribed" ] = {
+      [ "alive" ] = {},
+      [ "dead"  ] = {},
+    }
+  }
+  for _, item in ipairs( self.updaters.list ) do
+    local fun, subscribed
+    if self.object:alive() then
+      fun        = item.alive
+      subscribed = self.updaters.subscribed.alive
+    else
+      fun        = item.dead
+      subscribed = self.updaters.subscribed.dead
+    end
+    if fun then
+      if item.pre_check then
+        if not item.pre_check( self ) then
+          fun = nil
+        end
+      end
+    end
+    if fun then
+      local t = {
+        [ "signal" ] = "on_npc_update." .. self.object:id(),
+        [ "self"   ] = self,
+        [ "fun"    ] = fun,
+        [ "queued" ] = true,
+      }
+      table.insert( subscribed, t )
+      self.am:subscribe( t )
+    end
+  end
 end
 
 
@@ -844,10 +885,6 @@ function motivator_binder:hit_callback( obj, amount, local_direction, who, bone_
     blowout_scheme.hit_callback( obj )
   end
 
-  -- added by xStream for AMK miniSDK
-  amk.on_npc_hit( obj, amount, local_direction, who, bone_index )
-  -- end of addition
-
   if xr_companion.is_companion( self.object:id() ) then
     if xr_combat_companion then
       xr_combat_companion.hit_callback( self.object, who, amount )
@@ -954,6 +991,11 @@ function motivator_binder:death_callback( victim, who )
   --// xr_companion
   xr_companion.companion_death( self.object )
 
+  for _, s in ipairs( self.updaters.subscribed.alive ) do
+    self.am:unsubscribe( s )
+  end
+  self.updaters.subscribed.alive = {}
+
   self.am:call( "on_npc_death", self.object, who )
   event( "npc_death" ):trigger({ victim = self.object, who = who })
 end
@@ -1015,8 +1057,7 @@ function motivator_binder:update( delta )
   if self.object == nil then return end
 
   local self_object_id = self.object:id()
-  db.storage[ self_object_id ].us = 100
-  db.storage[ self_object_id ].us =  99
+  db.storage[ self_object_id ].us = 99
 
   if self.first_update == false then
     --спавн друпа если не был произведен
@@ -1080,19 +1121,6 @@ function motivator_binder:update( delta )
 
   event( "npc_update" ):trigger({ obj = self.object })
 
-  local wpn = utils.wpn_info_get( self.object )
-  if wpn[ "ammo" ] ~= nil then
-    local enemy = self.object:best_enemy()
-    if
-      enemy and enemy:id() == db.actor:id()
-      and self.object:see( db.actor )
-    and self.prev_ammo > wpn[ "ammo" ] then
-      amk.npc_shot_actor( self.object )
-    end
-  end
-  self.prev_ammo = wpn[ "ammo" ] or 0
-
-  db.storage[ self_object_id ].us = 98
   db.storage[ self_object_id ].us =  0
 
   self.am:call( "on_npc_update", self.object, delta )
@@ -1102,69 +1130,46 @@ end
 
 -- Апдейт включения/выключения фонарика
 function motivator_binder:check_light()
-  if self.object:alive() then
-    if time_global() - self.last_update > 1000 then
-      if
-        amk.get_npc_relation( self.object,db.actor ) == "enemy"
-        and self.object.health > 0.01
-      then
-        if self.object:see( db.actor ) then
-          amk.enemy_see_actor( self.object, "npc" )
-        end
-        if db.actor:see( self.object ) then
-          amk.actor_see_enemy( self.object, "npc" )
-        end
-      end
-      sr_light.check_light( self.object )
-      self.last_update = time_global()
-    end
+  if time_global() - self.last_update > 1000 then
+    sr_light.check_light( self.object )
+    self.last_update = time_global()
   end
 end
 
 
 -- Апдейт торговли
 function motivator_binder:trade_manager_update()
-  if self.object:alive() then
-    trade_manager.update( self.object )
-  end
+  trade_manager.update( self.object )
 end
 
 
 -- Обновление схем гранатометания, медика и переодевания
 function motivator_binder:xrs_ai_npc_update()
-  if self.object:alive() then
-    if xrs_ai then xrs_ai.npc_update( self ) end
-  end
+  if xrs_ai then xrs_ai.npc_update( self ) end
 end
 
 
 -- Обновление оружейного менеджера
 function motivator_binder:rx_ai_npc_update()
-  if self.object:alive() then
-    if rx_ai then rx_ai.npc_update( self.object, self.st ) end
-  end
+  if rx_ai then rx_ai.npc_update( self.object, self.st ) end
 end
 
 
 -- Проверка артефакта в руках
 function motivator_binder:check_art_weapon()
-  if self.object:alive() then
-    check_art_weapon( self.object )
-  end
+  check_art_weapon( self.object )
 end
 
 
 -- Проверка брони
 function motivator_binder:amkii_equip()
-  if self.object:alive() then
-    if
-      ( not armor_check[ self.object:id() ] )
-      or time_global() > armor_check[ self.object:id() ]
-    then
-      armor_check[ self.object:id() ] = time_global()
-        + math.random( 10000, 30000 )
-      amkii_equip.CAmkDisguise():PeriodicalUpdate( self.object )
-    end
+  if
+    ( not armor_check[ self.object:id() ] )
+    or time_global() > armor_check[ self.object:id() ]
+  then
+    armor_check[ self.object:id() ] = time_global()
+      + math.random( 10000, 30000 )
+    amkii_equip.CAmkDisguise():PeriodicalUpdate( self.object )
   end
 end
 
