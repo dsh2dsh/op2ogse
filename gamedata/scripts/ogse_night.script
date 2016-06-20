@@ -1,222 +1,264 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
--- ухудшение зрения неписей ночью -- учитывает опыт непися - подразумевая наличие ПНВ --
---------------------------- Copyright 2009 KamikaZze для OGSE -------------------------
+-- ухудшение зрения неписей ночью -- учитывает опыт непися - подразумевая наличие ПНВ
+--------------------------- Copyright 2009 KamikaZze для OGSE -----------------------
 
 local range_normal = 150
 local fov_normal   = 160
 
-being_hit       = {}
-local processed = {}
+
+function attach(sm)
+  sm:subscribe({ signal = "on_npc_death", fun = this.on_death     })
+  sm:subscribe({ signal = "on_npc_hit",   fun = this.on_hit       })
+  sm:subscribe({ signal = "on_npc_spawn", fun = this.on_npc_spawn })
+end
 
 
-function check_night( obj )
+function on_npc_spawn( obj, binder )
+  if not obj:alive() then return end
   -- Выключить, пока не спасли Шустрого. А то с Петрухой не
   -- поговорить, т.к. он сразу бежит бандитов выносить.
   if not has_alife_info( "tutorial_wounded_give_info" ) then
     return
   end
+  local s = {
+    [ "signal" ] = "on_npc_update." .. obj:id(),
+    [ "fun"    ] = this.check_night,
+    [ "queued" ] = true,
+  }
+  binder[ script_name() .. ".subscribed" ] = s
+  ogse_signals.get_mgr():subscribe( s )
+end
 
-  local htime = level.get_time_hours()
-  if htime and obj then
-    local nid = obj:id()
-    if xr_companion.is_companion( nid ) then
-      return
-    end
-    if processed[ nid ] and ( processed[ nid ] + 100 ) > time_global() then
-      return
-    end
 
-    local npc = level.object_by_id( nid )
-    if npc and IsStalker( npc ) then
-      if
-        npc:character_community() == "zombied"
-        or ogse.is_quest_npc( npc )
-      then
-        return
+function on_death( obj )
+  local binder = obj:binded_object()
+  local s      = binder[ script_name() .. ".subscribed" ]
+  if s then
+    ogse_signals.get_mgr():unsubscribe( s )
+  end
+end
+
+
+local being_hit = {}
+local processed = {}
+
+
+function on_hit( obj, amount, local_direction, who, bone_index )
+  if who and amount > 0.01 then
+    local hit_info = {
+      timer = time_global() + 7000,
+      id    = who:id(),
+      dist  = obj:position():distance_to( who:position() )
+    }
+    being_hit[ obj:id() ] = hit_info
+    local binder = obj:binded_object()
+    binder[ script_name() .. ".check_t" ] = nil
+    check_night( obj )
+  end
+end
+
+
+function check_night( obj )
+  local binder = obj:binded_object()
+  local k      = script_name() .. ".check_t"
+  if binder[ k ] and binder[ k ] > time_global() then return end
+  binder[ k ] = time_global() + 10000
+
+  local nid = obj:id()
+  local npc = obj
+  if xr_companion.is_companion( nid ) then return end
+  if npc:character_community() == "zombied" or ogse.is_quest_npc( npc ) then
+    return
+  end
+
+  local gulag_range, gulag_max = get_gulag_range( npc )
+  if gulag_range then
+    if gulag_range > 0 then
+      local range = npc:range()
+      if range and range > gulag_range then
+        npc:set_range( gulag_range )
+      end
+    end
+    return
+  end
+  local this_range_normal = gulag_max or range_normal
+
+  local npc_name = npc:profile_name()
+  if
+    string.find( npc_name, "sniper" )
+    or string.find( npc_name, "leader" )
+    or string.find( npc_name, "commander" )
+  then
+    local range = npc:range()
+    local fov   = npc:fov()
+
+    if
+      not npc:best_danger()
+      and not npc:best_enemy()
+      and not xrs_battle_ai.in_combat[ nid ]
+    then
+
+      -- пока мы спокойны
+      if range and range < this_range_normal then
+        npc:set_range( this_range_normal )
       end
 
-      local gulag_range, gulag_max = get_gulag_range( npc )
-      if gulag_range then
-        if gulag_range > 0 then
-          local range = npc:range()
-          if range and range > gulag_range then
-            npc:set_range( gulag_range )
-          end
+    elseif
+      npc:best_enemy()
+      or ( npc:best_enemy() and npc:best_danger() )
+      or ( being_hit[ nid ] and being_hit[ nid ].timer > time_global() )
+      or xrs_battle_ai.in_combat[ nid ]
+    then
+
+      if is_night() then
+        -- ночь
+        if range and range < 95 then
+          npc:set_range( 100 )
         end
-        processed[ nid ] = time_global()
-        return
-      end
-      local this_range_normal = gulag_max or range_normal
-
-      local npc_name = npc:profile_name()
-      if
-        string.find( npc_name, "sniper" )
-        or string.find( npc_name, "leader" )
-        or string.find( npc_name, "commander" )
-      then
-        local range = npc:range()
-        local fov   = npc:fov()
+      else
+        -- день
         if
-          not npc:best_danger()
-          and not npc:best_enemy()
-          and not xrs_battle_ai.in_combat[ nid ]
+          being_hit[ nid ]
+          and being_hit[ nid ].timer > time_global()
         then
-          -- пока мы спокойны
-          if range and range < this_range_normal then
-            npc:set_range( this_range_normal )
-          end
-        elseif
-          npc:best_enemy()
-          or ( npc:best_enemy() and npc:best_danger() )
-          or ( being_hit[ nid ] and being_hit[ nid ].timer > time_global() )
-          or xrs_battle_ai.in_combat[ nid ]
-        then
-          if is_night() then
-            -- ночь
-            if range and range < 95 then
-              npc:set_range( 100 )
-            end
-          else
-            -- день
-            if
-              being_hit[ nid ]
-              and being_hit[ nid ].timer > time_global()
-            then
-              if being_hit[ nid ].dist > this_range_normal then
-                npc:set_range( being_hit[ nid ].dist * 1.1 )
-              else
-                if range and range < this_range_normal then
-                  npc:set_range( this_range_normal )
-                end
-              end
-            else
-              if range and range < this_range_normal then
-                npc:set_range( this_range_normal )
-              end
-            end
-          end
-        end
-        processed[ nid ] = time_global()
-        return
-      end
-
-      local npc_rank = ranks.get_obj_rank_name( npc )
-      if
-        not npc:best_danger()
-        and not npc:best_enemy()
-        and not xrs_battle_ai.in_combat[ nid ]
-      then
-        -- пока мы спокойны
-        if is_night() then
-          -- ночь
-          local range = npc:range()
-          local fov   = npc:fov()
-          if range and range >= this_range_normal then
-            if npc_rank == "novice" then
-              npc:set_range( 40 )
-            elseif npc_rank == "experienced" then
-              npc:set_range( 45 )
-            elseif npc_rank == "veteran" then
-              npc:set_range( 50 )
-            elseif npc_rank == "master" then
-              npc:set_range( 55 )
-            end
-          end
-          if fov and fov >= fov_normal then
-            if npc_rank == "novice" then
-              npc:set_fov(  90 )
-            elseif npc_rank == "experienced" then
-              npc:set_fov(  95 )
-            elseif npc_rank == "veteran" then
-              npc:set_fov( 100 )
-            elseif npc_rank == "master" then
-              npc:set_fov( 110 )
-            end
-          end
-        elseif is_twilight() then
-          -- сумерки
-          local range = npc:range()
-          local fov   = npc:fov()
-          if range and range >= this_range_normal then
-            if npc_rank == "novice" then
-              npc:set_range( 60 )
-            elseif npc_rank == "experienced" then
-              npc:set_range( 65 )
-            elseif npc_rank == "veteran" then
-              npc:set_range( 70 )
-            elseif npc_rank == "master" then
-              npc:set_range( 75 )
-            end
-          end
-        else
-          -- день
-          local range = npc:range()
-          local fov   = npc:fov()
-          if range and range < this_range_normal then
-            npc:set_range( this_range_normal )
-          end
-          if fov and fov < fov_normal then
-            npc:set_fov( fov_normal )
-          end
-        end
-        processed[ nid ] = time_global()
-      elseif
-        npc:best_danger()
-        and not npc:best_enemy()
-        and not xrs_battle_ai.in_combat[ nid ]
-      then
-        -- если мы напуганы увеличим угол обзора
-        -- имитируя опасливое осматривание по сторонам
-        -- и повышенную внимательность
-        local range = npc:range()
-        local fov   = npc:fov()
-        if fov and fov < 180 then
-          npc:set_fov( 180 )
-        end
-        processed[ nid ] = time_global()
-      elseif
-        npc:best_enemy()
-        or ( npc:best_enemy() and npc:best_danger() )
-        or ( being_hit[ nid ] and being_hit[ nid ].timer > time_global() )
-        or xrs_battle_ai.in_combat[ nid ]
-      then
-        -- если мы заметили врага то увеличим и
-        -- дальность обзора тоже, так как
-        -- по сути нас уже заметили
-        local range = npc:range()
-        local fov   = npc:fov()
-        if is_night() then
-          -- ночь
-          if range and range < 75 then
-            npc:set_range( 75 )
-          end
-        else
-          -- день
-          if being_hit[ nid ] and being_hit[ nid ].timer > time_global() then
-            if being_hit[ nid ].dist > this_range_normal then
-              npc:set_range( being_hit[ nid ].dist * 1.1 )
-            else
-              if range and range < this_range_normal then
-                npc:set_range( this_range_normal )
-              end
-            end
+          if being_hit[ nid ].dist > this_range_normal then
+            npc:set_range( being_hit[ nid ].dist * 1.1 )
           else
             if range and range < this_range_normal then
               npc:set_range( this_range_normal )
             end
           end
+        else
+          if range and range < this_range_normal then
+            npc:set_range( this_range_normal )
+          end
         end
-        if fov and fov < 180 then
-          npc:set_fov( 180 )
+      end
+
+    end
+    return
+  end
+
+  local npc_rank = ranks.get_obj_rank_name( npc )
+  if
+    not npc:best_danger()
+    and not npc:best_enemy()
+    and not xrs_battle_ai.in_combat[ nid ]
+  then
+
+    -- пока мы спокойны
+    if is_night() then
+
+      -- ночь
+      local range = npc:range()
+      local fov   = npc:fov()
+      if range and range >= this_range_normal then
+        if npc_rank == "novice" then
+          npc:set_range( 40 )
+        elseif npc_rank == "experienced" then
+          npc:set_range( 45 )
+        elseif npc_rank == "veteran" then
+          npc:set_range( 50 )
+        elseif npc_rank == "master" then
+          npc:set_range( 55 )
         end
-        processed[ nid ] = time_global()
+      end
+      if fov and fov >= fov_normal then
+        if npc_rank == "novice" then
+          npc:set_fov(  90 )
+        elseif npc_rank == "experienced" then
+          npc:set_fov(  95 )
+        elseif npc_rank == "veteran" then
+          npc:set_fov( 100 )
+        elseif npc_rank == "master" then
+          npc:set_fov( 110 )
+        end
+      end
+
+    elseif is_twilight() then
+
+      -- сумерки
+      local range = npc:range()
+      local fov   = npc:fov()
+      if range and range >= this_range_normal then
+        if npc_rank == "novice" then
+          npc:set_range( 60 )
+        elseif npc_rank == "experienced" then
+          npc:set_range( 65 )
+        elseif npc_rank == "veteran" then
+          npc:set_range( 70 )
+        elseif npc_rank == "master" then
+          npc:set_range( 75 )
+        end
+      end
+
+    else
+
+      -- день
+      local range = npc:range()
+      local fov   = npc:fov()
+      if range and range < this_range_normal then
+        npc:set_range( this_range_normal )
+      end
+      if fov and fov < fov_normal then
+        npc:set_fov( fov_normal )
+      end
+
+    end
+  elseif
+    npc:best_danger()
+    and not npc:best_enemy()
+    and not xrs_battle_ai.in_combat[ nid ]
+  then
+
+    -- если мы напуганы увеличим угол обзора
+    -- имитируя опасливое осматривание по сторонам
+    -- и повышенную внимательность
+    local range = npc:range()
+    local fov   = npc:fov()
+    if fov and fov < 180 then
+      npc:set_fov( 180 )
+    end
+
+  elseif
+    npc:best_enemy()
+    or ( npc:best_enemy() and npc:best_danger() )
+    or ( being_hit[ nid ] and being_hit[ nid ].timer > time_global() )
+    or xrs_battle_ai.in_combat[ nid ]
+  then
+
+    -- если мы заметили врага то увеличим и
+    -- дальность обзора тоже, так как
+    -- по сути нас уже заметили
+    local range = npc:range()
+    local fov   = npc:fov()
+    if is_night() then
+      -- ночь
+      if range and range < 75 then
+        npc:set_range( 75 )
+      end
+    else
+      -- день
+      if being_hit[ nid ] and being_hit[ nid ].timer > time_global() then
+        if being_hit[ nid ].dist > this_range_normal then
+          npc:set_range( being_hit[ nid ].dist * 1.1 )
+        else
+          if range and range < this_range_normal then
+            npc:set_range( this_range_normal )
+          end
+        end
+      else
+        if range and range < this_range_normal then
+          npc:set_range( this_range_normal )
+        end
       end
     end
+    if fov and fov < 180 then
+      npc:set_fov( 180 )
+    end
+
   end
 end
-
--- ухудшение зрения неписей ночью -- учитывает опыт непися - подразумевая наличие ПНВ --
---------------------------- Copyright 2009 KamikaZze для OGSE -------------------------
 
 
 function get_gulag_range( npc )
