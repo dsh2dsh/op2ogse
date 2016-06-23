@@ -1,9 +1,27 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
+  sm:subscribe({ signal = "on_monster_death",       fun = this.on_death   })
+  sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_destroy })
+  sm:subscribe({ signal = "on_npc_death",           fun = this.on_death   })
+  sm:subscribe({ signal = "on_npc_net_destroy",     fun = this.on_destroy })
   sm:subscribe({ signal = "on_trade_open", fun = this.on_trade_open })
   sm:subscribe({ signal = "on_trade",      fun = this.on_trade      })
   sm:subscribe({ signal = "on_trade_hide", fun = this.on_trade_hide })
+end
+
+
+function on_death( obj )
+  local binder     = obj:binded_object()
+  local subscribed = binder[ script_name() .. ".subscribed" ]
+  if subscribed then
+    ogse_signals.get_mgr():unsubscribe( subscribed )
+  end
+end
+
+
+function on_destroy( obj )
+  cleanup( obj )
 end
 
 
@@ -89,20 +107,42 @@ function trade_init( npc, cfg )
         end
       end
     end
-  else 
+  else
     tt.buy_supplies = nil
   end
+
+  if npc:alive() then
+    local binder = npc:binded_object()
+    local s_name = ( npc:clsid() == clsid.script_trader )
+      and ( "on_monster_update." .. npc:id() )
+      or  ( "on_npc_update."     .. npc:id() )
+    local s = {
+      [ "signal" ] = s_name,
+      [ "fun"    ] = this.update,
+      [ "queued" ] = true,
+    }
+    binder[ script_name() .. ".subscribed" ] = s
+    ogse_signals.get_mgr():subscribe( s )
+  end
+end
+
+
+function cleanup( obj )
+  trade_manager[ obj:id() ] = nil
 end
 
 
 function update( npc )
   local tt = trade_manager[ npc:id() ]
-  if not tt then return end
+  ASSERT( tt, "trade_manager[ npc:id() ] npt found: %s", npc:name() )
 
   if tt.update_time and tt.update_time > time_global() then
+    ogse_signals.get_mgr():reschedule( tt.update_time - time_global() )
     return
   end
-  tt.update_time = time_global() + math.random( 1800, 3600 ) * 1000
+  local update_t = math.random( 1800, 3600 ) * 1000
+  tt.update_time = time_global() + update_t
+  ogse_signals.get_mgr():reschedule( update_t )
 
   local str = xr_logic.pick_section_from_condlist(
     db.actor, npc, tt.buy_condition
