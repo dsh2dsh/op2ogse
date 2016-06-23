@@ -290,29 +290,19 @@ function signals_mgr:call( signal_name, ... )
       end
     end
     -- затем срабатывает очередной сигнал в очереди, если имеется
-    local slot = slots.queue[ slots.next_in_queue ]
-    if slot then
-      if not slot.unsubscribed then -- очень маловероятно, но на всякий случай
-        if ( not slot.timeout ) or slot.timeout <= time_global() then
-          slot.timeout = nil
-          self.slot_in_process = slot
-          if slot.self then
-            slot.fun( slot.self, ... )
-          else
-            slot.fun( ... )
-          end
-          self.slot_in_process = nil
-          if slot.timeout then
-            slots.reschedule_queue = true
-          end
-        else
-          slots.next_in_queue = 1
-        end
+    local wrapped = self:try_call_queued( slots, ... )
+    if wrapped then
+      -- если ничего не удалось выполнить и перешли в начало очереди
+      if slots.reschedule_queue then
+        -- пересортируем очередь, если нужно
+        slots.reschedule_queue = nil
+        slots.queue = sort_queue( slots.queue )
       end
-      slots.next_in_queue = slots.next_in_queue + 1
-      if slots.next_in_queue > table.getn( slots.queue ) then
-        slots.next_in_queue = 1
-      end
+      -- т.к. предыдущая попытка ничего не выполнила, попробуем
+      -- выполнить первый обработчик. Ну, что бы этот апдейт не был
+      -- холостым. Результат нам уже не важен, т.к. либо он будет
+      -- выполнен, либо нам просто сейчас нечего делать.
+      self:try_call_queued( slots, ... )
     end
     unfinished_count[ self.mgr_name ] = unfinished_count[ self.mgr_name ] - 1
     if self.to_unsubscribe and unfinished_count[ self.mgr_name ] == 0 then
@@ -334,6 +324,39 @@ function signals_mgr:call( signal_name, ... )
       slots.queue = sort_queue( slots.queue )
     end
   end
+end
+
+
+function signals_mgr:try_call_queued( slots, ... )
+  local slot    = slots.queue[ slots.next_in_queue ]
+  local wrapped = false
+  if slot then
+    if not slot.unsubscribed then -- очень маловероятно, но на всякий случай
+      if ( not slot.timeout ) or slot.timeout <= time_global() then
+        slot.timeout = nil
+        self.slot_in_process = slot
+        if slot.self then
+          slot.fun( slot.self, ... )
+        else
+          slot.fun( ... )
+        end
+        self.slot_in_process = nil
+        if slot.timeout then
+          slots.reschedule_queue = true
+        end
+      else
+        if slots.next_in_queue > 1 then
+          wrapped = true
+        end
+        slots.next_in_queue = 1
+      end
+    end
+    slots.next_in_queue = slots.next_in_queue + 1
+    if slots.next_in_queue > table.getn( slots.queue ) then
+      slots.next_in_queue = 1
+    end
+  end
+  return wrapped
 end
 
 
