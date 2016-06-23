@@ -67,7 +67,7 @@ local mgr
 function get_mgr()
   if not this.mgr then
     -- this.mgr инициализируется внутри конструтора. См. комментарии там.
-    signals_mgr("global", ogse_signals_addons_list.addons, true)
+    signals_mgr( "global", ogse_signals_addons_list.addons, true )
   end
   return this.mgr
 end
@@ -187,7 +187,7 @@ function signals_mgr:subscribe( slot_to_subscribe )
   self.signals[ signal ] = self.signals[ signal ]
     or { normal = {}, queue = {}, next_in_queue = 1 }
   if slot_to_subscribe.queued then
-    table.insert( self.signals[ signal ].queue, slot_to_subscribe )
+    table.insert( self.signals[ signal ].queue,  slot_to_subscribe )
   else
     table.insert( self.signals[ signal ].normal, slot_to_subscribe )
   end
@@ -267,28 +267,46 @@ function signals_mgr:call( signal_name, ... )
   local slots = self.signals[ signal_name ]
   if slots then
     unfinished_count[ self.mgr_name ] = unfinished_count[ self.mgr_name ] + 1
+    local reschedule_normal = false
     for _, slot in ipairs( slots.normal ) do
       -- при рекурсивных вызовах отписанные, но ещё не удалённые
       -- слоты, необходимо пропустить
       if not slot.unsubscribed then
+        if ( slot.timeout or 0 ) > time_global() then break end
+        slot.timeout = nil
         local result
+        self.slot_in_process = slot
         if slot.self then
           result = slot.fun( slot.self, ... )
         else
           result = slot.fun( ... )
+        end
+        self.slot_in_process = nil
+        if slot.timeout then
+          reschedule_normal = true
         end
         -- вызов заявил, что он финальный в цепочке вызовов
         if result then break end
       end
     end
     -- затем срабатывает очередной сигнал в очереди, если имеется
-    local slot  = slots.queue[ slots.next_in_queue ]
+    local slot = slots.queue[ slots.next_in_queue ]
     if slot then
       if not slot.unsubscribed then -- очень маловероятно, но на всякий случай
-        if slot.self then
-          slot.fun( slot.self, ... )
+        if ( not slot.timeout ) or slot.timeout <= time_global() then
+          slot.timeout = nil
+          self.slot_in_process = slot
+          if slot.self then
+            slot.fun( slot.self, ... )
+          else
+            slot.fun( ... )
+          end
+          self.slot_in_process = nil
+          if slot.timeout then
+            slots.reschedule_queue = true
+          end
         else
-          slot.fun( ... )
+          slots.next_in_queue = 1
         end
       end
       slots.next_in_queue = slots.next_in_queue + 1
@@ -307,5 +325,35 @@ function signals_mgr:call( signal_name, ... )
       end
       self.to_unsubscribe = nil
     end
+    if reschedule_normal then
+      -- пересортировываем очередь
+      slots.normal = sort_queue( slots.normal )
+    end
+    if slots.reschedule_queue and slots.next_in_queue == 1 then
+      slots.reschedule_queue = nil
+      slots.queue = sort_queue( slots.queue )
+    end
   end
+end
+
+
+function sort_queue( q )
+  local q1, q2 = {}, {}
+  for _, item in ipairs( q ) do
+    if not item.timeout or item.timeout == 0 then
+      table.insert( q1, item )
+    else
+      table.insert( q2, item )
+    end
+  end
+  table.sort( q2, function( a, b ) return a.timeout < b.timeout end )
+  for _, item in ipairs( q2 ) do
+    table.insert( q1, item )
+  end
+  return q1
+end
+
+
+function signals_mgr:reschedule( timeout )
+  self.slot_in_process.timeout = time_global() + timeout
 end
