@@ -9,15 +9,15 @@
 -----------------------------------------------------------------------
 local excluded_npc = {
   [ 29 ] = true,                -- учебная плоть блин
-  [ "bar_ecolog_professor"] = true,
-  [ "dik_the_drifter"     ] = true,
-  [ "zona_brother1"       ] = true,
-  [ "zona_brother2"       ] = true,
-  [ "val_escort_captive"  ] = true,
-  [ "val_escort_nap1"     ] = true,
-  [ "bandit_trader"       ] = true,
-  [ "bandit_trader_spawn" ] = true,
-  [ "peshera_plennyi"     ] = true,
+  [ "bar_ecolog_professor" ] = true,
+  [ "dik_the_drifter"      ] = true,
+  [ "zona_brother1"        ] = true,
+  [ "zona_brother2"        ] = true,
+  [ "val_escort_captive"   ] = true,
+  [ "val_escort_nap1"      ] = true,
+  [ "bandit_trader"        ] = true,
+  [ "bandit_trader_spawn"  ] = true,
+  [ "peshera_plennyi"      ] = true,
 }
 
 local excluded_sect = {
@@ -39,13 +39,13 @@ local last_position      = {}
 
 
 function attach( sm )
-  sm:subscribe({ signal = "on_after_blowout",        fun = this.on_after_blowout })
-  sm:subscribe({ signal = "on_monster_death",        fun = this.on_death   })
-  sm:subscribe({ signal = "on_monster_net_destroy",  fun = this.on_destroy })
-  sm:subscribe({ signal = "on_monster_spawn", fun = this.on_monster_spawn  })
-  sm:subscribe({ signal = "on_npc_death",            fun = this.on_death   })
-  sm:subscribe({ signal = "on_npc_net_destroy",      fun = this.on_destroy })
-  sm:subscribe({ signal = "on_npc_spawn",     fun = this.on_npc_spawn      })
+  sm:subscribe({ signal = "on_after_blowout",       fun = this.on_after_blowout })
+  sm:subscribe({ signal = "on_monster_death",       fun = this.on_death   })
+  sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_destroy })
+  sm:subscribe({ signal = "on_monster_spawn", fun = this.on_monster_spawn })
+  sm:subscribe({ signal = "on_npc_death",           fun = this.on_death   })
+  sm:subscribe({ signal = "on_npc_net_destroy",     fun = this.on_destroy })
+  sm:subscribe({ signal = "on_npc_spawn",     fun = this.on_npc_spawn     })
   sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
   sm:subscribe({ signal = "on_save",  fun = this.on_save  })
 end
@@ -55,10 +55,11 @@ function on_monster_spawn( obj, binder )
   added_restrictions[ obj:id() ] = nil
   last_position[ obj:id()      ] = nil
   if not obj:alive() then return end
+  if excluded_npc[ obj:story_id() ] then return end
+  if excluded_locations[ level.name() ] then return end
   local s = {
     [ "signal" ] = "on_monster_update." .. obj:id(),
     [ "fun"    ] = this.update_norm,
-    [ "queued" ] = true,
   }
   binder[ script_name() .. ".subscribed" ] = s
   ogse_signals.get_mgr():subscribe( s )
@@ -69,10 +70,18 @@ function on_npc_spawn( obj, binder )
   added_restrictions[ obj:id() ] = nil
   last_position[ obj:id()      ] = nil
   if not obj:alive() then return end
+  if
+    excluded_npc[ obj:profile_name() ]
+    or excluded_npc[ obj:name() ]
+    or excluded_npc[ obj:story_id() ]
+    or excluded_comms[ obj:character_community() ]
+  then
+    return
+  end
+  if excluded_locations[ level.name() ] then return end
   local s = {
     [ "signal" ] = "on_npc_update." .. obj:id(),
     [ "fun"    ] = this.update_norm,
-    [ "queued" ] = true,
   }
   binder[ script_name() .. ".subscribed" ] = s
   ogse_signals.get_mgr():subscribe( s )
@@ -149,55 +158,29 @@ end
 
 
 -- как часто выполнять обход аномалий (в мс)
-local freq = 500
+local freq = 1000
 
 function update_norm( obj )
-  local npc = obj
-  if not npc:alive() then return end
+  ogse_signals.get_mgr():reschedule( freq )
 
-  local profile  = npc:profile_name()
-  local name     = npc:name()
-  local lev_name = level.name()
-
-  if
-    excluded_npc[ profile ]
-    or excluded_npc[ name ]
-    or excluded_npc[ npc:story_id() ]
-    or (
-      IsStalker( npc ) and excluded_comms[ npc:character_community() ]
-    )
-  then
-    return
-  end
-  if excluded_locations[ lev_name ] then return end
-
-  local binder = npc:binded_object()
-  if
-    binder.ogse_anomaly_evader_t
-    and binder.ogse_anomaly_evader_t > time_global()
-  then
-    return
-  end
-  binder.ogse_anomaly_evader_t = time_global() + freq
-
-  local curr_pos = npc:position()
-  local prev_pos = last_position[ npc:id() ]
+  local curr_pos = obj:position()
+  local prev_pos = last_position[ obj:id() ]
   if prev_pos then
-    if prev_pos:distance_to( curr_pos ) < 20 then
+    if prev_pos:distance_to( curr_pos ) < 15 then
       return
     else
-      last_position[ npc:id() ] = curr_pos
+      last_position[ obj:id() ] = curr_pos
     end
   else
-    last_position[ npc:id() ] = curr_pos
+    last_position[ obj:id() ] = curr_pos
   end
 
-  if not added_restrictions[ npc:id() ] then
-    added_restrictions[ npc:id() ] = {}
+  if not added_restrictions[ obj:id() ] then
+    added_restrictions[ obj:id() ] = {}
   end
 
   local restr = {}
-  for _, o in ipairs( amk_anoms.get_anomaly_list( npc, 30 ) ) do
+  for _, o in ipairs( amk_anoms.get_anomaly_list( obj, 30 ) ) do
     local obj = level.object_by_id( o.id )
     if obj and ogse_anomaly.get_anomaly_mode( o.id ) ~= "del" then
       local sect_anom = obj:section()
@@ -215,7 +198,7 @@ function update_norm( obj )
   end
   
   local del = {}
-  for k, _ in pairs( added_restrictions[ npc:id() ] ) do
+  for k, _ in pairs( added_restrictions[ obj:id() ] ) do
     if restr[ k ] then
       restr[ k ] = nil -- уже установлен
     else
@@ -224,20 +207,20 @@ function update_norm( obj )
   end
   if table.getn( del ) > 0 then
     for _, k in ipairs( del ) do
-      added_restrictions[ npc:id() ][ k ] = nil
+      added_restrictions[ obj:id() ][ k ] = nil
     end
-    npc:remove_restrictions( "", table.concat( del, "," ) )
+    obj:remove_restrictions( "", table.concat( del, "," ) )
   end
 
   local add = {}
   for k, _ in pairs( restr ) do
-    if not should_npc_miss_this_anomaly( npc ) then
+    if not should_npc_miss_this_anomaly( obj ) then
       table.insert( add, k ) -- добавить новый
-      added_restrictions[ npc:id() ][ k ] = true
+      added_restrictions[ obj:id() ][ k ] = true
     end
   end
   if table.getn( add ) > 0 then
-    npc:add_restrictions( "", table.concat( add, "," ) )
+    obj:add_restrictions( "", table.concat( add, "," ) )
   end
 end
 
@@ -277,12 +260,5 @@ end
 
 
 function on_after_blowout()
-  for id, _ in pairs( last_position ) do
-    local obj = level.object_by_id( id )
-    if obj then
-      local binder = obj:binded_object()
-      binder.ogse_anomaly_evader_t = nil
-      last_position[ id ] = nil
-    end
-  end
+  last_position = {}
 end
