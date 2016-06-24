@@ -1,48 +1,107 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
-----------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
 --'     Лечим нерадивых товарищей...
 --' ver: 2.0
 --'     автор: xStream
---'     TODO: 
-----------------------------------------------------------------------------------------------------------------------
-excluded_npcs={
+--'     TODO:
+--------------------------------------------------------------------------------
+
+excluded_npcs = {
   -- фотография Монолита в Саркофаге
-  [ "nevid_monolit" ] = true,
-  esc_fox=true,
-  esc_vagon_wounded=true,
-  gar_bandit_stroyka3=true,
-  gar_wounded_bandit=true,
-  val_sos_wounded=true,
-  val_escort_bandit_halfdead=true,
-  nebo_kurier=true,
-  scromnyi=true,
-  forest_wound=true,
-  dead_mono_labirint=true,
-  labirint_monolit_shahter=true,
-  muha_soldat_ranen=true,
-  ecolog_wound_bunker=true
+  [ "nevid_monolit"              ] = true,
+  [ "esc_fox"                    ] = true,
+  [ "esc_vagon_wounded"          ] = true,
+  [ "gar_bandit_stroyka3"        ] = true,
+  [ "gar_wounded_bandit"         ] = true,
+  [ "val_sos_wounded"            ] = true,
+  [ "val_escort_bandit_halfdead" ] = true,
+  [ "nebo_kurier"                ] = true,
+  [ "scromnyi"                   ] = true,
+  [ "forest_wound"               ] = true,
+  [ "dead_mono_labirint"         ] = true,
+  [ "labirint_monolit_shahter"   ] = true,
+  [ "muha_soldat_ranen"          ] = true,
+  [ "ecolog_wound_bunker"        ] = true,
 }
 
-mk_types={
-        [1]="medkit",
-        [2]="medkit_army",
-        [3]="medkit_scientic",
-        [4]="bandage"
+mk_types = {
+  [ 1 ] = "medkit",
+  [ 2 ] = "medkit_army",
+  [ 3 ] = "medkit_scientic",
+  [ 4 ] = "bandage",
 }
 
-wounded = {}
-turn_off = {}
+wounded   = {}
+turn_off  = {}
 has_medic = {}
 friends_r = 50
 neutral_r = 30
----------------
-evid_medic=18680
-evid_self_medic=evid_medic+1
 
-actid_medic=evid_medic
-actid_self_medic=actid_medic+1
+evid_medic      = 18680
+evid_self_medic = evid_medic + 1
 
-local anims = {{a = "norm_torso_12_draw_0",t = 500},{a = "norm_torso_12_attack_0",t = 3600},{a = "norm_torso_12_holster_0",t = 300}} --,{a = "norm_torso_12_reload_0",t = 600}
+actid_medic      = evid_medic
+actid_self_medic = actid_medic + 1
+
+local anims = {
+  {
+    a = "norm_torso_12_draw_0",
+    t = 500
+  },
+  {
+    a = "norm_torso_12_attack_0",
+    t = 3600
+  },
+  {
+    a = "norm_torso_12_holster_0",
+    t = 300
+  },
+}
+
+
+function attach( sm )
+  sm:subscribe({ signal = "on_npc_death", fun = this.on_death     })
+  sm:subscribe({ signal = "on_npc_spawn", fun = this.on_npc_spawn })
+  sm:subscribe({ signal = "on_take",      fun = this.pickup       })
+end
+
+
+function on_npc_spawn( obj, binder )
+  if not obj:alive() then return end
+  if
+    excluded_npcs[ obj:name() ]
+    or excluded_npcs[ obj:character_community() ]
+  then
+    return
+  end
+  if
+    obj:character_community() == "zombied"
+    or obj:character_community() == "trader"
+    or obj:character_community() == "arena_enemy"
+    or obj:name() == "mil_stalker0012"
+    or obj:name() == "yantar_ecolog_general"
+  then
+    return
+  end
+  local s = {
+    [ "signal" ] = "on_npc_update." .. obj:id(),
+    [ "fun"    ] = this.npc_update,
+    [ "queued" ] = true,
+  }
+  binder[ script_name() .. ".subscribed" ] = s
+  ogse_signals.get_mgr():subscribe( s )
+end
+
+
+function on_death( obj )
+  local binder     = obj:binded_object()
+  local subscribed = binder[ script_name() .. ".subscribed" ]
+  if subscribed then
+    ogse_signals.get_mgr():unsubscribe( subscribed )
+  end
+  death_callback( obj )
+end
+
 
 ----------------------------------------------------------------------------------------------------------------------
 -- EVALUATORS
@@ -444,93 +503,91 @@ function disable_scheme(npc, scheme)
         end
 end
 
-----------------------------------------------------------------------------------------------------------------------
--- HELPERS
-----------------------------------------------------------------------------------------------------------------------
 
-function get_npc(id)
-        return level.object_by_id(id)
+function get_npc( id )
+  return level.object_by_id( id )
 end
 
-function death_callback(npc)
-        wounded[npc:id()]=nil
-        has_medic[npc:id()]=nil
-        for k,v in pairs(has_medic) do
-                if v == npc:id() then has_medic[k]=nil break end
+
+function death_callback( npc )
+  wounded[ npc:id()   ] = nil
+  has_medic[ npc:id() ] = nil
+  if npc:object( "yad" ) then
+    alife():release( alife():object( npc:object( "yad" ):id() ) )
+  end
+  if not npc:alive() then
+    local remove_medkits = {}
+    npc:iterate_inventory(
+      function ( dummy, item )
+        if item == nil or alife():object( item:id() ) == nil then return end
+        for k, v in pairs( mk_types ) do
+          if item:section() == v then
+            table.insert( remove_medkits, item:id() )
+            break
+          end
         end
-        if npc:object("yad") then
-                alife():release(alife():object(npc:object("yad"):id()))
-        end
-        
-        if not npc:alive() then
-                local remove_medkits={}
-                npc:iterate_inventory(function (dummy, item) 
-                        if item==nil or alife():object(item:id())==nil then return end
-                        for k,v in pairs(mk_types) do
-                                if item:section()==v then
-                                        table.insert(remove_medkits, item:id())
-                                        break
-                                end
-                        end
-                end, npc)
-                for k,v in pairs(remove_medkits) do
-                        alife():release(alife():object(v),true)
-                end
-        end
+      end,
+      npc
+    )
+    for _, v in ipairs( remove_medkits ) do
+      alife():release( alife():object( v ), true )
+    end
+  end
 end
 
-function npc_update(binder)
-        local npc = binder.object
-        
-        if not npc:alive() then 
-                wounded[npc:id()]=nil
-                has_medic[npc:id()]=nil
-                return 
-        end
-        
-        if excluded_npcs[npc:name()] or excluded_npcs[npc:character_community()] then return end
-        
-        if npc:critically_wounded() or npc:wounded() then
-                if not wounded[npc:id()] then
-                        wounded[npc:id()]=true
-                        for k,v in pairs(has_medic) do
-                                if v == npc:id() then has_medic[k]=nil break end
-                        end
-                end
-        else
-                wounded[npc:id()]=nil
-        end
-        
-        if not npc:object("yad") then
-                alife():create("yad",npc:position(),npc:level_vertex_id(),npc:game_vertex_id(),npc:id())
-        end
-        
-        if not binder.medkit_update_time then binder.medkit_update_time=time_global()+5000 end
-        if npc:character_community()=="zombied" or npc:character_community()=="trader" or
-                  npc:character_community()=="arena_enemy" or npc:name()=="mil_stalker0012" or 
-                  npc:name()=="yantar_ecolog_general" then return end
-        
-        if time_global()>binder.medkit_update_time then
-                if not npc:object("medkit") and not npc:object("medkit_army") and not npc:object("medkit_scientic") then
-                        local sobj = alife():object(npc:id())
-                        if sobj and sobj.rank and sobj:rank()~=0 then
-                                if math.random()>0.2 then alife():create(mk_types[3%math.ceil(sobj:rank()/1000)+1],npc:position(),npc:level_vertex_id(),npc:game_vertex_id(),npc:id()) end
-                        end
-                end
-                if not npc:object("bandage") then
-                        if math.random()>0.05 then alife():create("bandage",npc:position(),npc:level_vertex_id(),npc:game_vertex_id(),npc:id()) end
-                end
-                binder.medkit_update_time=time_global()+300000
-        end
-        
+
+function npc_update( npc )
+  ogse_signals.get_mgr():reschedule( 300000 )
+  if npc:critically_wounded() or npc:wounded() then
+    if not wounded[ npc:id() ] then
+      wounded[ npc:id()   ] = true
+      has_medic[ npc:id() ] = nil
+    end
+  else
+    wounded[ npc:id() ] = nil
+  end
+  if not npc:object( "yad" ) then
+    alife():create(
+      "yad",
+      npc:position(),
+      npc:level_vertex_id(), npc:game_vertex_id(),
+      npc:id()
+    )
+  end
+  if
+    ( not npc:object( "medkit" ) )
+    and ( not npc:object( "medkit_army" ) )
+    and ( not npc:object( "medkit_scientic" ) )
+  then
+    local sobj = alife():object( npc:id() )
+    if sobj and sobj.rank and sobj:rank() ~= 0 then
+      if math.random() > 0.2 then
+        alife():create(
+          mk_types[ 3 % math.ceil( sobj:rank() / 1000 ) + 1 ],
+          npc:position(), npc:level_vertex_id(), npc:game_vertex_id(),
+          npc:id()
+        )
+      end
+    end
+  end
+  if not npc:object( "bandage" ) then
+    if math.random() > 0.05 then
+      alife():create(
+        "bandage",
+        npc:position(), npc:level_vertex_id(), npc:game_vertex_id(),
+        npc:id()
+      )
+    end
+  end
 end
 
-function pickup(obj)
-        if obj == nil or alife():object(obj:id()) == nil then return end
-        if obj:section()=="yad" then 
-                local sobj = alife():object(obj:id())
-                if sobj then
-                        alife():release(sobj, true) 
-                end
-        end
+
+function pickup( obj )
+  if obj == nil or alife():object( obj:id() ) == nil then return end
+  if obj:section() == "yad" then
+    local sobj = alife():object( obj:id() )
+    if sobj then
+      alife():release( sobj, true )
+    end
+  end
 end
