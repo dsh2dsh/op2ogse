@@ -1,101 +1,144 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
-----------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
 --' Схема метания гранат и убегания от них
 --' мод OGSE, версия 2.5, 18/08/2011
 --' автор: xStream
 --' переработка, доработки алгоритма: KamikaZze
-----------------------------------------------------------------------------------------------------------------------
-gr_types={
-        "grenade_f1",
-        "grenade_rgd5",
---      "grenade_flash",
+--------------------------------------------------------------------------------
+
+function attach( sm )
+  sm:subscribe({ signal = "on_npc_death", fun = this.on_death     })
+  sm:subscribe({ signal = "on_npc_spawn", fun = this.on_npc_spawn })
+  sm:subscribe({ signal = "on_spawn",     fun = this.net_spawn    })
+  sm:subscribe({ signal = "on_take",      fun = this.fake_pickup  })
+  sm:subscribe({ signal = "on_update",    fun = this.update, queued = true })
+end
+
+
+function on_npc_spawn( obj, binder )
+  if not obj:alive() then return end
+  if
+    obj:character_community() == "ecolog"
+    or obj:character_community() == "zombied"
+    or obj:character_community() == "trader"
+    or obj:character_community() == "arena_enemy"
+    or obj:character_community() == "quest_stalker"
+    or obj:name() == "mil_stalker0012"
+    or obj:name() == "yantar_ecolog_general"
+    or string.find( obj:section(), "arena" )
+    or string.find( obj:section(), "aem" )
+  then
+    return
+  end
+  local s = {
+    [ "signal" ] = "on_npc_update." .. obj:id(),
+    [ "fun"    ] = this.npc_update,
+    [ "queued" ] = true,
+  }
+  binder[ script_name() .. ".subscribed" ] = s
+  ogse_signals.get_mgr():subscribe( s )
+end
+
+
+function on_death( obj )
+  local binder     = obj:binded_object()
+  local subscribed = binder[ script_name() .. ".subscribed" ]
+  if subscribed then
+    ogse_signals.get_mgr():unsubscribe( subscribed )
+  end
+  death_callback( obj )
+end
+
+
+gr_types = {
+  "grenade_f1",
+  "grenade_rgd5",
 }
 
 grenade_radius_override = {
-  ["grenade_flash"] = 9,
+  [ "grenade_flash" ] = 9,
 }
 
-grenades = {}
-grenadiers = {}
-pseudo_grenades = {}
+grenades        = {}
+grenadiers      = {}
+test_grenades   = {}
 
 local grenade_owners = {}
-local grenade_times = {}
-
-test_grenades={}
+local grenade_times  = {}
 
 grenade_max_dist = 50
-grenade_bone = "bip01_head"
+grenade_bone     = "bip01_head"
 
-snd_grenade_replics={
-        stalker = {
-                [[stalker\ready_1]],
-                [[stalker\ready_2]],
-                [[stalker\ready_3]],
-                [[stalker\ready_4]],
-                [[stalker\ready_5]],
-                [[stalker\ready_6]],
-                [[stalker\ready_7]],
-                [[stalker\ready_8]]
-        },
-        military = {
-                [[voyaki\ready_1]],
-                [[voyaki\ready_2]],
-                [[voyaki\ready_3]]
-        },
-        bandit = {
-                [[bandos\ready_1]],
-                [[bandos\ready_2]],
-                [[bandos\ready_3]],
-                [[bandos\ready_4]],
-                [[bandos\ready_5]],
-                [[bandos\ready_6]],
-                [[bandos\ready_7]],
-                [[bandos\ready_8]],
-                [[bandos\ready_9]],
-                [[bandos\ready_10]]
-        },
-        monolith = {
-                [[mono\ready_1]],
-                [[mono\ready_2]],
-                [[mono\ready_3]]
-        },
-        killer = {
-                [[merc\ready_1]],
-                [[merc\ready_2]]
-        },
-        vermaht = {
-                [[vermaht\ready_1]]
-        },
-        dolg = {
-                [[dolgos\abuse_3]],
-                [[dolgos\backup_3]],
-                [[dolgos\panic_monster_2]],
-                [[dolgos\panic_monster_4]],
-                [[dolgos\search_8]],
-                [[dolgos\threat_distant_2]],
-                [[dolgos\threat_distant_5]]
-        },
-        freedom = {
-                [[freedom\freedom1]],
-                [[freedom\freedom2]],
-                [[freedom\freedom3]]
-        }
+snd_grenade_replics = {
+  stalker = {
+    [[stalker\ready_1]],
+    [[stalker\ready_2]],
+    [[stalker\ready_3]],
+    [[stalker\ready_4]],
+    [[stalker\ready_5]],
+    [[stalker\ready_6]],
+    [[stalker\ready_7]],
+    [[stalker\ready_8]]
+  },
+  military = {
+    [[voyaki\ready_1]],
+    [[voyaki\ready_2]],
+    [[voyaki\ready_3]]
+  },
+  bandit = {
+    [[bandos\ready_1]],
+    [[bandos\ready_2]],
+    [[bandos\ready_3]],
+    [[bandos\ready_4]],
+    [[bandos\ready_5]],
+    [[bandos\ready_6]],
+    [[bandos\ready_7]],
+    [[bandos\ready_8]],
+    [[bandos\ready_9]],
+    [[bandos\ready_10]]
+  },
+  monolith = {
+    [[mono\ready_1]],
+    [[mono\ready_2]],
+    [[mono\ready_3]]
+  },
+  killer = {
+    [[merc\ready_1]],
+    [[merc\ready_2]]
+  },
+  vermaht = {
+    [[vermaht\ready_1]]
+  },
+  dolg = {
+    [[dolgos\abuse_3]],
+    [[dolgos\backup_3]],
+    [[dolgos\panic_monster_2]],
+    [[dolgos\panic_monster_4]],
+    [[dolgos\search_8]],
+    [[dolgos\threat_distant_2]],
+    [[dolgos\threat_distant_5]]
+  },
+  freedom = {
+    [[freedom\freedom1]],
+    [[freedom\freedom2]],
+    [[freedom\freedom3]]
+  },
 }
 
-local excluded_npcs={
-        ["trader"]                                                      = true,
-        ["watchtower"]                                          = true,
-        ["sniper"]                                                      = true,
+local excluded_npcs = {
+  [ "trader"     ] = true,
+  [ "watchtower" ] = true,
+  [ "sniper"     ] = true,
 }
 
 local no_grenades = {}
 
-local forbidden_comms = {                       -- запретные коммунити
-        ["ecolog"] = true,
-        ["zombied"] = true,
-        ["trader"] = true
+local forbidden_comms = {       -- запретные коммунити
+  [ "ecolog"  ] = true,
+  [ "zombied" ] = true,
+  [ "trader"  ] = true,
 }
+
 
 ----------------------------------------------------------------------------------------------------------------------
 -- EVALUATORS
@@ -296,26 +339,6 @@ function evaluator_love_napalm_smell:check_grenade(section)
         -- если накроет взрывом - не будем кидать
         local r = self.a.grenades[section].radius
         if throw_dist < r then return false end
---[[
-        --теперь проверим, чтоб не задеть своих и нейтралов
-        local function check_item(obj)
-                obj=obj:object()
-                if obj==nil or obj.clsid==nil then return false end
-                if not obj:clsid() == clsid.actor and not obj:clsid() == clsid.script_stalker then return false end
-                if npc:relation(obj) ~= game_object.enemy then
-                        local d=bp:distance_to(obj:position())
-                        if d<self.a.grenades[section].radius then return true end
-                end
-                return false
-        end
-        
-        for o in npc:memory_visible_objects() do
-                if check_item(o) then return false end
-        end
-        for o in npc:memory_sound_objects() do
-                if check_item(o) then return false end
-        end
-]]
         --можно использовать эту гранату....
         return true
 end
@@ -661,12 +684,6 @@ function add_to_binder( object, char_ini, scheme, section, st )
         action:add_precondition( world_property( stalker_ids.property_anomaly,   false ) )
         action:add_precondition( world_property( property_wounded,                               false ) )
         action:add_precondition( world_property( prop_grenade,                       false ) )
---[[
-        action:add_precondition( world_property( ogsm_hideout.property_blowout,  false ) )
-        action:add_precondition( world_property( ogsm_hideout.property_hideout_lost, false) )
-        action:add_precondition( world_property( ogsm_hideout.property_inhide,   false ) )
-        action:add_precondition( world_property( ogsm_hideout.property_psyzoned, false ) )      
-]]
         action:add_precondition( world_property( prop_fire,                          true  ) )
         action:add_effect      ( world_property( prop_fire,                                      false ) )
         manager:add_action( act_kill_it, action )
@@ -675,10 +692,6 @@ function add_to_binder( object, char_ini, scheme, section, st )
         action:add_precondition( world_property( stalker_ids.property_alive,     true  ) )
         action:add_precondition( world_property( stalker_ids.property_anomaly,   false ) )
         action:add_precondition( world_property( property_wounded,                               false ) )
---[[
-        action:add_precondition( world_property( ogsm_hideout.property_hideout_lost, false ) )
-        action:add_precondition( world_property( ogsm_hideout.property_psyzoned, false ) )      
-]]
         action:add_precondition( world_property( prop_grenade,                       true  ) )
         action:add_effect      ( world_property( prop_grenade,                                   false ) )
         manager:add_action( act_run, action )
@@ -720,185 +733,192 @@ function disable_scheme(npc, scheme)
         end
 end
 
-----------------------------------------------------------------------------------------------------------------------
--- HELPERS
-----------------------------------------------------------------------------------------------------------------------
-function get_grenade(id)
-        return level.object_by_id(id)
+
+function get_grenade( id )
+  return level.object_by_id( id )
 end
 
-function get_grenade_srv(id)
-        return alife():object(id)
+
+function get_grenade_srv( id )
+  return alife():object( id )
 end
 
-function get_grenade_radius(section)
-        local r,t = 1000,0
-        local ini = system_ini()
-        local br = utils.cfg_get_number(ini, section, "blast_r", false, false, false, 1000)
-        local fr = utils.cfg_get_number(ini, section, "frags_r", false, false, false, 1000)
-        t = utils.cfg_get_number(ini, section, "destroy_time", false, false, false, 0)
-        r = math.max(br,fr)
-        if grenade_radius_override[ section ] then
-          r = grenade_radius_override[ section ]
+
+function get_grenade_radius( section )
+  local r, t = 1000, 0
+  local ini  = system_ini()
+  local br   = utils.cfg_get_number(
+    ini, section, "blast_r", false, false, false, 1000
+  )
+  local fr   = utils.cfg_get_number(
+    ini, section, "frags_r", false, false, false, 1000
+  )
+  t = utils.cfg_get_number(
+    ini, section, "destroy_time", false, false, false, 0
+  )
+  r = math.max( br, fr )
+  if grenade_radius_override[ section ] then
+    r = grenade_radius_override[ section ]
+  end
+  return r, t
+end
+
+
+function update( delta )
+  ogse_signals.get_mgr():reschedule( 1000 )
+  for k, v in pairs( grenades ) do
+    local sobj = alife():object( k )
+    if sobj then
+      if time_global() > v then
+        local obj = level.object_by_id( k )
+        if obj then
+          local a = alife():create(
+            obj:section() .. "_fake",
+            obj:position():add( vector():set( 0, 1, 0 ) ),
+            obj:level_vertex_id(), obj:game_vertex_id()
+          )
+          level.client_spawn_manager():add(
+            a.id, -1, function( id, obj )
+              mark_grenade_non_pickable( id, obj )
+              obj:explode( 0 )
+            end
+          )
         end
-
-        return r,t
+        alife():release( sobj, true )
+        grenades[ k ] = nil
+      end
+    else
+      grenades[ k ] = nil
+    end
+  end
+  for k, v in pairs( test_grenades ) do
+    local sobj = alife():object( k )
+    if sobj then
+      if time_global() > v then
+        alife():release( sobj, true )
+        test_grenades[ k ] = nil
+      end
+    else
+      test_grenades[ k ] = nil
+    end
+  end
 end
 
-function update(delta)
-        
-        for k,v in pairs(pseudo_grenades) do
-                local sobj = alife():object(k)
-                if sobj then
-                        local obj = level.object_by_id(k)
-                        if obj then 
-                                obj:explode(0)
-                                pseudo_grenades[k]=nil
-                        end
-                else
-                        pseudo_grenades[k]=nil
-                end
-        end
-        
-        for k,v in pairs(grenades) do
-                local sobj = alife():object(k)
-                if sobj then
-                        if time_global()>v then
-                                local obj = level.object_by_id(k)
-                                if obj then 
-                                        local a = alife():create(obj:section().."_fake",obj:position():add(vector():set(0,1,0)),obj:level_vertex_id(),obj:game_vertex_id())
-                                        level.client_spawn_manager():add(a.id, -1, mark_grenade_non_pickable)
-                                        if a then
-                                                pseudo_grenades[a.id]=true
-                                        end
-                                end
-                                if sobj then
-                                        alife():release(sobj, true)
-                                end
-                                grenades[k]=nil
-                        end
-                else
-                        grenades[k]=nil
-                end
-        end
-        
-        for k,v in pairs(test_grenades) do
-                local sobj = alife():object(k)
-                if sobj then
-                        if time_global()>v then
-                                alife():release(sobj, true)
-                                test_grenades[k]=nil
-                        end
-                else
-                        test_grenades[k]=nil
-                end
-        end
 
+function death_callback( npc )
+  if grenadiers[ npc:id() ] then
+    local grenade = grenadiers[ npc:id() ]
+    local g_obj = get_grenade( grenade )
+    if g_obj then
+      local dummy, timeout = get_grenade_radius( g_obj:section() )
+      grenade = alife():create(
+        g_obj:section(),
+        npc:bone_position( grenade_bone ),
+        npc:level_vertex_id(), npc:game_vertex_id()
+      )
+      grenades[ grenade.id ] = time_global() + timeout
+    end
+    grenadiers[ npc:id() ] = nil
+  end
 end
 
-function death_callback(npc)
-        if grenadiers[npc:id()] then
-                local grenade = grenadiers[npc:id()]
-                local g_obj = get_grenade(grenade)
-                if g_obj then
-                        local dummy,timeout = get_grenade_radius(g_obj:section())
-                        grenade = alife():create(g_obj:section(), npc:bone_position(grenade_bone), npc:level_vertex_id(), npc:game_vertex_id())
-                        grenades[grenade.id] = time_global() + timeout  
-                end
-                grenadiers[npc:id()]=nil
+
+function check_enemy( npc, be )
+  return
+    npc:alive() and be
+    and (
+      be:clsid() == clsid.script_stalker
+      or be:clsid() == clsid.actor
+      or be:clsid() == clsid.bloodsucker_s
+      or be:clsid() == clsid.burer_s
+      or be:clsid() == clsid.controller_s
+      or be:clsid() == clsid.poltergeist_s
+      or be:clsid() == clsid.gigant_s
+      or be:clsid() == clsid.zombie_s
+    )
+    and be:alive() and npc:see( be )
+  -- из-за глюков движка кидать будем только в объекты, недалеко от аи сетки
+    and be:position():distance_to(
+      level.vertex_position( be:level_vertex_id() )
+    ) < 2
+end
+
+
+function npc_update( npc )
+  ogse_signals.get_mgr():reschedule(
+    120000 - 20000 * level.get_game_difficulty()
+  )
+  for k, v in ipairs( gr_types ) do
+    local curr_gr = npc:object( v )
+    if not curr_gr then
+      local sobj = alife():object( npc:id() )
+      if sobj and sobj.rank and sobj:rank() ~= 0 then
+        local prb = sobj:rank() / 2500
+        if prb > 0.9  then prb = 0.9  end
+        if prb < 0.01 then prb = 0.01 end
+        if math.random() < prb then
+          alife():create(
+            v,
+            npc:position(), npc:level_vertex_id(), npc:game_vertex_id(),
+            npc:id()
+          )
         end
+      end
+    else
+      break
+    end
+  end
 end
 
-function check_enemy(npc,be)
-        return npc:alive() and be and (
-                be:clsid() == clsid.script_stalker or
-                be:clsid() == clsid.actor or 
-                be:clsid() == clsid.bloodsucker_s or
-                be:clsid() == clsid.burer_s or
-                be:clsid() == clsid.controller_s or
-                be:clsid() == clsid.poltergeist_s or
-                be:clsid() == clsid.gigant_s or
-                be:clsid() == clsid.zombie_s
-                ) and be:alive() and npc:see(be) and be:position():distance_to(level.vertex_position(be:level_vertex_id()))<2 --из-за глюков движка кидать будем только в объекты, недалеко от аи сетки
+
+function throw( id, typ, target )
+  if not get_grenade( id ):get_physics_shell() then return end
+  local bone = get_grenade( id ):get_physics_shell():get_element_by_bone_name( "wpn_body" )
+  local dir  = utils.vector_copy_by_val( target ):sub( get_grenade(id):position() )
+  dir:mul( 1300 )
+  if typ == "lo" then
+    dir:add( vector():set( 0,  8000, 0 ) )
+  else
+    dir:add( vector():set( 0, 19000, 0 ) )
+  end
+  if bone then
+    bone:apply_force(
+      dir.x + math.random( -3, 3 ), dir.y, dir.z + math.random( -3, 3 )
+    )
+  end
 end
 
-function npc_update(binder)
-        local npc = binder.object
-        if not npc:alive() then return end
-        if not binder.grenade_update_time then binder.grenade_update_time=time_global()+15000 end
-
-        if time_global()>binder.grenade_update_time then
-                -- так дергается намного реже
-                if npc:character_community()=="ecolog" 
-                or npc:character_community()=="zombied" 
-                or npc:character_community()=="trader" 
-                or npc:character_community()=="arena_enemy" 
-                or npc:character_community()=="quest_stalker"           
-                or npc:name()=="mil_stalker0012" 
-                or npc:name()=="yantar_ecolog_general" 
-                or string.find(npc:section(),"arena") 
-                or string.find(npc:section(),"aem") then return end
-                          
-                for k,v in ipairs(gr_types) do
-                        local curr_gr = npc:object(v)
-                        if not curr_gr then 
-                                local sobj = alife():object(npc:id())
-                                if sobj and sobj.rank and sobj:rank()~=0 then
-                                        local prb = sobj:rank()/2500
-                                        if prb>0.9 then prb=0.9 end
-                                        if prb<0.01 then prb=0.01 end
-                                        --if v=="grenade_f1" then prb=prb/2 end
-                                        if math.random()<prb then alife():create(v,npc:position(),npc:level_vertex_id(),npc:game_vertex_id(),npc:id()) end
-                                end
-                        else
-                                break
-                        end
-                end
-                -- Добавлена зависимость частоты броска гранаты неписями от уровня сложности
-                binder.grenade_update_time=time_global()+120000-20000*level.get_game_difficulty()
-        end
-end
-
-function throw(id,typ,target)
-        if not get_grenade(id):get_physics_shell() then return end
-        
-        local bone = get_grenade(id):get_physics_shell():get_element_by_bone_name("wpn_body")
-        local dir=utils.vector_copy_by_val(target):sub(get_grenade(id):position())
-        dir:mul(1300)
-        if typ=="lo" then
-                dir:add(vector():set(0,8000,0))
-        else
-                dir:add(vector():set(0,19000,0))
-        end
-        if bone then bone:apply_force(dir.x+math.random(-3, 3),dir.y,dir.z+math.random(-3, 3)) end
-end
 
 function net_spawn()
-        for a=0,65534 do
-                local sobj = alife():object(a)
-                if sobj then
-                        for k,v in ipairs(gr_types) do
-                                if sobj:section_name()==v.."_test" or sobj:section_name()==v.."_fake" then
-                                        if sobj then
-                                                alife():release(sobj, true)
-                                        end
-                                        break
-                                end
-                        end
-                end
+  for a = 1, 65534 do
+    local sobj = alife():object( a )
+    if sobj then
+      for k, v in ipairs( gr_types ) do
+        if
+          sobj:section_name() == v .. "_test"
+          or sobj:section_name() == v .. "_fake"
+        then
+          alife():release( sobj, true )
+          break
         end
+      end
+    end
+  end
 end
 
-function fake_pickup(obj)
-        level.map_remove_object_spot(obj:id(), "grenade_location")
 
-        for k,v in ipairs(gr_types) do
-                if obj:section()==v.."_test" or obj:section()==v.."_fake" then
-                        local sobj = alife():object(obj:id())
-                        if sobj then
-                                alife():release(sobj, true)
-                        end
-                        return
-                end
-        end
+function fake_pickup( obj )
+  level.map_remove_object_spot( obj:id(), "grenade_location" )
+  for k, v in ipairs( gr_types ) do
+    if
+      obj:section() == v .. "_test"
+      or obj:section() == v .. "_fake"
+    then
+      local sobj = alife():object( obj:id() )
+      if sobj then
+        alife():release( sobj, true )
+      end
+      return
+    end
+  end
 end
