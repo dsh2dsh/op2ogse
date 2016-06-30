@@ -105,7 +105,6 @@ function npc_update(npc)
                 if rx_bandage then
                         rx_bandage.npc_update(npc,st)
                 end
-                eat_medkit(npc)
         end
 end
 
@@ -228,9 +227,6 @@ function addCommonPrecondition(action)
         end
 end
 
-function on_menu_close()
-end
-
 
 ------------------------------------eating----------------------------------------
 
@@ -266,21 +262,9 @@ end
 
 
 function eat_medkit( npc )
-  if not eating.enabled     then return end
-  if not eating.initialized then eat_init() end
+  ogse_signals.get_mgr():reschedule( math.random( 1000, 5000 ) )
   local st = get_storage( npc:id(), "eating" )
-  if st.disabled then
-    return
-  elseif st.disabled == nil then
-    st.disabled = false
-    if
-      eating.exc_comms[ npc:character_community() ]
-      or eating.exc_npcs[ npc:name() ]
-    then
-      st.disabled = true
-    end
-    return
-  end
+  if st.disabled then return end
   local enemy = npc:best_enemy()
   if
     xr_wounded.is_wounded( npc )
@@ -291,23 +275,22 @@ function eat_medkit( npc )
     st.time = nil
     return
   end
-  if st.item and st.time then
-    if st.time < time_global() then
-      local med = npc:object( st.item )
-      if med then
-        rx_utils.eat_medkit( npc, med )
-      end
-      st.item = nil
+  if st.item then
+    local med = npc:object( st.item )
+    if med then
+      rx_utils.eat_medkit( npc, med )
     end
+    st.item = nil
     return
   end
   if npc.health < eating.max_h and not xr_wounded.is_wounded( npc ) then
     for k, v in ipairs( eating.medkits ) do
       local medkit = npc:object( v )
       if medkit then
-        st.time = time_global()
-          + math.random( eating.delay[ 1 ], eating.delay[ 2 ] )
         st.item = v
+        ogse_signals.get_mgr():reschedule(
+          math.random( eating.delay[ 1 ], eating.delay[ 2 ] )
+        )
         return
       end
     end
@@ -316,11 +299,49 @@ function eat_medkit( npc )
     for k, v in ipairs( eating.bandages ) do
       local bandage = npc:object( v )
       if bandage then
-        st.time = time_global()
-          + math.random( eating.delay[ 1 ], eating.delay[ 2 ] )
         st.item = v
+        ogse_signals.get_mgr():reschedule(
+          math.random( eating.delay[ 1 ], eating.delay[ 2 ] )
+        )
         return
       end
     end
+  end
+end
+
+
+function attach( sm )
+  sm:subscribe({ signal = "on_npc_death", fun = this.on_death     })
+  sm:subscribe({ signal = "on_npc_spawn", fun = this.on_npc_spawn })
+end
+
+
+function on_npc_spawn( obj, binder )
+  if not obj:alive() then return end
+  if eating.enabled then
+    if not eating.initialized then eat_init() end
+    if
+      not (
+        eating.exc_comms[ obj:character_community() ]
+        or eating.exc_npcs[ obj:name() ]
+      )
+    then
+      local s = {
+        [ "signal" ] = "on_npc_update." .. obj:id(),
+        [ "fun"    ] = this.eat_medkit,
+        [ "queued" ] = true,
+      }
+      binder[ script_name() .. ".subscribed" ] = s
+      ogse_signals.get_mgr():subscribe( s )
+    end
+  end
+end
+
+
+function on_death( obj )
+  local binder     = obj:binded_object()
+  local subscribed = binder[ script_name() .. ".subscribed" ]
+  if subscribed then
+    ogse_signals.get_mgr():unsubscribe( subscribed )
   end
 end
