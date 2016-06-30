@@ -258,71 +258,97 @@ function add_to_binder(npc,ini,scheme,section,storage)
         end
 end
 
-function npc_update(npc)
-        local npc_id = npc:id()
-        local st = db.storage[npc_id]["bandage"]
-        if not bandage_sets.enabled or not st or st.disabled then
-                return
+
+function npc_update( npc )
+  ogse_signals.get_mgr():reschedule( math.random( 5 ) * 1000 )
+  local npc_id = npc:id()
+  local st     = db.storage[ npc_id ][ "bandage" ]
+  if ( not st ) or st.disabled then return end
+  if not npc:object( "yad" ) then
+    alife():create(
+      "yad", npc:position(), npc:level_vertex_id(), npc:game_vertex_id(), npc_id
+    )
+  end
+  if not ( xrs_medic and db.storage[ npc_id ][ "medic" ] ) then
+    st = rx_ai.get_storage( npc_id, "rx_bandage" )
+    if time_global() > ( st.spawn_time or 10000 ) then
+      local ban
+      for k, v in ipairs( bandage_sets.bandages ) do
+        ban = npc:object( v )
+        if ban then
+          break
         end
-        local obj = npc:object("yad")
-        if not obj then
-                alife():create("yad",npc:position(),npc:level_vertex_id(),npc:game_vertex_id(),npc_id)
+      end
+      if not ban then
+        if math.random() > 0.15 then
+          alife():create(
+            bandage_sets.bandages[
+              math.random( table.getn( bandage_sets.bandages ) )
+            ],
+            npc:position(), npc:level_vertex_id(), npc:game_vertex_id(), npc_id
+          )
         end
-        if not (xrs_medic and db.storage[npc_id]["medic"]) then
-                st = rx_ai.get_storage(npc_id,"rx_bandage")
-                if time_global() > (st.spawn_time or 10000) then
-                        local ban
-                        for k,v in ipairs(bandage_sets.bandages) do
-                                ban = npc:object(v)
-                                if ban then
-                                        break
-                                end
-                        end
-                        if not ban then
-                                if math.random() > 0.15 then
-                                        printf("npc_update[%s]:spawn bandage",npc:character_name())
-                                        alife():create(bandage_sets.bandages[math.random(#bandage_sets.bandages)],npc:position(),npc:level_vertex_id(),npc:game_vertex_id(),npc_id)
-                                end
-                        end
-                        st.spawn_time = time_global()+math.random(100,400)*1000
-                end
-        end
+      end
+      st.spawn_time = time_global() + math.random( 100, 400 ) * 1000
+    end
+  end
 end
 
-local trem = {}
 
-function npc_death(npc)
-        local obj = npc:object("yad")
-        if obj then
-                table.insert(trem,obj:id())
-        end
+function npc_death( npc )
+  local obj = npc:object( "yad" )
+  if obj then
+    local sobj = alife():object( obj:id() )
+    if sobj then
+      alife():release( sobj )
+    end
+  end
 end
 
-function npc_switch_offline(npc)
-        npc_death(npc)
+
+function set_scheme( npc, ini, scheme, section )
+  local st = xr_logic.assign_storage_and_bind( npc, ini, scheme, section )
 end
 
-function update()
---      ogse_debug.process_actor("upd_a", 4571)
-        for i,id in ipairs(trem) do
-                local sobj = alife():object(id)
-                if sobj and sobj:section_name() == "yad" then
---                      ogse_debug.process_actor("upd_a", 45711)
-                        alife():release(sobj,true)
-                end
-        end
-        trem = {}
---      ogse_debug.process_actor("upd_a", 4572)
+
+function disable_scheme( npc, scheme )
+  local st = db.storage[ npc:id() ][ scheme ]
+  if st then
+    st.enabled = false
+  end
 end
 
-function set_scheme(npc,ini,scheme,section)
-        local st = xr_logic.assign_storage_and_bind(npc,ini,scheme,section)
+
+function attach( sm )
+  sm:subscribe({ signal = "on_npc_death", fun = this.on_death     })
+  sm:subscribe({ signal = "on_npc_net_destroy", fun = this.on_npc_net_destroy })
+  sm:subscribe({ signal = "on_npc_spawn", fun = this.on_npc_spawn })
 end
 
-function disable_scheme(npc,scheme)
-        local st = db.storage[npc:id()][scheme]
-        if st then
-                st.enabled = false
-        end
+
+function on_npc_spawn( obj, binder )
+  if not obj:alive()          then return end
+  if not bandage_sets.enabled then return end
+  local s = {
+    [ "signal" ] = "on_npc_update." .. obj:id(),
+    [ "fun"    ] = this.npc_update,
+    [ "queued" ] = true,
+  }
+  binder[ script_name() .. ".subscribed" ] = s
+  ogse_signals.get_mgr():subscribe( s )
 end
 
+
+function on_death( obj )
+  local binder     = obj:binded_object()
+  local subscribed = binder[ script_name() .. ".subscribed" ]
+  if subscribed then
+    ogse_signals.get_mgr():unsubscribe( subscribed )
+  end
+  npc_death( obj )
+end
+
+
+function on_npc_net_destroy( obj )
+  npc_death( obj )
+end
