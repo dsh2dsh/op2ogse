@@ -10,39 +10,39 @@ function attach(sm)
     signal = "on_before_actor_conditions_update",
     fun    = this.actor_conditions_update
   })
-  sm:subscribe({ signal = "on_update", fun = this.on_actor_update })
+  sm:subscribe({
+      signal = "on_update", fun = this.on_actor_update, queued = true
+  })
 end
 auto_attach = true
 
 
 local flames             = {}
 local looking_into_flame = false
-local prev_actor_pos     = nil
-local prev_time          = time_global()
+local prev_actor_pos
 local start_stand_time   = time_global()
 
 function on_actor_update()
-  if prev_time + 1000 > time_global() then return end
-  if prev_actor_pos == nil then prev_actor_pos = db.actor:position() end
+  ogse_signals.get_mgr():reschedule( 1000 )
+  if not prev_actor_pos then prev_actor_pos = db.actor:position() end
   if prev_actor_pos:distance_to_sqr( db.actor:position() ) > 0.01 then -- 0.1^2
     start_stand_time = time_global()
   end
-  prev_actor_pos = db.actor:position()
-  prev_time      = time_global()
+  prev_actor_pos     = db.actor:position()
   looking_into_flame = false
   if db.actor and db.actor.psy_health < 1 and stand_time() > 3000 then
     local npos = device().cam_pos
     local vd   = device().cam_dir
     for id, pos in pairs( flames ) do
       if pos:distance_to( npos ) < 3 then
-        local diff  = vector():sub( pos, npos ):normalize()                         
+        local diff  = vector():sub( pos, npos ):normalize()
         local cp    = vector():crossproduct( vd, diff )
         local dp    = vd:dotproduct( diff )
-        local angle = math.atan2( cp:magnitude(), dp )           
+        local angle = math.atan2( cp:magnitude(), dp )
         if math.abs( angle ) < 0.75 then
           looking_into_flame = true
           break
-        end 
+        end
       end
     end
   end
@@ -77,7 +77,7 @@ function switch_light( light, ena )
   if ena then
     lamp:turn_on()
   else
-    lamp:turn_off()			
+    lamp:turn_off()
   end
 end
 
@@ -86,7 +86,7 @@ function switch_flame( flame, ena )
   if ena then
     flame:enable_anomaly()
   else
-    flame:disable_anomaly()			
+    flame:disable_anomaly()
   end
 end
 
@@ -135,11 +135,10 @@ function play_particle_near_light( light, particle )
   particle:play_at_pos( pos )
 end
 
---[[
-  типа конечный автомат:
-    next - переводит КА в следующее состояние
-	action - вызывается при переходе в данное состояние
-]]
+
+-- типа конечный автомат:
+--   next - переводит КА в следующее состояние
+--     action - вызывается при переходе в данное состояние
 states = {
   -- костер полностью погашен: аномалия отключена, лампа погашена,
   -- партиклы не играют
@@ -157,7 +156,7 @@ states = {
       switch_light( self.object, false )
     end,
   },
-	
+
   -- костер горит на полную: аномалия включена, лампочка горит, партиклов нет
   firing = {
     next = function( has_users, now, prev )
@@ -173,7 +172,7 @@ states = {
       if self.particle then self.particle:stop() end
     end,
   },
-	
+
   -- костер начинает гаснуть: аномалия еще включена, лампочка горит,
   -- включается партикл затухающего огня
   down = {
@@ -195,7 +194,7 @@ states = {
       play_particle_near_light( self.object, self.particle )
     end,
   },
-	
+
   -- следующий этап угасания: отключается аномалия, но лампочка еще горит,
   -- партикл играется
   flame_off = {
@@ -211,7 +210,7 @@ states = {
     action = function( self )
       switch_flame_near_light( self.object, false )
       switch_light( self.object, true )
-      if not self.particle then 
+      if not self.particle then
         self.particle = particles_object( "dyn_kfire\\dyingfire" )
         play_particle_near_light( self.object, self.particle )
       end
@@ -274,8 +273,8 @@ function campfire_binder:check_npc( npc )
     if db.storage[ npc:id() ].state_mgr then
       local anim = db.storage[ npc:id() ].state_mgr.animstate:state()
       if not camp_anims[ anim ] then return false end
-    end	
-  end	
+    end
+  end
   return true
 end
 
@@ -288,27 +287,28 @@ function campfire_binder:update( delta )
     )
   end
   local time = time_global()
-  if self.scan_time == nil then
+  if not self.scan_time then
     self.scan_time = time
     self.state.action( self )
     self.time = time
   elseif self.scan_time < time then
-    local users = 0
+    local users = false
     for npc_id, is_npc in pairs( db.creature ) do
       if is_npc then
         local npc = level.object_by_id( npc_id )
         if self:check_npc( npc ) then
-          users = users + 1
+          users = true
+          break
         end
       end
     end
-    local new_state = self.state.next( users ~= 0, time, self.time )
+    local new_state = self.state.next( users, time, self.time )
     ASSERT( new_state ~= nil, "new_state ~= nil" )
     if new_state ~= self.state then
       new_state.action( self )
       self.state = new_state
       self.time  = time
-    end		
+    end
     self.scan_time = time + 5000
   end
 end
