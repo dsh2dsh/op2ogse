@@ -1,3 +1,4 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
 -- ************************************************
 -- **                    Imp                     **
 -- **       Биндер самодельных телепортов        **
@@ -6,201 +7,215 @@
 -- **    функций рестриктора и выдачи поршней,   **
 -- **    а также поддержки формы телепорта box   **
 -- ************************************************
---[[ Proper70 в конфиг добавлены параметры для поддержания функций рестриктора и выдачи поршней:
-info				= vzn_temp1						-- есди задано - выдается этот поршень
-func				= kostya_dialog.give_ammo(1)	-- если задано - вызывается эта функция с указанными параметрами, все писать без пробелов.
 
-для создания телепорта в форме box в конфиге можно задавать 3 параметра:
-x_radius, y_radius, z_radius. z_radius = высота.
-]]
+-- Proper70 в конфиг добавлены параметры для поддержания функций
+-- рестриктора и выдачи поршней:
+--
+-- info = vzn_temp1 -- есди задано - выдается этот поршень
+--
+-- func = kostya_dialog.give_ammo(1)-- если задано - вызывается эта
+-- функция с указанными параметрами, все писать без пробелов.
+--
+-- для создания телепорта в форме box в конфиге можно задавать 3 параметра:
+-- x_radius, y_radius, z_radius. z_radius = высота.
 
-local teleport_binders ={}	-- Список телепортов
 
-function abs_comp(a,b)
-	-- Служебная функция вычисления разности
-	if( a < b) then
-		return (b - a)
-	else
-		return (a - b)
-	end
+local teleport_binders = {}     -- Список телепортов
+
+
+function abs_comp( a, b )
+  -- Служебная функция вычисления разности
+  if( a < b) then
+    return ( b - a )
+  else
+    return ( a - b )
+  end
 end
 
-function teleportate(x,y,z)
--- Функция телепортации
-	local a = vector()
-	-- Задаем координаты
-	a.x = x
-	a.y = y
-	a.z = z
 
-	-- Сама телепортация
-	db.actor:set_actor_position(a)
+function teleportate( x, y, z )
+  -- Функция телепортации
+  local a = vector()
+  -- Задаем координаты
+  a.x = x
+  a.y = y
+  a.z = z
+  -- Сама телепортация
+  db.actor:set_actor_position( a )
 end
 
-function actor_update(delta)
-	local i,v,acter_poz,s
 
-	-- Получим позицию актера (что-бы каждый раз не запрашивать)
-	acter_poz = db.actor:position()
+function actor_update( delta )
+  -- Получим позицию актера (что-бы каждый раз не запрашивать)
+  local acter_poz = db.actor:position()
+  -- Проверяем наши телепорты
+  for i, v in pairs( teleport_binders ) do
+    local s = v.parametrs
+    local obj = level.object_by_id( i )
+    if obj then
+      -- Наш телепорт в онлайне проверяем дальше
+      if s.teleporte ~= nil and s.teleporte ~= false then
+        -- Телепорт запущен
+        if s.fli_code and not s.fli_droped and time_global() >= s.fli_time then
+          -- спавним код на островах
+          fly_island.drop_code()
+          s.fli_droped = true
+        end
+        if not s.fli_code or time_global() >= s.time then
+          -- время отведенное на показ спецэфектов прошло производим
+          -- телепортацию
+          teleportate( s.poz_x, s.poz_y, s.poz_z )
+          if s.rotate then
+            db.actor:set_actor_direction(s.rotate)
+          end
+          -- выполняем функции рестриктора
+          if s.info then
+            -- выдаем поршень
+            db.actor:give_info_portion( s.info )
+          end
+          if s.func then
+            -- выполняем функцию
+            loadstring( s.func )()
+          end
+          s.teleporte = false
+          db.actor:give_info_portion( "teleport_finished" )
+        end
+        return
+      end
 
-	-- Проверяем наши телепорты
-	for i, v in pairs(teleport_binders) do
-		s = v.parametrs
-
-		local obj = level.object_by_id( i )
-		if obj ~= nil then
-		-- Наш телепорт в онлайне проверяем дальше
-			if s.teleporte ~= nil and s.teleporte ~= false then
-				-- Телепорт запущен
-				if s.fli_code and not s.fli_droped and time_global() >= s.fli_time then
-					-- спавним код на островах
-					fly_island.drop_code()
-					s.fli_droped = true
-				end
-
-				if not s.fli_code or time_global() >= s.time then
-					-- время отведенное на показ спецэфектов прошло
-					-- производим телепортацию
-					teleportate(s.poz_x,s.poz_y,s.poz_z)
---					news_manager.send_tip(db.actor, v.object:section(), nil, nil, 10000) -- какой ТП сработал
-					if s.rotate ~= nil then
-						db.actor:set_actor_direction(s.rotate)
-					end
-
-					-- выполняем функции рестриктора
-					if s.info then
-						-- выдаем поршень
-						db.actor:give_info_portion(s.info)
-					end
-					if s.func then
-						-- выполняем функцию
-						loadstring(s.func)()
-					end
-
-					s.teleporte = false
-					db.actor:give_info_portion("teleport_finished")
-				end
-				return
-			end
-
-			-- Проверим не забрел ли актор в наш телепорт
-			if (abs_comp(s.x, acter_poz.x)< v.parametrs.x_radius  and
-			    abs_comp(s.z, acter_poz.z)< v.parametrs.y_radius  and
-			    abs_comp(s.y, acter_poz.y)< v.parametrs.z_radius) then
-				-- Актер в зоне действия телепорта, запустим телепорт
-				db.actor:give_info_portion("teleport_started")
-				s["teleporte"] = true
-				s["time"] = time_global() + 1500
-
-				if s.fli_code then
-					-- спавним код у ГГ в рюкзаке
-					fly_island.create_code(s.fli_code)
-					s["fli_time"] = time_global() + 1000
-					s["fli_droped"] = false
-				end
-
-				-- Запускаем спецэфекты телепортации
-				level.add_pp_effector ("teleport.ppe", 2006, false)
-
-				-- Звуковое сопровождение
-				local snd_obj = xr_sound.get_safe_sound_object([[anomaly\teleport_work_1]])
-				snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
-
-				if s.fli_code then
-					-- закидываем актора на остров для спавна кода
-					db.actor:set_actor_position(fly_island.get_actor_pos(s.fli_code))
-				end
-			end
-		end
-	end
+      -- Проверим не забрел ли актор в наш телепорт
+      if
+        abs_comp( s.x, acter_poz.x ) < v.parametrs.x_radius
+        and abs_comp( s.z, acter_poz.z ) < v.parametrs.y_radius
+        and abs_comp( s.y, acter_poz.y ) < v.parametrs.z_radius
+      then
+        -- Актер в зоне действия телепорта, запустим телепорт
+        db.actor:give_info_portion( "teleport_started" )
+        s[ "teleporte" ] = true
+        s[ "time"      ] = time_global() + 1500
+        if s.fli_code then
+          -- спавним код у ГГ в рюкзаке
+          fly_island.create_code( s.fli_code )
+          s[ "fli_time"   ] = time_global() + 1000
+          s[ "fli_droped" ] = false
+        end
+        -- Запускаем спецэфекты телепортации
+        level.add_pp_effector ( "teleport.ppe", 2006, false )
+        -- Звуковое сопровождение
+        local snd_obj = xr_sound.get_safe_sound_object(
+          [[anomaly\teleport_work_1]]
+        )
+        snd_obj:play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 1.0 )
+        if s.fli_code then
+          -- закидываем актора на остров для спавна кода
+          db.actor:set_actor_position( fly_island.get_actor_pos( s.fli_code ) )
+        end
+      end
+    end
+  end
 end
+
 
 function bind( obj )
-	obj:bind_object( restrictor_teleport( obj ) ) 
+  obj:bind_object( restrictor_teleport( obj ) )
 end
 
-----------------------------------------------------------------------------------------------------
+
 class "restrictor_teleport" ( object_binder )
-
-function restrictor_teleport:__init(obj, char_ini) super(obj)
+function restrictor_teleport:__init( obj, char_ini ) super( obj )
 end
 
-function restrictor_teleport:net_spawn(data)
-	local char_ini = system_ini()
 
-	-- Если это телепорт то занесем его в специальный список телепортов
-	if self.teleport == true then
-		teleport_binders[self.object:id()] = self
-
-		-- Заполним таблицу параметров
-		self["parametrs"] = {}
-		if char_ini:line_exist(self.section, "radius") then
-			self.parametrs["x_radius"] = tonumber(char_ini:r_string(self.section, "radius"))
-			self.parametrs["y_radius"] = tonumber(char_ini:r_string(self.section, "radius"))
-		else
-			self.parametrs["x_radius"] = 2 -- Дефолтный радиус по xy
-			self.parametrs["y_radius"] = 2 -- Дефолтный радиус по xy
-		end
-		if char_ini:line_exist(self.section, "z_radius") then
-			self.parametrs["z_radius"] = tonumber(char_ini:r_string(self.section, "z_radius"))
-		else
-			self.parametrs["z_radius"] = self.parametrs["x_radius"] -- если радиус высоты не задан то задаем равным радиусу xy
-		end
-		--  параметры box
-		if char_ini:line_exist(self.section, "x_radius") then
-			self.parametrs["x_radius"] = tonumber(char_ini:r_string(self.section, "x_radius"))
-		end
-		if char_ini:line_exist(self.section, "y_radius") then
-			self.parametrs["y_radius"] = tonumber(char_ini:r_string(self.section, "y_radius"))
-		end
-		
-		-- Запомним позицию что-бы каждый раз не считать
-		local s_obj = alife():object(self.object:id())
-		self.parametrs["x"] = tonumber(s_obj.position.x);
-		self.parametrs["y"] = tonumber(s_obj.position.y);
-		self.parametrs["z"] = tonumber(s_obj.position.z);
-
-		-- Запомним координаты куда телепортимся
-		self.parametrs["poz_x"] = tonumber(char_ini:r_string(self.section, "poz_x"))
-		self.parametrs["poz_y"] = tonumber(char_ini:r_string(self.section, "poz_y"))
-		self.parametrs["poz_z"] = tonumber(char_ini:r_string(self.section, "poz_z"))
-
-		if char_ini:line_exist(self.section, "rotate") then
-			self.parametrs["rotate"] = tonumber(char_ini:r_string(self.section, "rotate"))
-		end
-		
-		-- Функции рестриктора
-		if char_ini:line_exist(self.section, "info") then
-			-- выдать поршень
-			self.parametrs["info"] = char_ini:r_string(self.section, "info")
-		end
-		if char_ini:line_exist(self.section, "func") then
-			-- выполнить функцию
-			self.parametrs["func"] = char_ini:r_string(self.section, "func")
-		end
-		if char_ini:line_exist(self.section, "fli_code") then
-			-- спавн на островах
-			self.parametrs["fli_code"] = tonumber(char_ini:r_string(self.section, "fli_code"))
-		end
-	end
-	return true
+function restrictor_teleport:net_spawn( data )
+  local char_ini = system_ini()
+  -- Если это телепорт то занесем его в специальный список телепортов
+  if self.teleport == true then
+    teleport_binders[self.object:id()] = self
+    -- Заполним таблицу параметров
+    self[ "parametrs" ] = {}
+    if char_ini:line_exist( self.section, "radius" ) then
+      self.parametrs[ "x_radius" ] = tonumber(
+        char_ini:r_string( self.section, "radius" )
+      )
+      self.parametrs[ "y_radius" ] = tonumber(
+        char_ini:r_string( self.section, "radius" )
+      )
+    else
+      self.parametrs[ "x_radius" ] = 2 -- Дефолтный радиус по xy
+      self.parametrs[ "y_radius" ] = 2 -- Дефолтный радиус по xy
+    end
+    if char_ini:line_exist( self.section, "z_radius" ) then
+      self.parametrs[ "z_radius" ] = tonumber(
+        char_ini:r_string( self.section, "z_radius" )
+      )
+    else
+      -- если радиус высоты не задан то задаем равным радиусу xy
+      self.parametrs[ "z_radius" ] = self.parametrs[ "x_radius" ]
+    end
+    --  параметры box
+    if char_ini:line_exist( self.section, "x_radius" ) then
+      self.parametrs[ "x_radius" ] = tonumber(
+        char_ini:r_string( self.section, "x_radius" )
+      )
+    end
+    if char_ini:line_exist( self.section, "y_radius" ) then
+      self.parametrs[ "y_radius" ] = tonumber(
+        char_ini:r_string( self.section, "y_radius" )
+      )
+    end
+    -- Запомним позицию что-бы каждый раз не считать
+    local s_obj = alife():object( self.object:id() )
+    self.parametrs[ "x" ] = tonumber( s_obj.position.x );
+    self.parametrs[ "y" ] = tonumber( s_obj.position.y );
+    self.parametrs[ "z" ] = tonumber( s_obj.position.z );
+    -- Запомним координаты куда телепортимся
+    self.parametrs[ "poz_x" ] = tonumber(
+      char_ini:r_string( self.section, "poz_x" )
+    )
+    self.parametrs[ "poz_y" ] = tonumber(
+      char_ini:r_string( self.section, "poz_y" )
+    )
+    self.parametrs[ "poz_z" ] = tonumber(
+      char_ini:r_string( self.section, "poz_z" )
+    )
+    if char_ini:line_exist( self.section, "rotate" ) then
+      self.parametrs[ "rotate" ] = tonumber(
+        char_ini:r_string( self.section, "rotate" )
+      )
+    end
+    -- Функции рестриктора
+    if char_ini:line_exist( self.section, "info" ) then
+      -- выдать поршень
+      self.parametrs[ "info" ] = char_ini:r_string( self.section, "info" )
+    end
+    if char_ini:line_exist( self.section, "func" ) then
+      -- выполнить функцию
+      self.parametrs[ "func" ] = char_ini:r_string( self.section, "func" )
+    end
+    if char_ini:line_exist( self.section, "fli_code" ) then
+      -- спавн на островах
+      self.parametrs[ "fli_code" ] = tonumber(
+        char_ini:r_string( self.section, "fli_code" )
+      )
+    end
+  end
+  return true
 end
+
 
 function restrictor_teleport:net_destroy()
-	-- Удаляем наш телепорт
-	teleport_binders[self.object:id()] = nil
-	self.parametrs = nil
-	object_binder.net_destroy(self)
-end
-
-function restrictor_teleport:reload(section)
-	local char_ini = system_ini()
-
-	self.section = section
-	-- Если это телепорт то 
-	if char_ini ~= nil and char_ini:line_exist(self.section, "teleport") then
-		self["teleport"] = true
-	end
+  -- Удаляем наш телепорт
+  teleport_binders[ self.object:id() ] = nil
+  self.parametrs = nil
+  object_binder.net_destroy( self )
 end
 
 
+function restrictor_teleport:reload( section )
+  local char_ini = system_ini()
+  self.section = section
+  -- Если это телепорт то
+  if char_ini and char_ini:line_exist( self.section, "teleport" ) then
+    self[ "teleport" ] = true
+  end
+end
