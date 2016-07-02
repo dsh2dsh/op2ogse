@@ -95,6 +95,7 @@ function signals_mgr:__init( name, modules_list, scan_for_autoattaching_modules 
   this.mgr      = self -- а так ссылку прописываем ещё до завершения конструктора
   self.mgr_name = name
   self.signals  = {}
+  self.slots_in_process = {}
   if modules_list then -- если задали список модулей, то начинаем их подключение
     local registered_modules = {}
     if scan_for_autoattaching_modules then
@@ -275,13 +276,13 @@ function signals_mgr:call( signal_name, ... )
         if ( slot.timeout or 0 ) > time_global() then break end
         slot.timeout = nil
         local result
-        self.slot_in_process = slot
+        table.insert( self.slots_in_process, slot )
         if slot.self then
           result = slot.fun( slot.self, ... )
         else
           result = slot.fun( ... )
         end
-        self.slot_in_process = nil
+        table.remove( self.slots_in_process )
         if slot.timeout then
           reschedule_normal = true
         end
@@ -334,13 +335,13 @@ function signals_mgr:try_call_queued( slots, ... )
     if not slot.unsubscribed then -- очень маловероятно, но на всякий случай
       if ( not slot.timeout ) or slot.timeout <= time_global() then
         slot.timeout = nil
-        self.slot_in_process = slot
+        table.insert( self.slots_in_process, slot )
         if slot.self then
           slot.fun( slot.self, ... )
         else
           slot.fun( ... )
         end
-        self.slot_in_process = nil
+        table.remove( self.slots_in_process )
         if slot.timeout then
           slots.reschedule_queue = true
         end
@@ -378,5 +379,8 @@ end
 
 
 function signals_mgr:reschedule( timeout )
-  self.slot_in_process.timeout = time_global() + timeout
+  local n = table.getn( self.slots_in_process )
+  ASSERT( n > 0, "empty slots_in_process table" )
+  local slot   = self.slots_in_process[ n ]
+  slot.timeout = time_global() + timeout
 end
