@@ -20,9 +20,6 @@
 -- x_radius, y_radius, z_radius. z_radius = высота.
 
 
-local teleport_binders = {}     -- Список телепортов
-
-
 function abs_comp( a, b )
   -- Служебная функция вычисления разности
   if( a < b) then
@@ -45,77 +42,6 @@ function teleportate( x, y, z )
 end
 
 
-function actor_update( delta )
-  -- Получим позицию актера (что-бы каждый раз не запрашивать)
-  local acter_poz = db.actor:position()
-  -- Проверяем наши телепорты
-  for i, v in pairs( teleport_binders ) do
-    local s = v.parametrs
-    local obj = level.object_by_id( i )
-    if obj then
-      -- Наш телепорт в онлайне проверяем дальше
-      if s.teleporte ~= nil and s.teleporte ~= false then
-        -- Телепорт запущен
-        if s.fli_code and not s.fli_droped and time_global() >= s.fli_time then
-          -- спавним код на островах
-          fly_island.drop_code()
-          s.fli_droped = true
-        end
-        if not s.fli_code or time_global() >= s.time then
-          -- время отведенное на показ спецэфектов прошло производим
-          -- телепортацию
-          teleportate( s.poz_x, s.poz_y, s.poz_z )
-          if s.rotate then
-            db.actor:set_actor_direction(s.rotate)
-          end
-          -- выполняем функции рестриктора
-          if s.info then
-            -- выдаем поршень
-            db.actor:give_info_portion( s.info )
-          end
-          if s.func then
-            -- выполняем функцию
-            loadstring( s.func )()
-          end
-          s.teleporte = false
-          db.actor:give_info_portion( "teleport_finished" )
-        end
-        return
-      end
-
-      -- Проверим не забрел ли актор в наш телепорт
-      if
-        abs_comp( s.x, acter_poz.x ) < v.parametrs.x_radius
-        and abs_comp( s.z, acter_poz.z ) < v.parametrs.y_radius
-        and abs_comp( s.y, acter_poz.y ) < v.parametrs.z_radius
-      then
-        -- Актер в зоне действия телепорта, запустим телепорт
-        db.actor:give_info_portion( "teleport_started" )
-        s[ "teleporte" ] = true
-        s[ "time"      ] = time_global() + 1500
-        if s.fli_code then
-          -- спавним код у ГГ в рюкзаке
-          fly_island.create_code( s.fli_code )
-          s[ "fli_time"   ] = time_global() + 1000
-          s[ "fli_droped" ] = false
-        end
-        -- Запускаем спецэфекты телепортации
-        level.add_pp_effector ( "teleport.ppe", 2006, false )
-        -- Звуковое сопровождение
-        local snd_obj = xr_sound.get_safe_sound_object(
-          [[anomaly\teleport_work_1]]
-        )
-        snd_obj:play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 1.0 )
-        if s.fli_code then
-          -- закидываем актора на остров для спавна кода
-          db.actor:set_actor_position( fly_island.get_actor_pos( s.fli_code ) )
-        end
-      end
-    end
-  end
-end
-
-
 function bind( obj )
   obj:bind_object( restrictor_teleport( obj ) )
 end
@@ -123,14 +49,13 @@ end
 
 class "restrictor_teleport" ( object_binder )
 function restrictor_teleport:__init( obj, char_ini ) super( obj )
+  self.sm = ogse_signals.get_mgr()
 end
 
 
 function restrictor_teleport:net_spawn( data )
   local char_ini = system_ini()
-  -- Если это телепорт то занесем его в специальный список телепортов
   if self.teleport == true then
-    teleport_binders[self.object:id()] = self
     -- Заполним таблицу параметров
     self[ "parametrs" ] = {}
     if char_ini:line_exist( self.section, "radius" ) then
@@ -198,6 +123,12 @@ function restrictor_teleport:net_spawn( data )
         char_ini:r_string( self.section, "fli_code" )
       )
     end
+    self.subscribed = {
+      [ "signal" ] = "on_update",
+      [ "fun"    ] = self.actor_update,
+      [ "self"   ] = self,
+    }
+    self.sm:subscribe( self.subscribed )
   end
   return true
 end
@@ -205,7 +136,10 @@ end
 
 function restrictor_teleport:net_destroy()
   -- Удаляем наш телепорт
-  teleport_binders[ self.object:id() ] = nil
+  if self.subscribed then
+    self.sm:unsubscribe( self.subscribed )
+    self.subscribed = nil
+  end
   self.parametrs = nil
   object_binder.net_destroy( self )
 end
@@ -217,5 +151,83 @@ function restrictor_teleport:reload( section )
   -- Если это телепорт то
   if char_ini and char_ini:line_exist( self.section, "teleport" ) then
     self[ "teleport" ] = true
+  end
+end
+
+
+function restrictor_teleport:actor_update( delta )
+  self.sm:reschedule( 200 )
+  local s = self.parametrs
+  if s.teleporte ~= nil and s.teleporte ~= false then
+    -- Телепорт запущен
+    if s.fli_code and not s.fli_droped and time_global() >= s.fli_time then
+      -- спавним код на островах
+      fly_island.drop_code()
+      s.fli_droped = true
+      self.sm:reschedule( 500 )
+    end
+    if not s.fli_code or time_global() >= s.time then
+      -- время отведенное на показ спецэфектов прошло производим
+      -- телепортацию
+      teleportate( s.poz_x, s.poz_y, s.poz_z )
+      if s.rotate then
+        db.actor:set_actor_direction( s.rotate )
+      end
+      -- выполняем функции рестриктора
+      if s.info then
+        -- выдаем поршень
+        db.actor:give_info_portion( s.info )
+      end
+      if s.func then
+        -- выполняем функцию
+        loadstring( s.func )()
+      end
+      s.teleporte = false
+      db.actor:give_info_portion( "teleport_finished" )
+      local dist = self.object:position():distance_to( db.actor:position() )
+      self.sm:reschedule(
+        ( dist < 25 and 200 ) or ( dist < 100 and 1000 )
+        or math.random( 5000, 6000 )
+      )
+    end
+    return
+  end
+
+  -- Проверим не забрел ли актор в наш телепорт
+  local acter_poz = db.actor:position()
+  if
+    abs_comp( s.x, acter_poz.x ) < s.x_radius
+    and abs_comp( s.z, acter_poz.z ) < s.y_radius
+    and abs_comp( s.y, acter_poz.y ) < s.z_radius
+  then
+    -- Актер в зоне действия телепорта, запустим телепорт
+    db.actor:give_info_portion( "teleport_started" )
+    s[ "teleporte" ] = true
+    s[ "time"      ] = time_global() + 1500
+    self.sm:reschedule( 1500 )
+    if s.fli_code then
+      -- спавним код у ГГ в рюкзаке
+      fly_island.create_code( s.fli_code )
+      s[ "fli_time"   ] = time_global() + 1000
+      s[ "fli_droped" ] = false
+      self.sm:reschedule( 1000 )
+    end
+    -- Запускаем спецэфекты телепортации
+    level.add_pp_effector( "teleport.ppe", 2006, false )
+    -- Звуковое сопровождение
+    local snd_obj = xr_sound.get_safe_sound_object(
+      [[anomaly\teleport_work_1]]
+    )
+    snd_obj:play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 1.0 )
+    if s.fli_code then
+      -- закидываем актора на остров для спавна кода
+      db.actor:set_actor_position( fly_island.get_actor_pos( s.fli_code ) )
+    end
+  else
+    local dist = self.object:position():distance_to( db.actor:position() )
+    self.sm:reschedule(
+      ( dist < 25 and 200 ) or ( dist < 100 and 1000 )
+      or math.random( 5000, 6000 )
+    )
   end
 end

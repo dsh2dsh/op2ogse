@@ -8,15 +8,6 @@
 --   - актёр вызывает искусственно на своём обновлении
 
 
-local updatable_binders = {} -- биндеры, которые требуют обновлений (update)
-
-function actor_update( delta )
-  for i, v in pairs( updatable_binders ) do
-    v:actor_update(delta)
-  end
-end
-
-
 function bind( obj )
   if
     obj:name() == "gar_vagon_in_restrictor"
@@ -38,6 +29,7 @@ class "restrictor_binder" ( object_binder )
 function restrictor_binder:__init( obj, char_ini ) super( obj )
   self.initialized = false
   self.loaded      = false
+  self.sm          = ogse_signals.get_mgr()
 end
 
 
@@ -76,7 +68,17 @@ function restrictor_binder:net_spawn( data )
     self.object, "<customdata>"
   )
   if xr_logic.logic_not_empty( self.object, char_ini ) then
-    updatable_binders[ self.object:id() ] = self
+    self.subscribed = {
+      [ "signal" ] = "on_update",
+      [ "fun"    ] = self.actor_update,
+      [ "self"   ] = self,
+    }
+    self.sm:subscribe( self.subscribed )
+  else
+    log2(
+      "dsh: [%s]: %s: empty logic detected on spawn",
+      script_name(), self.object:name()
+    )
   end
   return true
 end
@@ -88,7 +90,10 @@ function restrictor_binder:net_destroy()
     xr_logic.issue_event( self.object, st[st.active_scheme], "net_destroy" )
   end
   db.del_zone( self.object )
-  updatable_binders[ self.object:id() ] = nil
+  if self.subscribed then
+    self.sm:unsubscribe( self.subscribed )
+    self.subscribed = nil
+  end
   db.storage[ self.object:id() ] = nil
   object_binder.net_destroy( self )
 end
@@ -102,32 +107,64 @@ function restrictor_binder:actor_update( delta )
       self.object, self.st, self.loaded, db.actor, modules.stype_restrictor
     )
   end
-  if self.st.active_section ~= nil then
+  if not self:is_nil_active_section() then
     xr_logic.issue_event(
       self.object, self.st[self.st.active_scheme], "update", delta
     )
-  elseif
-    self.object:section() == "space_restrictor"
-    and self.object:name() == self.object:section() .. self.object:id()
-  then
-    -- ОП-2: Рестрикторы, у которых логика вышла в nil, не удаляются
-    -- еще от ПЫСов и болтаются в памяти всю игру. И этот апдейт для
-    -- них постоянно вызывается.  Но теперь, согласно правке
-    -- заполнения updatable_binders выше, в этой таблице есть только
-    -- рестрикторы с логикой.  И их логика вышла в nil, поэтому их
-    -- смело можно было бы удалить. Но некоторые из них используются
-    -- дополнительно как рестрикторы зон для неписей.  Поэтому удаляем
-    -- только обычные рестрикторы, заспавненные скриптом. У
-    -- скриптового рестриктора name = секция+ид.  А алспауновские и с
-    -- уникальными секциями не удаляем ...
-    local sobj = alife():object( self.object:id() )
-    if sobj then
-      alife():release( sobj )
-    end
-  else
-    -- ... а просто снимаем с апдейта
-    updatable_binders[ self.object:id() ] = nil
+    local dist = self.object:position():distance_to( db.actor:position() )
+    self.sm:reschedule(
+      ( dist < 25 and 200 ) or ( dist < 100 and 1000 )
+      or math.random( 5000, 6000 )
+    )
   end
+  -- пустая логика могла быть пустой изначально, или могла переключиться
+  -- активная секция после вызова xr_logic.issue_event(). Поэтому проверим
+  -- лишний раз здесь.
+  if self:is_nil_active_section() then
+    log2(
+      "dsh: [%s]: %s: nil active section detected: %s",
+      script_name(), self.object:name(), tostring( self.st.active_section )
+    )
+    if 
+      self.object:section() == "space_restrictor"
+      and self.object:name() == self.object:section() .. self.object:id()
+    then
+      -- ОП-2: Рестрикторы, у которых логика вышла в nil, не удаляются
+      -- еще от ПЫСов и болтаются в памяти всю игру. И этот апдейт для
+      -- них постоянно вызывается.  Но теперь, согласно правке
+      -- заполнения updatable_binders выше, в этой таблице есть только
+      -- рестрикторы с логикой.  И их логика вышла в nil, поэтому их
+      -- смело можно было бы удалить. Но некоторые из них используются
+      -- дополнительно как рестрикторы зон для неписей.  Поэтому удаляем
+      -- только обычные рестрикторы, заспавненные скриптом. У
+      -- скриптового рестриктора name = секция+ид.  А алспауновские и с
+      -- уникальными секциями не удаляем ...
+      log2(
+        "dsh: [%s]: %s: ... releasing",
+        script_name(), self.object:name()
+      )
+      local sobj = alife():object( self.object:id() )
+      if sobj then
+        alife():release( sobj )
+      end
+    else
+      -- ... а просто снимаем с апдейта
+      ASSERT( self.subscribed, "not subscribed: %s", self.object:name() )
+      log2(
+        "dsh: [%s]: %s: ... unsubscribing",
+        script_name(), self.object:name()
+      )
+      self.sm:unsubscribe( self.subscribed )
+      self.subscribed = nil
+    end
+  end
+end
+
+
+function restrictor_binder:is_nil_active_section()
+  return
+    self.st.active_section == nil
+    or self.st.active_section == "sr_idle@nil"
 end
 
 
