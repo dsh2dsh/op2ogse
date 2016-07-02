@@ -789,53 +789,40 @@ function return_all()
 	end
 end
 
-function kill_wm(obj,death)
-	if not obj then return end
-	local id = obj:id()
-	local st = rx_ai.get_storage(id)
-	if st and st.wm ~= nil then
-		clear_wms(id)
-	end
+
+function kill_wm( obj, death )
+  if not obj then return end
+  local id = obj:id()
+  local st = rx_ai.get_storage( id )
+  if st and st.wm ~= nil then
+    clear_wms( id )
+  end
 end
 
-function global_update(tg)
---	ogse_debug.process_actor("upd_a", 45511)
-	if not wm_modes.inited then
-		init()
-	end
-	if not wm_modes.enabled then
-		return
-	end
-	if tg > update_time then
-		for k,v in pairs(wms) do
-			if db.storage[k] then
-			else
---				ogse_debug.process_actor("upd_a", 45531)
-				clear_wms(k)
-			end
-		end
---		ogse_debug.process_actor("upd_a", 45532)
-		update_time = tg+wm_modes.update_prd
-	end
+
+function global_update()
+  ogse_signals.get_mgr():reschedule( wm_modes.update_prd )
+  if not wm_modes.inited then
+    init()
+  end
+  for k, v in pairs( wms ) do
+    if not db.storage[ k ] then
+      clear_wms(k)
+    end
+  end
 end
 
-local updates_time = {
-}
 
-function npc_update(npc,st)
-	if wm_modes.enabled and st and st.wm then
-		local tg = time_global()
-		if not updates_time[npc:id()] or updates_time[npc:id()] < tg then
-			local be = npc:best_enemy()
-			local timeout = 3000
-			if be then
-				timeout = 1000
-			end
-			updates_time[npc:id()] = time_global() + timeout
-			st.wm:update()
-		end
-	end
+function npc_update( npc, st )
+  ogse_signals.get_mgr():reschedule( 3000 )
+  if st and st.wm then
+    if npc:best_enemy() then
+      ogse_signals.get_mgr():reschedule( 1000 )
+    end
+    st.wm:update()
+  end
 end
+
 
 function read_wm_modes(comm,rank,sect,npc)
 	if not wm_modes.inited then
@@ -1185,4 +1172,46 @@ local friends = {}
 		end
 	end
 	return shooting_are_safe
+end
+
+
+function attach( sm )
+  sm:subscribe({ signal = "on_npc_death", fun = this.on_death      })
+  sm:subscribe({ signal = "on_npc_net_destroy", fun = this.kill_wm })
+  sm:subscribe({ signal = "on_npc_spawn", fun = this.on_npc_spawn  })
+  if wm_modes.enabled then
+    sm:subscribe({
+      signal = "on_update", fun = this.global_update, queued = true
+    })
+  end
+end
+
+
+function on_npc_spawn( obj, binder )
+  if not obj:alive()          then return end
+  if not wm_modes.enabled     then return end
+  if rx_utils.IsTrader( obj ) then return end
+  local s = {
+    [ "signal" ] = "on_npc_update." .. obj:id(),
+    [ "fun"    ] = this.on_npc_update,
+    [ "queued" ] = true,
+  }
+  binder[ script_name() .. ".subscribed" ] = s
+  ogse_signals.get_mgr():subscribe( s )
+end
+
+
+function on_npc_update( obj )
+  local st = rx_ai.get_storage( obj:id() )
+  npc_update( obj, st )
+end
+
+
+function on_death( obj )
+  local binder     = obj:binded_object()
+  local subscribed = binder[ script_name() .. ".subscribed" ]
+  if subscribed then
+    ogse_signals.get_mgr():unsubscribe( subscribed )
+  end
+  kill_wm( obj, true )
 end
