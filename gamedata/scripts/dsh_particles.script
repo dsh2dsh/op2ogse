@@ -4,11 +4,9 @@ function attach( sm )
   sm:subscribe({ signal = "on_monster_death",  fun = this.on_death })
   sm:subscribe({ signal = "on_monster_init",   fun = this.on_init })
   sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_net_destroy })
-  sm:subscribe({ signal = "on_monster_spawn",  fun = this.on_monster_spawn })
   sm:subscribe({ signal = "on_npc_death",      fun = this.on_death })
   sm:subscribe({ signal = "on_npc_init",       fun = this.on_init })
   sm:subscribe({ signal = "on_npc_net_destroy", fun = this.on_net_destroy })
-  sm:subscribe({ signal = "on_npc_spawn",      fun = this.on_npc_spawn })
 end
 
 
@@ -17,30 +15,14 @@ function on_init( obj, binder )
 end
 
 
-function on_monster_spawn( obj, binder )
-  ogse_signals.get_mgr():subscribe({
-      [ "signal" ] = "on_monster_update." .. obj:id(),
-      [ "fun"    ] = this.on_update,
-      [ "queued" ] = true,
-  })
-end
-
-
-function on_npc_spawn( obj, binder )
-  ogse_signals.get_mgr():subscribe({
-      [ "signal" ] = "on_npc_update." .. obj:id(),
-      [ "fun"    ] = this.on_update,
-      [ "queued" ] = true,
-  })
-end
-
-
 function on_update( obj, delta )
-  local binder = obj:binded_object()
+  local binder      = obj:binded_object()
+  local unsubscribe = true
   for k, v in pairs( binder.particles ) do
     if v:is_finished() then
       binder.particles[ k ] = nil
     else
+      unsubscribe = false
       v:update( delta )
       if v.give_dmg and v.target then
         if
@@ -63,6 +45,20 @@ function on_update( obj, delta )
         end
       end
     end
+  end
+  if unsubscribe then
+    local s = binder[ script_name() .. ".subscribed" ]
+    ASSERT( s, "not subscribed: %s", obj:name() )
+    ogse_signals.get_mgr():unsubscribe( s )
+    binder[ script_name() .. ".subscribed" ] = nil
+  else
+    local dist = obj:position():distance_to( db.actor:position() )
+    ogse_signals.get_mgr():reschedule(
+      ( dist < 25 and 100 )
+      or ( dist <  50 and 200 )
+      or ( dist < 100 and 500 )
+      or math.random( 1000, 2000 )
+    )
   end
 end
 
@@ -88,8 +84,19 @@ end
 
 function play_particle( obj, params )
   local binder = obj:binded_object()
-  local key = params.bone .. params.particle
+  local key    = params.bone .. params.particle
   if not binder.particles[ key ] then
     binder.particles[ key ] = amk_particle.amk_particle( params )
+  end
+  if not binder[ script_name() .. ".subscribed" ] then
+    local s_name = obj:is_stalker()
+      and ( "on_npc_update."     .. obj:id() )
+      or  ( "on_monster_update." .. obj:id() )
+    local s = {
+      [ "signal" ] = s_name,
+      [ "fun"    ] = this.on_update,
+    }
+    binder[ script_name() .. ".subscribed" ] = s
+    ogse_signals.get_mgr():subscribe( s )
   end
 end
