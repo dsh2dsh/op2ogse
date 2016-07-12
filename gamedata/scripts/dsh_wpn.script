@@ -11,35 +11,48 @@ function on_update( delta )
   if not wpn then return end
   if not wpn:is_weapon() then return end
   if ( not cur_wpn.id ) or cur_wpn.id ~= wpn:id() then
-    cur_wpn = {
-      [ "ammo_n"        ] = wpn:get_ammo_in_magazine(),
-      [ "has_gl"        ] = has_wpn_gl( wpn ),
-      [ "has_silencer"  ] = ( ogse_wpn_utils.get_silencer_status( wpn ) == 2 ),
-      [ "highfire_mode" ] = get_float( wpn:section(), "highfire_mode" ),
-      [ "id"            ] = wpn:id(),
-      [ "weapon_state"  ] = wpn:get_hud_item_state(),
-      [ "wpn"           ] = wpn,
-    }
+    local t = {}
+    t.ammo_n           = wpn:get_ammo_in_magazine()
+    t.dispersion_start = get_u32( wpn:section(), "dispersion_start" )
+    t.has_gl           = has_wpn_gl( wpn )
+    t.has_silencer     = ( ogse_wpn_utils.get_silencer_status( wpn ) == 2 )
+    t.highfire_mode    = get_u32( wpn:section(), "highfire_mode" )
+    t.id               = wpn:id()
+    t.lowfire_mode     = get_u32( wpn:section(), "lowfire_mode"  )
+    t.rpm              = get_u32( wpn:section(), "rpm"      )
+    t.rpm_high         = get_u32( wpn:section(), "rpm_high" )
+    t.rpm_low          = get_u32( wpn:section(), "rpm_low"  )
+    t.shot_n           = 0
+    t.weapon_state     = wpn:get_hud_item_state()
+    t.wpn              = wpn
+    cur_wpn = t
     if cur_wpn.has_gl then
       cur_wpn.gl_mode = ogse_wpn_utils.get_gl_mode( wpn )
       cur_wpn.gl_name = get_string( wpn:section(), "grenade_launcher_name" )
     end
   end
   check_silencer( wpn )
-  configure_rpm( cur_wpn )
+  configure_high_rpm( cur_wpn )
   local state = wpn:get_hud_item_state()
   if state == cur_wpn.weapon_state then
     if state == weapon_states.fire then
       local ammo_n = wpn:get_ammo_in_magazine()
       if ammo_n ~= cur_wpn.ammo_n then
         cur_wpn.ammo_n = ammo_n
+        cur_wpn.shot_n = cur_wpn.shot_n + 1
+        configure_low_rpm( cur_wpn )
         ogse_signals.get_mgr():call( "on_actor_fire", cur_wpn )
       end
     end
   else
-    cur_wpn.weapon_state = state
+    cur_wpn.shot_n = 0
+    if cur_wpn.weapon_state == weapon_states.fire then
+      configure_low_rpm( cur_wpn )
+    end
     if state == weapon_states.fire then
       cur_wpn.ammo_n = wpn:get_ammo_in_magazine()
+      cur_wpn.shot_n = cur_wpn.shot_n + 1
+      configure_low_rpm( cur_wpn )
       ogse_signals.get_mgr():call( "on_actor_fire", cur_wpn )
     elseif state == weapon_states.switch then
       if cur_wpn.has_gl then
@@ -58,6 +71,7 @@ function on_update( delta )
         dsh.say_blin()
       end
     end
+    cur_wpn.weapon_state = state
   end
 end
 
@@ -94,20 +108,37 @@ function check_silencer( wpn )
 end
 
 
-function configure_rpm( cur_wpn )
+function configure_high_rpm( cur_wpn )
   if cur_wpn.highfire_mode then
     local wpn = cur_wpn.wpn
-    local qs = ogse_wpn_utils.get_queue_size( wpn )
+    local qs  = ogse_wpn_utils.get_queue_size( wpn )
     if ( not cur_wpn.queue_size ) or qs ~= cur_wpn.queue_size then
       local rpm
       if qs == cur_wpn.highfire_mode then
-        rpm = 60 / get_float( wpn:section(), "rpm_high" )
+        rpm = 60 / cur_wpn.rpm_high
       else
-        rpm = 60 / get_float( wpn:section(), "rpm" )
+        rpm = 60 / cur_wpn.rpm
       end
       ogse_wpn_utils.set_time_to_fire( wpn, rpm )
       cur_wpn.queue_size = qs
     end
+  end
+end
+
+
+function configure_low_rpm( cur_wpn )
+  if cur_wpn.lowfire_mode and cur_wpn.lowfire_mode > 1 then
+    local wpn = cur_wpn.wpn
+    local rpm
+    -- уменьшать время выстрела нужно не после последнего выстрела, а после
+    -- предпоследнего, т.к. движок уже вычислил время ожидания и новое время
+    -- выстрела вступит в силу только через выстрел.
+    if cur_wpn.shot_n < cur_wpn.lowfire_mode - 1 then
+      rpm = 60 / cur_wpn.rpm
+    else
+      rpm = 60 / cur_wpn.rpm_low
+    end
+    ogse_wpn_utils.set_time_to_fire( wpn, rpm )
   end
 end
 
