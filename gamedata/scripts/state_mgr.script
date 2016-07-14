@@ -1,8 +1,24 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
 ----------------------------------------------------------------------------------------------------------------------
 --	Менеджер изменения состояния тела
 --	автор: Диденко Руслан (Stohe)
 --	TODO: 
 ----------------------------------------------------------------------------------------------------------------------
+
+function attach( sm )
+  sm:subscribe({ signal = "on_npc_death", fun = this.on_npc_death })
+end
+
+
+function on_npc_death( obj )
+  local st = db.storage[ obj:id() ]
+  if st.state_mgr then
+    st.state_mgr:unsubscribe()
+    st.state_mgr = nil
+  end
+end
+
+
 function printf()
 end
 
@@ -448,278 +464,262 @@ animation_reset_denied = {
 	wounded_zombie = true
 	}
 
+
 --' Сам менеджер
 class "state_manager"
-function state_manager:__init(npc)
-	state_mgr_goap.goap_graph(self, npc)
+function state_manager:__init (npc )
+  state_mgr_goap.goap_graph( self, npc )
 		
-	self.target_state = "idle"
-	self.current_direction = nil
-	self.target_position = nil
-	self.current_object = nil
-	self.combat = false
-	self.alife = true
-	self.emerg = {}
-	self.synsound = nil
-	self.yaw_delta = nil
-	self.subanim = 0
-	self.need_reweapon = false
+  self.target_state      = "idle"
+  self.current_direction = nil
+  self.target_position   = nil
+  self.current_object    = nil
+  self.combat            = false
+  self.alife             = true
+  self.emerg             = {}
+  self.synsound          = nil
+  self.yaw_delta         = nil
+  self.subanim           = 0
+  self.need_reweapon     = false
+
+  self.sm = ogse_signals.get_mgr()
+  if npc:alive() then
+    local s = {
+      [ "signal" ] = "on_npc_update." .. self.npc:id(),
+      [ "fun"    ] = self.update,
+      [ "self"   ] = self,
+    }
+    self.sm:subscribe( s )
+    self.subscribed = s
+  end
 end
-function state_manager:set_state(state_name, callback, timeout, target, emerg, synsound, extrakeys)
-	printf("Set State called: for %s State: %s", self.npc:name(), state_name)
-	
---	ogse_debug.process_npc(self.npc, "smgr_s", 1)
-	
-	if state_lib.states[state_name] == nil then
-		log1("DEBUG_STATEMGR: Script "..tostring(caller).." called illegal state ["..tostring(state_name).."] for NPC "..tostring(self.npc:name()))
-		log1( debug.traceback() )
-		abort("ERROR: ILLEGAL SET STATE CALLED!!! %s fo %s", tostring(state_name), self.npc:name())
-		-- state_name="idle"
-	end
-	
---	ogse_debug.process_npc(self.npc, "smgr_s", 2)
-	
-	if target then
-		if target.look_position then
-			printf("look position: %s %s %s", target.look_position.x,
-												target.look_position.y,
-												target.look_position.z)
-		else
-			printf("look position: NIL")
-		end
-		if target.look_object then
-			printf("look object: %s", target.look_object:name())
-		else
-			printf("look object: NIL")
-		end
-	else
-		printf("look target NIL")
-	end
-	
---	ogse_debug.process_npc(self.npc, "smgr_s", 3)
 
-	--сперва устанавливаем цели
-	if target ~= nil then
-		self.look_position = target.look_position
-		if target.look_object ~= nil then 
-			self.look_object = target.look_object:id()
-		else
-			self.look_object = nil
-		end
-	else
-		self.look_position = nil
-		self.look_object = nil
-	end
---	ogse_debug.process_npc(self.npc, "smgr_s", 4)	
-	
-	-- меняем угол точности.
-	if extrakeys and extrakeys.yaw_delta ~= nil then
-		self.yaw_delta = extrakeys.yaw_delta
-	else
-		self.yaw_delta = 5
-	end
-	
---	ogse_debug.process_npc(self.npc, "smgr_s", 5)	
-	-- меняем глубину рекурсивности анимации.
-	if extrakeys and extrakeys.subanim ~= nil then
-		self.subanim = extrakeys.subanim
-	else
-		self.subanim = 0
-	end
-	
---	ogse_debug.process_npc(self.npc, "smgr_s", 6)	
 
-	local switched = false
-	local last_state = self.target_state
-	if self.target_state ~= state_name then
-
-		--' Если мы переключаемся из стреляющего состояния в нестреляющее - необходимо сразу же прекратить стрельбу
-		if (state_lib.states[self.target_state].weapon == "fire" or
-		   state_lib.states[self.target_state].weapon == "sniper_fire") and 
-		   (state_lib.states[state_name].weapon ~= "fire" and
-		   state_lib.states[state_name].weapon ~= "sniper_fire")		
-		then		
-			self.npc:set_item(state_mgr_weapon.get_idle_state(state_name), state_mgr_weapon.get_weapon(self.npc, state_name))
-			--printf("[%s] stop shooting", self.npc:name())
-		end
-
-		-- --' Если мы переключаемся из идущего положения в стоящее - надо задизаблить перемещение
-		-- if state_lib.states[self.target_state].movement ~= move.stand and
-			-- state_lib.states[self.target_state].animation ~= nil and
-			-- state_lib.states[state_name].movement == move.stand
-		-- then
-			-- self.npc:movement_enabled(false)
-		-- end
-
-		self.target_state = state_name	
-		self.current_object = nil
-
-		switched = true
-	end
-	
---	ogse_debug.process_npc(self.npc, "smgr_s", 7)	
-
-	if state_lib.states[state_name].reset == true then
-		self.reset_state = true
-	else
-		self.reset_state = false
-	end
-	
---	ogse_debug.process_npc(self.npc, "smgr_s", 8)
-	
-	if switched and emerg ~= nil then
-		if animation_reset_denied[last_state] ~= true  then
-			self.emerg.animation = emerg.animation
-			self.emerg.animation_nout = emerg.animation_nout
-		end
-	end
-
---	ogse_debug.process_npc(self.npc, "smgr_s", 9)	
-	self.synsound = synsound
-	
-	self.callback = callback
-	if timeout ~= nil and
-	   timeout >= 0 
-	then
-		self.callback.timeout = timeout
-		self.callback.begin = nil
-	else
-		if self.callback then			
-			self.callback.func = nil
-			self.callback.timeout = nil
-		end
-	end
-	
---	ogse_debug.process_npc(self.npc, "smgr_s", 10)
-	
-	-- if switched == true then
-		-- if self.npc:best_enemy() then
-			-- if last_state == nil or last_state == "idle" then
-				-- self:update()
-			-- end
-		-- elseif self.npc:best_danger() then
-			-- if last_state == nil or last_state == "idle" then
-				-- self:update()
-			-- end			
-		-- end
-	-- end
-	
---	if switched == true then
---		self:update()
---	end
-
---	ogse_debug.process_npc(self.npc, "smgr_s", 0)
+function state_manager:unsubscribe()
+  if self.subscribed then
+    self.sm:unsubscribe( self.subscribed )
+    self.subscribed = nil
+  end
 end
+
+
+function state_manager:set_state( state_name, callback, timeout, target, emerg, synsound, extrakeys )
+  if state_lib.states[ state_name ] == nil then
+    log1( "DEBUG_STATEMGR: Script "..tostring(caller).." called illegal state ["..tostring(state_name).."] for NPC "..tostring(self.npc:name()) )
+    log1( debug.traceback() )
+    abort( "ERROR: ILLEGAL SET STATE CALLED!!! %s fo %s", tostring(state_name), self.npc:name() )
+  end
+	
+  --сперва устанавливаем цели
+  if target ~= nil then
+    self.look_position = target.look_position
+    if target.look_object ~= nil then 
+      self.look_object = target.look_object:id()
+    else
+      self.look_object = nil
+    end
+  else
+    self.look_position = nil
+    self.look_object   = nil
+  end
+	
+  -- меняем угол точности.
+  if extrakeys and extrakeys.yaw_delta ~= nil then
+    self.yaw_delta = extrakeys.yaw_delta
+  else
+    self.yaw_delta = 5
+  end
+	
+  -- меняем глубину рекурсивности анимации.
+  if extrakeys and extrakeys.subanim ~= nil then
+    self.subanim = extrakeys.subanim
+  else
+    self.subanim = 0
+  end
+	
+  local switched   = false
+  local last_state = self.target_state
+  if self.target_state ~= state_name then
+    -- Если мы переключаемся из стреляющего состояния в нестреляющее -
+    -- необходимо сразу же прекратить стрельбу
+    if
+      (
+        state_lib.states[ self.target_state ].weapon == "fire"
+        or state_lib.states[ self.target_state ].weapon == "sniper_fire"
+      )
+      and (
+        state_lib.states[ state_name ].weapon ~= "fire"
+        and state_lib.states[ state_name ].weapon ~= "sniper_fire"
+      )
+    then		
+      self.npc:set_item(
+        state_mgr_weapon.get_idle_state( state_name ),
+        state_mgr_weapon.get_weapon( self.npc, state_name )
+      )
+    end
+    self.target_state   = state_name	
+    self.current_object = nil
+    switched            = true
+  end
+
+  if state_lib.states[ state_name ].reset == true then
+    self.reset_state = true
+  else
+    self.reset_state = false
+  end
+	
+  if switched and emerg ~= nil then
+    if animation_reset_denied[ last_state ] ~= true  then
+      self.emerg.animation      = emerg.animation
+      self.emerg.animation_nout = emerg.animation_nout
+    end
+  end
+
+  self.synsound = synsound
+	
+  self.callback = callback
+  if timeout ~= nil and timeout >= 0 then
+    self.callback.timeout = timeout
+    self.callback.begin   = nil
+  else
+    if self.callback then			
+      self.callback.func = nil
+      self.callback.timeout = nil
+    end
+  end
+end
+
+
 function state_manager:get_state()
-	return self.target_state
+  return self.target_state
 end
+
+
 function state_manager:update()
-	--printf("Update called")
---	ogse_debug.process_npc(self.npc, "smgr_u", 1)
-	self.animstate:update()	
---	ogse_debug.process_npc(self.npc, "smgr_u", 2)
-	self.animation:update()	
---	ogse_debug.process_npc(self.npc, "smgr_u", 3)
-	local last_pl_id = nil	
-	self.planner:update()
---	ogse_debug.process_npc(self.npc, "smgr_u", 4)
-	if not self.planner:initialized() then 
---		ogse_debug.process_npc(self.npc, "smgr_u", 0)
-		return 
-	end
---	ogse_debug.process_npc(self.npc, "smgr_u", 5)
-	local pl_id = self.planner:current_action_id()
---	ogse_debug.process_npc(self.npc, "smgr_u", 6)
-	while pl_id ~= last_pl_id and
-	   pl_id ~= self.operators["end"] and
-	   pl_id ~= self.operators["locked"]
-	do
-		last_pl_id = pl_id
---		ogse_debug.process_npc(self.npc, "smgr_u", 7)
-		self.planner:update()
---		ogse_debug.process_npc(self.npc, "smgr_u", 8)
-		pl_id = self.planner:current_action_id()
-	end	
---	ogse_debug.process_npc(self.npc, "smgr_u", 0)
-	--self.planner:show("")
-end
-
-function set_state(npc, state_name, callback, timeout, target, emerg, synsound, extrakeys)
-	if db.storage[npc:id()].state_mgr then
-		db.storage[npc:id()].state_mgr:set_state(state_name, callback, timeout, target, emerg, synsound, extrakeys)
-	end
-end
-function get_state(npc)
-	if db.storage[npc:id()].state_mgr then
-		return db.storage[npc:id()].state_mgr:get_state()
-	end
-	return nil
-end
-
-function update_state(npc)
-	if db.storage[npc:id()].state_mgr then
-		db.storage[npc:id()].state_mgr:update()
-	end
+  self.animstate:update()	
+  self.animation:update()	
+  local last_pl_id = nil	
+  self.planner:update()
+  if not self.planner:initialized() then return end
+  local pl_id = self.planner:current_action_id()
+  while
+    pl_id ~= last_pl_id
+    and pl_id ~= self.operators[ "end"    ]
+    and pl_id ~= self.operators[ "locked" ]
+  do
+    last_pl_id = pl_id
+    self.planner:update()
+    pl_id = self.planner:current_action_id()
+  end	
 end
 
 
-function bind_manager(object)
-	local manager = object:motivation_action_manager()
+function set_state( npc, state_name, callback, timeout, target, emerg, synsound, extrakeys )
+  if db.storage[ npc:id() ].state_mgr then
+    db.storage[ npc:id() ].state_mgr:set_state(
+      state_name, callback, timeout, target, emerg, synsound, extrakeys
+    )
+  end
+end
 
 
-	local properties	= {}
-	properties["state_mgr_idle_combat"] 	= xr_evaluators_id.state_mgr + 1
-	properties["state_mgr_idle_alife"]	 	= xr_evaluators_id.state_mgr + 2
-	properties["state_mgr_idle_off"]	 	= xr_evaluators_id.state_mgr + 3
+function get_state( npc )
+  if db.storage[ npc:id() ].state_mgr then
+    return db.storage[ npc:id() ].state_mgr:get_state()
+  end
+  return nil
+end
 
 
-	local operators		= {}
-	operators["state_mgr_to_idle_combat"]	= xr_actions_id.state_mgr + 1
-	operators["state_mgr_to_idle_alife"]	= xr_actions_id.state_mgr + 2
-	operators["state_mgr_to_idle_off"]	= xr_actions_id.state_mgr + 3
+function bind_manager( object )
+  local manager = object:motivation_action_manager()
 
+  local properties = {}
+  properties[ "state_mgr_idle_combat" ] = xr_evaluators_id.state_mgr + 1
+  properties[ "state_mgr_idle_alife"  ] = xr_evaluators_id.state_mgr + 2
+  properties[ "state_mgr_idle_off"    ] = xr_evaluators_id.state_mgr + 3
 
-	local state_manager = state_mgr.state_manager(object)
+  local operators = {}
+  operators[ "state_mgr_to_idle_combat" ] = xr_actions_id.state_mgr + 1
+  operators[ "state_mgr_to_idle_alife"  ] = xr_actions_id.state_mgr + 2
+  operators[ "state_mgr_to_idle_off"    ] = xr_actions_id.state_mgr + 3
+
+  local state_manager = state_mgr.state_manager( object )
+  manager:add_evaluator(
+    properties[ "state_mgr_idle_combat" ],
+    evaluator_state_mgr_idle( "state_mgr_idle_combat", state_manager )
+  )
+  manager:add_evaluator(
+    properties[ "state_mgr_idle_alife"  ],
+    evaluator_state_mgr_idle_alife( "state_mgr_idle_alife", state_manager )
+  )
+  manager:add_evaluator(
+    properties[ "state_mgr_idle_off"    ],
+    evaluator_state_mgr_idle_off( "state_mgr_idle_off", state_manager )
+  )
+
+  local action = this.act_state_mgr_to_idle(
+    "state_mgr_to_idle_combat", state_manager
+  )
+  action:add_precondition(
+    world_property( properties[ "state_mgr_idle_combat" ], false )
+  )
+  action:add_effect(
+    world_property( properties[ "state_mgr_idle_combat" ], true  )
+  )
+  manager:add_action( operators[ "state_mgr_to_idle_combat" ], action )
 	
-	manager:add_evaluator(properties["state_mgr_idle_combat"], 	evaluator_state_mgr_idle("state_mgr_idle_combat", state_manager))
-	manager:add_evaluator(properties["state_mgr_idle_alife"], 	evaluator_state_mgr_idle_alife("state_mgr_idle_alife", state_manager))
-	manager:add_evaluator(properties["state_mgr_idle_off"], 	evaluator_state_mgr_idle_off("state_mgr_idle_off", state_manager))
+  -- Добавим ещё один тип отключения этого безобразия
+  action = this.act_state_mgr_to_off( "state_mgr_to_off", state_manager )
+  action:add_precondition(
+    world_property( properties[ "state_mgr_idle_off" ], false )
+  )
+  action:add_effect(
+    world_property( properties[ "state_mgr_idle_off" ], true  )
+  )
+  manager:add_action( operators[ "state_mgr_to_idle_off" ], action )
 
-	local action = this.act_state_mgr_to_idle("state_mgr_to_idle_combat", state_manager)
-	action:add_precondition		(world_property(properties["state_mgr_idle_combat"],	false))
-	action:add_effect 			(world_property(properties["state_mgr_idle_combat"],	true))
-	manager:add_action(operators["state_mgr_to_idle_combat"], action)
-	
-	-- Добавим ещё один тип отключения этого безобразия
-	action = this.act_state_mgr_to_off("state_mgr_to_off", state_manager)
-	action:add_precondition		(world_property(properties["state_mgr_idle_off"],	false))
-	action:add_effect 			(world_property(properties["state_mgr_idle_off"],	true))
-	manager:add_action(operators["state_mgr_to_idle_off"], action)
+  action = this.act_state_mgr_to_idle(
+    "state_mgr_to_idle_alife", state_manager
+  )
+  action:add_precondition(
+    world_property( stalker_ids.property_enemy, false )
+  )
+  action:add_precondition(
+    world_property( stalker_ids.property_danger, false )
+  )
+  action:add_precondition(
+    world_property( properties[ "state_mgr_idle_alife" ], false )
+  )
+  action:add_effect(
+    world_property( properties[ "state_mgr_idle_alife" ], true  )
+  )
+  manager:add_action( operators[ "state_mgr_to_idle_alife" ], action )
 
-	action = this.act_state_mgr_to_idle("state_mgr_to_idle_alife", state_manager)
-	action:add_precondition		(world_property(stalker_ids.property_enemy,	false))
-	action:add_precondition		(world_property(stalker_ids.property_danger,false))
-	action:add_precondition		(world_property(properties["state_mgr_idle_alife"],	false))
-	action:add_effect 			(world_property(properties["state_mgr_idle_alife"],	true))
-	manager:add_action(operators["state_mgr_to_idle_alife"], action)
+  action = manager:action( xr_actions_id.alife )
+  action:add_precondition(
+    world_property( properties[ "state_mgr_idle_alife" ], true )
+  )
 
-	action = manager:action(xr_actions_id.alife)
-	action:add_precondition(world_property(properties["state_mgr_idle_alife"],true))
+  action = manager:action( stalker_ids.action_combat_planner )
+  action:add_precondition(
+    world_property( properties[ "state_mgr_idle_combat" ], true )
+  )
 
-  	action = manager:action(stalker_ids.action_combat_planner)
-  	action:add_precondition(world_property(properties["state_mgr_idle_combat"],true))
-
-  	action = manager:action(stalker_ids.action_anomaly_planner)
-  	action:add_precondition(world_property(properties["state_mgr_idle_combat"],true))
+  action = manager:action( stalker_ids.action_anomaly_planner )
+  action:add_precondition(
+    world_property( properties[ "state_mgr_idle_combat" ], true )
+  )
   	
-  	action = manager:action(stalker_ids.action_danger_planner)
-  	action:add_precondition(world_property(properties["state_mgr_idle_combat"],true))
+  action = manager:action( stalker_ids.action_danger_planner )
+  action:add_precondition(
+    world_property( properties[ "state_mgr_idle_combat" ], true )
+  )
 
-	action = manager:action(stalker_ids.action_gather_items)
-	action:add_precondition(world_property(properties["state_mgr_idle_alife"],true))
+  action = manager:action( stalker_ids.action_gather_items )
+  action:add_precondition(
+    world_property( properties[ "state_mgr_idle_alife" ], true )
+  )
 	
-	return state_manager
+  return state_manager
 end
-
-
-
