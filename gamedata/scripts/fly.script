@@ -1,4 +1,6 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
 -- полет ГГ
+
 local vel = 30		-- скорость в м/с
 local delta = 30	-- интервал обновления в мс. не должен быть меньше 20 и произведение vel*delta должно быть не меньше 900, иначе картинка будет дергаться
 local time = time_global()
@@ -130,107 +132,165 @@ function actor_is_in_danger()
 	end
 end
 
+
 -- Возвращатель ГГ
-local single_click, double_click = nil, nil
 local click_timeout = 350
 local returner_pos, returner_temp_pos
+local single_click, double_click
+local subscribed
 
 function returner()
-	if single_click then
-		-- второе нажатие
-		double_click = time_global()+click_timeout
-	else
-		-- первое нажатие
-		single_click = time_global()+click_timeout
-		returner_temp_pos = db.actor:position()
-	end
+  if single_click then
+    -- второе нажатие
+    double_click = time_global() + click_timeout
+  else
+    -- первое нажатие
+    single_click      = time_global() + click_timeout
+    returner_temp_pos = db.actor:position()
+    if not subscribed then
+      local s = { signal = "on_update", fun = this.returner_update }
+      ogse_signals.get_mgr():subscribe( s )
+      subscribed = s
+    end
+  end
 end
+
 
 -- Висит на апдейте актора
 function returner_update()
-	if single_click then
-		if single_click > time_global() and double_click then
-			-- второе нажатие
-			if set_pos_allowed() then
-				returner_set_pos()
-			end
-			
-			single_click = nil
-			double_click = nil
-			
-		elseif single_click <= time_global() then
-			-- одно нажатие
-			if returner_allowed() then
-				do_returner()
-			end
-			
-			single_click = nil
-			double_click = nil
-		end
-	end
-	
-	if returner_pos and db.actor:active_item() then
-		returner_pos = nil
-	end
+  ogse_signals.get_mgr():reschedule( 200 )
+  if single_click then
+    if single_click > time_global() and double_click then
+      -- второе нажатие
+      if set_pos_allowed() then
+        returner_set_pos()
+      end
+      single_click = nil
+      double_click = nil
+    elseif single_click <= time_global() then
+      -- одно нажатие
+      if returner_allowed() then
+        do_returner()
+      end
+      single_click = nil
+      double_click = nil
+    end
+  end
+  if returner_pos and db.actor:active_item() then
+    returner_pos = nil
+  end
+  if not single_click then
+    if not returner_pos then
+      ogse_signals.get_mgr():unsubscribe( subscribed )
+      subscribed = nil
+    end
+  end
 end
+
 
 function returner_set_pos()
-	fly.stop()
-
-	xr_sound.get_safe_sound_object([[device\bed_2]]):play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
-	returner_pos = db.actor:position()
+  fly.stop()
+  xr_sound.get_safe_sound_object( [[device\bed_2]] )
+    :play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 1.0 )
+  returner_pos = db.actor:position()
 end
 
-function returner_clear_pos(obj)
-	if obj and obj:section() == "separator" then return end
 
-	returner_pos = nil
+function returner_clear_pos( obj )
+  if obj and obj:section() == "separator" then return end
+  returner_pos = nil
 end
+
 
 function set_pos_allowed()
-	if has_alife_info("no_teleport_near_heli_btr") and not (has_alife_info("snpt_jupiter5_have3") and not has_alife_info("snpt_jupiter6_done")) then 
-		news_manager.send_tip(db.actor, "Возвращение из района скопления вражеских сил невозможно по техническим причинам. Для восстановления функциональности устраните угрозу.", nil, "nano", 20000)
-		return false
-	elseif db.actor:active_item() then
-		news_manager.send_tip(db.actor, "Возвращатель не работает при наличии в руках любого предмета или оружия. Для восстановления функциональности исправьте ситуацию.", nil, "nano", 20000)
-		return false
-	elseif actor_is_in_danger() then
-		return false
-	elseif returner_temp_pos:distance_to(db.actor:position()) > 0.001 then 
-		news_manager.send_tip(db.actor, "Ошибка установки позиции. При задании позиции нельзя перемещаться.", nil, "nano", 20000)
-		return false
-	end
-	return true
+  if
+    has_alife_info( "no_teleport_near_heli_btr" )
+    and not (
+      has_alife_info( "snpt_jupiter5_have3" )
+      and not has_alife_info( "snpt_jupiter6_done" )
+    )
+  then 
+    news_manager.send_tip(
+      db.actor,
+      "Возвращение из района скопления вражеских сил невозможно по техническим причинам. Для восстановления функциональности устраните угрозу.",
+      nil, "nano", 5000
+    )
+    return false
+  elseif db.actor:active_item() then
+    news_manager.send_tip(
+      db.actor,
+      "Возвращатель не работает при наличии в руках любого предмета или оружия. Для восстановления функциональности исправьте ситуацию.",
+      nil, "nano", 5000
+    )
+    return false
+  elseif actor_is_in_danger() then
+    return false
+  elseif returner_temp_pos:distance_to( db.actor:position() ) > 0.001 then 
+    news_manager.send_tip(
+      db.actor,
+      "Ошибка установки позиции. При задании позиции нельзя перемещаться.",
+      nil, "nano", 5000
+    )
+    return false
+  end
+  return true
 end
+
 
 function do_returner()
-	fly.stop()
-	
-	xr_sound.get_safe_sound_object([[device\bed_2]]):play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
-	db.actor:give_info_portion("teleport_started")
-	db.actor:set_actor_position(returner_pos)
-	db.actor:give_info_portion("teleport_finished")
+  fly.stop()
+  xr_sound.get_safe_sound_object( [[device\bed_2]] )
+    :play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 1.0 )
+  db.actor:give_info_portion( "teleport_started" )
+  db.actor:set_actor_position( returner_pos )
+  db.actor:give_info_portion( "teleport_finished" )
 end
+
 
 function returner_allowed()
-	if has_alife_info("no_teleport_near_heli_btr") and not (has_alife_info("snpt_jupiter5_have3") and not has_alife_info("snpt_jupiter6_done")) then 
-		news_manager.send_tip(db.actor, "Возвращение из района скопления вражеских сил невозможно по техническим причинам. Для восстановления функциональности устраните угрозу.", nil, "nano", 20000)
-		return false
-	elseif db.actor:active_item() then
-		news_manager.send_tip(db.actor, "Возвращатель не работает при наличии в руках любого предмета или оружия. Для восстановления функциональности исправьте ситуацию.", nil, "nano", 20000)
-		return false
-	elseif actor_is_in_danger() then
-		return false
-	elseif not returner_pos then 
-		news_manager.send_tip(db.actor, "Не задана позиция возвращения. Для установки позиции нажмите дважды клавишу Возвращателя.", nil, "nano", 20000)
-		return false
-	elseif returner_pos:distance_to_xz(db.actor:position()) > 30 then 
-		news_manager.send_tip(db.actor, "Возвращение невозможно из-за слишком большого расстояния. Для смены позиции нажмите дважды клавишу Возвращателя.", nil, "nano", 20000)
-		return false
-	elseif returner_pos:distance_to(db.actor:position()) < 1 then 
-		news_manager.send_tip(db.actor, "Слишком малое расстояние между текущей и заданной позицией. Для выполнения возвращения нужно отойти подальше.", nil, "nano", 20000)
-		return false
-	end
-	return true
+  if
+    has_alife_info( "no_teleport_near_heli_btr" )
+    and not (
+      has_alife_info( "snpt_jupiter5_have3" )
+      and not has_alife_info( "snpt_jupiter6_done" )
+    )
+  then 
+    news_manager.send_tip(
+      db.actor,
+      "Возвращение из района скопления вражеских сил невозможно по техническим причинам. Для восстановления функциональности устраните угрозу.",
+      nil, "nano", 5000
+    )
+    return false
+  elseif db.actor:active_item() then
+    news_manager.send_tip(
+      db.actor,
+      "Возвращатель не работает при наличии в руках любого предмета или оружия. Для восстановления функциональности исправьте ситуацию.",
+      nil, "nano", 5000
+    )
+    return false
+  elseif actor_is_in_danger() then
+    return false
+  elseif not returner_pos then 
+    news_manager.send_tip(
+      db.actor,
+      "Не задана позиция возвращения. Для установки позиции нажмите дважды клавишу Возвращателя.",
+      nil, "nano", 5000
+    )
+    return false
+  elseif returner_pos:distance_to_xz( db.actor:position() ) > 30 then 
+    news_manager.send_tip(
+      db.actor,
+      "Возвращение невозможно из-за слишком большого расстояния. Для смены позиции нажмите дважды клавишу Возвращателя.",
+      nil, "nano", 5000
+    )
+    return false
+  elseif returner_pos:distance_to( db.actor:position() ) < 1 then 
+    news_manager.send_tip(
+      db.actor,
+      "Слишком малое расстояние между текущей и заданной позицией. Для выполнения возвращения нужно отойти подальше.",
+      nil, "nano", 5000
+    )
+    return false
+  end
+  return true
 end
-
