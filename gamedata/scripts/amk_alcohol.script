@@ -1,0 +1,462 @@
+-- Упрощенный алкоголь. Не более 5 бутылок в сутки. Остальное всё отключено.
+function drink_vodka(obj)
+	if obj:section()=="vodka" then
+		amk.start_timer("alcohol", 0.2, obj:id())
+	end
+end
+function drink_vodka_chunk()
+	local alc = amk.unpack_array_from_string(amk.load_variable("alc",""))
+	table.insert(alc, amk.game_minutes())
+	local limit = iif(has_alife_info("acv_alk"),6,5)
+	
+	if #alc > limit then
+		db.actor:stop_talk()
+		amk.send_tip(game.translate_string("alc_too_much_die"),nil,nil,10)
+		amk.start_timer("zonedocs_gg_kill",14.5,0)
+		level.add_cam_effector("camera_effects\\radar_stop.anm", 2507, false, "")
+	elseif #alc > limit-1 then
+		amk.send_tip(game.translate_string("alc_too_much"),nil,nil,10)
+	end
+	
+	amk.save_variable("alc",amk.pack_array_to_string(alc))
+	archievements.acv_count_event("acv_alk", 70, "Алкоголик")
+end
+
+function update()
+	local alc = amk.unpack_array_from_string(amk.load_variable("alc",""))
+	local gm = amk.game_minutes()
+
+	for i=#alc,1,-1 do
+		if gm > alc[i]+60*24 then
+			table.remove(alc, i)
+		end
+	end
+
+	amk.save_variable("alc",amk.pack_array_to_string(alc))
+end
+
+--[=[ старый код отключен
+-- Алкогольная зависимость by Terrapack. Основноые функции.
+-- Также правились файлы amk.script, amk_mod.script
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+--
+--===	переменные	===--
+-- старый буфер
+local ap_old={}
+		-- служебные флаги для таймеров
+		ap_old.alco_drink_flag = 0
+		ap_old.must_drink_flag = 0
+		ap_old.abstinent_step_flag = 0
+		ap_old.alcoholic_lose_hp_flag = 0
+		ap_old.sober_step_flag = 0
+		ap_old.poison_death_flag = 0
+		ap_old.alco_dream_flag = 0
+		ap_old.alco_good_morning_flag = 0
+		
+		ap_old.alco_drink_timer = 0
+		ap_old.must_drink_timer = 0
+		ap_old.abstinent_step_timer = 0
+		ap_old.alcoholic_lose_hp_timer = 0
+		ap_old.sober_step_timer = 0
+		ap_old.poison_death_timer = 0
+		ap_old.alco_dream_timer = 0
+		ap_old.alco_good_morning_timer = 0
+		
+		ap_old.amk_gg_bottle_drinked = 0
+		ap_old.amk_gg_bottle_summary_drinked = 0
+		ap_old.amk_gg_is_alcoholic = 0
+		ap_old.alco_objectid = -1
+--
+-- новый буфер
+local ap={}
+		-- служебные флаги для таймеров
+		ap.a0 = 0	--ap_old.alco_drink_flag
+		ap.a1 = 0	--ap_old.alco_drink_timer
+		
+		ap.b0 = 0	--ap_old.must_drink_flag
+		ap.b1 = 0	--ap_old.must_drink_timer
+		
+		ap.c0 = 0	--ap_old.abstinent_step_flag
+		ap.c1 = 0	--ap_old.abstinent_step_timer
+		
+		ap.d0 = 0	--ap_old.alcoholic_lose_hp_flag
+		ap.d1 = 0	--ap_old.alcoholic_lose_hp_timer
+		
+		ap.e0 = 0	--ap_old.sober_step_flag
+		ap.e1 = 0	--ap_old.sober_step_timer
+		
+		ap.f0 = 0	--ap_old.poison_death_flag
+		ap.f1 = 0	--ap_old.poison_death_timer
+		
+		ap.g0 = 0	--ap_old.alco_dream_flag
+		ap.g1 = 0	--ap_old.alco_dream_timer
+		
+		ap.h0 = 0	--ap_old.alco_good_morning_flag
+		ap.h1 = 0	--ap_old.alco_good_morning_timer
+		
+		ap.a = 0	--ap_old.amk_gg_bottle_drinked
+		ap.b = 0	--ap_old.amk_gg_bottle_summary_drinked
+		ap.c = 0	--ap_old.amk_gg_is_alcoholic
+		ap.d = -1	--ap_old.alco_objectid
+--
+
+local alc_todo_alcoholic = 35	--штук	--через сколько бутылок допьешься до алкоголизма [35]
+
+local alc_to_drink_alcoholic = 24	--часов	--через сколько часов надо пить 1 бутылку если есть алкогольная зависимость [24]
+
+local alc_unlike_time = 5	--дней	--количество дней через которое происходит следующая стадия отвыкания от алкоголя [5]
+local alc_unlike_step = 5	--штук	--шаг отвыкания (уменьшение алкогольной зависимости) (если gg_bottle_summary_drinked < alc_unlike_step то gg_bottle_drinked=0) [5]
+
+local sober_time = 8		--через сколько часов ГГ протрезвеет
+local alc_hp_lose_after_sober = 0.1		--количество HP, которые ГГ теряет после того, как протрезвеет (голова болит и все такое)
+
+local alc_time_lose_hp = 4	--часов	--раз во сколько часов теряются hp при алкогольной зависимости если не выпить водки
+local alc_hp_lose = 0.1		--сколько теряем hp если вовремя не выпить будучи алкоголиком
+
+local alc_max_drink_bottles_to_death = 5	--штук	--сколько бутылок водки - смертельная доза [5]
+
+local alc_max_drink_bottles = 4		--сколько максимально можно выпить бутылок водки, после которых герой засыпает [4]
+local alc_max_drink_to_dream_timer = 15	--минут	--через сколько минут ГГ заснет, если выпьет максимально количество водки
+local alc_max_drink_dream_time = 12	--часов	--сколько проспит герой после того, как выпьет максимально количество водки
+
+-- служебные флаги
+local must_drink_flag = 0		--ГГ-алкоголик должен выпить [таймер 95]
+local abstinent_step_flag = 0	--шаг уменьшения алкогольной зависимости [таймер 96]
+local alcoholic_lose_hp_flag = 0		--флаг потери здоровья, если алкоголик не пьет [таймер 97]
+local sober_step_flag = 0		--ГГ протрезвел [таймер 98]
+--
+--
+--
+--= функции =--
+--
+-- Конвертер из старого типа данных в новый
+function convert_variables()
+	ap_old = amk.unpack_array_from_string(amk.load_variable("amk_alcohol_params",amk.pack_array_to_string(ap_old)))
+	ap = amk.unpack_array_from_string(amk.load_variable("alcpar",amk.pack_array_to_string(ap)))
+	ap.a0 = ap_old.alco_drink_flag
+	ap.a1 = ap_old.alco_drink_timer
+	
+	ap.b0 = ap_old.must_drink_flag
+	ap.b1 = ap_old.must_drink_timer
+	
+	ap.c0 = ap_old.abstinent_step_flag
+	ap.c1 = ap_old.abstinent_step_timer
+	
+	ap.d0 = ap_old.alcoholic_lose_hp_flag
+	ap.d1 = ap_old.alcoholic_lose_hp_timer
+	
+	ap.e0 = ap_old.sober_step_flag
+	ap.e1 = ap_old.sober_step_timer
+	
+	ap.f0 = ap_old.poison_death_flag
+	ap.f1 = ap_old.poison_death_timer
+	
+	ap.g0 = ap_old.alco_dream_flag
+	ap.g1 = ap_old.alco_dream_timer
+	
+	ap.h0 = ap_old.alco_good_morning_flag
+	ap.h1 = ap_old.alco_good_morning_timer
+	
+	ap.a = ap_old.amk_gg_bottle_drinked
+	ap.b = ap_old.amk_gg_bottle_summary_drinked
+	ap.c = ap_old.amk_gg_is_alcoholic
+	ap.d = ap_old.alco_objectid
+	amk.save_variable("alcpar",amk.pack_array_to_string(ap))
+	--флаг, что сконвертировали уже, и больше не надо
+	amk.del_variable("amk_alcohol_params")
+	amk.save_variable("alcv", 1)
+end
+-- Реакции на update актора
+function check_alcohol()
+	--задаем параметры
+	-- получение игрового времени
+	local time = amk.game_minutes()
+	-- распаковка состояний и флагов таймеров, переменных
+	if amk.load_variable("alcv", 0) == 0 then
+		convert_variables()
+	end
+	ap = amk.unpack_array_from_string(amk.load_variable("alcpar",amk.pack_array_to_string(ap)))
+	--условия на сработку "таймера"
+	-- выпил водку
+	if ap.a0 == 1 then
+		if ap.a1 <= time then 
+			if alife():object(ap.d) == nil then
+				ap.a0 = 0
+				ap.a1 = 0
+				ap.d = -1
+				alcohol_drink(time)
+			end
+		end
+	end
+	--
+	-- помирание
+	if ap.f0 == 1 then
+		if ap.f1 <= time then
+			reset_dream()
+			reset_sober()
+			reset_lose_hp()
+			ap.f0 = 0 
+			ap.f1 = 0 
+			amk_alcohol_poison_death()
+		end
+	end
+	--
+	-- засыпание
+	if ap.g0 == 1 then
+		if ap.g1 <= time then
+			reset_sober()
+			ap.g0 = 0
+			ap.g1 = 0
+			reset_sober()
+			amk_alcohol_dream(time)
+		end
+	end
+	--
+	--утреннее похмелье
+	if ap.h0 == 1 then
+		if ap.h1 <= time then
+			ap.h0 = 0
+			ap.h1 = 0
+			amk_alcohol_good_morning()
+		end
+	end
+	--
+	--протрезвление (не спал, т.е. меньше 4-х бутылок)
+	if ap.e0 == 1  then
+		if ap.e1 <= time then
+			ap.e0 = 0
+			ap.e1 = 0
+			amk_alcohol_good_morning()
+		end
+	end
+	--
+	--вовремя не выпил - скоро покосячит
+	if ap.b0 == 1 then
+		if ap.b1 <= time then
+			amk_need_alcohol(time)
+		end
+	end
+	--
+	--нанесение вреда если алкоголик не выпил
+	if ap.d0 == 1 then
+		if ap.d1 <= time then
+			amk_lose_hp(time)
+		end
+	end
+	--
+	--шаг отвыкания от алкогольной зависимости
+	if ap.c0 == 1 then
+		if ap.c1 <= time then
+			amk_abstinent_step(time)
+		end
+	end
+	--  упаковка состояний и флагов таймеров, переменных
+	amk.save_variable("alcpar",amk.pack_array_to_string(ap))
+	
+end
+--
+-- Проверка распития бутылки водки
+function drink_vodka(obj)
+	-- получение игрового времени
+	local time = amk.game_minutes()
+	local section = obj:section()
+	local oid = obj:id()
+	if (section=="vodka") then
+		ap.d  = oid
+		ap.a0 = 1
+		ap.a1 = time
+	end
+	amk.save_variable("alcpar",amk.pack_array_to_string(ap))
+end
+--
+function alcohol_drink(game_time)
+	--обновление переменных
+	ap.a = ap.a + 1
+	ap.b = ap.b +1
+	--если превысили порог в макс. кол-во бутылок, то смерть
+	if ap.a >= alc_max_drink_bottles_to_death then
+		reset_dream()
+		reset_sober()
+		reset_lose_hp()
+		ap.a = 0
+		ap.b = 0
+		ap.f0 = 1
+		ap.f1 = game_time + 5 --minute
+		amk.send_tip(game.translate_string("alc_too_much_die"),nil,nil,5)
+	end
+	--
+	--проверка нужно ли "заснуть" ГГ - выпил ли он макс. число бутылок, но меньше смертельного максимума
+	if ap.a == alc_max_drink_bottles then
+		ap.g0 = 1
+		ap.g1 = game_time + alc_max_drink_to_dream_timer --minutes
+		amk.send_tip(game.translate_string("alc_too_much"),nil,nil,5)
+	end
+	--
+	--проверка на появление алкоголизма
+	if ap.c == 0 then
+		--герой не алкоголик, но теперь стал :)
+		if ap.b > alc_todo_alcoholic then
+			amk.send_tip(game.translate_string("alc_todo_alcoholic"),nil,nil,5)
+			ap.c = 1
+			--здесь должен быть запуск таймера для того, чтобы потребовать прием водки через n часов
+			--таймер на желание алкоголя и на отвыкание от него (по идее надо бы чтобы это было после протрезвления)
+			ap.c0 = 1
+			ap.c1 = game_time + alc_to_drink_alcoholic*60 --hours
+			ap.b0 = 1
+			ap.b1 = game_time + alc_unlike_time*24*60 --days
+		end
+	elseif ap.c == 1 then
+		--если герой выпил водки количеством меньше срубающего в сон, то запустить таймер потребности (по идее надо бы чтобы это было после протрезвления)
+		--
+		if ap.a >= 1 then
+			if ap.a < alc_max_drink_bottles then
+				if ap.b0 == 1 then
+					ap.b1 = game_time + alc_to_drink_alcoholic*60 --hours
+				end
+				if ap.b0 == 0 then
+					ap.b0 = 1
+					ap.b1 = game_time + alc_to_drink_alcoholic*60 --hours
+				end
+				--запуск отвыкания сразу после распития (по идее надо бы чтобы это было после протрезвления)
+				if ap.c0 == 1 then
+					ap.c1 = game_time + alc_unlike_time*24*60 --days
+				end
+				if ap.c0 == 0 then
+					ap.c0 = 1
+					ap.c1 = game_time + alc_unlike_time*24*60 --days
+				end
+			end
+		end
+	end
+	--
+	--проверка таймера отрезвления
+	if ap.e0 == 0 then
+		ap.e0 = 1
+		ap.e1 = game_time + sober_time*60 --hours
+	elseif ap.e0 == 1 then
+		ap.e1 = game_time + sober_time*60 --hours
+	end
+end
+--
+-- функции для таймеров
+--
+--смерть от передоза --тестовая функция, надо доработать эффекторы
+function amk_alcohol_poison_death()
+	level.add_cam_effector("camera_effects\\head_shot.anm", 5001, false, "")
+	db.actor:kill(db.actor)
+end
+--
+--ГГ засыпает с перепоя
+function amk_alcohol_dream(game_time)
+	ap.h0 = 1
+	ap.h1 = game_time + alc_max_drink_dream_time*60+10	--hours
+	sleep_manager.main(alc_max_drink_dream_time)
+end
+--
+--ГГ "получает" похмелье
+function amk_alcohol_good_morning()
+	local h = hit()
+	h.draftsman = db.actor
+	h.type = hit.fire_wound
+	h.direction = vector():set(0, 0, 0)
+	h.power = alc_hp_lose_after_sober
+	h.impulse = 1
+	db.actor:hit(h)
+	level.add_pp_effector("alcohol.ppe", 3000, false)
+   	ap.a = 0
+end
+--
+--Алкоголику нужна водка
+function amk_need_alcohol(game_time)
+	if ap.b0 == 1 then
+		if ap.d0 == 0 then
+			ap.d0 = 1
+			ap.d1 = game_time + alc_time_lose_hp*60 --hours
+			amk.send_tip(game.translate_string("alc_need_drink"),nil,nil,5)
+		end
+		if alcoholic_lose_hp_flag == 1 then
+			ap.d1 = game_time + alc_time_lose_hp*60 --hours
+			amk.send_tip(game.translate_string("alc_need_drink"),nil,nil,5)
+		end
+	end
+end
+--
+--Нанесение вреда здоровью, если вовремя не выпил
+function amk_lose_hp(game_time)	
+	if ap.b0 == 1 then
+		local h = hit()
+		h.draftsman = db.actor
+		h.type = hit.fire_wound
+		h.direction = vector():set(0, 0, 0)
+		h.power = alc_hp_lose
+		h.impulse = 1
+		db.actor:hit(h)
+		ap.d0 = 1
+		ap.d1 = game_time + alc_time_lose_hp*60 --hours
+		amk.send_tip(game.translate_string("alc_need_drink_big"),nil,nil,5)
+	end
+	if ap.b0 == 0 then
+		alcoholic_lose_hp_flag = 0
+		ap.d0 = 0
+		ap.d1 = 0
+	end
+end
+--
+--Шаг отвыкания сработал
+function amk_abstinent_step(game_time)
+	if ap.c0 == 1 then
+		local tmp1 = ap.b
+		local tmp2 = tmp1 - alc_unlike_step
+		if tmp2 <= 0 then
+			ap.b0 = 0
+			ap.b1 = 0
+			ap.d0 = 0
+			ap.d1 = 0
+			ap.c0 = 0
+			ap.c1 = 0
+			ap.b = 0
+			ap.c = 0
+			amk.send_tip(game.translate_string("alc_coded"),nil,nil,5)
+		end
+		if tmp2>0 then
+			if tmp2 < alc_todo_alcoholic then
+				ap.b0 = 0
+				ap.b1 = 0
+				ap.d0 = 0
+				ap.d1 = 0
+				ap.c0 = 1
+				ap.c1 = game_time + alc_unlike_time*24*60 --days
+				amk.send_tip(game.translate_string("alc_no_more_need"),nil,nil,5)
+			end
+			if tmp2 > alc_todo_alcoholic then
+				ap.c0 = 1
+				ap.c1 = game_time + alc_unlike_time*24*60 --days
+			end
+			ap.b = ap.b  - alc_unlike_step
+		end
+	end
+end
+--
+--Функции сброса различных флагов
+--
+--Сброс флага и таймера сна
+function reset_dream()
+	ap.g0 = 0
+	ap.g1 = 0
+end
+--
+--Сброс флага и таймера протрезвления
+function reset_sober()
+	ap.e0 = 0
+	ap.e1 = 0
+end
+--
+--Сброс флага и таймера потери здоровья если алкоголик не выпил
+function reset_lose_hp()
+	ap.d0 = 0
+	ap.d1 = 0
+end
+--
+--=========================--
+]=]
+
