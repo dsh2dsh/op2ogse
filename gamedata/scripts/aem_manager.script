@@ -1,3 +1,27 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+function attach( sm )
+  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
+end
+
+
+local actor = db.actor
+
+function on_spawn()
+  actor = db.actor
+  if level.name() == "l05_bar" then
+    ogse_signals.get_mgr():subscribe({
+      signal = "on_update", fun = this.on_update, queued = true
+    })
+  end
+end
+
+
+function on_update()
+  ogse_signals.get_mgr():reschedule( math.random( 6000, 12000 ) )
+  get_aem():update()
+end
+
 
 local time_open = 22	-- время (час) открытия арены, min = 0, max = 23
 local time_close = 7	-- время (час) закрытия, min = 0, max = 23
@@ -14,7 +38,6 @@ local aem_only = false	-- (!!!МЕНЯТЬ ТОЛЬКО ОДИН РАЗ!!!) false - мод активируетс
 local arenaext = nil	-- объект manager
 local time_def = nil	-- время в мире на момент начала игры (CTime)
 local update_time = game.CTime()
-local actor = db.actor
 local sim = alife()
 ---------------------------------------------------------------------------------------------------
 -- вывод отладочной информации
@@ -854,223 +877,232 @@ function CArenaext:reinit()
 	actor:give_info_portion("aem_ready")
 end
 
+
 -------
 -- вызывается из "bind_stalker.script" <actor_binder:update(delta)>
 -------
 function CArenaext:update()
-	local curr = time_get_curr()
-
-	local id, npc, ctm, rt, ct
+  local curr = time_get_curr()
 	
-	if actor:dont_has_info("aem_startup") then
-		if aem_only == true then
-			actor:give_info_portion("bar_arena_fight_8_done")
-			startup()
-		end
-	end
+  if actor:dont_has_info( "aem_startup" ) then
+    if aem_only == true then
+      actor:give_info_portion( "bar_arena_fight_8_done" )
+      startup()
+    end
+  end
 	
-	id = xr_logic.pstor_retrieve(actor, "aem_id", 0)
+  local id = xr_logic.pstor_retrieve( actor, "aem_id", 0 )
 
-	-- удаляем Арни и создаём его клона
-	if id == 0 then
-		npc = sim:object("bar_arena_man")
-		if npc ~= nil then
-			sim:release(npc)
-			if npc:alive() ~= true then
-				-- мёртвый
-				actor:give_info_portion("aem_arny_dead")
-				actor:give_info_portion("aem_arny_dis_1")
-				admin_dead()
-			else
-				-- живой
-				local obj = sim:create("aem_arny", vector():set(149.561569213867,0.429975032806396,69.2308807373047), 40035, 1180)
-				-- сохранение id
-				xr_logic.pstor_store(actor, "aem_id", obj.id)
-			end
-		else
-			actor:give_info_portion("aem_arny_spread_out")
-			actor:give_info_portion("aem_arny_dis_2")
-			admin_dead()
-		end
-	end
+  -- удаляем Арни и создаём его клона
+  if id == 0 then
+    local npc = sim:object( "bar_arena_man" )
+    if npc then
+      sim:release( npc )
+      if not npc:alive() then
+        -- мёртвый
+        actor:give_info_portion( "aem_arny_dead" )
+        actor:give_info_portion( "aem_arny_dis_1" )
+        admin_dead()
+      else
+        -- живой
+        local obj = sim:create(
+          "aem_arny",
+          vector():set( 149.561569213867, 0.429975032806396, 69.2308807373047 ),
+          40035, 1180
+        )
+        -- сохранение id
+        xr_logic.pstor_store( actor, "aem_id", obj.id )
+      end
+    else
+      actor:give_info_portion( "aem_arny_spread_out" )
+      actor:give_info_portion( "aem_arny_dis_2" )
+      admin_dead()
+    end
+  end
 	
-	-- проверка Арни(админа) по сохранённому id: мёртв или уничтожен	
-	if  update_time < game.get_game_time() then
-		local idle_time = game.CTime()
-		idle_time:setHMSms(0, 5, 0, 0)
-		update_time = game.get_game_time() + idle_time
-		--printf("CArenaext:update(30sec_update_done)")
-		if id > 0 then	
-			id = xr_logic.pstor_retrieve(actor, "aem_id")
-			npc = sim:object(id)
-			if npc ~= nil and npc:clsid() == clsid.script_stalker then
-				if npc:alive() ~= true then
-					-- мёртвый
-					if npc:profile_name() == "aem_arny" then
-						actor:give_info_portion("aem_arny_dead")
-						actor:give_info_portion("aem_arny_dis_1")
-					elseif string.find(npc:name(), "aem_admin") then
-						actor:give_info_portion("aem_admin_dead")
-					else
-						-- Арни(админа) порвало -> заспавнился левый id -> левый умер -> update
-						if actor:dont_has_info("aem_arny_dis_1") and actor:dont_has_info("aem_arny_dis_2") then
-							actor:give_info_portion("aem_arny_spread_out")
-							actor:give_info_portion("aem_arny_dis_2")
-						else
-							actor:give_info_portion("aem_admin_spread_out")
-						end
-					end
-					admin_dead()
-				else
-					-- живой
-					if npc:profile_name() ~= "aem_arny" and not string.find(npc:name(), "aem_admin") then
-						-- уничтожен (порвало в аномалии)
-						if actor:dont_has_info("aem_arny_dis_1") and actor:dont_has_info("aem_arny_dis_2") then
-							actor:give_info_portion("aem_arny_spread_out")
-							actor:give_info_portion("aem_arny_dis_2")
-						else
-							actor:give_info_portion("aem_admin_spread_out")
-						end
-						admin_dead()
-					end
-				end
-			else
-				-- уничтожен (порвало в аномалии)
-				if actor:dont_has_info("aem_arny_dis_1") and actor:dont_has_info("aem_arny_dis_2") then
-					actor:give_info_portion("aem_arny_spread_out")
-					actor:give_info_portion("aem_arny_dis_2")
-				else
-					actor:give_info_portion("aem_admin_spread_out")
-				end
-				admin_dead()
-			end
-		end
-	end
+  -- проверка Арни(админа) по сохранённому id: мёртв или уничтожен	
+  if  update_time < game.get_game_time() then
+    local idle_time = game.CTime()
+    idle_time:setHMSms( 0, 5, 0, 0 )
+    update_time = game.get_game_time() + idle_time
+    if id > 0 then	
+      id = xr_logic.pstor_retrieve( actor, "aem_id" )
+      local npc = sim:object( id )
+      if npc and npc:clsid() == clsid.script_stalker then
+        if not npc:alive() then
+          -- мёртвый
+          if npc:profile_name() == "aem_arny" then
+            actor:give_info_portion( "aem_arny_dead" )
+            actor:give_info_portion( "aem_arny_dis_1" )
+          elseif string.find( npc:name(), "aem_admin" ) then
+            actor:give_info_portion( "aem_admin_dead" )
+          else
+            -- Арни(админа) порвало -> заспавнился левый id -> левый умер -> update
+            if
+              actor:dont_has_info( "aem_arny_dis_1" )
+              and actor:dont_has_info( "aem_arny_dis_2" )
+            then
+              actor:give_info_portion( "aem_arny_spread_out" )
+              actor:give_info_portion( "aem_arny_dis_2" )
+            else
+              actor:give_info_portion( "aem_admin_spread_out" )
+            end
+          end
+          admin_dead()
+        else
+          -- живой
+          if
+            npc:profile_name() ~= "aem_arny"
+            and not string.find( npc:name(), "aem_admin" )
+          then
+            -- уничтожен (порвало в аномалии)
+            if
+              actor:dont_has_info( "aem_arny_dis_1" )
+              and actor:dont_has_info( "aem_arny_dis_2" )
+            then
+              actor:give_info_portion( "aem_arny_spread_out" )
+              actor:give_info_portion( "aem_arny_dis_2" )
+            else
+              actor:give_info_portion( "aem_admin_spread_out" )
+            end
+            admin_dead()
+          end
+        end
+      else
+        -- уничтожен (порвало в аномалии)
+        if
+          actor:dont_has_info( "aem_arny_dis_1" )
+          and actor:dont_has_info( "aem_arny_dis_2" )
+        then
+          actor:give_info_portion( "aem_arny_spread_out" )
+          actor:give_info_portion( "aem_arny_dis_2" )
+        else
+          actor:give_info_portion( "aem_admin_spread_out" )
+        end
+        admin_dead()
+      end
+    end
+  end
 
-	-- выдача сообщения о восстановлении работы арены
-	-- инициализация спавна админа
-	rt = xr_logic.pstor_retrieve(actor, "aem_rt")
-	if rt ~= nil then
-		if (curr + rt >= self.nt) and (self.lt + rt < self.nt) then
-			msg("aem_restore")
-			actor:disable_info_portion("aem_arny_dead")
-			actor:disable_info_portion("aem_admin_dead")
-			actor:disable_info_portion("aem_arny_spread_out")
-			actor:disable_info_portion("aem_admin_spread_out")
-			actor:give_info_portion("aem_spam")
-			admin_spawn()
-			db.storage[db.actor:id()].pstor["aem_rt"] = nil
-		end
-	end
+  -- выдача сообщения о восстановлении работы арены
+  -- инициализация спавна админа
+  local rt = xr_logic.pstor_retrieve( actor, "aem_rt" )
+  if rt ~= nil then
+    if curr + rt >= self.nt and self.lt + rt < self.nt then
+      msg( "aem_restore" )
+      actor:disable_info_portion( "aem_arny_dead" )
+      actor:disable_info_portion( "aem_admin_dead" )
+      actor:disable_info_portion( "aem_arny_spread_out" )
+      actor:disable_info_portion( "aem_admin_spread_out" )
+      actor:give_info_portion( "aem_spam" )
+      admin_spawn()
+      db.storage[ db.actor:id() ].pstor[ "aem_rt" ] = nil
+    end
+  end
 
-	-- 5 мин. после закрытия арены: сообщение + info для смены рестрикта
-	ct = xr_logic.pstor_retrieve(actor, "aem_ct")
-	if ct ~= nil then
-		ctm = level.get_time_minutes()
+  -- 5 мин. после закрытия арены: сообщение + info для смены рестрикта
+  local ct = xr_logic.pstor_retrieve( actor, "aem_ct" )
+  if ct ~= nil then
+    local ctm = level.get_time_minutes()
+    if ctm >= ct then
+      x = 0
+    else --if ctm < ct
+      x = 60
+    end
 		
-		if ctm >= ct then
-			x = 0
-		else --if ctm < ct
-			x = 60
-		end
-		
-		if ctm >= ct + 5 - x then
-			if actor:has_info("aem_spam") then
-				local txt = {"aem_drunk_1", "aem_drunk_2", "aem_drunk_3", "aem_drunk_4"}
-				local cnt = table.getn(txt)
-				local rnd = math.random(cnt)
-				msg(txt[rnd])
-			end
-			actor:give_info_portion("aem_go_bar")
-			db.storage[db.actor:id()].pstor["aem_ct"] = nil
-		end
-	end
+    if ctm >= ct + 5 - x then
+      if actor:has_info( "aem_spam" ) then
+        local txt = {
+          "aem_drunk_1", "aem_drunk_2", "aem_drunk_3", "aem_drunk_4"
+        }
+        local cnt = table.getn( txt )
+        local rnd = math.random( cnt )
+        msg( txt[ rnd ] )
+      end
+      actor:give_info_portion( "aem_go_bar" )
+      db.storage[ db.actor:id() ].pstor[ "aem_ct" ] = nil
+    end
+  end
 
-	if actor:has_info("aem_startup") then
-		if actor:has_info("aem_open") then
-			if actor:has_info("aem_done") then
-				--printf("CArenaext:update(~aem_open)")
-				self.nt = time_get_next(curr + 1) -- хотя бы часовой перерыв
-				xr_logic.pstor_store(actor, "aem_nt", self.nt)
-				actor:disable_info_portion("aem_done")
-				actor:disable_info_portion("aem_open")
-				actor:disable_info_portion("aem_ready")
-				if actor:has_info("aem_spam") then
-					msg("aem_msg_done")
-				end
-				-- отключение мегафона и освещения щита "Арена"
-				actor:disable_info_portion("aem_megafone")
-				--aem_lights.shield_off()
-				-- запомним время закрытия арены
-				local ct = level.get_time_minutes()
-				xr_logic.pstor_store(actor, "aem_ct", ct)
-			elseif time_need_close(curr, self.nt) and
-				actor:dont_has_info("bar_arena_fight") and
-				actor:dont_has_info("aem_fight_wait")
-			then
-				--printf("CArenaext:update(~aem_open)")
-				self.nt = time_get_next(curr + 1) -- хотя бы часовой перерыв
-				xr_logic.pstor_store(actor, "aem_nt", self.nt)
-				actor:disable_info_portion("aem_open")
-				actor:disable_info_portion("aem_ready")
-				if actor:has_info("aem_spam") then
-					msg("aem_msg_close")
-				end
-				-- отключение мегафона и освещения щита "Арена"
-				actor:disable_info_portion("aem_megafone")
-				--aem_lights.shield_off()
-				-- запомним время закрытия арены
-				local ct = level.get_time_minutes()
-				xr_logic.pstor_store(actor, "aem_ct", ct)
-			end
-		else
-			if curr >= self.nt then
-				--printf("CArenaext:update(aem_open)")
-				actor:give_info_portion("aem_open")
-				actor:disable_info_portion("aem_go_bar")
-			elseif (curr + 3 >= self.nt) and (self.lt + 3 < self.nt) then
-				-- включение мегафона и освещения щита "Арена"
-				actor:give_info_portion("aem_megafone")
-				--aem_lights.shield_on()
-				actor:disable_info_portion("aem_go_bar")
-			end
-			if actor:has_info("aem_spam") then
-				if (curr >= self.nt) and (self.lt < self.nt) then
-					msg("aem_msg_open")
-				elseif (curr + 3 >= self.nt) and (self.lt + 3 < self.nt) then
-					msg("aem_msg_3h")
-				elseif (curr + 6 >= self.nt) and (self.lt + 6 < self.nt) then
-					msg("aem_msg_6h")
-				elseif (curr + 12 >= self.nt) and (self.lt + 12 < self.nt) then
-					msg("aem_msg_12h")
-				elseif (curr + 24 >= self.nt) and (self.lt + 24 < self.nt) then
-					msg("aem_msg_24h")
-				elseif (curr + 48 >= self.nt) and (self.lt + 48 < self.nt) then
-					msg("aem_msg_48h")
-				elseif (curr + 72 >= self.nt) and (self.lt + 72 < self.nt) then
-					msg("aem_msg_72h")
-				elseif (curr + 96 >= self.nt) and (self.lt + 96 < self.nt) then
-					msg("aem_msg_96h")
-				end
-			end
-		end
+  if actor:has_info( "aem_startup" ) then
+    if actor:has_info( "aem_open" ) then
+      if actor:has_info( "aem_done" ) then
+        self.nt = time_get_next( curr + 1 ) -- хотя бы часовой перерыв
+        xr_logic.pstor_store( actor, "aem_nt", self.nt )
+        actor:disable_info_portion( "aem_done" )
+        actor:disable_info_portion( "aem_open" )
+        actor:disable_info_portion( "aem_ready" )
+        if actor:has_info( "aem_spam" ) then
+          msg( "aem_msg_done" )
+        end
+        -- отключение мегафона и освещения щита "Арена"
+        actor:disable_info_portion( "aem_megafone" )
+        local ct = level.get_time_minutes()
+        xr_logic.pstor_store( actor, "aem_ct", ct )
+      elseif time_need_close( curr, self.nt ) and
+        actor:dont_has_info( "bar_arena_fight" ) and
+        actor:dont_has_info( "aem_fight_wait" )
+      then
+        self.nt = time_get_next( curr + 1 ) -- хотя бы часовой перерыв
+        xr_logic.pstor_store( actor, "aem_nt", self.nt )
+        actor:disable_info_portion( "aem_open" )
+        actor:disable_info_portion( "aem_ready" )
+        if actor:has_info( "aem_spam" ) then
+          msg( "aem_msg_close" )
+        end
+        -- отключение мегафона и освещения щита "Арена"
+        actor:disable_info_portion( "aem_megafone" )
+        -- запомним время закрытия арены
+        local ct = level.get_time_minutes()
+        xr_logic.pstor_store(actor, "aem_ct", ct)
+      end
+    else
+      if curr >= self.nt then
+        actor:give_info_portion( "aem_open" )
+        actor:disable_info_portion( "aem_go_bar" )
+      elseif curr + 3 >= self.nt and self.lt + 3 < self.nt then
+        -- включение мегафона и освещения щита "Арена"
+        actor:give_info_portion( "aem_megafone" )
+        actor:disable_info_portion( "aem_go_bar" )
+      end
+      if actor:has_info( "aem_spam" ) then
+        if curr >= self.nt and self.lt < self.nt then
+          msg( "aem_msg_open" )
+        elseif curr + 3 >= self.nt and self.lt + 3 < self.nt then
+          msg( "aem_msg_3h" )
+        elseif curr + 6 >= self.nt and self.lt + 6 < self.nt then
+          msg( "aem_msg_6h" )
+        elseif curr + 12 >= self.nt and self.lt + 12 < self.nt then
+          msg( "aem_msg_12h" )
+        elseif curr + 24 >= self.nt and self.lt + 24 < self.nt then
+          msg( "aem_msg_24h" )
+        elseif curr + 48 >= self.nt and self.lt + 48 < self.nt then
+          msg( "aem_msg_48h" )
+        elseif curr + 72 >= self.nt and self.lt + 72 < self.nt then
+          msg( "aem_msg_72h" )
+        elseif curr + 96 >= self.nt and self.lt + 96 < self.nt then
+          msg( "aem_msg_96h" )
+        end
+      end
+    end
 		
-		-- проверка на разрыв диалога после передачи денег для ставки
-		if not actor:is_talking() and actor:has_info("aem_fight_wait") then
-			self:start_stake()		
-		end
+    -- проверка на разрыв диалога после передачи денег для ставки
+    if not actor:is_talking() and actor:has_info( "aem_fight_wait" ) then
+      self:start_stake()		
+    end
 		
-		-- ???
-		if self.grenads then
-			if aem_grenade.unload2(self.grenads) then
-				self.grenads = nil
-			end
-		end
-	end
+    -- ???
+    if self.grenads then
+      if aem_grenade.unload2( self.grenads ) then
+        self.grenads = nil
+      end
+    end
+  end
 	
-	self.lt = curr
-	xr_logic.pstor_store(actor, "aem_lt", self.lt)
+  self.lt = curr
+  xr_logic.pstor_store( actor, "aem_lt", self.lt )
 end
+
 
 -------
 -- начать бой
