@@ -5,7 +5,6 @@
 
 local upd_time
 local upd_time4
-local upd_time5
 
 local table_sort = table.sort
 local math_ceil = math.ceil
@@ -30,9 +29,6 @@ local game_difficulty_by_num = {
 
 lasthealth  = 0
 lasttime  = 0
-post_process = 0
-local weapon_hide = false
--- local arts = false
 
 local sim = alife()
 ----------------------------------------------------------------------------------------------------------------------
@@ -64,8 +60,6 @@ function actor_binder:net_spawn(data)
   level.show_indicators()
 
   self.bCheckStart = true
-  self.weapon_hide = false -- спрятано или нет оружие при разговоре.
-  weapon_hide = false -- устанавливаем глобальный дефолтовый флаг.
 
   if object_binder.net_spawn(self,data) == false then
 --    skunk.dbglog("actor net spawn 1")   
@@ -133,6 +127,11 @@ end]]
     self = self, queued = true
   })
 
+  self.am:subscribe({ signal = "on_talk_open",  fun = this.hide_weapon    })
+  self.am:subscribe({ signal = "on_talk_hide",  fun = this.restore_weapon })
+  self.am:subscribe({ signal = "on_trade_open", fun = this.hide_weapon    })
+  self.am:subscribe({ signal = "on_trade_hide", fun = this.restore_weapon })
+  
   self.am:call( "on_spawn", data )
   event( "actor_spawn" ):trigger({ data = data })
   return true
@@ -753,49 +752,12 @@ function actor_binder:update( delta )
     ui_mm_opt_add.del_bad_objects()
     self.bCheckStart = nil    
   end 
-	
-  amk.oau_watchdog = 191
-  -- Апдейт прятание оружия игрока во время диалога
-  if weapon_hide == true or self.object:is_talking() then
-    if self.weapon_hide == false then
-      self.object:hide_weapon()
-      self.weapon_hide = true
-    end
-  else
-    if self.weapon_hide == true then
-		-- сюда пишем все проверки, когда можно достать оружие
-		if	not db.eat
-		then
-			self.object:restore_weapon()
-			self.weapon_hide = false
-		end
-    end
-  end 
-
-  amk.oau_watchdog=191
-	self.update_cnt = self.update_cnt+1
-	if self.update_cnt > 5 then
-		self.update_cnt = 1
-		if has_alife_info("teleport_finished") then
-			db.actor:disable_info_portion("teleport_started")
-			db.actor:disable_info_portion("teleport_finished")
-		end
-	end
-
-  amk.oau_watchdog=190
-  -- обновление постпроцессов
-  if post_process ~= 0 then
-    if post_process:update () == true then
-       post_process = 0
-    end
-  end
 
   -- обновление пси-антенны
   if sr_psy_antenna.psy_antenna then
     sr_psy_antenna.psy_antenna:update(delta)
   end
 
-  amk.oau_watchdog=189
   amk.oau_watchdog=187
   --AMK UTILS--
   amk.on_actor_upade(delta)
@@ -826,35 +788,23 @@ function actor_binder:update( delta )
   amk.oau_watchdog=181
   stco.update()
   transparent_treasure.update()
-  amk.oau_watchdog=180
 
-   if upd_time5 == nil then
-    upd_time5 = time + 120000
-  elseif upd_time5 < time then
-    upd_time5 = time + 120000
-	  fly_island.check_code()
-  end
+  amk.oau_watchdog=180
   if upd_time4 == nil then
       upd_time4 = time + 500
   elseif upd_time4 < time then
       upd_time4 = time + 500
       doc_viewer.update()
-      amk.oau_watchdog=179
       amk.oau_watchdog=178
 -- Akill begin
 	akill.check_actor_health()
-	akill.check_actor_outfit()
 	akill.check_actor_armor()
 -- Akill end
-	  
-      amk.oau_watchdog=183
-	  snp.update()
   end
 
-  amk.oau_watchdog=184
-  amk.oau_watchdog=0
-  amk.oau_reason=""    
-
+  amk.oau_watchdog = 0
+  amk.oau_reason   = ""    
+  
   self.am:call( "on_update", delta )
   if update_was_never_called then
     self.am:call( "on_first_update" )
@@ -1176,12 +1126,31 @@ end
 
 
 -- Weapon functions
+local restore_wpn_t, weapon_hide
+
 function hide_weapon()
   weapon_hide = true
+  if restore_wpn_t then return end
+  db.actor:hide_weapon()
+  restore_wpn_t = dsh.wait_condition(
+    function()
+      return not ( weapon_hide or db.actor:is_talking() or db.eat )
+    end,
+    function()
+      db.actor:restore_weapon()
+      weapon_hide   = false
+      restore_wpn_t = nil
+    end,
+    function()
+      ogse_signals.get_mgr():reschedule( 200 )
+    end
+  )
 end
+
 function restore_weapon()
-  weapon_hide = false
+   weapon_hide = false
 end
+
 
 function has_traded()
 	if db.traded then
