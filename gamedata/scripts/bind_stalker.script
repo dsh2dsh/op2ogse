@@ -753,42 +753,11 @@ function actor_binder:update( delta )
     self.bCheckStart = nil    
   end 
 
-  -- обновление пси-антенны
-  if sr_psy_antenna.psy_antenna then
-    sr_psy_antenna.psy_antenna:update(delta)
-  end
-
-  amk.oau_watchdog=187
   --AMK UTILS--
+  amk.oau_watchdog=187
   amk.on_actor_upade(delta)
   --AMK UTILS--
-  amk.oau_watchdog=186
   
-  -- added by Red75. Контроль за переполнением 
-  if self.warning then
-    self.warning=nil
-    get_hud():AddCustomStatic("hud_save_warning")
-    local wnd=get_hud():GetCustomStatic("hud_save_warning"):wnd()
-    if self.critical==1 then
-      wnd:SetTextST(game.translate_string("amk_warn_trans"))
-      self.critical=nil
-    elseif self.critical==2 then
-      wnd:SetTextST(game.translate_string("amk_warn_trans_critical"))
-      self.critical=nil
-    else
-      wnd:SetTextST(game.translate_string("amk_warn_attention"))
-    end
-  elseif self.wt and self.wt<time_global() then
-    self.wt=nil
-    if get_hud():GetCustomStatic("hud_save_warning") then
-      get_hud():RemoveCustomStatic("hud_save_warning")
-    end
-  end
-  
-  amk.oau_watchdog=181
-  stco.update()
-  transparent_treasure.update()
-
   amk.oau_watchdog=180
   if upd_time4 == nil then
       upd_time4 = time + 500
@@ -797,7 +766,6 @@ function actor_binder:update( delta )
       doc_viewer.update()
       amk.oau_watchdog=178
 -- Akill begin
-	akill.check_actor_health()
 	akill.check_actor_armor()
 -- Akill end
   end
@@ -816,6 +784,32 @@ function actor_binder:update( delta )
   dunin_ammo.on_update()	
   -- Отложенное удаление патронов -- должно быть последним на апе актора!
   death_manager.release_deferred_ammo()
+end
+
+
+function actor_binder:show_hud_save_warning( crit, timeout )
+  if self.hud_save_warning_t then
+    self.hud_save_warning_t:stop()
+  end
+  self.hud_save_warning_t = dsh.timeout( 1, function()
+    if not get_hud():GetCustomStatic( "hud_save_warning" ) then
+      get_hud():AddCustomStatic( "hud_save_warning" )
+    end
+    local wnd = get_hud():GetCustomStatic( "hud_save_warning" ):wnd()
+    if crit == 1 then
+      wnd:SetTextST( game.translate_string( "amk_warn_trans" ) )
+    elseif crit == 2 then
+      wnd:SetTextST( game.translate_string( "amk_warn_trans_critical" ) )
+    else
+      wnd:SetTextST( game.translate_string( "amk_warn_attention" ) )
+    end
+    self.hud_save_warning_t = dsh.timeout( timeout, function()
+      if get_hud():GetCustomStatic( "hud_save_warning" ) then
+        get_hud():RemoveCustomStatic( "hud_save_warning" )
+      end
+      self.hud_save_warning_t = nil
+    end )
+  end )
 end
 
 
@@ -951,28 +945,15 @@ function actor_binder:save(packet)
   pk1=fake_net_packet.fake_net_packet()
   self:save_old(pk1)
   amk.mylog("Packet size is "..pk1:w_tell())
-  --news_manager.send_tip(db.actor, "Размер нетпакета ГГ: "..tostring(pk1:w_tell()), nil, nil, 10000)
   if pk1:w_tell()>7500 then
-    self.warning=true
-    self.critical=1
-    self.wt=time_global()+60000
+    self:show_hud_save_warning( 1, 60000 )
     amk.emergency_cleanup()
     self:save_old(packet)
     amk.mylog("Actor packet size is "..packet:w_tell().."!")
- amk.send_tip("Actor packet size critical=2 >7500 ","Размер нетпакета ГГ критический:"..pk1:w_tell(),0,15,"gen_info")
+    amk.send_tip("Actor packet size critical=2 >7500 ","Размер нетпакета ГГ критический:"..pk1:w_tell(),0,15,"gen_info")
     amk.emergency_restore()
-  elseif pk1:w_tell()>6000 then
--- отключено предупреждение меньше 7500 by Proper70 begin
---    self.warning=true
---   self.wt=time_global()+60000
-    self.wt=time_global()
--- отключено предупреждение меньше 7500 by Proper70 end
-    self:save_old(packet)
--- amk.send_tip("Actor packet size critical=1 >6000 ","Размер нетпакета ГГ допустимый:"..pk1:w_tell(),0,15,"gen_info")
   else
     self:save_old(packet)
-    self.wt=time_global()
--- amk.send_tip("Actor packet size <6000 ","Размер нетпакета ГГ мал. Всё ОК:"..pk1:w_tell(),0,15,"gen_info")
   end
   self.am:call("on_save", packet)
   event("actor_save"):trigger({packet = packet})
@@ -1060,9 +1041,7 @@ function actor_binder:load(reader)
   event("actor_load"):trigger({packet = reader})
   
   if xr_logic.pstor_retrieve(self.object,"emerg",false) then -- нельзя использовать amk.load_varible(), так как db.actor ещё не определён
-    self.warning=true
-    self.critical=2
-    self.wt=time_global()+60000
+    self:show_hud_save_warning( 2, 60000 )
   end
 end
 ----------------------------------------------------------------------------------------------------------------------
