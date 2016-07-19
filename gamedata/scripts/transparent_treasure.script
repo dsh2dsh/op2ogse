@@ -1,0 +1,91 @@
+-- скрипт прозрачных рюкзаков
+
+local convert_visual = {}
+
+-- подменяемый ли визуал?
+function IsChangeable(section)
+	return (string.sub(section,2,15)=="_inventory_box" and string.find(rx_utils.read_from_ini(nil, section, "visual", "", 1), "item_rukzak")) or
+		string.sub(section,1,11)=="val_taynik_" or 
+		rx_utils.read_from_ini(nil, section, "removable", false, 0)
+end
+-- подбираемый ли рюкзак?
+function IsTaken(section)
+	return IsChangeable(section) or string.find(rx_utils.read_from_ini(nil, section, "visual", "", 1), "rukzak_invisible")
+end
+
+-- перебор рюкзаков, вызывается при смене сложности
+function scan()
+	if level.present() then
+		-- игра загружена
+
+		local box
+		for id,obj in pairs(db.storage) do
+			box = level.object_by_id(id)
+			if box and IsChangeable(box:section()) then
+				change_visual(box)
+			end
+		end
+	end
+end
+
+function net_spawn(box)
+	if IsChangeable(box:section()) then
+		if db.treasure_change_visual[box:id()] then
+			-- уже заменили визуал
+			db.treasure_change_visual[box:id()] = nil
+		else
+			change_visual(box)
+		end
+	end
+end
+
+-- замена визуала рюкзака
+function change_visual(box)
+	if box:section() == "m_inventory_box" then return end	-- пропускаем "свои" нычки
+	
+	local visual = "equipments\\item_rukzak" 				-- новичок - оригинальный визуал
+
+	if ui_mm_opt_main.GetOption("transparent_treasure") then
+		-- выбираем визуал
+		local difficulty = level.get_game_difficulty()
+		if     difficulty == 1 then
+			visual = visual..tostring(math.random(1, 3)*10)
+		elseif difficulty == 2 then
+			visual = visual..tostring(math.random(3, 5)*10)
+		elseif difficulty == 3 then
+			visual = visual..tostring(math.random(5, 7)*10)
+		end
+	end
+	
+	-- меняем визуал
+	local se_box = alife():object(box:id())
+	db.treasure_change_visual[se_box.id] = true
+	local t = amk.get_invbox_data(se_box)
+	t.visual = visual
+	amk.set_invbox_data(t, se_box)
+
+	-- отправляем в оффлайн и обратно для обновления визуала
+	convert_visual[se_box.id]="turn_off"
+end
+
+function update()
+	for k,v in pairs(convert_visual) do
+		local box = level.object_by_id(k)
+		local se_box = alife():object(k)
+		if se_box then
+			if box ~= nil and v == "turn_off" then
+				alife():set_switch_online(se_box.id, false)
+				alife():set_switch_offline(se_box.id, true)
+				convert_visual[k] = "turn_on"
+			elseif box == nil and v == "turn_on" then
+				alife():set_switch_online(se_box.id, true)
+				alife():set_switch_offline(se_box.id, true)
+				convert_visual[k] = false
+			elseif v == false then
+				convert_visual[k] = nil
+			end
+		else
+			convert_visual[k] = nil
+		end
+	end
+end
