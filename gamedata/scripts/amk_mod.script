@@ -10,11 +10,27 @@ copyright © AMK TEAM 2007-2008
 
 function attach( sm )
   sm:subscribe({ signal = "on_before_spawn", fun = this.on_before_spawn })
+  sm:subscribe({ signal = "on_spawn",        fun = this.on_actor_spawn  })
 end
 
 
 function on_before_spawn()
   load_hand_made_af_info()
+end
+
+
+function on_actor_spawn()
+  if db.actor:has_info( "blowout" ) then
+    on_blowout_hit_actor()
+    blowout_phantoms()
+  end
+  if level.name() == "l10_radar" then
+    if not has_alife_info( "bar_deactivate_radar_done" ) then
+      ogse_signals.get_mgr():subscribe({
+        signal = "on_update", fun = this.check_radar_off, queued = true
+      })
+    end
+  end
 end
 
 
@@ -444,33 +460,36 @@ function test_for_need_sleep_tr_item(oid)
 end
 
 
---'*******************************************************************************
---'   **   **   **   **   **    **   **   **      RADAR_FIX         **   **   **   **   **    **   **   **   **
---'*******************************************************************************
+--'****************************************************************************
+--'   **   **   **   **   **    **   **   **      RADAR_FIX         **   **   *
+--'****************************************************************************
+
+
 function check_radar_off()
-        if (level.name() == "l10_radar") then
-                if not has_alife_info("bar_deactivate_radar_done") then
-                        local pos = db.actor:position()
-                        if pos.z>65 and pos.x>350 and pos.x<410 then
-                                if amk.load_variable("radar_fix",0)==0 then
-                                        level.add_pp_effector("fire_hit.ppe", 1523, true)
-                                        level.set_pp_effector_factor(1523, 0.5)
-                                        amk.save_variable("radar_fix",1)
-                                        amk.start_timer("radar_fix",5)
-                                end
-                        end
-                end
-        end
+  ogse_signals.get_mgr():reschedule( 1000 )
+  if not has_alife_info( "bar_deactivate_radar_done" ) then
+    local pos = db.actor:position()
+    if pos.z > 65 and pos.x > 350 and pos.x < 410 then
+      if amk.load_variable( "radar_fix", 0 ) == 0 then
+        level.add_pp_effector( "fire_hit.ppe", 1523, true )
+        level.set_pp_effector_factor( 1523, 0.5 )
+        amk.save_variable( "radar_fix", 1 )
+        amk.start_timer( "radar_fix", 5 )
+      end
+    end
+  end
 end
 
+
 function radar_fix()
-        level.remove_pp_effector(1523)
-        local pos = db.actor:position()
-        if pos.z>65 and pos.x>350 and pos.x<410 then
-                db.actor:kill(db.actor)
-        end
-        amk.del_variable("radar_fix")
+  level.remove_pp_effector( 1523 )
+  local pos = db.actor:position()
+  if pos.z > 65 and pos.x > 350 and pos.x < 410 then
+    db.actor:kill( db.actor )
+  end
+  amk.del_variable( "radar_fix" )
 end
+
 
 --'*******************************************************************************
 --'   **   **   **   **   **    **   **   **      ITEM_TRANSFORM         **   **   **   **   **    **   **   **
@@ -921,31 +940,51 @@ function check_metka()
         end  
 end
 
---'*******************************************************************************
---'   **   **   **   **   **    **   **   **   **      BLOWOUT        **   **   **   **   **    **   **   **   **
---'*******************************************************************************
+
+--'****************************************************************************
+--'   **   **   **   **   **    **   **   **   **      BLOWOUT        **   **
+--'****************************************************************************
+
+
+local blowout_phantoms_subscribed
+
 function blowout_phantoms()
-        local blow=amk.load_variable("blowout",-1)
-        local bt=blowout_type()
-        if blow>1 and blow<4 and bt<2 then
-          local lname=level.name()
-                if not in_hide and amk_hideouts.blowouts_phantoms[lname] then
-                        local phantoms=amk_hideouts.blowouts_phantoms[lname]
-                        if phantoms and phantoms.count>0 then
-                                if math_random()<phantoms.probability then
-                                        if phantom_manager:phantom_count()<phantoms.count then
-                                                local yaw                               = math_pi*2.0*math_random()
-                                                local radius                    = phantoms.radius*(math_random()/2.0+0.5)
-                                                local height                    = phantoms.height*math_random()
-                                                local a_pos                     = db.actor:position()
-                                                local pos                               = vector():set(math_sin(yaw)*radius+a_pos.x,a_pos.y+height,math_cos(yaw)*radius+a_pos.z)
-                                                phantom_manager.spawn_phantom(pos)
-                                        end
-                                end
-                        end
-                end
+  local blow = amk.load_variable( "blowout", -1 )
+  if blowout_type() < 2 and blow > 1 and blow < 4 then
+    local lname    = level.name()
+    local phantoms = amk_hideouts.blowouts_phantoms[ lname ]
+    if phantoms and phantoms.count > 0 then
+      if blowout_phantoms_subscribed then
+        ogse_signals.get_mgr():reschedule( 1000 )
+        if not in_hide then
+          if math.random() < phantoms.probability then
+            if phantom_manager:phantom_count() < phantoms.count then
+              local yaw = math_pi * 2.0 * math.random()
+              local radius = phantoms.radius * ( math.random() / 2.0 + 0.5 )
+              local height = phantoms.height * math.random()
+              local a_pos  = db.actor:position()
+              local pos    = vector():set(
+                math.sin( yaw ) * radius + a_pos.x,
+                a_pos.y + height,
+                math.cos( yaw ) * radius + a_pos.z
+              )
+              phantom_manager.spawn_phantom( pos )
+            end
+          end
         end
+      else
+        blowout_phantoms_subscribed = {
+          signal = "on_update", fun = this.blowout_phantoms, queued = true
+        }
+        ogse_signals.get_mgr():subscribe( blowout_phantoms_subscribed )
+      end
+    end
+  elseif blowout_phantoms_subscribed then
+    ogse_signals.get_mgr():unsubscribe( blowout_phantoms_subscribed )
+    blowout_phantoms_subscribed = nil
+  end
 end
+
 
 function blowout_scary_sounds()
         local blow=amk.load_variable("blowout",-1)
@@ -1113,15 +1152,32 @@ amk.g_start_timer("blowout", 0, 0, resuls, 4)
         end
 end
 
-local next_actor_hit_time=0
+
+local blowout_hit_subscribed
+
 function on_blowout_hit_actor()
-        if next_actor_hit_time<time_global() then
-                next_actor_hit_time=time_global()+1000
-                on_blowout_hit(db.actor)
-        end
+  local blow = amk.load_variable( "blowout", -1 )
+  if blowout_type() == 0 and blow > 1 and blow < 4 then
+    if blowout_hit_subscribed then
+      ogse_signals.get_mgr():reschedule( 1000 )
+      on_blowout_hit( db.actor )
+    else
+      blowout_hit_subscribed = {
+        signal = "on_update", fun = this.on_blowout_hit_actor, queued = true
+      }
+      ogse_signals.get_mgr():subscribe( blowout_hit_subscribed )
+    end
+  else
+    in_hide = true
+    if blowout_hit_subscribed then
+      ogse_signals.get_mgr():unsubscribe( blowout_hit_subscribed )
+      blowout_hit_subscribed = nil
+    end
+  end
 end
 
-function on_blowout_hit(npc,hide)
+
+function on_blowout_hit( npc, hide )
         local bt=blowout_type()
         if bt>0 or amk.load_variable("blowout",-1)~=3 then 
                 if npc:id()==db.actor:id() then in_hide = true end
@@ -1195,6 +1251,7 @@ function on_blowout_hit(npc,hide)
     end
     return need_hit or khit>0
 end
+
 
 function outfit_hideout()
         local outfits = {

@@ -5,6 +5,7 @@
 function attach( sm )
   sm:subscribe({ signal = "on_npc_death",  fun = this.on_npc_death    })
   sm:subscribe({ signal = "on_npc_spawn",  fun = this.npc_spawn_event })
+  sm:subscribe({ signal = "on_update",     fun = this.on_actor_upade  })
 end
 
 
@@ -37,6 +38,9 @@ function on_npc_death( obj, who )
     end
   end
 end
+
+
+local load_table_cache = {}
 
 
 local table_sort = table.sort
@@ -248,28 +252,6 @@ function g_start_timer(name, delay_d, delay_h, delay_m, parameters)
 	save_table("timers", timers)
 	--dump_table(timers)
 	
---[[  local time = game_minutes()
-
-  if delay_d==nil or delay_h==nil or delay_m==nil then
-    return false
-  end
-  
-  if action==nil then
-    action = ""
-  end
-
-  local a=1
-  while db.storage[db.actor:id()].pstor["gt"..a] do
-    a=a+1
-    if a>100 then 
-      return false 
-    end
-  end
-
-  save_variable("gt"..a, name)
-  save_variable("gd"..a, time+delay_d*60*24+delay_h*60+delay_m)
-  save_variable("gp"..a, action)]]
-
   return true
 end
 
@@ -314,13 +296,6 @@ end
 
 function has_g_timer(name)
 	return has_timer(name)
---[[  for a=1,100,1 do
-    tmp=load_variable("gt"..a,nil)
-    if tmp and tmp==name then
-      return true
-    end
-  end  
-  return false]]
 end
 
 -- Временное хранилище для переменных удалённых из pstor
@@ -355,15 +330,6 @@ function emergency_restore()
 	if emerg_store.zombied then
 		save_table("zombied", emerg_store.zombied)
 	end
---[[  for k,v in pairs(emerg_store) do
-    if k=="zombied" then
-      save_table(k,v)
-    else
-      save_variable("gt"..k,v.gt)
-      save_variable("gd"..k,v.gd)
-      save_variable("gp"..k,v.gp)      
-    end
-  end]]
   --get_console():execute("load ~~~ TIMERS emergency_restore")
   save_table("timers", emerg_store.timers)
   del_variable("emerg")
@@ -471,94 +437,49 @@ function convert_timers()
   end
 end
 
+
 --проверка таймеров
 function check_timers()
-	--get_console():execute("load ~~~ TIMERS check_timers: "..game_milliseconds())
-	local timers = load_table("timers")
-	--dump_table(timers)
-	local name -- имя действия
-	local delay -- задержка в игровых миллисекундах
-	local parameters -- параметры действия
-	local timersToStart = {} -- список таймеров на запуск, которые запустятся после очистки таблицы, так как таблица может одновременно чистится и заполнятся в процессе запуска действий
-	local milliseconds = game_milliseconds()
-	
-	for i = #timers, 1, -1 do -- идём с хвоста по таймерам с наименьшим временем срабатывания
-		name		= timers[i][1]
-		delay		= timers[i][2]
-		parameters	= timers[i][3]
-		if type(parameters) == "table" then
-			parameters = pack_array_to_string(parameters)
-		end
-		if delay <= milliseconds then
-			table.insert(timersToStart, {name, parameters})
-			table_remove(timers) -- сначала чистим таблицу, а то ещё в __do_timer_action() она может быть дополнена
-		else -- таймеров с временем меньшим за текущее уже нет, так как таблица была отсортирована
-			break
-		end
-	end
+  local timers = load_table( "timers" )
+  -- список таймеров на запуск, которые запустятся после очистки таблицы,
+  -- так как таблица может одновременно чистится и заполнятся в процессе
+  -- запуска действий
+  local timersToStart = {}
+  local milliseconds  = game_milliseconds()
+  -- идём с хвоста по таймерам с наименьшим временем срабатывания
+  for i = #timers, 1, -1 do
+    local name       = timers[ i ][ 1 ]
+    local delay      = timers[ i ][ 2 ]
+    local parameters = timers[ i ][ 3 ]
+    if delay <= milliseconds then
+      if type( parameters ) == "table" then
+        parameters = pack_array_to_string( parameters )
+      end
+      table.insert( timersToStart, { name, parameters } )
+      -- сначала чистим таблицу, а то ещё в __do_timer_action() она может быть
+      -- дополнена
+      table.remove( timers )
+    else
+      -- таймеров с временем меньшим за текущее уже нет, так как таблица была
+      -- отсортирована
+      break
+    end
+  end
 
-	if #timersToStart > 0 then -- какие-то таймеры сработали и были удалены из таблицы
-		--get_console():execute("load ~~~ TIMERS check_timers: "..game_milliseconds())
-		--dump_table(timers)
-		-- перезаписываем таблицу
-		save_table("timers", timers)
-	
-		-- запуск действий на выполнение
-		for i = 1, #timersToStart do
-			name		= timersToStart[i][1]
-			parameters	= timersToStart[i][2]
-			oau_reason = name.." "..parameters -- для протокола в случае слежки
-			__do_timer_action(name, parameters)		
-		end
-	end
---[[  local tmp
-  for a=1,100,1 do
-    tmp=load_variable("xt"..a,nil)
-    if tmp~=nil then
-      __timer_found(a)  
+  -- какие-то таймеры сработали и были удалены из таблицы
+  if table.getn( timersToStart ) > 0 then
+    -- перезаписываем таблицу
+    save_table( "timers", timers )
+    -- запуск действий на выполнение
+    for i = 1, table.getn( timersToStart ) do
+      local name       = timersToStart[ i ][ 1 ]
+      local parameters = timersToStart[ i ][ 2 ]
+      oau_reason = name .. " " .. parameters -- для протокола в случае слежки
+      __do_timer_action( name, parameters )
     end
   end
-  
-  for a=1,100,1 do
-    tmp=load_variable("gt"..a,nil)
-    if tmp~=nil then
-      __g_timer_found(a)  
-    end
-  end]]
-  end
---[[function __timer_found(idx)
-    local time = game.time() --time in seconds since 1970
-  local name,params
-  if load_variable("xd"..idx, nil)<=time then
-    name=load_variable("xt"..idx, nil)
-    params=load_variable("xp"..idx, nil)
-    del_variable("xt"..idx)
-    del_variable("xd"..idx)
-    del_variable("xp"..idx)
-		oau_reason=name.." "..params
-    __do_timer_action(name,params)
-    return true
-  end
-  return false
 end
-function __g_timer_found(idx)
-  local gtime = game_minutes()
 
-  local name,params
-  local v = load_variable("gd"..idx, nil)
-
-  if load_variable("gd"..idx, nil)<=gtime then
-    name=load_variable("gt"..idx, nil)
-    params=load_variable("gp"..idx, nil)
-    del_variable("gt"..idx)
-    del_variable("gd"..idx)
-    del_variable("gp"..idx)
-		oau_reason=name.." "..params
-    __do_timer_action(name,params)
-    return true
-  end
-  return false
-end]]
 
 -- таблица функций для ускорения их вызовов
 -- используется ниже
@@ -1272,6 +1193,7 @@ function del_variable(variable_name)
   end]]
     if db.storage[npc_id].pstor[vn] then
     db.storage[npc_id].pstor[vn] = nil
+    load_table_cache[variable_name] = nil
   end
 end
 
@@ -1563,8 +1485,6 @@ function on_item_drop(obj)
 gps_habar.on_item_drop(obj) --idler++--
   mod_call("check_for_af_drop",obj)
   mod_call("check_for_item_drop",obj)
---  mod_call("check_sleep_item",obj)
---  mod_call("check_beacon_drop",obj)
   amkii_transmutator.amkUseTransmutator(obj)
 
 flamethrower.have_a_fire_kolobok()
@@ -1574,35 +1494,25 @@ flamethrower.have_a_vodko()
 flamethrower.have_a_gorelka()
 end
 
---колбэк на апдейт ГГ (удобно для проверки условий, так как вызывается постоянно, нельзя перегружать, а то будут лаги)
-function on_actor_upade(delta)
-	oau_watchdog=100
-	local sim = alife()
-	local actor = db.actor
-	local milliseconds = game_milliseconds()
- --не удалять! библиотечная конструкция
+
+-- колбэк на апдейт ГГ (удобно для проверки условий, так как вызывается
+-- постоянно, нельзя перегружать, а то будут лаги)
+function on_actor_upade( delta )
+  -- local t = profile_timer()
+  -- t:start()
+  oau_watchdog = 100
+  local sim          = alife()
+  local actor        = db.actor
+  local milliseconds = game_milliseconds()
+  -- не удалять! библиотечная конструкция
   if not timer_trigger then 
-    timer_trigger=milliseconds 
+    timer_trigger = milliseconds 
   end
   if timer_trigger <= milliseconds then
     timer_trigger = milliseconds + 250
     check_timers()
   end
-	--user area 
-	braad_test.check_npc_dead()
-	braad_test.check_ecolog_dead()
-	oau_watchdog=99
-  mod_call("blowout_phantoms")
-	oau_watchdog=98
-  mod_call("check_radar_off")
-	oau_watchdog=97
-	oau_watchdog=94
-	oau_watchdog=93
-	oau_watchdog=92
-  amk_mod.on_blowout_hit_actor()
 	oau_watchdog=91
-  if amk_target then amk_target.update() end
-  --
   for k,v in pairs(convert_npc) do
     local obj=level.object_by_id(k)
 		local sobj=sim:object(k)
@@ -1636,7 +1546,6 @@ function on_actor_upade(delta)
 	end
 	oau_watchdog=87
 	
---	amk_anoms.update()
 	oau_watchdog=86
 oAmkLauncher:UpdateFuncs()
 	oau_watchdog=85
@@ -1648,11 +1557,11 @@ wawka.check_yurik_dead()
 	oau_watchdog=84
 
 gps_habar.on_actor_upade(delta) --idler++--
-	oau_watchdog=88
 
------------
-	oau_watchdog=0
-	oau_reason=""
+  oau_watchdog = 0
+  oau_reason   = ""
+  -- t:stop()
+  -- log2( "dsh: t = %s", t:time() )
 end
 
 --колбэк на создание непися (точнее на его переход в онлайн), использует следующую за ним функцию для выбора действия
@@ -1836,21 +1745,30 @@ function mod_call(i,...)
   amk_mod[i](...)
 end
 
-function load_table(name)
-  local var=load_variable(name)
-  return (var==nil and {}) or unpack_array_from_string(var)
+
+function load_table( name )
+  if not load_table_cache[ name ] then
+    local var = load_variable( name )
+    load_table_cache[ name ] = ( var == nil and {} )
+      or unpack_array_from_string( var )
+  end
+  return load_table_cache[ name ]
 end
 
-function save_table(name,tbl)
-  save_variable(name,pack_array_to_string(tbl))
+
+function save_table( name, tbl )
+  load_table_cache[ name ] = tbl
+  save_variable( name, pack_array_to_string( tbl ) )
 end
 
-function update_table(name,id,val)
-  local tbl=load_table(name)
-  tbl[id]=val
-  save_table(name,tbl)
+
+function update_table( name, id, val )
+  local tbl = load_table( name )
+  tbl[ id ] = val
+  save_table( name, tbl )
   return tbl
 end
+
 
 function sixbit(char)
 	local byte = string_byte(char)
