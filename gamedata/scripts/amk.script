@@ -833,11 +833,6 @@ local func_by_string = {}
 	func_by_string["collect_anomalies_info"] = function (params_string)
 		amk_anoms.collect_info()
 	end
-	func_by_string["news_check"] = function (params_string)
-		if (news_main and news_main.check_news) then
-			news_main.check_news()
-		end
- 	end
 	func_by_string["timer_drop_obj_varka"] = function (params_string)
 		local tbl = unpack_array_from_string(params_string)
 		local sobj = alife():object(tbl.obj_id)
@@ -1550,40 +1545,7 @@ function on_actor_upade( delta )
     timer_trigger = milliseconds + 250
     check_timers()
   end
-	oau_watchdog=91
-  for k,v in pairs(convert_npc) do
-    local obj=level.object_by_id(k)
-		local sobj=sim:object(k)
-		if sobj then
-	    if obj==nil and v==true then
-	      convert_npc[k]=false
-	      switch_online(k)
-      elseif obj and v==false then
-        convert_npc[k]=nil
-	    elseif v==1 and obj then -- тайник не перешёл в оффлайн попытаемся его туда запихнуть.
-       sim:set_switch_online(k, false)
-       sim:set_switch_offline(k, true)
-      elseif v==1 then -- тайник в оффлайне. выталкиваем.
-	      convert_npc[k]=nil
-	      switch_online(k)      
-			end
-		else
-			convert_npc[k]=nil
-    end
-  end
-	oau_watchdog=89
-	
-	if (amk_offline_alife) then
-      amk_offline_alife.update()
-    end
-	oau_watchdog=88
-	if (amk_corpses) then
-		for a=1, 3 do
-			amk_corpses.update()
-		end
-	end
-	oau_watchdog=87
-	
+
 	oau_watchdog=86
 oAmkLauncher:UpdateFuncs()
 	oau_watchdog=85
@@ -1601,6 +1563,45 @@ gps_habar.on_actor_upade(delta) --idler++--
   -- t:stop()
   -- log2( "dsh: t = %s", t:time() )
 end
+
+
+class "convert_npc_timer" ( ogse_qt.quick_timer )
+function convert_npc_timer:__init( id, flag ) super()
+  self.id = id
+  convert_npc[ self.id ] = flag
+end
+
+function convert_npc_timer:condition()
+  return convert_npc[ self.id ] == nil
+end
+
+function convert_npc_timer:action()
+end
+
+function convert_npc_timer:update()
+  local obj  = level.object_by_id( self.id )
+  local sobj = alife():object( self.id )
+  if sobj then
+    local v = convert_npc[ self.id ]
+    if ( not obj ) and v == true then
+        convert_npc[ self.id ] = false
+        switch_online( self.id )
+      elseif obj and v == false then
+        convert_npc[ self.id ] = nil
+      elseif obj and v == 1 then
+        -- тайник не перешёл в оффлайн попытаемся его туда запихнуть.
+        alife():set_switch_online( self.id, false )
+        alife():set_switch_offline( self.id, true )
+      elseif v == 1 then -- тайник в оффлайне. выталкиваем.
+        convert_npc[ self.id ] = nil
+        switch_online( self.id )      
+      end
+  else
+    convert_npc[ self.id ] = nil
+  end
+end
+
+
 
 --колбэк на создание непися (точнее на его переход в онлайн), использует следующую за ним функцию для выбора действия
 function on_npc_spawn(npc)
@@ -2219,10 +2220,9 @@ function write_stalker_params(tbl,sobj,noconvert)
   sobj:STATE_Read(stpk,size)
   sobj:UPDATE_Read(uppk)
   local npc=level.object_by_id(sobj.id)
-  if npc and (not noconvert) then
-    amk.convert_npc[sobj.id]=true
-		npc:stop_talk()
-    switch_offline(npc)
+  if npc and ( not noconvert ) then
+    convert_npc_timer( sobj.id, true ):start()
+    switch_offline( npc )
   end
 end
 
@@ -2237,11 +2237,6 @@ function write_monster_params(tbl,sobj)
   uppk:r_seek(0)
   sobj:STATE_Read(stpk,size)
   sobj:UPDATE_Read(uppk)
-  -- local npc=level.object_by_id(sobj.id)
-  -- if npc then
-    -- amk.convert_npc[sobj.id]=true
-    -- switch_offline(npc)
-  -- end
 end
 
 function get_anomaly_data(sobj)
