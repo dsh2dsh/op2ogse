@@ -77,7 +77,7 @@ protected = {
     5472,
     5473,
     5474,
-    573
+    573,
   },
   sections = {    -- секции объектов
     "volna_shron",
@@ -99,40 +99,26 @@ local smart_filters = {
 }
 
 
-local rel_enemy,rel_friend
+local rel_enemy, rel_friend
 
---радиус "обзора"
-local look_radius=50
---интенсивность поиска (количество отрабатываемых неписей)
---local search_intensivity=40
-local search_intensivity=60
--- продолжительность боев
-local max_rounds = 10
--- При каком уровне здоровья НПС считается раненым
-local health_wound = 0.20
-local health_wound_set = 0.02
--- Эталон firepower\distance при distance = 1 который снимет 100% health
-local base_fp = 1400
--- Коэффициент для расстояния
-local dist_coeff = 8
+-- радиус "обзора"
+local look_radius        = 50
+-- интенсивность поиска (количество отрабатываемых неписей)
+local search_intensivity = 60
 -- Вещи дешевле продает торговцам
-local sell_limit = 3000
--- Рейтинг за убийство. При убийстве более слабого - 0.5 * rate_kill_base, более сильного - 2 * rate_kill_base
-local rate_kill_base = 100
-local rate_art_found = 100
-local to_actor = 150
-local look_radius_box = 10
+local sell_limit         = 3000
+local rate_art_found     = 100
+local to_actor           = 150
+local look_radius_box    = 20
 
 local stalkers_comm = {
-  [ "actor" ]           = true,
-  [ "actor_dolg" ]      = true,
-  [ "actor_freedom" ]   = true,
-  [ "stalker" ]         = true,
-  [ "dolg" ]            = true,
-  [ "freedom" ]         = true,
-  [ "bandit" ]          = true,
-  [ "ecolog" ]          = true,
-  [ "csky" ]            = true,
+  [ "bandit"  ] = true,
+  [ "dolg"    ] = true,
+  [ "ecolog"  ] = true,
+  [ "freedom" ] = true,
+  [ "green"   ] = true,
+  [ "nebo"    ] = true,
+  [ "stalker" ] = true,
 }
 
 
@@ -184,14 +170,13 @@ function add_fresh_meat( obj )
       db.actor:id() ~= obj.id
       and obj.parent_id ~= db.actor:id()
     )
-    and not protected_items.actor_items_keep( obj:section_name() )
-    and not protected_items.is_no_offline_alife_npc( obj:section_name() )
-    and not get_bool( obj:section_name(), "quest_item", false )
-    and not get_bool( obj:section_name(), "watcher_act.bad_item", false )
+    and ( not always_keep_item[ obj:section_name() ] )
+    and ( not protected_items.actor_items_keep( obj:section_name() ) )
+    and ( not protected_items.is_no_offline_alife_npc( obj:section_name() ) )
+    and ( not get_bool( obj:section_name(), "quest_item", false ) )
+    and ( not get_bool( obj:section_name(), "watcher_act.bad_item", false ) )
   then
-    local map = alife():level_name(
-      game_graph():vertex( obj.m_game_vertex_id ):level_id()
-    )
+    local map = object_level_name( obj )
     if not off_npcs[ map ] then
       off_npcs[ map ] = {
         artefacts = {},
@@ -204,20 +189,13 @@ function add_fresh_meat( obj )
     if
       IsStalker( obj ) and obj.alive and obj:alive()
       and obj.health and obj:health() > 0 and obj.m_story_id == 4294967296
+      and obj:community() ~= "zombied"
       and not xr_companion.is_companion( obj.id )
     then
-      local flags = get_flags( obj.id )
-      if flags == 0 or flags == 2 then --Уберем тех, у кого on_hit есть.
-        if obj:community() ~= "zombied" then
-          table.insert(
-            off_npcs[ map ].stalkers, { id = obj.id, name = obj:name() }
-          )
-        end
-      end
-    elseif
-      dsh.is_artefact( obj:section_name() )
-      and obj.parent_id == 65535
-    then
+      table.insert(
+        off_npcs[ map ].stalkers, { id = obj.id, name = obj:name() }
+      )
+    elseif dsh.is_artefact( obj:section_name() ) and obj.parent_id == 65535 then
       table.insert(
         off_npcs[ map ].artefacts, { id = obj.id, name = obj:name() }
       )
@@ -236,6 +214,7 @@ function add_fresh_meat( obj )
       )
     elseif
       obj.parent_id ~= 65535 and obj.m_story_id == 4294967296
+      and sell_table[ obj:section_name() ]
       and not ( IsMonster( obj ) or IsStalker( obj ) )
     then
       local zz = alife():object( obj.parent_id )
@@ -401,9 +380,7 @@ function update_tables( level )
     if obj then
       if
         ggraph:valid_vertex_id( obj.m_game_vertex_id )
-        and sim:level_name(
-          ggraph:vertex( obj.m_game_vertex_id ):level_id()
-        ) == level
+        and object_level_name( obj ) == level
       then
         add_fresh_meat( obj )
       elseif obj.parent_id then
@@ -411,9 +388,7 @@ function update_tables( level )
         if
           p_obj
           and ggraph:valid_vertex_id( p_obj.m_game_vertex_id )
-          and sim:level_name(
-            ggraph:vertex( p_obj.m_game_vertex_id ):level_id()
-          ) == level
+          and object_level_name( p_obj ) == level
         then
           add_fresh_meat( obj )
         end
@@ -445,22 +420,25 @@ end
 
 --генерируем оффлайн события
 function offline_alife()
-  local lname = maps[ math.random( #maps ) ]
+  local lname = maps[ math.random( table.getn( maps ) ) ]
   local st    = 0
   amk.oau_reason = "cn offline_alife chp1"
-  if off_npcs[ lname ] then st = #off_npcs[ lname ].stalkers end
+  if off_npcs[ lname ] then st = table.getn( off_npcs[ lname ].stalkers ) end
   if st > 0 then
     amk.oau_reason = "cn offline_alife chp2"
     for search = 1, search_intensivity do
       amk.oau_reason = "cn offline_alife chp3"
       local rnd = math.random( st )
       amk.oau_reason = "cn offline_alife chp4"
-      if off_npcs[ lname ].stalkers[ rnd ] then 
+      if off_npcs[ lname ].stalkers[ rnd ] then
         amk.oau_reason = "cn offline_alife chp5"
         local victim = alife():object( off_npcs[ lname ].stalkers[ rnd ].id )
         amk.oau_reason = "cn offline_alife chp6"
         if
-          victim and ( not victim.online ) and victim.health
+          victim
+          and IsStalker( victim )
+          and object_level_name( victim ) == lname
+          and ( not victim.online ) and victim.health
           and victim.can_switch_online and victim:health() > 0
           and victim:can_switch_online()
           and victim:name() == off_npcs[ lname ].stalkers[ rnd ].name
@@ -470,21 +448,27 @@ function offline_alife()
           local vdata = collect_info( victim, lname )
           amk.oau_reason = "cn offline_alife chp8 "
             .. tostring( victim and victim:name() )
-          if #vdata.artefacts > 0 then
+          if table.getn( vdata.artefacts ) > 0 then
             -- есть арты
             amk.oau_reason = "cn offline_alife chp14 "
               .. tostring( victim and victim:name() )
             on_artifacts_found( victim, vdata )
             break   --прерываем цикл - событие отработано
-          elseif #vdata.inv_boxes > 0 then
+          elseif
+            table.getn( vdata.inv_boxes ) > 0 and victim:community() ~= "zombied"
+          then
             -- есть контейнеры. Надо обыскать.
             amk.oau_reason = "cn offline_alife chp18 "
               .. tostring( victim and victim:name() )
             on_inv_boxes_found( victim, vdata )
             break   --прерываем цикл - событие отработано
-          elseif items[ victim.id ] and #items[ victim.id ] > 0 then
+          elseif
+            items[ victim.id ] and table.getn( items[ victim.id ] ) > 0
+            and victim:community() ~= "zombied"
+          then
             --попробуем продать всякого
-            amk.oau_reason = "cn offline_alife chp17 " .. tostring( victim and victim:name() )
+            amk.oau_reason = "cn offline_alife chp17 "
+              .. tostring( victim and victim:name() )
             process_trade( victim )
             break
           end
@@ -502,27 +486,28 @@ function collect_info( victim, map )
   vdata.rank      = victim:rank()
   vdata.health    = victim:health()
   vdata.community = victim:community()
-  
   local sim = alife()
+
   --составляем список артов в зоне "видимости"
   vdata.artefacts = {}
-  if off_npcs[ map ].artefacts then
-    if #off_npcs[ map ].artefacts > 0 then
-      for a = 1, #off_npcs[ map ].artefacts do
-        if off_npcs[ map ].artefacts[ a ] then
-          local artefact = sim:object( off_npcs[ map ].artefacts[ a ].id )
-          if
-            artefact
-            and artefact.can_switch_online and artefact:can_switch_online()
-            and artefact:name() == off_npcs[ map ].artefacts[ a ].name
-            and artefact.parent_id == 65535
-            and victim.position:distance_to( artefact.position ) < look_radius
-            and sobj_is_far( artefact, to_actor )
-          then
-            table.insert(
-              vdata.artefacts, { id = artefact.id, name = artefact:name() }
-            )
-          end
+  if
+    off_npcs[ map ].artefacts and table.getn( off_npcs[ map ].artefacts ) > 0
+  then
+    for a = 1, table.getn( off_npcs[ map ].artefacts ) do
+      local artefact = sim:object( off_npcs[ map ].artefacts[ a ].id )
+      if
+        artefact and object_level_name( artefact ) == map
+        and artefact.can_switch_online and artefact:can_switch_online()
+        and artefact:name() == off_npcs[ map ].artefacts[ a ].name
+        and artefact.parent_id == 65535
+        and victim.position:distance_to( artefact.position ) < look_radius
+        and sobj_is_far( artefact, to_actor )
+      then
+        local zdist = victim.position:distance_to( artefact.position ) / look_radius
+        if math.random() > zdist then
+          table.insert(
+            vdata.artefacts, { id = artefact.id, name = artefact:name() }
+          )
         end
       end
     end
@@ -530,26 +515,24 @@ function collect_info( victim, map )
 
   --составляем список контейнеров в зоне "видимости"
   vdata.inv_boxes = {}
-  if off_npcs[ map ].inv_boxes then
-    if #off_npcs[ map ].inv_boxes > 0 then
-      for a = 1, #off_npcs[ map ].inv_boxes do
-        if off_npcs[ map ].inv_boxes[ a ] then
-          local inv_box = sim:object( off_npcs[ map ].inv_boxes[ a ].id )
-          if
-            inv_box
-            and inv_box.can_switch_online and inv_box:can_switch_online()
-            and inv_box:name() == off_npcs[ map ].inv_boxes[ a ].name
-            and victim.position:distance_to( inv_box.position ) < look_radius_box
-            and sobj_is_far( inv_box, to_actor )
-          then
-            local zdist = victim.position:distance_to( inv_box.position ) / look_radius_box
-            if math.random() > zdist then
-              if inv_box.parent_id == nil or inv_box.parent_id == 65535 then
-                table.insert(
-                  vdata.inv_boxes, { id = inv_box.id, name = inv_box:name() }
-                )
-              end
-            end
+  if
+    off_npcs[ map ].inv_boxes and table.getn( off_npcs[ map ].inv_boxes ) > 0
+  then
+    for a = 1, table.getn( off_npcs[ map ].inv_boxes ) do
+      local inv_box = sim:object( off_npcs[ map ].inv_boxes[ a ].id )
+      if
+        inv_box
+        and inv_box.can_switch_online and inv_box:can_switch_online()
+        and inv_box:name() == off_npcs[ map ].inv_boxes[ a ].name
+        and victim.position:distance_to( inv_box.position ) < look_radius_box
+        and sobj_is_far( inv_box, to_actor )
+      then
+        local zdist = victim.position:distance_to( inv_box.position ) / look_radius_box
+        if math.random() > zdist then
+          if inv_box.parent_id == nil or inv_box.parent_id == 65535 then
+            table.insert(
+              vdata.inv_boxes, { id = inv_box.id, name = inv_box:name() }
+            )
           end
         end
       end
@@ -562,31 +545,19 @@ end
 
 -- Моя прелесссть
 function on_artifacts_found( victim, vdata )
-  if ( victim == nil or vdata == nil ) then return end
-  local v_id      = victim.id
-  local b_stalker = false
-  -- Если сталкер - дадим опыт.
-  if victim and IsStalker( victim ) and victim.community then
-    local m_comm = victim:community()
-    if stalkers_comm[ m_comm ] then
-      b_stalker = true
-    end
-  end
+  local trade = false
   for i = 1, table.getn( vdata.artefacts ) do
-    local v_obj = vdata.artefacts[ i ]
-    if v_obj then
-      local object = alife():object( v_obj.id )
-      if object and object:name() == v_obj.name then
-        local obj = pick_item( victim, object )
-        if obj then
-          if b_stalker then
-            victim:set_rank( victim:rank() + rate_art_found )
-          end
-        end
+    local v_obj  = vdata.artefacts[ i ]
+    local object = alife():object( v_obj.id )
+    if object then
+      local obj = pick_item( victim, object )
+      if obj and victim:community() ~= "zombied" then
+        victim:set_rank( victim:rank() + rate_art_found )
+        trade = true
       end
     end
   end
-  process_trade( victim )
+  if trade then process_trade( victim ) end
 end
 
 
@@ -594,8 +565,6 @@ end
 -- до тайника.  если есть аномалии в радиусе 20м, меньше шансов или
 -- если тайник высоко, тоже не факт что долезет.
 function inv_box_is_avail( victim, box )
-  if (victim == nil or box == nil or box.id == 0) then return false end
-
   -- отсекаем сюжетные тайники
   if
     transparent_treasure.IsTaken( box:section_name() )
@@ -603,110 +572,95 @@ function inv_box_is_avail( victim, box )
   then
     return false
   end
-
-  if victim.position and box.position then
-    local n_rnd = math.random( 2, 5 )
-    if math.abs( box.position.y - victim.position.y ) > n_rnd then
-      return false
-    end
+  local n_rnd = math.random( 2, 5 )
+  if math.abs( box.position.y - victim.position.y ) > n_rnd then
+    return false
   end
-
-  local anom_list = amk_anoms.get_anomaly_list_for_pos( box.position, 20 )
-  local n_anoms   = table.getn( anom_list )
-  local n_rnd     = math.random( 100 )
-  -- смотрим вероятность. Чем больше аномалий, тем меньше шансов.
-  -- При 5 - точно до ящика не доберется
-  if n_rnd < n_anoms * 20 then return false end
-
+  if object_level_name( box ) == level.name() then
+    local anom_list = amk_anoms.get_anomaly_list_for_pos( box.position, 20 )
+    local n_anoms   = table.getn( anom_list )
+    local n_rnd     = math.random( 100 )
+    -- смотрим вероятность. Чем больше аномалий, тем меньше шансов. При
+    -- 5 - точно до ящика не доберется
+    if n_rnd < n_anoms * 20 then return false end
+  end
   return true
 end
 
 
 function on_inv_boxes_found( victim, vdata )
-  if ( victim == nil or vdata == nil ) then return end
-  local obj
-  local v_id = victim.id
-  local b_stalker = false
-  -- Если сталкер - дадим опыт.
-  if victim and IsStalker( victim ) and victim.community then
-    local m_comm = victim:community()
-    if stalkers_comm[ m_comm ] then
-      b_stalker = true
-    end
-  end
-  for i = 1, #vdata.inv_boxes do
-    local v_obj = vdata.inv_boxes[ i ]
-    if v_obj then
-      local object = alife():object( v_obj.id )
-      if object and object:name() == v_obj.name then
-        -- Idler ++-- если нычка доступна - можно шмонать
-        if inv_box_is_avail( victim, object ) then
-          if object:section_name() == "dsh_treasure_item" then
-            dsh_rukzak.on_inv_box_found( object.id, victim )
-          elseif items[ v_obj.id ] and #items[ v_obj.id ] > 0 then
-            for a = 1, #items[ v_obj.id ] do
-              local v_itA = items[ v_obj.id ][ a ]
-              if v_itA then
-                local itA = alife():object( v_itA.id )
-                if
-                  itA and itA:name() == v_itA.name
-                  and itA.parent_id == v_obj.id
-                then
-                  -- Решим, подбираем или нет?
-                  if is_valuable( itA ) then
-                    local l_objA = pick_item( victim, itA )
-                  end
-                end
+  local trade = false
+  for i = 1, table.getn( vdata.inv_boxes ) do
+    local v_obj  = vdata.inv_boxes[ i ]
+    local object = alife():object( v_obj.id )
+    if object then
+      -- Idler ++-- если нычка доступна - можно шмонать
+      if inv_box_is_avail( victim, object ) then
+        if object:section_name() == "dsh_treasure_item" then
+          dsh_rukzak.on_inv_box_found( object.id, victim )
+          trade = true
+        elseif items[ v_obj.id ] and table.getn( items[ v_obj.id ] ) > 0 then
+          for a = 1, table.getn( items[ v_obj.id ] ) do
+            local v_itA = items[ v_obj.id ][ a ]
+            local itA   = alife():object( v_itA.id )
+            if
+              itA
+              and itA.parent_id == v_obj.id
+              and itA:name() == v_itA.name
+            then
+              -- Решим, подбираем или нет?
+              if is_valuable( itA ) then
+                pick_item( victim, itA )
+                trade = true
               end
             end
           end
-          if b_stalker then
-            victim:set_rank( victim:rank() + rate_art_found )
-          end
+        end
+        if victim:community() ~= "zombied" then
+          victim:set_rank( victim:rank() + rate_art_found )
         end
       end
     end
   end
-  process_trade( victim )
+  if trade then process_trade( victim ) end
 end
 
 
 function pick_item( npc, obj )
-  local new
-  if npc and obj and db.actor and obj.id ~= db.actor:id() then
-    local section = obj:section_name()
-    new = alife():create(
-      section,
-      npc.position, npc.m_level_vertex_id, npc.m_game_vertex_id,
-      npc.id
-    )
-    if new then
-      if new.parent_id then
-        if not items[ new.parent_id ] then items[ new.parent_id ] = {} end
-        table.insert(
-          items[ new.parent_id ], { id = new.id, name = new:name() }
-        )
-        -- Idler++-- корректируем хабар в помеченных тайниках
-        gps_habar.insert_item( new.parent_id, new )
-      end
-      if
-        obj.parent_id
-        and items[ obj.parent_id ] and #items[ obj.parent_id ] > 0
-      then
-        for z = 1, #items[ obj.parent_id ] do
-          if
-            items[ obj.parent_id ][ z ]
-            and items[ obj.parent_id ][ z ].id == obj.id
-          then
-            -- Idler++-- корректируем хабар в помеченных тайниках
-            gps_habar.remove_item( obj.parent_id, items[ obj.parent_id ][ z ] )
-            table.remove( items[ obj.parent_id ], z )
-            break
-          end
+  local section = obj:section_name()
+  local new     = alife():create(
+    section,
+    npc.position, npc.m_level_vertex_id, npc.m_game_vertex_id,
+    npc.id
+  )
+  if new then
+    if new.parent_id then
+      if not items[ new.parent_id ] then items[ new.parent_id ] = {} end
+      table.insert(
+        items[ obj.parent_id ],
+        {
+          id    = new.id,
+          lname = object_level_name( new ),
+          name  = new:name(),
+        }
+      )
+      -- Idler++-- корректируем хабар в помеченных тайниках
+      gps_habar.insert_item( new.parent_id, new )
+    end
+    if
+      obj.parent_id
+      and items[ obj.parent_id ] and table.getn( items[ obj.parent_id ] ) > 0
+    then
+      for z = 1, table.getn( items[ obj.parent_id ] ) do
+        if items[ obj.parent_id ][ z ].id == obj.id then
+          -- Idler++-- корректируем хабар в помеченных тайниках
+          gps_habar.remove_item( obj.parent_id, items[ obj.parent_id ][ z ] )
+          table.remove( items[ obj.parent_id ], z )
+          break
         end
       end
-      alife():release( alife():object( obj.id ), true )
     end
+    alife():release( alife():object( obj.id ), true )
   end
   return new
 end
@@ -755,8 +709,8 @@ function process_trade( npc )
     and items[ npc.id ] and table.getn( items[ npc.id ] ) > 0
     and ( not protected_items.is_no_offline_alife_npc( npc:section_name() ) )
   then
-    local m_comm = npc:community()
     local b_stalker = false
+    local m_comm    = npc:community()
     if stalkers_comm[ m_comm ] then
       if npc.name and npc:name() ~= "agr_ratcatcher" then
         b_stalker = true
@@ -1069,7 +1023,7 @@ function process_trade( npc )
           function( a, b ) return get_item_cost( a ) > get_item_cost( b ) end
         )
         local zz = sell_list[ 1 ]
-        if zz and b_stalker == true and get_item_cost( zz ) >= sell_limit then
+        if zz and b_stalker and get_item_cost( zz ) >= sell_limit then
           -- Продадим через новости.
           news_main.on_offline_trade( npc, zz )
           table.remove( sell_list, 1 )
@@ -1161,7 +1115,7 @@ end
 
 function process_weapon_repair( our_weapons )
   for _, w in ipairs( our_weapons ) do
-    if w.cond < 1 then
+    if w.cond < 1 and not is_broken_wpn( w ) then
       local data = m_net_utils.get_weapon_data( w.obj )
       if data.condition < 0.9 then
         data.condition = data.condition + 0.1
@@ -1176,125 +1130,51 @@ end
 function process_weapon_repair_allowed() end
 
 
-function sobj_is_far(obj, distance)
-        local result = true
-        if (db.actor and obj and distance and obj.position and db.actor.position ) then
-                -- на одном ли уровне?
-                if obj.m_game_vertex_id and game_graph():valid_vertex_id(obj.m_game_vertex_id) then
-                local map = alife():level_name(game_graph():vertex(obj.m_game_vertex_id):level_id())
-                if (map and level.name() == map) then
-                        -- Достаточно ли далеко?
-                        if (obj.position:distance_to(db.actor:position()) < distance) then
-                                result = false
-                        end
-                end
-   end
-   end
-   return result
+function sobj_is_far( obj, distance )
+  local result = true
+  -- на одном ли уровне?
+  if object_level_name( obj ) == level.name() then
+    -- Достаточно ли далеко?
+    if obj.position:distance_to( db.actor:position() ) < distance then
+      result = false
+    end
+  end
+  return result
 end
 
 
-function box_is_protected(v)
-        if v then
-                local name = v:name()
-                local id = v.id
-                local sid = v.m_story_id
-                local sec = v:section_name()
-                
-                -- проверяем по ID объекта
-                if protected.ids[ id ] then return true end
-                
-                -- проверяем по имени объекта
-                for k, o in pairs(protected.names) do
-                        if o == name then
-                                return true
-                        end
-                end
-                
-                -- проверяем по story ID объекта
-                for k, o in pairs(protected.story_ids) do
-                        if o == sid then
-                                return true
-                        end
-                end
-
-                -- проверяем по секции объекта
-                for k, o in pairs(protected.sections) do
-                        if o == sec then
-                                return true
-                        end
-                end
-        end
-        return false
-end
-
-
-function npc_smart_is_peaceful(sobj)
-        local result = false
-        if (sobj and smart_filters and #smart_filters>0) then
-                if (sobj.smart_terrain_id and sobj:smart_terrain_id() and sobj:smart_terrain_id()~=65535) then
-                        local sm = alife():object(sobj:smart_terrain_id())
-                        if (sm and sm.name and sm:name()) then
-                                local sn = sm:name()
-                                for ks, vs in pairs(smart_filters) do
-                                        if (vs == sn) then
-                                                -- Ага, он у нас мирный.
-                                                result = true
-                                                break
-                                        end
-                                end
-                        end
-                end
-        end
-        return result
-end
-
-
-function get_flags(npc_id)
-        local flags = 0
-        local obj = alife():object(npc_id)
-        if obj then
-                if IAmAMonster[obj:clsid()] or IAmAStalker[obj:clsid()] then
-                        local char_ini = xr_logic.get_customdata_or_ini_file(obj, "<customdata>")
-                        if char_ini:section_exist("logic") then
-                                local from = ""
-                                local items = ""
-                                if char_ini:line_exist("logic", "on_hit") then
-                                        flags = 1
-                                end
-                                if char_ini:line_exist("logic", "on_death") then
-                                        flags = flags + 2
-                                end
-                        end
-                end
-        end
-        return flags
+function box_is_protected( v )
+  -- проверяем по ID объекта
+  if protected.ids[ v.id ] then return true end
+  -- проверяем по имени объекта
+  for _, o in ipairs( protected.names ) do
+    if o == v:name() then
+      return true
+    end
+  end
+  -- проверяем по story ID объекта
+  for _, o in ipairs( protected.story_ids ) do
+    if o == v.m_story_id then
+      return true
+    end
+  end
+  -- проверяем по секции объекта
+  for _, o in ipairs( protected.sections ) do
+    if o == v:section_name() then
+      return true
+    end
+  end
+  return false
 end
 
 
 function is_valuable( item )
   local result = false
-  if
-    item
-    and
-    not ( IAmAMonster[ item:clsid() ] or IAmAStalker[ item:clsid() ] )
-    and
-    not protected_items.actor_items_keep( item:section_name() )
-  then
-    -- Уники не подбираем (пока?)
-    if
-      always_keep_item[ item:section_name() ]
-      or
-      sell_table[ item:section_name() ] == nil
-    then
-      return false
-    end
-    local cost = get_item_cost( item )
-    if IAmAWeapon[ item:clsid() ] and cost >= 1000 then
-      result = true
-    elseif cost >= 800 then
-      result = true
-    end
+  local cost   = get_item_cost( item )
+  if IAmAWeapon[ item:clsid() ] and cost >= 1000 then
+    result = true
+  elseif cost >= 800 then
+    result = true
   end
   return result
 end
