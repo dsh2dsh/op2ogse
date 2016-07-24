@@ -345,6 +345,56 @@ function check_sound( self, who, sound_type, sound_position, sound_power )
 end
 
 
+function check_art_weapon( npc )
+  ------------------------------
+  -- Изредка движок сглюкивает, назначая неписю в слот артефакт этого
+  -- следует избежать, так как такие неписи застревают на попытке
+  -- применения арта как оружия
+  ------------------------------
+  local item_in_slot = npc:item_in_slot( 1 )
+  local act_item     = npc:active_item()
+  if act_item and item_in_slot and act_item:id() == item_in_slot:id() then
+    local item_in_slot_sec = act_item:section()
+    local item_in_slot_id  = act_item:id()
+    if
+      item_in_slot_sec and item_in_slot_id
+      and not (
+        string.find( item_in_slot_sec, "af_", 1, true )
+        or string.find( item_in_slot_sec, "caps_", 1, true )
+        or string.find( item_in_slot_sec, "_cocoon", -7, true )
+      )
+    then
+      -- Если непись получил арт в слот по ошибке при загрузке игры,
+      -- мы просто обновим ему оружие в руках и всё. Иначе, если он
+      -- взял арт в руки и отказывается его убирать, а лучшее оружие
+      -- получить не удаётся, придётся арт выбросить, отрелизить и
+      -- вернуть ему в рюкзак.
+      local bw     = npc:best_weapon()
+      local be     = npc:best_enemy()
+      local rem_id = npc:active_item():id()
+      npc:drop_item( npc:active_item() )
+      local s_obj = alife():object( rem_id )
+      if s_obj then
+        alife():release( s_obj, true )
+        alife():create(
+          item_in_slot_sec,
+          npc:position(), npc:level_vertex_id(), npc:game_vertex_id(), npc:id()
+        )
+      end
+      if bw and string.find( bw:section(), "wpn_" ) then
+        if be then
+          npc:set_item( object.fire1, bw )
+          return
+        else
+          npc:set_item( object.idle, bw )
+          return
+        end
+      end
+    end
+  end
+end
+
+
 class "motivator_binder" ( object_binder )
 function motivator_binder:__init( obj ) super( obj )
   self.loaded             = false
@@ -577,8 +627,31 @@ function motivator_binder:net_spawn( sobject )
     )
   end
 
+  self:subscribe_updaters()
+
   self.am:call( "on_npc_spawn", self.object, self )
   return true
+end
+
+
+function motivator_binder:subscribe_updaters()
+  -- выполнять по одному за апдейт
+  local s_name = "on_npc_update." .. self.object:id()
+  if self.object:alive() then
+    self.updaters = {
+      {
+        [ "signal" ] = s_name,
+        [ "self"   ] = self,
+        [ "fun"    ] = self.check_art_weapon,
+        [ "queued" ] = true,
+      },
+    }
+  else
+    self.updaters = {}
+  end
+  for _, s in ipairs( self.updaters ) do
+    self.am:subscribe( s )
+  end
 end
 
 
@@ -856,8 +929,18 @@ function motivator_binder:death_callback( victim, who )
   --// xr_companion
   xr_companion.companion_death( self.object )
 
+  self:unsubscribe_updaters()
+
   self.am:call( "on_npc_death", self.object, who )
   event( "npc_death" ):trigger({ victim = self.object, who = who })
+end
+
+
+function motivator_binder:unsubscribe_updaters()
+  for _, s in ipairs( self.updaters ) do
+    self.am:unsubscribe( s )
+  end
+  self.updaters = {}
 end
 
 
@@ -937,6 +1020,13 @@ function motivator_binder:update( delta )
   end
   self.am:call( "on_npc_update", self.object, delta )
   self.am:call( "on_npc_update." .. self.object:id(), self.object, delta )
+end
+
+
+-- Проверка артефакта в руках
+function motivator_binder:check_art_weapon()
+  self.am:reschedule( 1000 )
+  check_art_weapon( self.object )
 end
 
 
