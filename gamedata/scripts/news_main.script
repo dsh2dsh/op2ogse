@@ -70,7 +70,7 @@ local rel_friend = 1000
 news_stack = {}
 table_spawned = {}
 table_killed_by_actor = {}
-spammers = {}
+local spammers = {}
 
 
 function init()
@@ -476,35 +476,32 @@ function get_current_time()
 	return m_time
 end
 
-function get_npc_name(obj)
-	local m_s_name = ""
-	if (obj) then
-		if (isGameObject(obj)) then
-			if (obj.character_name) then
-				m_s_name = obj:character_name()
-			end
-		else
-			local ob = get_obj(obj.id)
-			if (ob and ob.character_name) then
-				m_s_name = ob:character_name()
-			else
-				if (amk and amk.read_stalker_params and IsNpcStalker(obj)) then
-					local tbl = amk.read_stalker_params(obj)
-					if(tbl and tbl.charname) then
-						m_s_name = tbl.charname
-					end
-				end
-			end
-		end
-	end
-	if (m_s_name == nil) then
-		m_s_name = ""
-	end
-	if (m_s_name == "") then
-		--m_s_name = get_npc_community(obj)
-	end
-	return m_s_name
+
+function get_npc_name( obj )
+  local m_s_name = ""
+  if obj then
+    if isGameObject( obj ) then
+      if obj.character_name then
+        m_s_name = obj:character_name()
+      end
+    else
+      local ob = get_obj( obj.id )
+      if ob and ob.character_name then
+        m_s_name = ob:character_name()
+      else
+        if amk.read_stalker_params and IsNpcStalker( obj ) then
+          local tbl = amk.read_stalker_params( obj )
+          if tbl and tbl.charname then
+            m_s_name = tbl.charname
+          end
+        end
+      end
+    end
+  end
+  if not m_s_name then m_s_name = "" end
+  return m_s_name
 end
+
 
 function get_npc_community(obj)
 	local m_s_c = ""
@@ -775,14 +772,6 @@ end
 
 function IsAnomaly(obj)
 	return (obj and amk_anoms.is_anomaly(obj:clsid()))
-	--[[if (obj) then
-		local otype = get_clsid(obj)
-		if (otype>172 and otype<180) then
-			return true
-		else		
-		end
-	end
-	return false]]
 end
 
 
@@ -836,7 +825,7 @@ function show_news(text, from, timeout, showtime, section)
 	if (timeout > 1000) then timeout = rnd(timer_general, timer_general * 4) end
 	dbglog("show_news ==> ["..timeout.."] "..from..": "..text)
 	
-	table.insert(spammers, from)
+	spammers[ from ] = true
 	
 	if not ogse_sleep_mgr.is_sleep_active() then
 		amk.send_tip(text, from, timeout, showtime, section)
@@ -2409,11 +2398,6 @@ function on_news()
 		for k,v in pairs(news_stack) do
 			if v.activated == nil then
 				if (v.lifetime > amk.game_minutes()) then
---[[					if (v.timeout < game_minutes) then -- Новость актуальна.
-						--ti(avail, k)
-					else
-						mylog("Not ready yet - ".. v.from) -- Еще не время.
-					end]]
 				else -- Новость устарела.
 						-- mylog("Too old - "..v.from..": "..v.text)
 					table_remove(news_stack, k)
@@ -2494,29 +2478,15 @@ function on_news()
 	if (timer_next_blow == 0) then
 		local next_time = ogse_weather_mgr.get_surge_time()
 		timer_next_blow = amk.game_minutes() + next_time * 60 -- в минутах
---[=[
-		local name, delay
-		for a=1,100,1 do
-		local tmp = amk.load_variable("gt"..a,nil)
-			if tmp ~= nil then
-				name 	= amk.load_variable("gt"..a, nil)		
-				delay 	= amk.load_variable("gd"..a, nil)
-				if (name and delay and name == "blow_shift") then
-					timer_next_blow = delay
-					--next_blow(delay)
-				end
-			end
-		end	
---]=]
 	end
 
     local gtime = amk.game_minutes()
-	
-	if (gtime - timer_alife_showed > timer_alife_freq) then
-		amk.oau_reason="cn on_news offline_alife start"
-		amk_offline_alife.offline_alife()
-		amk.oau_reason="cn on_news offline_alife exit"
-		timer_alife_showed = amk.game_minutes()
+
+	if gtime - timer_alife_showed > timer_alife_freq then
+	  amk.oau_reason = "cn on_news offline_alife start"
+	  amk_offline_alife.offline_alife()
+	  amk.oau_reason = "cn on_news offline_alife exit"
+	  timer_alife_showed = amk.game_minutes()
 	end
 	if (gtime - timer_blow_showed > timer_blow_freq) then
 		do_blow_news()
@@ -2524,9 +2494,6 @@ function on_news()
 	if (gtime - timer_eternal_stalker > timer_eternal_stalker_freq) then
 		do_eternal_stalker()	
 	end
-	--[[ if (gtime - timer_random_spawn > timer_random_spawn_freq) then
-		do_seen()
-	end ]]
 	if (gtime - timer_def_spawn > timer_def_spawn_freq) then
 		do_seen_monster()	
 	end	
@@ -2534,11 +2501,6 @@ function on_news()
 		on_daytime()
 	end
 end
-
---[[function game_minutes()
-	local gtime = level.get_time_days()*60*24+level.get_time_hours()*60+level.get_time_minutes()  --time in game minutes
-	return gtime
-end]]
 
 function on_offline_item_found(who, object)
 	if _debug == true then
@@ -2854,56 +2816,59 @@ function point_is_far(point, lv, gv, distance)
    return result
 end
 
-function get_nearest_stalker(level, point, dist_max, dist_min)
-	local sim = alife()
-	local obj = nil
-	local map = level
-	local min_dist = 1000000
-	if (dist_max == nil or dist_max == 0) then dist_max = dist_seen end
-	if (dist_min == nil) then dist_min = 0 end
-	if (map and point and amk_offline_alife.off_npcs[map] and amk_offline_alife.off_npcs[map].stalkers and #amk_offline_alife.off_npcs[map].stalkers > 0) then
-		for k, v in pairs(amk_offline_alife.off_npcs[map].stalkers) do
-			if v then
-				local stalker = sim:object(v.id)
-				-- На одном ли уровне?
-				if stalker and stalker.id ~= db.actor:id() and stalker.health and stalker.can_switch_online and stalker:can_switch_online() and stalker.m_game_vertex_id and game_graph():valid_vertex_id(stalker.m_game_vertex_id) then
-					local s_map = sim:level_name(game_graph():vertex(stalker.m_game_vertex_id):level_id())
-					if (map == s_map) then
-						if (stalker:health() > 0 and stalker.alive and stalker:alive()==true) then
-							local zz = get_npc_community(stalker)
-							if (zz == "stalker" or zz == "dolg" or zz == "freedom" or zz == "nebo" or zz == "green") then -- это сталкер
-								if (stalker.name and stalker:name() ~= "agr_ratcatcher") then
-								-- Достаточно ли далеко?
-									local s_dist = stalker.position:distance_to(point)
-									if (s_dist <= dist_max and s_dist >= dist_min and s_dist < min_dist) then
-										-- А не спамил ли он в последнее время?
-										local b_ok = true
-										if (spammers and #spammers > 0) then
-											local sn = get_npc_name(stalker)
-											if (sn ~= "" and sn ~= nil) then
-												for sk, sv in pairs(spammers) do
-													if (sv == sn) then
-														b_ok = false
-														break
-													end
-												end
-											end
-										end
-										if (b_ok == true) then
-											min_dist = s_dist
-											obj = stalker
-										end
-									end
-								end
-							end
-						end
-					end
-				end
-			end
-		end
-	end
-	return obj
+
+function get_nearest_stalker( level, point, dist_max, dist_min )
+  local sim      = alife()
+  local map      = level
+  local min_dist = 1000000
+  if dist_max == nil or dist_max == 0 then dist_max = dist_seen end
+  if dist_min == nil then dist_min = 0 end
+  local obj
+  if
+    map and point
+    and amk_offline_alife.off_npcs[ map ]
+    and table.getn( amk_offline_alife.off_npcs[ map ].stalkers ) > 0
+  then
+    for _, v in ipairs( amk_offline_alife.off_npcs[ map ].stalkers ) do
+      local stalker = sim:object( v.id )
+      -- На одном ли уровне?
+      if
+        stalker
+        and game_graph():valid_vertex_id( stalker.m_game_vertex_id )
+        and object_level_name( stalker ) == map
+        and stalker:alive() and stalker:health() > 0
+        and stalker:can_switch_online()
+      then
+        local zz = get_npc_community( stalker )
+        if
+          zz == "stalker" or zz == "dolg" or zz == "freedom" or zz == "nebo"
+          or zz == "green"
+        then -- это сталкер
+          if stalker.name and stalker:name() ~= "agr_ratcatcher" then
+            -- Достаточно ли далеко?
+            local s_dist = stalker.position:distance_to( point )
+            if
+              s_dist <= dist_max and s_dist >= dist_min and s_dist < min_dist
+            then
+              -- А не спамил ли он в последнее время?
+              local b_ok = true
+              local sn   = get_npc_name( stalker )
+              if sn ~= "" and spammers[ sn ] then
+                b_ok = false
+              end
+              if b_ok then
+                min_dist = s_dist
+                obj      = stalker
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  return obj
 end
+
 
 function isAlive(story_id)
 	local sim = alife()
@@ -2934,10 +2899,6 @@ end
 -- Функция отключена, чтобы всегда приходили сообщения о погибших квестовиках и ограбленных нычках
 function isIsolatedLevel(level_name)
 	local result = false
---[[	local ln = level_name
-	if (ln == "av_peshera" or ln == "l03u_agr_underground" or ln == "l04u_labx18" or ln == "l08u_brainlab" or ln == "l10u_bunker" or ln == "peshera" or ln == "l12u_control_monolith" or ln == "l12u_sarcofag" or ln == "jupiter_underground" or ln == "labx8" or ln == "warlab") then
-		result = true
-	end]]
 	return result
 end
 
