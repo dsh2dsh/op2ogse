@@ -19,6 +19,7 @@ function attach(sm)
   sm:subscribe({ signal = "on_spawn",    fun = this.on_spawn       })
   sm:subscribe({ signal = "on_update",   fun = this.check_my_suit_hud_update })
   sm:subscribe({ signal = "on_update",   fun = this.show_time_update })
+  sm:subscribe({ signal = "on_update",   fun = this.ui_rad_update  })
   if
     blurs_enable > 0
     and amk.load_variable( "option_hud", 2 ) == 2
@@ -49,6 +50,7 @@ function on_spawn()
   else
     suithud, suithud_enable = false, false
   end
+  check_sniper_timer():start()
 end
 
 
@@ -59,6 +61,7 @@ end
 
 class "check_sniper_timer" ( ogse_qt.quick_timer )
 function check_sniper_timer:__init() super()
+  self.hidden         = false
   self.on_sniper_mode = false
   self.sniper_mode    = false
 end
@@ -130,40 +133,34 @@ end
 
 -- Обновление динамических элементов худа
 function check_sniper_timer:update_hud_elements()
-  if db.actor and db.actor:alive() then
-    if self.sniper_mode == true then
+  if self.sniper_mode then
+    if not self.hidden then
       if suithud_enable then
         suithud_enable = false
         set_my_suit_hud()
       end
       ui_rad.update( false )
-      if not self.on_sniper_mode then
-        sak.show_time()
-        if not wpn_IsRotatingToZoom( db.actor:active_item() ) then
-          ogse_night_vision.on_sniper_mode( true )
-          self.on_sniper_mode = true
-        end
-      end
-    else
-      if suithud and not suithud_enable then
-        suithud_enable = true
-        check_my_suit_hud()
-      end
-      ui_rad.update( true )
-      if self.on_sniper_mode then
-        ogse_night_vision.on_sniper_mode( false )
-        sak.show_time()
-        self.on_sniper_mode = false
+      sak.show_time()
+      self.hidden = true
+    end
+    if not self.on_sniper_mode then
+      if not wpn_IsRotatingToZoom( db.actor:active_item() ) then
+        ogse_night_vision.on_sniper_mode( true )
+        self.on_sniper_mode = true
       end
     end
   else
-    if suithud_enable then
-      suithud_enable = false
-      set_my_suit_hud()
+    if suithud and not suithud_enable then
+      suithud_enable = true
+      check_my_suit_hud()
     end
-    if amk.load_variable( "option_rad", 1 ) > 0 then
-      ui_rad.update( false )
+    ui_rad.update( true )
+    sak.show_time()
+    if self.on_sniper_mode then
+      ogse_night_vision.on_sniper_mode( false )
+      self.on_sniper_mode = false
     end
+    self.hidden = false
   end
 end
 
@@ -179,7 +176,9 @@ end
 
 -- Проверка нажатия клавиш
 function chek_keys( key, bind )
-  if sniper_mode or level.main_input_receiver() then return end
+  if sniper_mode or level.main_input_receiver() or not db.actor:alive() then
+    return
+  end
   if bind == key_bindings.kWPN_ZOOM then
     need_sniper_chek = true
     check_sniper_timer():start()
@@ -457,11 +456,20 @@ end
 
 local active_pnv, active_torch
 function helmet_on_off()
+  local outfit = db.actor:get_current_outfit()
+  if
+    not (
+      outfit
+      and get_bool( outfit:section(), "dynamic_hud_enable", false )
+    )
+  then
+    return
+  end
   if suithud then
     suithud, suithud_enable = false, false
     ogse.save_var( script_name() .. ".helmet_on_off.status", false, "bool" )
   else
-    suithud, suithud_enable = true, false
+    suithud, suithud_enable = true, true
     ogse.save_var( script_name() .. ".helmet_on_off.status", true,  "bool" )
     dsh_hud_fx.force_on_helmet()
   end
@@ -475,6 +483,7 @@ function helmet_on_off()
     torch:switch_torch( false )
   end
   set_my_suit_hud()
+  check_my_suit_hud()
 end
 
 
@@ -513,4 +522,10 @@ end
 function show_time_update()
   ogse_signals.get_mgr():reschedule( 2000 )
   sak.show_time()
+end
+
+
+function ui_rad_update()
+  ogse_signals.get_mgr():reschedule( 1000 )
+  ui_rad.update( db.actor:alive() and not sniper_mode )
 end
