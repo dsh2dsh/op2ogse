@@ -26,11 +26,7 @@ local death_ini  = ini_file( "misc\\ph_box_generic.ltx" )
 local configured = false
 
 
-class "ph_item_box"
-function ph_item_box:__init( obj )
-  self.obj = obj
-  if configured then return end
-
+function configure()
   --' Множители и минимаксы для выпадения вещей в зависимости от уровня
   local level_name = level.name()
   if not death_ini:section_exist( level_name ) then
@@ -88,16 +84,35 @@ function ph_item_box:__init( obj )
     local result, id, value = death_ini:r_line( "ammo_sections", i, "", "" )
     ammo_sections[ id ] = true
   end
+end
 
-  configured = true
+
+class "ph_item_box"
+function ph_item_box:__init( obj )
+  if not configured then
+    configure()
+    configured = true
+  end
+  self.obj = obj
+
+  local ini  = self.obj:spawn_ini()
+  self.items = r_items( ini, "drop_box", "items" )
+
+  local community  = get_string( "drop_box", "community", "def_box", ini )
+  self.spawn_items = item_by_community[ community ]
+  if not self.spawn_items then
+    log2(
+      "xr_box: [%s]: wrong community -- %s setting default def_box ",
+      self.obj:name(), community
+    )
+    self.spawn_items = item_by_community[ "def_box" ]
+  end
 end
 
 
 function ph_item_box:spawn_items()
-  local ini   = self.obj:spawn_ini()
-  local items = r_items( ini, "drop_box", "items" )
-  if items then
-    for _, v in ipairs( items ) do
+  if self.items then
+    for _, v in ipairs( self.items ) do
       create_obligatory_items( self.obj, v.section, v.count )
     end
     return
@@ -105,26 +120,14 @@ function ph_item_box:spawn_items()
   -- Доспавниваем необходимое количество итемов:
   -- Необходимо составить список объектов которые могут быть
   -- заспавнены для персонажа
-  local community   = utils.cfg_get_string(
-    ini, "drop_box", "community", self.obj, false, "", "def_box"
-  )
-  local spawn_items = item_by_community[ community ]
-  --' Если комьюнити задана не верно, то ставим дефолт и срем в лог.
-  if not spawn_items then
-    log2(
-      "xr_box: [%s]: wrong community -- %s setting default def_box ",
-      self.obj:name(), community
-    )
-    spawn_items = item_by_community[ "def_box" ]
-  end
-  for k, v in pairs( spawn_items ) do
+  for k, rnd in pairs( self.spawn_items ) do
     --' По каждому объекту необходимо получить количество
     local number = math.ceil(
       math.random( count_by_level[ k ].min, count_by_level[ k ].max )
     )
-    if number > 0 and v > 0 then
+    if number > 0 and rnd > 0 then
       --' Необходимо заспавнить нужное количество.
-      create_items( self.obj, k, number, v )
+      create_items( self.obj, k, number, rnd )
     end
   end
 end
