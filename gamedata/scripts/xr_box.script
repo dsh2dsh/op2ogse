@@ -25,6 +25,9 @@ local ammo_sections = {}
 local death_ini  = ini_file( "misc\\ph_box_generic.ltx" )
 local configured = false
 
+-- ящики с таким визуалом через некоторое время снова появятся
+local recreatable = [[physics\box\box_wood_01]]
+
 
 function configure()
   --' Множители и минимаксы для выпадения вещей в зависимости от уровня
@@ -96,6 +99,7 @@ function ph_item_box:__init( obj )
   self.obj = obj
 
   local ini  = self.obj:spawn_ini()
+  self.name  = get_string( "drop_box", "orig_name", self.obj:name(), ini )
   self.items = r_items( ini, "drop_box", "items" )
 
   local community  = get_string( "drop_box", "community", "def_box", ini )
@@ -111,6 +115,9 @@ end
 
 
 function ph_item_box:spawn_items()
+  if self.obj:get_visual_name() == recreatable then
+    self:recreate_box()
+  end
   if self.items then
     for _, v in ipairs( self.items ) do
       create_obligatory_items( self.obj, v.section, v.count )
@@ -130,6 +137,48 @@ function ph_item_box:spawn_items()
       create_items( self.obj, k, number, rnd )
     end
   end
+end
+
+
+function ph_item_box:recreate_box()
+  local items = {}
+  for k, rnd in pairs( item_by_community[ "def_box" ] ) do
+    local n = math.ceil(
+      math.random( count_by_level[ k ].min, count_by_level[ k ].max )
+    )
+    if n > 0 and rnd > 0 and math.random() <= rnd then
+      table.insert( items, k )
+    end
+  end
+  items     = table.concat( items, "," )
+  local pos = self.obj:position()
+  dsh.start_gtimerDHMS(
+    script_name() .. ".recreate_box." .. self.name,
+    0, math.random( 20, 24 * 7 ), 0, 0,
+    script_name() .. ".recreate_box_on_timer",
+    self.name, recreatable, items, pos.x, pos.y, pos.z,
+    self.obj:level_vertex_id(), self.obj:game_vertex_id()
+  )
+end
+
+
+function recreate_box_on_timer( name, vis, items, x, y, z, lvid, gvid )
+  local sobj = alife():create(
+    "physic_destroyable_object",
+    vector():set( tonumber( x ), tonumber( y ), tonumber( z ) ),
+    tonumber( lvid ), tonumber( gvid )
+  )
+  local pk = xs_netpk.net_alife_object_physic( sobj )
+  ASSERT( pk:isOk(), "can't read netpacket of %s", sobj:name() )
+  local data = pk:get()
+  data.visual_name = vis
+  data.custom_data:setString(
+    "[drop_box]\norig_name = " .. name
+    .. "\ncommunity = def_box\nitems = " .. items .. "\n"
+  )
+  data.physic_type = 3
+  data.mass        = 10
+  pk:set( data )
 end
 
 
@@ -163,23 +212,14 @@ function create_items( obj, section, number, rnd )
 end
 
 
-function parse_names( s )
-  local t = {}
-  for name in string.gfind( s, "([%w_%-.\\]+)%p*" ) do
-    table.insert( t, name )
-  end
-  return t
-end
-
-
 function r_items( spawn_ini, section, line )
   if spawn_ini:line_exist( section, line ) then
     -- если default-ов больше, чем значений в ini, то забить
     -- недостающие последним значением из ini
-    local t         = parse_names( spawn_ini:r_string( section, line ) )
+    local t         = parse_names( get_string( section, line, "", spawn_ini ) )
     local n         = table.getn( t )
     local ret_table = {}
-    local k = 1
+    local k         = 1
     while k <= n do
       local item = {}
       item.section = t[ k ]
