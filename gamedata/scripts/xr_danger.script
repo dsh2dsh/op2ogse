@@ -31,23 +31,6 @@ local count_update 			= {}		-- Счетчик апдейтов
 
 local always_ignore_danger_from = { m_car = "true" }
 
-local in_danger_state = {}
-
-function check_in_danger(npc)
-	if in_danger_state[npc:name()] then
-		return true
-	end
-	return false
-end
-
-local function add_in_danger(npc)
-	in_danger_state[npc:name()] = true
-end
-
-local function remove_in_danger(npc)
-	in_danger_state[npc:name()] = nil
-end
-
 ----------------------------------------------------------------------------------------------------------------------
 -- EVALUATORS
 ----------------------------------------------------------------------------------------------------------------------
@@ -62,13 +45,15 @@ function evaluator_danger:evaluate()
 	
 	if count_update[self.object:id()] and count_update[self.object:id()] <= engage_after_update then
 		count_update[self.object:id()] = count_update[self.object:id()] + 1
-		remove_in_danger(self.object)
 		return false
 	elseif not count_update[self.object:id()] then
 		count_update[self.object:id()] = 0
-		remove_in_danger(self.object)
 		return false			
 	end	
+	
+	if not self.object:alive() then
+		return false
+	end
 
 	if self.mgr == nil then
 		self.mgr = self.object:motivation_action_manager()
@@ -89,7 +74,6 @@ function evaluator_danger:evaluate()
 		-- printf("DANGER [%s] [FALSE] no danger", self.object:name())
 		self.danger_time = nil
 		write_log("!!XR_DANGER_NOBD".." ["..self.object:name().."]")
-		remove_in_danger(self.object)
 		return false
 	end
 	
@@ -130,7 +114,6 @@ function evaluator_danger:evaluate()
 	if best_danger_object == nil then
 	--	printf("DANGER [%s] [FALSE] no object", self.object:name())
 		write_log("!!XR_DANGER_NOOBJ".." ["..self.object:name().."]")
-		remove_in_danger(self.object)
 		return false
 	end	
 	
@@ -149,12 +132,10 @@ function evaluator_danger:evaluate()
 	
 	if is_monster_obj or is_stalker_obj then
 		if is_still_alive == false and bd_type ~= danger_object.entity_corpse then
-			remove_in_danger(self.object)
 			return false			
 		end
 	else
 		if bd_type == danger_object.enemy_sound then
-			remove_in_danger(self.object)
 			return false	
 		end		
 	end
@@ -164,7 +145,6 @@ function evaluator_danger:evaluate()
 	--' проверка не находится ли денжер в списке вечнозапрещенных.(БТР, Вертолеты и тд)
 	if always_ignore_danger_from[best_danger_section_name] == "true" then
 		-- printf("DANGER [%s] [FALSE] forbidded", self.object:name())
-		remove_in_danger(self.object)
 		return false
 	end	
 	
@@ -174,14 +154,12 @@ function evaluator_danger:evaluate()
 	if is_monster_obj then
 		if not self.object:see(best_danger_object) and best_danger_object:position():distance_to(self.object:position()) > 40 then
 			write_log("!!XR_DANGER_MON_AWAY".." ["..self.object:name().."]")
-			remove_in_danger(self.object)
 			return false
 		end
 	-- И неписей
 	elseif is_stalker_obj then	
-		if not self.object:see(best_danger_object) and not best_danger_object:see(self.object) and best_danger_object:position():distance_to(self.object:position()) > 150 then
+		if not self.object:see(best_danger_object) and is_still_alive and not best_danger_object:see(self.object) and best_danger_object:position():distance_to(self.object:position()) > 150 then
 			write_log("!!XR_DANGER_STALK_AWAY".." ["..self.object:name().."]")
-			remove_in_danger(self.object)
 			return false
 		end		
 	end
@@ -189,7 +167,6 @@ function evaluator_danger:evaluate()
 	if is_stalker_obj and best_danger_object:id() == self.object:id() then
 		write_log("!!XR_DANGER_SELF_FUCK_YOU_IDIOT".." ["..self.object:name().."]")
 		-- три года на зоне, вся жопа в шрамах, сам себя боюсь
-		remove_in_danger(self.object)
 		return false
 	end		
 	
@@ -206,7 +183,6 @@ function evaluator_danger:evaluate()
 		then
 			-- printf("DANGER [%s] [FALSE] actor_danger", self.object:name())
 			write_log("!!XR_DANGER_ACTOR".." ["..self.object:name().."]")
-			remove_in_danger(self.object)
 			return false
 		end	
 	end
@@ -224,22 +200,18 @@ function evaluator_danger:evaluate()
 		or ((self.object:relation(best_danger_object) ~= game_object.enemy) and (best_danger_object:relation(self.object) ~= game_object.enemy))) then
 			if not best_danger_object:best_enemy() and not best_danger_object:best_danger() then
 				write_log("!!XR_DANGER_ATTK_SND".." ["..self.object:name().."]")
-				remove_in_danger(self.object)
 				return false
 			elseif best_danger_object:best_danger() then 		
 				local bdo_bd = best_danger_object:best_danger() -- ужас друга
 				local best_danger_object_test = bdo_bd:object() -- предмет ужаса друга
 				if best_danger_object_test and best_danger_object_test:id() == best_danger_object:id() then
 					write_log("!!XR_DANGER_ATTK_SND_SELF_IDIOT".." ["..self.object:name().."]") -- сам себя боится, идиот. Игнорируем.
-					remove_in_danger(self.object)
 					return false
 				elseif best_danger_object_test and best_danger_object_test:id() == self.object:id() then
 					write_log("!!XR_DANGER_ATTK_WE_ARE_FRIENDS_IDIOT".." ["..self.object:name().."]") -- нас боится, при этом дружелюбен, идиот. Игнорируем.
-					remove_in_danger(self.object)
 					return false
 				elseif best_danger_object_test and (IsStalker(best_danger_object_test) or IsMonster(best_danger_object_test)) and not best_danger_object_test:alive() then	
 					write_log("!!XR_DANGER_ATTK_DANGER_DEAD_IDIOT".." ["..self.object:name().."]") -- боится атаки трупа. Игнорируем.
-					remove_in_danger(self.object)
 					return false
 				end				
 			end
@@ -252,7 +224,6 @@ function evaluator_danger:evaluate()
 		if has_alife_info("blowout") or 
 			has_alife_info("pre_blowout") or 
 			has_alife_info("pre_blowout2")  then
-			remove_in_danger(self.object)
 			return false
 		end	
 		if is_stalker_obj and 
@@ -273,7 +244,6 @@ function evaluator_danger:evaluate()
 					a = a + 1
 				end
 				if killer == best_danger_object:id() then
-					remove_in_danger(self.object)
 					return false -- самоубийцы нас не интересуют
 				end
 				if (time_died+(30*60*1000)) > game.time() then
@@ -310,7 +280,6 @@ function evaluator_danger:evaluate()
 			end
 		end		
 		write_log("!!XR_DANGER_IGNORE_CORPSE".." ["..self.object:name().."]")
-		remove_in_danger(self.object)
 		return false
 		--'end
 	end
@@ -321,7 +290,6 @@ function evaluator_danger:evaluate()
 	if is_stalker_obj and best_danger_object:character_community() == self.object:character_community()  then
 		if not self.object:relation(best_danger_object) == game_object.enemy then 
 			write_log("!!XR_DANGER_FRIENDS".." ["..self.object:name().."]")
-			remove_in_danger(self.object)
 			return false
 		end
 	end	
@@ -337,13 +305,11 @@ function evaluator_danger:evaluate()
 		if self.object:character_community() == "zombied" then
 		--	printf("DANGER [%s] [FALSE] ignore grenade for community [zombied]", self.object:name())
 			write_log("!!XR_DANGER_ZOM_G".." ["..self.object:name().."]")
-			remove_in_danger(self.object)
 			return false
 		end
 		if self.a and self.a.ignore_types and self.a.ignore_types["grenade"] == true then
 	--		printf("DANGER [%s] [FALSE] ignore grenade", self.object:name())
 			write_log("!!XR_DANGER_IGNORE_GREN".." ["..self.object:name().."]")
-			remove_in_danger(self.object)
 			return false		
 		end
 	elseif bd_type == danger_object.entity_attacked or
@@ -351,7 +317,6 @@ function evaluator_danger:evaluate()
 		if (self.a and self.a.ignore_types and self.a.ignore_types["hit"] == true) or (is_stalker_obj and self.object:relation(best_danger_object) == game_object.friend) then
 	--		printf("DANGER [%s] [FALSE] ignore hit", self.object:name())
 			write_log("!!XR_DANGER_IGNORE_HIT".." ["..self.object:name().."]")
-			remove_in_danger(self.object)
 			return false
 		end	
 	elseif bd_type == danger_object.enemy_sound or
@@ -360,13 +325,11 @@ function evaluator_danger:evaluate()
 		if has_alife_info("blowout") or 
 			has_alife_info("pre_blowout") or 
 			has_alife_info("pre_blowout2")  then
-			remove_in_danger(self.object)
 			return false
 		end			   
 		if self.a and self.a.ignore_types and self.a.ignore_types["sound"] == true then
 			write_log("!!XR_DANGER_IGNORE_SOUND".." ["..self.object:name().."]")
 	--		printf("DANGER [%s] [FALSE] ignore sound", self.object:name())
-			remove_in_danger(self.object)
 			return false
 		end	
 	end
@@ -388,7 +351,6 @@ function evaluator_danger:evaluate()
 	    then
 		    -- printf("DANGER [%s]->[%s] [FALSE] ignore_danger", self.object:name(), best_danger_name)
 			write_log("!!XR_DANGER_IGNORE".." ["..self.object:name().."]")
-			remove_in_danger(self.object)
 		    return false
 	    end
     end	    
@@ -401,7 +363,6 @@ function evaluator_danger:evaluate()
 	   turret_mgun.is_friendly_turret(self.object, best_danger_object, best_danger:position()) then
 	   write_log("!!XR_DANGER_TURRET".." ["..self.object:name().."]")
 		-- printf("DANGER [%s] [FALSE] friendly turret", self.object:name())
-		remove_in_danger(self.object)
 		return false
 	end
 	
@@ -411,7 +372,6 @@ function evaluator_danger:evaluate()
 	-- Отсеиваем по дистанции
 	if check_danger_distance(self.object, best_danger) == false then
 		-- printf("DANGER [%s]->[%s] [FALSE] danger_distance", self.object:name(), best_danger_name)
-		remove_in_danger(self.object)
 		return false
 	end
 	
@@ -421,7 +381,6 @@ function evaluator_danger:evaluate()
 	if sr_danger.check_danger_position(best_danger:position()) then
 		write_log("!!XR_DANGER_ZONE".." ["..self.object:name().."]")
 		-- printf("DANGER [%s]->[%s] [FALSE] nodanger_zone", self.object:name(), best_danger_name)
-		remove_in_danger(self.object)
 		return false
 	end
 	
@@ -431,7 +390,6 @@ function evaluator_danger:evaluate()
 	if xr_gulag.is_info_restricted(self.object:id(), best_danger:position()) then
 		-- printf("DANGER [%s]->[%s] [FALSE] info restrictor", self.object:name(), best_danger_name)
 		write_log("!!XR_DANGER_RESTRICT".." ["..self.object:name().."]")
-		remove_in_danger(self.object)
 		return false
 	end
 	
@@ -441,7 +399,6 @@ function evaluator_danger:evaluate()
 	if xr_wounded.is_heavy_wounded_by_id(self.object:id()) then
 		write_log("!!XR_DANGER_WOUNDED".." ["..self.object:name().."]")
 		-- printf("DANGER [%s]->[%s] [FALSE] heavy_wounded", self.object:name(), best_danger_name)
-		remove_in_danger(self.object)
 		return false
 	end
 	
@@ -455,11 +412,9 @@ function evaluator_danger:evaluate()
 			-- write_log("!!BEST_DANGER 2 for "..self.object:name().." is "..best_danger_name.." section "..best_danger_section_name.." type "..bd_type)
 			write_log("!!XR_DANGER_CAMPER".." ["..self.object:name().."]")
 			ogse_debug.add_active_danger( self.object, script_name(), "dan_camp_gren" )
-			add_in_danger(self.object)
 			return true
 		end
 		write_log("!!XR_DANGER_CAMPER_2".." ["..self.object:name().."]")
-		remove_in_danger(self.object)
 		return false
 	else
 	
@@ -478,12 +433,10 @@ function evaluator_danger:evaluate()
 				write_log("!!XR_DANGER_INERTION_1".." ["..self.object:name().."]")
 
 				ogse_debug.add_active_danger( self.object, script_name(), "dan_time_("..type_to_show..")["..passed_time.."]" )
-				add_in_danger(self.object)
 				return true
 			else
 				-- printf("DANGER [%s]: [%s] [FALSE] expiration time [%s]", self.object:name(), passed_time, bd_type)
 				write_log("!!XR_DANGER_INERTION_2".." ["..self.object:name().."]")
-				remove_in_danger(self.object)
 				return false
 			end
 		end
@@ -493,7 +446,6 @@ function evaluator_danger:evaluate()
 	write_log("!!XR_DANGER_END".." ["..self.object:name().."]")
 
 	-- printf("DANGER [%s]->[%s] [FALSE] default", self.object:name(), best_danger_name)
-	remove_in_danger(self.object)
 	return false
 end
 
