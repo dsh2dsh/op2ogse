@@ -44,7 +44,7 @@ function configure()
   local item_count_section = "item_count_" .. level.get_game_difficulty()
   local n = death_ini:line_count( item_count_section )
   for i = 0, n - 1 do
-    local result, id, value = death_ini:r_line(item_count_section,i,"","")
+    local result, id, value = death_ini:r_line( item_count_section,i,"","" )
     --' Нужно распарсить value в два значения
     local t = parse_nums( value )
     if t[ 1 ] == nil then
@@ -102,15 +102,41 @@ function ph_item_box:__init( obj )
   self.name  = get_string( "drop_box", "orig_name", self.obj:name(), ini )
   self.items = r_items( ini, "drop_box", "items" )
 
-  local community  = get_string( "drop_box", "community", "def_box", ini )
-  self.spawn_items = item_by_community[ community ]
-  if not self.spawn_items then
+  local community   = get_string( "drop_box", "community", "def_box", ini )
+  self.random_items = item_by_community[ community ]
+  if not self.random_items then
     log2(
       "xr_box: [%s]: wrong community -- %s setting default def_box ",
       self.obj:name(), community
     )
-    self.spawn_items = item_by_community[ "def_box" ]
+    self.random_items = item_by_community[ "def_box" ]
   end
+
+  self.xyzlg = get_string( "drop_box", "orig_xyzlg", self.obj:name(), ini )
+  if self.xyzlg then
+    self.xyzlg = parse_nums( self.xyzlg )
+  else
+    self:configure_xyzlg()
+  end
+end
+
+
+function ph_item_box:configure_xyzlg()
+  local sobj = alife():object( self.obj:id() )
+  ASSERT( sobj, "%s not found in alife()", self.obj:name() )
+  local pk = xs_netpk.net_alife_object_physic( sobj )
+  ASSERT( pk:isOk(), "can't read netpacket of %s", sobj:name() )
+  local data = pk:get()
+  local cd   = data.custom_data:getTable()
+  local drop_box = cd[ "drop_box" ]
+  ASSERT( drop_box, "[drop_box] not found in %s", sobj:name() )
+  local pos = self.obj:position()
+  self.xyzlg = {
+    pos.x, pos.y, pos.z, self.obj:level_vertex_id(), self.obj:game_vertex_id()
+  }
+  drop_box.orig_xyzlg = table.concat( self.xyzlg, "," )
+  data.custom_data:set( cd )
+  pk:set( data )
 end
 
 
@@ -127,7 +153,7 @@ function ph_item_box:spawn_items()
   -- Доспавниваем необходимое количество итемов:
   -- Необходимо составить список объектов которые могут быть
   -- заспавнены для персонажа
-  for k, rnd in pairs( self.spawn_items ) do
+  for k, rnd in pairs( self.random_items ) do
     --' По каждому объекту необходимо получить количество
     local number = math.ceil(
       math.random( count_by_level[ k ].min, count_by_level[ k ].max )
@@ -156,27 +182,27 @@ function ph_item_box:recreate_box()
     script_name() .. ".recreate_box." .. self.name,
     0, math.random( 20, 24 * 7 ), 0, 0,
     script_name() .. ".recreate_box_on_timer",
-    self.name, recreatable, items,
-    pos.x, pos.y, pos.z,
-    self.obj:level_vertex_id(),
-    self.obj:game_vertex_id()
+    self.name, recreatable, items, unpack( self.xyzlg )
   )
 end
 
 
 function recreate_box_on_timer( name, vis, items, x, y, z, lvid, gvid )
+  local xyz = { tonumber( x ), tonumber( y ), tonumber( z ) }
+  local lg  = { tonumber( lvid ), tonumber( gvid ) }
   local sobj = alife():create(
-    "physic_destroyable_object",
-    vector():set( tonumber( x ), tonumber( y ), tonumber( z ) ),
-    tonumber( lvid ), tonumber( gvid )
+    "physic_destroyable_object", vector():set( unpack( xyz ) ), unpack( lg )
   )
   local pk = xs_netpk.net_alife_object_physic( sobj )
   ASSERT( pk:isOk(), "can't read netpacket of %s", sobj:name() )
   local data = pk:get()
   data.visual_name = vis
   data.custom_data:setString(
-    "[drop_box]\norig_name = " .. name
-    .. "\ncommunity = def_box\nitems = " .. items .. "\n"
+    "[drop_box]\n"
+    .. "orig_name  = " .. name .. "\n";
+    .. "orig_xyzlg = " .. table.concat( { unpack( xyz ), unpack( lg ) }, "," ) .. "\n"
+    .. "community  = def_box\n"
+    .. "items      = " .. items .. "\n"
   )
   data.physic_type = 3
   data.mass        = 10
@@ -218,7 +244,8 @@ function r_items( spawn_ini, section, line )
   if spawn_ini:line_exist( section, line ) then
     -- если default-ов больше, чем значений в ini, то забить
     -- недостающие последним значением из ini
-    local t         = parse_names( get_string( section, line, "", spawn_ini ) )
+    local s         = get_string( section, line, nil, spawn_ini )
+    local t         = parse_names( s or "" )
     local n         = table.getn( t )
     local ret_table = {}
     local k         = 1
@@ -251,7 +278,7 @@ function r_items( spawn_ini, section, line )
 end
 
 
-function create_obligatory_items( obj, item , count )
+function create_obligatory_items( obj, item, count )
   for i = 1, count do
     local position = vector():set( 0, 0, 0 )
     position.x = obj:position().x + math.random( -30, 30 ) / 100
