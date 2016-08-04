@@ -4,39 +4,60 @@
 -- они могут нападать. Все это не касается Лабиринта. Там нападают всегда.
 
 function attach( sm )
-  sm:subscribe({ signal = "on_monster_enemy_callback", fun = this.enemy_callback })
-  sm:subscribe({ signal = "on_monster_death", fun = this.on_monster_death })
+  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
 end
 
 
+local enemy_subscribed = {
+  signal = "on_monster_enemy_callback", fun = this.enemy_callback
+}
 local evil_tname = script_name() .. ".evil_rats"
-local freq       = 60000
+
+
+function on_spawn()
+  if level.name() == "av_peshera" then return end
+  local sm = ogse_signals.get_mgr()
+  sm:subscribe({ signal = "on_monster_death", fun = this.on_monster_death })
+  sm:subscribe({ signal = "on_monster_spawn", fun = this.on_monster_spawn })
+  local tn = evil_tname .. "." .. level.name()
+  if not ogse_st_mgr.timer_exists( tn ) then
+    sm:subscribe( enemy_subscribed )
+  end
+end
+
+
+function on_monster_spawn( obj )
+  if not string.find( obj:section(), "rat_", 1, true ) then return end
+  local tn = evil_tname .. "." .. level.name()
+  if ogse_st_mgr.timer_exists( tn ) then
+    obj:set_range( 300 )
+    obj:set_custom_panic_threshold( 0 )
+  else
+    obj:set_range(   0 )
+    obj:set_custom_panic_threshold( 1 )
+    disable_memory( obj )
+  end
+end
+
+
+function disable_memory( obj )
+  for o in obj:memory_visible_objects() do
+    obj:enable_memory_object( o, false )
+  end
+  for o in obj:memory_sound_objects() do
+    obj:enable_memory_object( o, false )
+  end
+end
+
 
 function enemy_callback( obj, enemy, result )
   if not string.find( obj:section(), "rat_", 1, true ) then return end
-  if not ( db.actor and enemy:id() == db.actor:id() ) then return end
-  if level.name() == "av_peshera" then return end
-  local is_enemy = dsh_enemies.get_cache_rec( obj, enemy )
-  if is_enemy == nil then
-    local tn = evil_tname .. "." .. level.name()
-    if ogse_st_mgr.timer_exists( tn ) then
-      is_enemy = true
-    else
-      is_enemy = false
-    end
-    dsh_enemies.add_cache_rec( obj, enemy, is_enemy, freq )
-  end
-  if is_enemy == false then
-    table.insert( result, is_enemy )
-    return true
-  end
+  table.insert( result, false )
+  return true
 end
 
 
-function make_evil_rat( obj, who )
-  if not string.find( obj:section(), "rat_", 1, true ) then return end
-  if not ( db.actor and who:id() == db.actor:id() ) then return end
-  if level.name() == "av_peshera" then return end
+function make_evil_rat()
   local tn = evil_tname .. "." .. level.name()
   if
     ( not ogse_st_mgr.timer_exists( tn ) )
@@ -46,12 +67,47 @@ function make_evil_rat( obj, who )
       :set_gdelay( math.random( 12, 24 ) * 3600 )
       :init( script_name() .. ".good_rats_on_timer", level.name() )
       :start()
+    ogse_signals.get_mgr():unsubscribe( enemy_subscribed )
+    for id, is_npc in pairs( db.creature ) do
+      if not is_npc then
+        local obj = level.object_by_id( id )
+        if
+          obj and obj:alive()
+          and string.find( obj:section(), "rat_", 1, true )
+        then
+          obj:set_range( 300 )
+          obj:set_custom_panic_threshold( 0 )
+          obj:enable_memory_object( db.actor, true )
+          obj:make_object_visible_somewhen( db.actor )
+        end
+      end
+    end
   end
 end
 
-function good_rats_on_timer( lname ) end
+
+function good_rats_on_timer( lname )
+  if lname and lname == level.name() then
+    ogse_signals.get_mgr():subscribe( enemy_subscribed )
+    for id, is_npc in pairs( db.creature ) do
+      if not is_npc then
+        local obj = level.object_by_id( id )
+        if
+          obj and obj:alive()
+          and string.find( obj:section(), "rat_", 1, true )
+        then
+          obj:set_range( 0 )
+          obj:set_custom_panic_threshold( 1 )
+          disable_memory( obj )
+        end
+      end
+    end
+  end
+end
 
 
 function on_monster_death( victim, who )
-  make_evil_rat( victim, who )
+  if not string.find( obj:section(), "rat_", 1, true ) then return end
+  if not ( db.actor and who:id() == db.actor:id() ) then return end
+  make_evil_rat()
 end
