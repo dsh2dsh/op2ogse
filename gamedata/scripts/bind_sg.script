@@ -58,36 +58,19 @@ end
 function sg_class_binder:save( packet )
   object_binder.save( self, packet )
 
-  -- ресет таблицы зарядки
-  for k, v in pairs ( self.ammo_load ) do
-    self.ammo_load[ k ] = 0
-  end
-
   -- номер текущего типа патронов в списке (начало с 1)
-  self.ammo_class_num = get_ammo_type( self.id ) + 1
+  self.ammo_class_num = self:get_ammo_type() + 1
   packet:w_u8( self.ammo_class_num ) -- сразу пишем
 
   self.load = self.object:get_ammo_in_magazine()
   packet:w_u16( self.load )
 
   -- читаем update-пакет
-  local sobj = alife():object( self.id )
-  local np = net_packet()
-  sobj:UPDATE_Write( np )
-  local size = np:w_tell()
-  np:r_seek( 11 ) -- интересуют только патроны
-  for i = 1, size - 11 do
-    -- номер данного типа патронов в списке (начало с 1)
-    local round_class = np:r_u8() + 1
-    if self.ammo_load[ round_class ] then
-      -- нашли патрон такого типа - прибавляем к сумме
-      self.ammo_load[ round_class ] = self.ammo_load[ round_class ] + 1
-    end
-  end
+  self:update_ammo_loaded()
 
   -- Пишем количества заряженных патронов
   for k, v in pairs ( self.ammo_load ) do
-    packet:w_u16(v)
+    packet:w_u16( v )
   end
 end
 
@@ -175,24 +158,10 @@ function sg_class_binder:update( delta )
   end
   if dist2 > unload_radius2 then
     if not self.unloaded then
-      -- ресет таблицы зарядки
-      for k, v in pairs ( self.ammo_load ) do
-        self.ammo_load[ k ] = 0
-      end
       -- номер текущего типа патронов в списке (начало с 1)
-      self.ammo_class_num = get_ammo_type( self.id ) + 1
+      self.ammo_class_num = self:get_ammo_type() + 1
       self.load           = self.object:get_ammo_in_magazine()
-      local sobj = alife():object( self.id )
-      local np = net_packet()
-      sobj:UPDATE_Write( np )
-      local size = np:w_tell()
-      np:r_seek( 11 ) -- интересуют только патроны
-      for i = 1, size - 11 do
-        -- номер данного типа патронов в списке (начало с 1)
-        local round_class = np:r_u8() + 1
-        -- нашли патрон такого типа - прибавляем к сумме
-        self.ammo_load[ round_class ] = self.ammo_load[ round_class ] + 1
-      end
+      self:update_ammo_loaded()
       self.check_ammo = true
     end
   else
@@ -208,15 +177,25 @@ function sg_class_binder:update( delta )
 end
 
 
-function get_ammo_type( id )
-  local sobj = alife():object( id )
-  if not sobj then
-    return 0
+function sg_class_binder:update_ammo_loaded()
+  local sobj = alife():object( self.object:id() )
+  ASSERT( sobj, "%s not found in alife()", self.object:name() )
+  local pk = xs_netpk.weapon( sobj )
+  ASSERT( pk:isOk(), "can't read netpacket of %s", sobj:name() )
+  local data = pk:get()
+  -- ресет таблицы зарядки
+  for k, v in pairs ( self.ammo_load ) do
+    self.ammo_load[ k ] = 0
   end
-  local np = net_packet()
-  sobj:STATE_Write( np )
-  local size = np:w_tell()
-  np:r_seek( size - 1 )
-  local ammo_type = np:r_u8()
-  return ammo_type
+  for _, t in ipairs( data.updammo_ids ) do
+    -- номер данного типа патронов в списке (начало с 1)
+    local round_class = t + 1
+    -- нашли патрон такого типа - прибавляем к сумме
+    self.ammo_load[ round_class ] = self.ammo_load[ round_class ] + 1
+  end
+end
+
+
+function sg_class_binder:get_ammo_type()
+  return ogse_wpn_utils.get_active_ammo_type( self.object )
 end
