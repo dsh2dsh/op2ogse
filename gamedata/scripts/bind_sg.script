@@ -2,252 +2,221 @@
 local ini = system_ini()
 local unload_radius2 = nil -- квадрат рассотяния от актора, на к-ром разряжается
 
-function init(obj)
-	local new_binder = sg_class_binder(obj)
-	obj:bind_object(new_binder)
+function init( obj )
+  local new_binder = sg_class_binder( obj )
+  obj:bind_object( new_binder )
 end
 
----------------------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
 -- Порядок загрузки:
 -- reload
 -- reinit
 -- load
 -- net_spawn
----------------------------------------------------------------------------------------------
-class "sg_class_binder" (object_binder)
-function sg_class_binder:__init(obj) super(obj)
-	self.check_ammo = false
-end 
-
-function sg_class_binder:reload(section)
-	object_binder.reload(self, section)
+--------------------------------------------------------------------------------
+class "sg_class_binder" ( object_binder )
+function sg_class_binder:__init( obj ) super( obj )
+  self.check_ammo = false
 end
+
+
+function sg_class_binder:reload( section )
+  object_binder.reload( self, section )
+end
+
 
 function sg_class_binder:reinit()
-	object_binder.reinit(self)
-	
-	self.id = self.object:id()
-	self.ammo_table = rx_utils.parse_list_new(nil, self.object:section(), "ammo_class")
-	
-	self.ammo_load = {} -- таблица к-ва патронов, инициализируем все типы нулями
-	for k,v in pairs (self.ammo_table) do
-		self.ammo_load[k] = 0
-	end
-	self.ammo_class_num = 1
-	self.load = 0
+  object_binder.reinit( self )
 
-	if not unload_radius2 then
-		local sd = ini:r_float("alife","switch_distance")
-		local sf = ini:r_float("alife","switch_factor")
-		local unload_radius = sd*(1-sf)*0.85 -- еще чуть меньше, чем онлайн-радиус
-		unload_radius2 = unload_radius*unload_radius
-		--qqq("sd = "..sd)
-		--qqq("sf = "..sf)
-		--qqq("unload_radius = "..unload_radius)
-		--qqq("unload_radius2 = "..unload_radius2)
-	end
+  self.id         = self.object:id()
+  self.ammo_table = rx_utils.parse_list_new(
+    nil, self.object:section(), "ammo_class"
+  )
+  self.ammo_load  = {} -- таблица к-ва патронов, инициализируем все типы нулями
+  for k, v in pairs ( self.ammo_table ) do
+    self.ammo_load[ k ] = 0
+  end
+  self.ammo_class_num = 1
+  self.load = 0
+
+  if not unload_radius2 then
+    local sd = ini:r_float( "alife", "switch_distance" )
+    local sf = ini:r_float( "alife", "switch_factor"   )
+    -- еще чуть меньше, чем онлайн-радиус
+    local unload_radius = sd * ( 1 - sf ) * 0.85
+    unload_radius2 = unload_radius * unload_radius
+  end
 end
+
 
 function sg_class_binder:net_save_relevant()
-	return true
+  return true
 end
 
-function sg_class_binder:save(packet)
-	object_binder.save(self, packet)
-	
-	-- ресет таблицы зарядки
-	for k,v in pairs (self.ammo_load) do
-		self.ammo_load[k] = 0
-	end
 
-	-- номер текущего типа патронов в списке (начало с 1)
-	self.ammo_class_num = get_ammo_type(self.id) + 1
-	packet:w_u8(self.ammo_class_num) -- сразу пишем
-	
-	self.load = self.object:get_ammo_in_magazine()
-	packet:w_u16(self.load)
-	
-	-- читаем update-пакет
-	local sobj = alife():object(self.id)
-	local np = net_packet()
-	sobj:UPDATE_Write(np)
-	local size = np:w_tell()
-	np:r_seek(11) -- интересуют только патроны
-	for i = 1,size - 11 do
-		local round_class = np:r_u8() + 1 -- номер данного типа патронов в списке (начало с 1)
-		if self.ammo_load[round_class] then
-			self.ammo_load[round_class] = self.ammo_load[round_class] + 1 -- нашли патрон такого типа - прибавляем к сумме
-		end
-	end
-	
-	-- Пишем количества заряженных патронов
-	for k,v in pairs (self.ammo_load) do
-		packet:w_u16(v)
-	end
-	--qqq("saved")
+function sg_class_binder:save( packet )
+  object_binder.save( self, packet )
+
+  -- ресет таблицы зарядки
+  for k, v in pairs ( self.ammo_load ) do
+    self.ammo_load[ k ] = 0
+  end
+
+  -- номер текущего типа патронов в списке (начало с 1)
+  self.ammo_class_num = get_ammo_type( self.id ) + 1
+  packet:w_u8( self.ammo_class_num ) -- сразу пишем
+
+  self.load = self.object:get_ammo_in_magazine()
+  packet:w_u16( self.load )
+
+  -- читаем update-пакет
+  local sobj = alife():object( self.id )
+  local np = net_packet()
+  sobj:UPDATE_Write( np )
+  local size = np:w_tell()
+  np:r_seek( 11 ) -- интересуют только патроны
+  for i = 1, size - 11 do
+    -- номер данного типа патронов в списке (начало с 1)
+    local round_class = np:r_u8() + 1
+    if self.ammo_load[ round_class ] then
+      -- нашли патрон такого типа - прибавляем к сумме
+      self.ammo_load[ round_class ] = self.ammo_load[ round_class ] + 1
+    end
+  end
+
+  -- Пишем количества заряженных патронов
+  for k, v in pairs ( self.ammo_load ) do
+    packet:w_u16(v)
+  end
 end
 
-function sg_class_binder:load(reader)
 
-	self.check_ammo = true
-	-- ресет таблицы зарядки
-	for k,v in pairs (self.ammo_load) do
-		self.ammo_load[k] = 0
-	end
-	--qqq("load - reading data")
-	object_binder.load(self, reader)
-	self.ammo_class_num = reader:r_u8()
-	--qqq("self.ammo_class_num = "..self.ammo_class_num)
-	
-	self.load = reader:r_u16()
-	--qqq("self.load = "..self.load)
-	
-	--qqq("reading self.ammo_load")
-	for k,v in pairs (self.ammo_load) do
-		self.ammo_load[k] = reader:r_u16()
-		--qqq(k.." = "..self.ammo_load[k])
-	end
-	--qqq("load end")
-	
+function sg_class_binder:load( reader )
+  self.check_ammo = true
+  -- ресет таблицы зарядки
+  for k, v in pairs ( self.ammo_load ) do
+    self.ammo_load[ k ] = 0
+  end
+  object_binder.load( self, reader )
+  self.ammo_class_num = reader:r_u8()
+  self.load           = reader:r_u16()
+  for k, v in pairs ( self.ammo_load ) do
+    self.ammo_load[ k ] = reader:r_u16()
+  end
 end
 
-function sg_class_binder:net_spawn(data)
-	if not object_binder.net_spawn(self, data) then
-		return false
-	end
-	self.unloaded = true
-	--qqq("net_spawn")
-	return true
+
+function sg_class_binder:net_spawn( data )
+  if not object_binder.net_spawn( self, data ) then return false end
+  self.unloaded = true
+  return true
 end
+
 
 function sg_class_binder:net_destroy()
-	object_binder.net_destroy(self)
-	--qqq("net_destroy")
+  object_binder.net_destroy( self )
 end
+
 
 function sg_class_binder:unload()
-	--qqq("self.ammo_load - start unload")
-	for k,v in pairs (self.ammo_load) do
-		--qqq(k.." = "..v)
-	end
-	if self.load ~= self.ammo_load[self.ammo_class_num] then
-	-- не все заряженные патроны были текущего типа
-		self.object:set_ammo_elapsed(0) -- ресет магазина
-		self.object:set_ammo_elapsed(self.ammo_load[self.ammo_class_num]) -- оставляем только патроны текущего типа
-		self.ammo_load[self.ammo_class_num] = 0 -- их возвращать не надо
-	--qqq("self.ammo_load - return ammo")
-	for k,v in pairs (self.ammo_load) do
-		--qqq(k.." = "..v)
-	end
-		-- возврат остальных патронов
-		local parent = self.object:parent()
-		if parent then
-			local pid = parent:id()
-			for k,v in pairs (self.ammo_load) do
-				if v > 0 then
-					se_respawn.create_ammo(self.ammo_table[k],vector():set(0,0,0),1,1,pid,v)
-				end
-			end
-		else
-			for k,v in pairs (self.ammo_load) do
-				if v > 0 then
---					pos = vector():set(self.object:position().x, self.object:position().y + math.random()*2, self.object:position().z)
-					pos = vector():set(self.object:position().x, self.object:position().y+10, self.object:position().z)
-					se_respawn.create_ammo(self.ammo_table[k],pos,self.object:level_vertex_id(),self.object:game_vertex_id(),65535,v)
-				end
-			end
-		end
-	end
-	-- ресет таблицы зарядки
-	for k,v in pairs (self.ammo_load) do
-		self.ammo_load[k] = 0
-	end
-	self.unloaded = true
-	--qqq("unloaded")
+  if self.load ~= self.ammo_load[ self.ammo_class_num ] then
+    -- не все заряженные патроны были текущего типа
+    self.object:set_ammo_elapsed( 0 ) -- ресет магазина
+    -- оставляем только патроны текущего типа
+    self.object:set_ammo_elapsed( self.ammo_load[ self.ammo_class_num ] )
+    self.ammo_load[ self.ammo_class_num ] = 0 -- их возвращать не надо
+    -- возврат остальных патронов
+    local parent = self.object:parent()
+    if parent then
+      local pid = parent:id()
+      for k, v in pairs ( self.ammo_load ) do
+        if v > 0 then
+          se_respawn.create_ammo(
+            self.ammo_table[ k ], vector():set( 0, 0, 0 ), 1, 1, pid, v
+          )
+        end
+      end
+    else
+      for k, v in pairs ( self.ammo_load ) do
+        if v > 0 then
+          local pos = vector():set(
+            self.object:position().x,
+            self.object:position().y + 10,
+            self.object:position().z
+          )
+          se_respawn.create_ammo(
+            self.ammo_table[ k ], pos,
+            self.object:level_vertex_id(), self.object:game_vertex_id(),
+            65535, v
+          )
+        end
+      end
+    end
+  end
+  -- ресет таблицы зарядки
+  for k, v in pairs ( self.ammo_load ) do
+    self.ammo_load[ k ] = 0
+  end
+  self.unloaded = true
 end
 
-function sg_class_binder:update(delta)
-	object_binder.update(self, delta)
-	
-	local dist2
-	if self.object:parent() then
-		dist2 = self.object:parent():position():distance_to_sqr(db.actor:position())
-	else
-		dist2 = self.object:position():distance_to_sqr(db.actor:position())
-	end
-	----qqq("dist2 = "..dist2)
-	if dist2 > unload_radius2 then
-		if not self.unloaded then
-			-- ресет таблицы зарядки
-			for k,v in pairs (self.ammo_load) do
-				self.ammo_load[k] = 0
-			end
-			-- номер текущего типа патронов в списке (начало с 1)
-			self.ammo_class_num = get_ammo_type(self.id) + 1
-			--qqq("self.ammo_class_num = "..self.ammo_class_num)
-			self.load = self.object:get_ammo_in_magazine()
-			--qqq("self.load = "..self.load)
-			
-			-- читаем update-пакет
-			local sobj = alife():object(self.id)
-			local np = net_packet()
-			sobj:UPDATE_Write(np)
-			local size = np:w_tell()
-			np:r_seek(11) -- интересуют только патроны
-			--qqq("net packet")
-			for i = 1,size - 11 do
-				local round_class = np:r_u8() + 1 -- номер данного типа патронов в списке (начало с 1)
-				--qqq(i.." = "..round_class)
-				self.ammo_load[round_class] = self.ammo_load[round_class] + 1 -- нашли патрон такого типа - прибавляем к сумме
-			end
-			self.check_ammo = true
-		end
-	else
-		if self.unloaded then
-			self.unloaded = nil
-		end
-	end
-	
-	if self.check_ammo then
-		self:unload()
-		self.check_ammo = false
-	end
+
+function sg_class_binder:update( delta )
+  object_binder.update( self, delta )
+
+  local dist2
+  if self.object:parent() then
+    dist2 = self.object:parent():position():distance_to_sqr(
+      db.actor:position()
+    )
+  else
+    dist2 = self.object:position():distance_to_sqr( db.actor:position() )
+  end
+  if dist2 > unload_radius2 then
+    if not self.unloaded then
+      -- ресет таблицы зарядки
+      for k, v in pairs ( self.ammo_load ) do
+        self.ammo_load[ k ] = 0
+      end
+      -- номер текущего типа патронов в списке (начало с 1)
+      self.ammo_class_num = get_ammo_type( self.id ) + 1
+      self.load           = self.object:get_ammo_in_magazine()
+      local sobj = alife():object( self.id )
+      local np = net_packet()
+      sobj:UPDATE_Write( np )
+      local size = np:w_tell()
+      np:r_seek( 11 ) -- интересуют только патроны
+      for i = 1, size - 11 do
+        -- номер данного типа патронов в списке (начало с 1)
+        local round_class = np:r_u8() + 1
+        -- нашли патрон такого типа - прибавляем к сумме
+        self.ammo_load[ round_class ] = self.ammo_load[ round_class ] + 1
+      end
+      self.check_ammo = true
+    end
+  else
+    if self.unloaded then
+      self.unloaded = nil
+    end
+  end
+
+  if self.check_ammo then
+    self:unload()
+    self.check_ammo = false
+  end
 end
 
-function get_ammo_type(id)
-	local sobj = alife():object(id)
-	if not sobj then
-		return 0 
-	end
-	local np = net_packet()
-	sobj:STATE_Write(np)
-	local size = np:w_tell()
-	np:r_seek(size - 1)
-	local ammo_type = np:r_u8()
-	return ammo_type
-end
 
---[[
-function qqq(n,o)
-	local scr = true
-	local con = true
-	if o then
-		if o == 1 or o == 0 then
-			scr = false
-		end
-		if o == 2 or o == 0 then
-			con = false
-		end
-	end
-	local k = "debug data qqq "..tostring(n)
-	if scr then
-		if db.actor then
-			news_manager.send_tip(db.actor, k, nil, nil, 5000) 
-		end
-	end
-	if con then
-		get_console():execute	("load "..k)	
-		get_console():execute	("flush")	
-	end
+function get_ammo_type( id )
+  local sobj = alife():object( id )
+  if not sobj then
+    return 0
+  end
+  local np = net_packet()
+  sobj:STATE_Write( np )
+  local size = np:w_tell()
+  np:r_seek( size - 1 )
+  local ammo_type = np:r_u8()
+  return ammo_type
 end
---]]
