@@ -554,8 +554,11 @@ function CTreasure:remind()
   local sms  = "%c[255,160,160,160]Тайники:\\n"
   for k, v in pairs( self.treasure_info ) do
     if v.active then
-      local obj = alife():story_object( v.target )
-      if obj and object_level_name( obj ) == level.name() then
+      local sobj = alife():story_object( v.target )
+      if
+        sobj and object_level_name( sobj ) == level.name()
+        and dsh.map_has_treasure_spot( sobj.id )
+      then
         sms  = sms .. "%c[170,200,200,200]" .. game.translate_string( v.name ) .. "\\n"
         have = true
       end
@@ -569,23 +572,25 @@ end
 
 
 --' Выдача тайника
-function CTreasure:give_treasure( k )
-  local v = self.treasure_info[ k ]
+function CTreasure:give_treasure( k, silent )
+  local v    = self.treasure_info[ k ]
   local obj = alife():story_object( v.target )
   if obj then
     ASSERT(
       obj:clsid() == clsid.inventory_box,
       "Story object [%s] is not an inventory box", v.target
     )
-    news_manager.send_treasure( v.name )
 
-    --' Пометить на карте
-    local text = "%c[255,238,155,23]"
-      .. game.translate_string( v.name ) .. "\\n"
-      .. "%c[default]" .. game.translate_string(
-        get_string( "treasure_manager." .. k, "description", "" )
-    )
-    dsh.map_add_treasure( obj.id, "treasure", text )
+    if not silent then
+      news_manager.send_treasure( v.name )
+      --' Пометить на карте
+      local text = "%c[255,238,155,23]"
+        .. game.translate_string( v.name ) .. "\\n"
+        .. "%c[default]" .. game.translate_string(
+          get_string( "treasure_manager." .. k, "description", "" )
+      )
+      dsh.map_add_treasure( obj.id, "treasure", text )
+    end
 
     -- проверка, какой тип тайника выбран
     -- если тайник не именной, то заменим содержимое
@@ -605,6 +610,7 @@ function CTreasure:give_treasure( k )
           obj.position, obj.m_level_vertex_id, obj.m_game_vertex_id,
           obj.id
         )
+        vv.id = sobj.id
         if dsh.is_artefact( vv.section ) and math.random() < 0.5 then
           dsh.mark_art_as_handmade( sobj, false )
         end
@@ -622,6 +628,7 @@ function CTreasure:give_treasure( k )
       -- ставим в очередь на вывод в онлайн
       amk.convert_npc_timer( obj.id, 1 ):start()
     end
+    return v.items
   else
     log2( "TREASURE %s, target doesnt exist", k )
   end
@@ -639,7 +646,10 @@ function CTreasure:treasure_empty( box, box_story_id )
   if self.treasure_info[ k ].named == false then
     self.treasure_info[ k ].done = false
   end
-  dsh.map_remove_treasure( box:id(), "treasure" )
+  if box then
+    dsh.map_remove_treasure( box:id(), "treasure" )
+  end
+  ogse_signals.get_mgr():call( "on_treasure_empty", box, box_story_id )
 end
 
 
@@ -802,7 +812,7 @@ function CTreasure:dialog( npc )
   else
     n_rank = 0
   end
-  
+
   local avail  = {}
   local tr_sum = 0
   for k, v in pairs( self.treasure_info ) do
@@ -840,4 +850,38 @@ end
 
 function is_active( sobj )
   get_treasure_manager():is_active( sobj )
+end
+
+
+function CTreasure:give_rnd_treasure_on_level( lname )
+  local avail  = {}
+  local tr_sum = 0
+  for k, v in pairs( self.treasure_info ) do
+    if v.done == false and v.active == false and v.named == false then
+      local sobj = alife():story_object( v.target )
+      if sobj and object_level_name( sobj ) == lname then
+        local treasure_prob = xr_logic.pick_section_from_condlist(
+          db.actor, db.actor, v.cond
+        )
+        if treasure_prob == "" or treasure_prob == nil then
+          treasure_prob = 0
+        end
+        treasure_prob = tonumber( treasure_prob )
+        if treasure_prob > 0 and treasure_prob < 100 then
+          table.insert( avail, { k = k, prob = treasure_prob, sobj = sobj } )
+          tr_sum = tr_sum + treasure_prob
+        end
+      end
+    end
+  end
+  if tr_sum == 0 then return end
+  local tr_w = dsh.get_next_random( script_name() .. ".rnd", tr_sum )
+  for k, v in pairs( avail ) do
+    tr_w = tr_w - v.prob
+    if tr_w <= 0 then
+      n_rank = db.actor:character_rank()
+      local items = self:give_treasure( v.k, true )
+      return v.sobj, items
+    end
+  end
 end
