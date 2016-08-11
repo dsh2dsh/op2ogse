@@ -370,7 +370,15 @@ local rare_list = {
 
 
 function attach( sm )
-  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
+  sm:subscribe({ signal = "on_ph_obj_use", fun = this.on_treasure_use })
+  sm:subscribe({ signal = "on_spawn",      fun = this.on_spawn        })
+end
+
+
+function on_treasure_use( obj, who )
+  if obj:is_inventory_box() and obj:story_id() then
+    get_treasure_manager():treasure_empty( obj, obj:story_id() )
+  end
 end
 
 
@@ -493,11 +501,7 @@ function CTreasure:use( npc )
   else
     n_rank = 0
   end
-
-  local rarets = 99
-  if amk.is_debug then
-    rarets = 0
-  end
+  local rarets = amk.is_debug and 0 or 99
 
   if dsh.get_next_random( script_name() .. ".rnd", 100 ) < rarets then
     return
@@ -507,15 +511,16 @@ function CTreasure:use( npc )
   local avail  = {}
   local tr_sum = 0
   for k, v in pairs( self.treasure_info ) do
-    if v.done == false and v.active == false then
+    if ( not v.done ) and ( not v.active ) then
       local treasure_prob = xr_logic.pick_section_from_condlist(
         db.actor, npc, v.cond
       )
       if treasure_prob == "" or treasure_prob == nil then
         treasure_prob = 0
       end
-      if tonumber( treasure_prob ) > 0 and v.active == false then
-        if tonumber( treasure_prob ) == 100 then
+      treasure_prob = tonumber( treasure_prob )
+      if treasure_prob > 0 and not v.active then
+        if treasure_prob == 100 then
           self:give_treasure( k )
         else
           table.insert( avail, { k = k, prob = treasure_prob } )
@@ -594,23 +599,24 @@ function CTreasure:give_treasure( k, silent, skip_onetime_items )
 
     -- проверка, какой тип тайника выбран
     -- если тайник не именной, то заменим содержимое
-    if v.named == false then
-      v.items = self:give_item_list( skip_onetime_items )
-    else
+    if v.named then
       v.items = parse_spawns(
         get_string( "treasure_manager." .. k, "items", "" )
       )
+    else
+      v.items = self:give_item_list( skip_onetime_items )
     end
 
     --' —генерить вещи
     for kk, vv in pairs( v.items ) do
+      vv.id = {}
       for i = 1, vv.prob do
         local sobj = alife():create(
           vv.section,
           obj.position, obj.m_level_vertex_id, obj.m_game_vertex_id,
           obj.id
         )
-        vv.id = sobj.id
+        table.insert( vv.id, sobj.id )
         if dsh.is_artefact( vv.section ) and math.random() < 0.5 then
           dsh.mark_art_as_handmade( sobj, false )
         end
@@ -638,12 +644,12 @@ end
 --' —нимаем отметку с тайника
 function CTreasure:treasure_empty( box, box_story_id )
   local k = self.treasure_by_target[ box_story_id ]
-  if k == nil or self.treasure_info[ k ] == nil then
+  if ( not k ) or ( not self.treasure_info[ k ] ) then
     return
   end
   self.treasure_info[ k ].active = false
   -- если тайник не именной, то переведен его в онлайн дл€ следующей выдачи
-  if self.treasure_info[ k ].named == false then
+  if not self.treasure_info[ k ].named then
     self.treasure_info[ k ].done = false
   end
   if box then
@@ -655,9 +661,10 @@ end
 
 function CTreasure:is_active( sobj )
   local k = self.treasure_by_target[ sobj.m_story_id ]
-  return ( k and self.treasure_info[ k ] )
-    and self.treasure_info[ k ].active
-    or  false
+  if k and self.treasure_info[ k ] then
+    return self.treasure_info[ k ].active
+  end
+  return false
 end
 
 
@@ -821,7 +828,7 @@ function CTreasure:dialog( npc )
   local avail  = {}
   local tr_sum = 0
   for k, v in pairs( self.treasure_info ) do
-    if v.done == false and v.active == false then
+    if ( not v.done ) and ( not v.active ) then
       local treasure_prob = xr_logic.pick_section_from_condlist(
         db.actor, npc, v.cond
       )
@@ -854,7 +861,7 @@ end
 
 
 function is_active( sobj )
-  get_treasure_manager():is_active( sobj )
+  return get_treasure_manager():is_active( sobj )
 end
 
 
@@ -862,7 +869,7 @@ function CTreasure:give_rnd_treasure_on_level( lname )
   local avail  = {}
   local tr_sum = 0
   for k, v in pairs( self.treasure_info ) do
-    if v.done == false and v.active == false and v.named == false then
+    if ( not v.done ) and ( not v.active ) and ( not v.named ) then
       local sobj = alife():story_object( v.target )
       if sobj and object_level_name( sobj ) == lname then
         local treasure_prob = xr_logic.pick_section_from_condlist(
