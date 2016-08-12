@@ -164,11 +164,14 @@ end
 function signals_mgr:is_already_subscribed( slot_in_question )
   local slots = self.signals[ slot_in_question.signal ]
   if not slots then return false end
-  for i, slot in ipairs(
-    slot_in_question.queued and slots.queue or slots.normal
-  ) do
-    if slots_equal( slot, slot_in_question ) then
-      return true
+  local check_slots = slot_in_question.queued
+    and slots.queue
+    or { slots.normal, slots.scheduled }
+  for _, cur in ipairs( check_slots ) do
+    for _, slot in ipairs( cur ) do
+      if slots_equal( slot, slot_in_question ) then
+        return true
+      end
     end
   end
   return false
@@ -178,15 +181,16 @@ end
 function signals_mgr:subscribe( slot_to_subscribe )
   ASSERT(
     not self:is_already_subscribed( slot_to_subscribe ),
-    "signals_mgr:subscribe: can't subscrabe signal '"..slot_to_subscribe.signal.."', it's already subscribed"
+    "signals_mgr:subscribe: can't subscrabe signal '"
+      .. slot_to_subscribe.signal .. "', it's already subscribed"
   )
   ASSERT(
     slot_to_subscribe.fun,
-    "signals_mgr:subscribe: 'fun' is a nil reference while attempting to subscribe signal '"..slot_to_subscribe.signal.."'"
+    "signals_mgr:subscribe: 'fun' is a nil reference while attempting to subscribe signal '"
+      .. slot_to_subscribe.signal .. "'"
   )
   local signal = slot_to_subscribe.signal
-  self.signals[ signal ] = self.signals[ signal ]
-    or { normal = {}, queue = {}, next_in_queue = 1 }
+  self.signals[ signal ] = self.signals[ signal ] or self:make_empty_signal()
   if slot_to_subscribe.queued then
     table.insert( self.signals[ signal ].queue,  slot_to_subscribe )
   else
@@ -195,10 +199,20 @@ function signals_mgr:subscribe( slot_to_subscribe )
 end
 
 
+function signals_mgr:make_empty_signal()
+  return {
+    normal = {}, queue = {}, scheduled = {}, next_in_queue = 1
+  }
+end
+
+
 function signals_mgr:unsubscribe( slot_to_unsubscribe )
   ASSERT(
     self:is_already_subscribed( slot_to_unsubscribe ),
-    "signals_mgr:unsubscribe: can't unsubscrabe signal '"..slot_to_unsubscribe.signal.."', id= "..(slot_to_unsubscribe.id or '')..", which is not previously subscribed"
+    "signals_mgr:unsubscribe: can't unsubscrabe signal '"
+      .. slot_to_unsubscribe.signal
+      .. "', id= " .. ( slot_to_unsubscribe.id or '' )
+      .. ", which is not previously subscribed"
   )
   if unfinished_count[ self.mgr_name ] > 0 then
     -- если находимся в процессе выполнения вызова, то физически
@@ -217,19 +231,24 @@ function signals_mgr:unsubscribe( slot_to_unsubscribe )
   else
     -- нет незавершённых вызовов, просто удаляем слот
     local slots = self.signals[ slot_to_unsubscribe.signal ]
-    for i, slot in ipairs( slots.normal ) do
-      if slots_equal( slot, slot_to_unsubscribe ) then
-        table.remove( slots.normal, i )
-        return
-      end
-    end
-    for i, slot in ipairs( slots.queue ) do
-      if slots_equal( slot, slot_to_unsubscribe ) then
-        table.remove( slots.queue, i )
-        if slots.next_in_queue > i then
-          slots.next_in_queue = slots.next_in_queue - 1
+    if slot_to_unsubscribe.queued then
+      for i, slot in ipairs( slots.queue ) do
+        if slots_equal( slot, slot_to_unsubscribe ) then
+          table.remove( slots.queue, i )
+          if slots.next_in_queue > i then
+            slots.next_in_queue = slots.next_in_queue - 1
+          end
+          break
         end
-        return
+      end
+    else
+      local check_slots = slot_to_unsubscribe.scheduled and slots.scheduled
+        or slots.normal
+      for i, slot in ipairs( check_slots ) do
+        if slots_equal( slot, slot_to_unsubscribe ) then
+          table.remove( check_slots, i )
+          break
+        end
       end
     end
   end
@@ -238,7 +257,7 @@ end
 
 function signals_mgr:cleanup_signal_subs( signal )
   if self.signals[ signal ] then
-    self.signals[ signal ] = { normal = {}, queue = {}, next_in_queue = 1 }
+    self.signals[ signal ] = self:make_empty_signal()
   end
 end
 
@@ -253,11 +272,13 @@ function signals_mgr:subscribe_module( module_name )
   )
   ASSERT(
     type( module ) == "table",
-    "signals_mgr:subscribe_module: Failed to subscribe module '"..module_name.."', must be a table"
+    "signals_mgr:subscribe_module: Failed to subscribe module '"
+      .. module_name .. "', must be a table"
   )
   ASSERT(
     type( module.attach ) == "function",
-    "signals_mgr:subscribe_module: Failed to subscribe module '"..module_name.."', has no 'attach' function"
+    "signals_mgr:subscribe_module: Failed to subscribe module '"
+      .. module_name .. "', has no 'attach' function"
   )
   module.attach( self )
 end
@@ -268,13 +289,14 @@ function signals_mgr:call( signal_name, ... )
   local slots = self.signals[ signal_name ]
   if slots then
     unfinished_count[ self.mgr_name ] = unfinished_count[ self.mgr_name ] + 1
-    local reschedule_normal = false
-    for _, slot in ipairs( slots.normal ) do
+    local n, need_reschedule = 1, false
+    while n <= table.getn( slots.normal ) do
+      local slot = slots.normal[ n ]
       -- при рекурсивных вызовах отписанные, но ещё не удалённые
       -- слоты, необходимо пропустить
-      if not slot.unsubscribed then
-        if ( slot.timeout or 0 ) > time_global() then break end
-        slot.timeout = nil
+      if slot.unsubscribed then
+        n = n + 1
+      else
         local result
         table.insert( self.slots_in_process, slot )
         if slot.self then
@@ -284,11 +306,37 @@ function signals_mgr:call( signal_name, ... )
         end
         table.remove( self.slots_in_process )
         if slot.timeout then
-          reschedule_normal = true
+          need_reschedule = true
+          slot.scheduled  = true
+          table.insert( slots.scheduled, slot )
+          table.remove( slots.normal,    n    )
+        else
+          n = n + 1
         end
         -- вызов заявил, что он финальный в цепочке вызовов
         if result then break end
       end
+    end
+    for _, slot in ipairs( slots.scheduled ) do
+      if not slot.unsubscribed then
+        if slot.timeout > time_global() then break end
+        local result
+        table.insert( self.slots_in_process, slot )
+        if slot.self then
+          result = slot.fun( slot.self, ... )
+        else
+          result = slot.fun( ... )
+        end
+        table.remove( self.slots_in_process )
+        need_reschedule = true
+        -- вызов заявил, что он финальный в цепочке вызовов
+        if result then break end
+      end
+    end
+    if need_reschedule and table.getn( slots.scheduled ) > 1 then
+      table.sort(
+        slots.scheduled, function( a, b ) return a.timeout < b.timeout end
+      )
     end
     -- затем срабатывает очередной сигнал в очереди, если имеется
     local wrapped = self:try_call_queued( slots, ... )
@@ -296,8 +344,12 @@ function signals_mgr:call( signal_name, ... )
       -- если ничего не удалось выполнить и перешли в начало очереди
       if slots.reschedule_queue then
         -- пересортируем очередь, если нужно
-        slots.reschedule_queue = nil
-        slots.queue = sort_queue( slots.queue )
+        slots.reschedule_queue = false
+        if table.getn( slots.queue ) > 1 then
+          table.sort(
+            slots.queue, function( a, b ) return a.timeout < b.timeout end
+          )
+        end
       end
       -- т.к. предыдущая попытка ничего не выполнила, попробуем
       -- выполнить первый обработчик. Ну, что бы этот апдейт не был
@@ -316,13 +368,13 @@ function signals_mgr:call( signal_name, ... )
       end
       self.to_unsubscribe = nil
     end
-    if reschedule_normal then
-      -- пересортировываем очередь
-      slots.normal = sort_queue( slots.normal )
-    end
     if slots.reschedule_queue and slots.next_in_queue == 1 then
-      slots.reschedule_queue = nil
-      slots.queue = sort_queue( slots.queue )
+      slots.reschedule_queue = false
+      if table.getn( slots.queue ) > 1 then
+        table.sort(
+          slots.queue, function( a, b ) return a.timeout < b.timeout end
+        )
+      end
     end
   end
 end
@@ -334,7 +386,7 @@ function signals_mgr:try_call_queued( slots, ... )
   if slot then
     if not slot.unsubscribed then -- очень маловероятно, но на всякий случай
       if ( not slot.timeout ) or slot.timeout <= time_global() then
-        slot.timeout = nil
+        slot.timeout = 0
         table.insert( self.slots_in_process, slot )
         if slot.self then
           slot.fun( slot.self, ... )
@@ -342,7 +394,7 @@ function signals_mgr:try_call_queued( slots, ... )
           slot.fun( ... )
         end
         table.remove( self.slots_in_process )
-        if slot.timeout then
+        if slot.timeout > 0 then
           slots.reschedule_queue = true
         end
       else
@@ -358,23 +410,6 @@ function signals_mgr:try_call_queued( slots, ... )
     end
   end
   return wrapped
-end
-
-
-function sort_queue( q )
-  local q1, q2 = {}, {}
-  for _, item in ipairs( q ) do
-    if not item.timeout or item.timeout == 0 then
-      table.insert( q1, item )
-    else
-      table.insert( q2, item )
-    end
-  end
-  table.sort( q2, function( a, b ) return a.timeout < b.timeout end )
-  for _, item in ipairs( q2 ) do
-    table.insert( q1, item )
-  end
-  return q1
 end
 
 
