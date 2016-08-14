@@ -41,10 +41,10 @@ local last_position      = {}
 function attach( sm )
   sm:subscribe({ signal = "on_after_blowout",       fun = this.on_after_blowout })
   sm:subscribe({ signal = "on_monster_death",       fun = this.on_death   })
-  sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_destroy })
+  sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_death   })
   sm:subscribe({ signal = "on_monster_spawn", fun = this.on_monster_spawn })
   sm:subscribe({ signal = "on_npc_death",           fun = this.on_death   })
-  sm:subscribe({ signal = "on_npc_net_destroy",     fun = this.on_destroy })
+  sm:subscribe({ signal = "on_npc_net_destroy",     fun = this.on_death   })
   sm:subscribe({ signal = "on_npc_spawn",     fun = this.on_npc_spawn     })
   sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
   sm:subscribe({ signal = "on_save",  fun = this.on_save  })
@@ -61,6 +61,7 @@ function on_monster_spawn( obj, binder )
     [ "signal" ] = "on_update",
     [ "self"   ] = obj,
     [ "fun"    ] = this.update_norm,
+    [ "script_name" ] = script_name(),
   }
   binder[ script_name() .. ".subscribed" ] = s
   ogse_signals.get_mgr():subscribe( s )
@@ -84,6 +85,7 @@ function on_npc_spawn( obj, binder )
     [ "signal" ] = "on_update",
     [ "self"   ] = obj,
     [ "fun"    ] = this.update_norm,
+    [ "script_name" ] = script_name(),
   }
   binder[ script_name() .. ".subscribed" ] = s
   ogse_signals.get_mgr():subscribe( s )
@@ -95,12 +97,8 @@ function on_death( obj )
   local subscribed = binder[ script_name() .. ".subscribed" ]
   if subscribed then
     ogse_signals.get_mgr():unsubscribe( subscribed )
+    binder[ script_name() .. ".subscribed" ] = nil
   end
-  cleanup( obj )
-end
-
-
-function on_destroy( obj )
   cleanup( obj )
 end
 
@@ -210,15 +208,23 @@ function update_norm( obj )
   if table.getn( del ) > 0 then
     for _, k in ipairs( del ) do
       added_restrictions[ obj:id() ][ k ] = nil
-      obj:remove_restrictions( "", k )
     end
+    local s = table.concat( del, "," )
+    ASSERT( s:len() < 4096, "too long: %s", s:len() )
+    obj:remove_restrictions( "", s )
   end
 
+  local add = {}
   for k, _ in pairs( restr ) do
     if not should_npc_miss_this_anomaly( obj ) then
+      table.insert( add, k )
       added_restrictions[ obj:id() ][ k ] = true
-      obj:add_restrictions( "", k )
     end
+  end
+  if table.getn( add ) > 0 then
+    local s = table.concat( add, "," )
+    ASSERT( s:len() < 4096, "too long: %s", s:len() )
+    obj:add_restrictions( "", s )
   end
 end
 

@@ -6,14 +6,17 @@ local monsters_like_npc = {
   [ "skelet_ded" ] = true,      -- Лесник из Забытого леса
 }
 -- как часто выполнять проверку на занятость рук (в мс)
-local freq = 100
+local freq = 200
 
 
 function attach( sm )
   sm:subscribe({ signal = "on_monster_death",  fun = this.on_monster_death })
+  sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_destroy  })
   sm:subscribe({ signal = "on_monster_spawn",  fun = this.on_monster_spawn })
   sm:subscribe({ signal = "on_npc_death",      fun = this.on_npc_death     })
+  sm:subscribe({ signal = "on_npc_net_destroy",     fun = this.on_destroy  })
   sm:subscribe({ signal = "on_npc_spawn",      fun = this.on_npc_spawn     })
+  sm:subscribe({ signal = "on_ph_net_destroy",      fun = this.on_destroy  })
   sm:subscribe({ signal = "on_ph_spawn",       fun = this.on_ph_spawn      })
   sm:subscribe({ signal = "on_spawn",          fun = this.on_spawn         })
 end
@@ -21,16 +24,16 @@ end
 
 local info_radius
 function on_spawn()
-  info_radius = math.pow( db.actor:get_actor_take_dist() + 1, 2 )
+  info_radius = db.actor:get_actor_take_dist() * 2
 end
 
 
 function on_monster_spawn( obj, binder )
   if obj:alive() then return end
   local s = {
-    [ "signal" ] = "on_monster_update." .. obj:id(),
+    [ "signal" ] = "on_update",
+    [ "self"   ] = obj,
     [ "fun"    ] = this.on_monster_update,
-    -- [ "queued" ] = true,
   }
   binder[ script_name() .. ".subscribed" ] = s
   ogse_signals.get_mgr():subscribe( s )
@@ -40,9 +43,9 @@ end
 function on_npc_spawn( obj, binder )
   if obj:alive() then return end
   local s = {
-    [ "signal" ] = "on_npc_update." .. obj:id(),
+    [ "signal" ] = "on_update",
+    [ "self"   ] = obj,
     [ "fun"    ] = this.on_npc_update,
-    -- [ "queued" ] = true,
   }
   binder[ script_name() .. ".subscribed" ] = s
   ogse_signals.get_mgr():subscribe( s )
@@ -72,12 +75,21 @@ function on_ph_spawn( obj, binder )
     return
   end
   local s = {
-    [ "signal" ] = "on_ph_update." .. obj:id(),
+    [ "signal" ] = "on_update",
+    [ "self"   ] = obj,
     [ "fun"    ] = this.on_ph_update,
-    -- [ "queued" ] = true,
   }
   binder[ script_name() .. ".subscribed" ] = s
   ogse_signals.get_mgr():subscribe( s )
+end
+
+
+function on_destroy( obj, binder )
+  local subscribed = binder[ script_name() .. ".subscribed" ]
+  if subscribed then
+    ogse_signals.get_mgr():unsubscribe( subscribed )
+    binder[ script_name() .. ".subscribed" ] = nil
+  end
 end
 
 
@@ -92,7 +104,12 @@ function on_monster_update( obj )
   end
   ogse_signals.get_mgr():reschedule( 5000 )
   if db.actor then
-    local dist = obj:position():distance_to_sqr( db.actor:position() )
+    local dist = obj:position():distance_to( db.actor:position() )
+    ogse_signals.get_mgr():reschedule(
+      ( dist < 25 and freq )
+      or ( dist < 50 and 1000 ) or ( dist < 100 and 2000 )
+      or math.random( 5000, 6000 )
+    )
     if dist < info_radius then
       local binder = obj:binded_object()
       if actor_has_knife() or GetShift() then
@@ -109,10 +126,6 @@ function on_monster_update( obj )
         end
       end
     end
-    ogse_signals.get_mgr():reschedule(
-      ( dist < 25 and freq ) or ( dist < 100 and 1000 )
-      or 5000
-    )
   end
 end
 
@@ -134,7 +147,12 @@ end
 function process_npc( obj, tip_text_def )
   ogse_signals.get_mgr():reschedule( 5000 )
   if db.actor then
-    local dist = obj:position():distance_to_sqr( db.actor:position() )
+    local dist = obj:position():distance_to( db.actor:position() )
+    ogse_signals.get_mgr():reschedule(
+      ( dist < 25 and freq )
+      or ( dist < 50 and 1000 ) or ( dist < 100 and 2000 )
+      or math.random( 5000, 6000 )
+    )
     if dist < info_radius then
       local binder = obj:binded_object()
       if actor_has_free_hands() then
@@ -157,10 +175,6 @@ function process_npc( obj, tip_text_def )
         end
       end
     end
-    ogse_signals.get_mgr():reschedule(
-      ( dist < 25 and freq ) or ( dist < 100 and 1000 )
-      or 5000
-    )
   end
 end
 

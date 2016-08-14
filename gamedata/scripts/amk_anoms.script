@@ -1730,13 +1730,6 @@ function init()
   end
   pre_blow_off()
   randomize_arts()
-  ogse_signals.get_mgr():subscribe({
-    signal = "on_before_first_update", fun = this.on_before_first_update
-  })
-end
-
-
-function on_before_first_update()
   generate_anoms()
   generate_new_arts()
 end
@@ -1773,9 +1766,7 @@ function pre_blow_off()
     local sobj = alife():object( id )
     if sobj then
       if is_anomaly( sobj:clsid() ) then
-        local map = alife():level_name(
-          game_graph():vertex( sobj.m_game_vertex_id ):level_id()
-        )
+        local map = object_level_name( sobj )
         if not check_exclusion( sobj, map ) then
           local status = get_anomaly_status( sobj )
           if status == "" or status == "on" then
@@ -1783,6 +1774,12 @@ function pre_blow_off()
             alife():release( sobj, true )
           end
         end
+      elseif
+        map == level.name()
+        and ( IsStalker( sobj ) or IsMonster( sobj ) )
+      then
+        forbidden_lvids[ sobj.m_level_vertex_id ] = true
+        table.insert( forbidden_pos, sobj.position )
       end
     end
   end
@@ -1832,16 +1829,6 @@ end
 
 
 function generate_anoms()
-  for id, is_npc in pairs( db.creature ) do
-    local obj = level.object_by_id( id )
-    if obj then
-      local lvid = obj:level_vertex_id()
-      if lvid then
-        forbidden_lvids[ lvid ] = true
-        table.insert( forbidden_pos, obj:position() )
-      end
-    end
-  end
   local lname = level.name()
   local v     = level_anoms[ lname ]
   if v then
@@ -1852,6 +1839,7 @@ function generate_anoms()
       local res = generate_anomaly()
       if res then
         cnt = cnt + 1
+        add_anomaly( res.id, res.position, res.radius, res )
       elseif res == false then
         log2(
           "dsh: [%s]: I give up here: %s, %s / %s anomalies generated",
@@ -2263,12 +2251,16 @@ function check_coordinates( pos, lname )
 end
 
 
+local anomaly_statuses = {}
 function get_anomaly_status( sobj )
-  local tbl = m_net_utils.get_anomaly_data( sobj )
-  local cd  = create_ini_file( tbl.custom )
-  return cd:section_exist( "dyn_anom" )
-    and get_string( "dyn_anom", "status", "", cd )
-    or  ""
+  if not anomaly_statuses[ sobj.id ] then
+    local tbl = m_net_utils.get_anomaly_data( sobj )
+    local cd  = create_ini_file( tbl.custom )
+    anomaly_statuses[ sobj.id ] = cd:section_exist( "dyn_anom" )
+      and get_string( "dyn_anom", "status", "", cd )
+      or  ""
+  end
+  return anomaly_statuses[ sobj.id ]
 end
 
 
@@ -2292,6 +2284,7 @@ function set_anomaly_status( sobj, status )
     tbl.custom = modify_anomaly_custom_data( tbl.custom, status )
     m_net_utils.set_anomaly_data( tbl, sobj )
     set_online_anomaly_status( sobj.id, status )
+    anomaly_statuses[ sobj.id ] = status
   end
 end
 
@@ -2301,12 +2294,12 @@ function set_online_anomaly_status( obj_id, status )
   if obj then
     if status == "off" or status=="del" then
       obj:disable_anomaly()
-      amk_anoms.remove_anomaly( obj_id )
-      amk_anoms.restrictor_deleted( obj_id, obj:name() )
+      remove_anomaly( obj_id )
+      restrictor_deleted( obj_id, obj:name() )
     else
       obj:enable_anomaly()
       local sobj = alife():object( obj_id )
-      amk_anoms.add_anomaly( obj_id, sobj.position, sobj.radius, sobj )
+      add_anomaly( obj_id, sobj.position, sobj.radius, sobj )
     end
   end
 end
@@ -2473,51 +2466,44 @@ function unreg_in_anom_manager(npc)
 end
 
 
-function bind(obj)
-  obj:bind_object(anom_binder(obj))
+function bind( obj )
+  obj:bind_object( anom_binder( obj ) )
 end
 
 
 class "anom_binder" ( object_binder )
-
-function anom_binder:__init(obj)
-  super(obj)
+function anom_binder:__init( obj ) super( obj )
 end
 
 
-function anom_binder:net_spawn(sobj)
-  if not object_binder.net_spawn( self,sobj ) then
+function anom_binder:net_spawn( sobj )
+  if not object_binder.net_spawn( self, sobj ) then
     return false
   end
-  local status=get_anomaly_status(sobj)
-  if status=="del" or status=="off" then
-    if status=="del" then
-    end
+  local status = get_anomaly_status( sobj )
+  if status == "del" or status == "off" then
     self.object:disable_anomaly()
   else
-    amk_anoms.add_anomaly(sobj.id,sobj.position,sobj.radius, sobj)
+    add_anomaly( sobj.id, sobj.position, sobj.radius, sobj )
   end
   return true
 end
 
 
 function anom_binder:net_destroy()
-  amk_anoms.remove_anomaly(self.object:id())
-  object_binder.net_destroy(self)
+  remove_anomaly( self.object:id() )
+  object_binder.net_destroy( self )
 end
 
 
-anom_list={}
-
-function get_radius_for_section(section)
-  return getIniValueFloat(section,"effective_radius",2,nil)
+function get_radius_for_section( section )
+  return get_float( section, "effective_radius", 2 )
 end
 
+
+anom_list = {}
 function add_anomaly( id, pos, radius, sobj )
-  if not anom_list then anom_list = {} end
-  local lname = alife():level_name(
-    game_graph():vertex(sobj.m_game_vertex_id):level_id()
-  )
+  local lname = object_level_name( sobj )
   anom_list[ id ] = {
     pos      = pos,
     clsid    = sobj:clsid(),
@@ -2528,29 +2514,30 @@ function add_anomaly( id, pos, radius, sobj )
 end
 
 
-function remove_anomaly(id)
-  if anom_list then anom_list[id]=nil end
+function remove_anomaly( id )
+  anom_list[ id ] = nil
+  anomaly_statuses[ id ] = nil
 end
 
 
-function get_nearest_anomaly(npc)
-  return get_nearest_anomaly_for_pos(npc:position())
+function get_nearest_anomaly( npc )
+  return get_nearest_anomaly_for_pos( npc:position() )
 end
 
 
-function get_nearest_anomaly_for_pos(posn)
-  local anomid,pos,radius,dist
-  local mindist=10000000
-  for id,o in pairs(anom_list) do
-    dist=posn:distance_to(o.pos)-o.radius
-    if dist<mindist then
-      mindist=dist
-      anomid=id
-      pos=o.pos
-      radius=o.radius
+function get_nearest_anomaly_for_pos( posn )
+  local anomid, pos, radius, dist
+  local mindist = 10000000
+  for id, o in pairs( anom_list ) do
+    dist = posn:distance_to( o.pos ) - o.radius
+    if dist < mindist then
+      mindist = dist
+      anomid  = id
+      pos     = o.pos
+      radius  = o.radius
     end
   end
-  return anomid,pos,radius,mindist
+  return anomid, pos, radius, mindist
 end
 
 
@@ -2561,16 +2548,14 @@ end
 
 function get_anomaly_list_for_pos( posn, radius )
   local ret = {}
-  if anom_list then
-    for id, o in pairs( anom_list ) do
-      local obj = level.object_by_id( id )
-      if obj then
-        local dist = posn:distance_to( o.pos ) - o.radius
-        if dist < radius then
-          table.insert(
-            ret, { id = id, name = obj:name(), pos = o.pos, radius = o.radius }
-          )
-        end
+  for id, o in pairs( anom_list ) do
+    local sobj = alife():object( id )
+    if sobj then
+      local dist = posn:distance_to( o.pos ) - o.radius
+      if dist < radius then
+        table.insert(
+          ret, { id = id, name = sobj:name(), pos = o.pos, radius = o.radius }
+        )
       end
     end
   end
