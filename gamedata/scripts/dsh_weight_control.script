@@ -1,25 +1,36 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
-  sm:subscribe({
-    signal = "on_before_actor_conditions_update",
-    fun    = this.on_update
-  })
+  sm:subscribe({ signal = "on_drop",         fun = this.remove_outfit   })
+  sm:subscribe({ signal = "on_item_to_ruck", fun = this.remove_outfit   })
+  sm:subscribe({ signal = "on_item_to_slot", fun = this.use_outfit      })
+  sm:subscribe({ signal = "on_update",       fun = this.on_update       })
+end
+
+
+function use_outfit( obj )
+  if obj:is_outfit() then
+    recalc_outfit()
+  end
+end
+
+
+function remove_outfit( obj )
+  if obj:is_outfit() and not db.actor:get_current_outfit() then
+    recalc_outfit()
+  end
 end
 
 
 function on_update()
-  if not ( db.actor and db.actor:alive() ) then return end
-  local add_weight
-  local outfit_item = db.actor:get_current_outfit()
-  if
-    outfit_item
-    and outfit_item:section() == "exo_mil_exoskeleton_addrs"
-    and inventory.on_belt( "art_acumm" )
-  then
-    add_weight = 20
-  end
-  set_weight_parameters( add_weight )
+  ogse_signals.get_mgr():reschedule( 1000 )
+  if not db.actor:alive() then return end
+  recalc_outfit()
+end
+
+
+function recalc_outfit()
+  set_weight_parameters()
   set_radiation_protection()
   set_power_loss()
 end
@@ -31,37 +42,44 @@ local def_max_walk_weight = get_float(
 )
 
 
-function set_weight_parameters( add_weight )
-  local outfit_item     = db.actor:get_current_outfit()
-  local max_weight      = def_max_weight
-  local max_walk_weight = def_max_walk_weight
-  if outfit_item then -- проверка нужна на время переодевания костюма
-    local sect = outfit_item:section()
-    -- это херня, что добавляемый вес не зависит от состояния экзы. исправим.
-    local condition_for_weight_calc = outfit_item:condition()
-    local walk_weight = get_float( sect, "additional_inventory_weight", 0 )
-    if walk_weight > 0 then
-      max_walk_weight = max_walk_weight + walk_weight * (
-        condition_for_weight_calc - 1
-      ) -- движок тоже прибавляет вес, так что учтем это
-      if add_weight then
-        max_walk_weight = max_walk_weight + add_weight
-      end
-    end
-    local weight = get_float( sect, "additional_inventory_weight2", 0 )
-    if weight > 0 then
-      max_weight = max_weight + weight * (
-        condition_for_weight_calc - 1
-      ) -- движок тоже прибавляет вес, так что учтем это
-      if add_weight then
-        max_weight = max_weight + add_weight
-      end
-    end
+function set_weight_parameters()
+  local ext = {
+    [ "actor_max_walk_weight"        ] = 0,
+    [ "actor_max_weight"             ] = 0,
+    [ "additional_inventory_weight"  ] = 0,
+    [ "additional_inventory_weight2" ] = 0,
+  }
+  ogse_signals.get_mgr():call( "on_before_set_actor_max_weights", ext )
+  local outfit = db.actor:get_current_outfit()
+  if outfit then
+    local cond   = outfit:condition()
+    local params = get_outfit_params( outfit:section() )
+    db.actor:set_actor_max_weight(
+      def_max_weight
+        + inventory.on_belt_restore_speed( "additional_inventory_weight2" )
+        + ext.actor_max_weight
+        + (
+            params.additional_inventory_weight2
+              + ext.additional_inventory_weight2
+          ) * cond
+    )
+    db.actor:set_actor_max_walk_weight(
+      def_max_walk_weight
+        + inventory.on_belt_restore_speed( "additional_inventory_weight"  )
+        + ext.actor_max_walk_weight
+        + (
+            params.additional_inventory_weight
+              + ext.additional_inventory_weight
+          ) * cond
+    )
+    set_outfit_additional_inventory_weight(  0 )
+    set_outfit_additional_inventory_weight2( 0 )
+  else
+    db.actor:set_actor_max_weight( def_max_weight + ext.actor_max_weight )
+    db.actor:set_actor_max_walk_weight(
+      def_max_walk_weight + ext.additional_inventory_weight
+    )
   end
-  if max_walk_weight < 0 then max_walk_weight = 0.1 end
-  if max_weight      < 0 then max_weight      = 0.1 end
-  db.actor:set_actor_max_weight( max_weight )
-  db.actor:set_actor_max_walk_weight( max_walk_weight )
 end
 
 
@@ -85,7 +103,7 @@ function set_radiation_protection()
     end
   else
     for _, k in ipairs( protections ) do
-      set_outfit_protection( outfit, k, get_float( outfit:section(), k, 0 ) )
+      set_outfit_protection( outfit, k, params[ k ] )
     end
   end
 end
@@ -95,8 +113,16 @@ local params_cache = {}
 function get_outfit_params( sect )
   if not params_cache[ sect ] then
     local t = {}
+    t.additional_inventory_weight  = get_float(
+      sect, "additional_inventory_weight",  0
+    )
+    t.additional_inventory_weight2 = get_float(
+      sect, "additional_inventory_weight2", 0
+    )
     t.helmet     = get_bool( sect, "dynamic_hud_enable", false )
     t.power_loss = get_float( sect, "power_loss", 1.0 )
+    t.radiation_protection = get_float( sect, "radiation_protection", 0 )
+    t.telepatic_protection = get_float( sect, "telepatic_protection", 0 )
     params_cache[ sect ] = t
   end
   return params_cache[ sect ]
@@ -106,10 +132,11 @@ end
 function set_power_loss()
   local outfit = db.actor:get_current_outfit()
   if not outfit then return end
-  local params = get_outfit_params( outfit:section() )
+  local cond        = outfit:condition()
+  local params      = get_outfit_params( outfit:section() )
   local power_loss  = params.power_loss
-  if outfit:condition() < 0.8 then
-    power_loss = power_loss + ( 10 - power_loss ) * ( 1 - outfit:condition() )
+  if cond < 0.8 then
+    power_loss = power_loss + ( 10 - power_loss ) * ( 0.8 - cond )
   end
   set_outfit_power_loss( outfit, power_loss )
 end

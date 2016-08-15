@@ -1,9 +1,9 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
---[[
-Этот скрипт отвечает за расходование артефакта Черная энергия при ношении
-экзоскелета СКАТ-15, с подключенным третим блоком апгрейда. Расход Черной
-энергии начинается при наличии в инвентаре доп. веса.
-]]
+--
+-- Этот скрипт отвечает за расходование артефакта Черная энергия при
+-- ношении экзоскелета СКАТ-15, с подключенным третим блоком
+-- апгрейда. Расход Черной энергии начинается при наличии в инвентаре
+-- доп. веса.
 
 local exo_sect = "exo_mil_exoskeleton_addrs"
 local use_time = 2 -- как долго расходуется одна Черная энергия в часах
@@ -12,12 +12,21 @@ local addl_weight = 20
 
 
 function attach( sm )
-  sm:subscribe({ signal = "on_drop",         fun = this.remove_outfit   })
   sm:subscribe({ signal = "on_exo_control_clicked", fun = this.show_autodoc })
-  sm:subscribe({ signal = "on_inventory_open", fun = this.on_inv_open   })
-  sm:subscribe({ signal = "on_item_to_ruck", fun = this.remove_outfit   })
-  sm:subscribe({ signal = "on_item_to_slot", fun = this.use_outfit      })
-  sm:subscribe({ signal = "on_spawn",        fun = this.on_spawn        })
+  sm:subscribe({ signal = "on_first_update",   fun = this.on_first_update   })
+  sm:subscribe({ signal = "on_inventory_open", fun = this.on_inv_open       })
+end
+
+
+function on_first_update()
+  local sm = ogse_signals.get_mgr()
+  sm:subscribe({ signal = "on_drop",         fun = this.remove_outfit })
+  sm:subscribe({ signal = "on_item_to_ruck", fun = this.remove_outfit })
+  sm:subscribe({ signal = "on_item_to_slot", fun = this.use_outfit    })
+  local outfit = db.actor:get_current_outfit()
+  if outfit and outfit:section() == exo_sect then
+    subscribe()
+  end
 end
 
 
@@ -37,103 +46,114 @@ function remove_outfit( obj )
 end
 
 
-local signals
+local pt, subscribed
+
 function subscribe()
-  if not signals then
-    signals = {
-      signal = "on_before_actor_conditions_update",
-      fun    = this.on_update
+  if not subscribed then
+    pt         = { game.get_game_time():get() }
+    subscribed = {
+      {
+        signal = "on_before_set_actor_max_weights",
+        fun    = this.set_actor_max_weights
+      },
+      { signal = "on_update", fun = this.on_update },
     }
-    ogse_signals.get_mgr():subscribe( signals )
+    local sm = ogse_signals.get_mgr()
+    for _, s in ipairs( subscribed ) do
+      sm:subscribe( s )
+    end
   end
 end
+
 
 function unsubscribe()
-  if signals then
-    ogse_signals.get_mgr():unsubscribe( signals )
-    signals = nil
+  if subscribed then
+    local sm = ogse_signals.get_mgr()
+    for _, s in ipairs( subscribed ) do
+      sm:unsubscribe( s )
+    end
+    pt         = nil
+    subscribed = nil
   end
 end
 
 
-local pt, max_weight
-function on_spawn()
-  pt = { game.get_game_time():get() }
-  max_weight = sys_ini:r_float(
-    exo_sect, "additional_inventory_weight2"
-  ) - addl_weight
+function set_actor_max_weights( ext )
+  if inventory.on_belt( "art_acumm" ) then
+    ext.additional_inventory_weight  =
+      ext.additional_inventory_weight  + addl_weight
+    ext.additional_inventory_weight2 =
+      ext.additional_inventory_weight2 + addl_weight
+  end
 end
 
 
 local warn_use
+
 function on_update()
-  if db.actor and db.actor:alive() then
-    local previous_check_time = game.CTime()
-    previous_check_time:set( unpack( pt ) )
-    local current_time = game.get_game_time()
-    local dt = current_time:diffSec( previous_check_time )
-    if dt < 60 then return end
-    pt = { current_time:get() }
-    local outfit_item = db.actor:get_current_outfit()
-    if outfit_item
-       and outfit_item:section() == exo_sect
-       and inventory.on_belt( "art_acumm" )
-       and db.actor:get_inventory_weight() > (
-         db.actor:get_actor_max_weight() + max_weight
-       )
-    then
-      if not warn_use then
-        news_manager.send_tip(
-          db.actor,
-          "Активирован режим потребления энергии.",
-          nil, "nano", 5000
-        )
-        warn_use = true
-      end
-      use_art_acumm( dt )
-    else
-      warn_low = false
-      warn_use = false
+  ogse_signals.get_mgr():reschedule( 12000 )
+  if not db.actor:alive() then return end
+  local prev_check_time = game.CTime()
+  prev_check_time:set( unpack( pt ) )
+  local cur_time = game.get_game_time()
+  local dt       = cur_time:diffSec( prev_check_time )
+  if dt == 0 then return end
+  pt = { cur_time:get() }
+  if
+    inventory.on_belt( "art_acumm" )
+    and db.actor:get_inventory_weight() > (
+      db.actor:get_actor_max_weight() - addl_weight
+    )
+  then
+    if not warn_use then
+      news_manager.send_tip(
+        db.actor,
+        "Активирован режим потребления энергии.",
+        nil, "nano", 5000
+      )
+      warn_use = true
     end
+    use_art_acumm( dt )
+  else
+    warn_low = false
+    warn_use = false
   end
 end
 
 
 local warn_low
 function use_art_acumm( dt )
+  local items = inventory.on_belt_obj( "art_acumm" )
+  if not items then return end
   local used = dt / ( use_time * 3600 )
-  for i = 0, db.actor:belt_count() - 1 do
-    local item = db.actor:item_on_belt( i )
-    local it_section = item:section()
-    if it_section == "art_acumm" then
-      local cond = item:condition()
-      if cond > used then
-        cond = cond - used
-        dsh.set_condition( item, cond )
-        if cond < 0.1 then
-          if not warn_low then
-            news_manager.send_tip(
-              db.actor,
-              "Внимание, низкий уровень энергии!",
-              nil, "nano", 5000
-            )
-            warn_low = true
-          end
-        else
-          warn_low = false
+  for _, item in ipairs( items ) do
+    local cond = item:condition()
+    if cond > used then
+      cond = cond - used
+      dsh.set_condition( item, cond )
+      if cond < 0.1 then
+        if not warn_low then
+          news_manager.send_tip(
+            db.actor,
+            "Внимание, низкий уровень энергии!",
+            nil, "nano", 5000
+          )
+          warn_low = true
         end
       else
-        news_manager.send_tip(
-          db.actor,
-          "Внимание, критический уровень энергии!",
-          nil, "nano", 5000
-        )
-        ogse.remove_item_from_inventory( item )
-        inventory.forced_inventory_update( false )
         warn_low = false
       end
-      break
+    else
+      news_manager.send_tip(
+        db.actor,
+        "Внимание, критический уровень энергии!",
+        nil, "nano", 5000
+      )
+      ogse.remove_item_from_inventory( item )
+      inventory.forced_inventory_update( false )
+      warn_low = false
     end
+    break
   end
 end
 
@@ -311,8 +331,8 @@ function show_autodoc()
       outfit:section(), script_name() .. ".use_autodoc_ui", false
     )
     if use_autodoc_ui then
-	local spwn = autodoc()
-	level.start_stop_menu( spwn, true )
+      local spwn = autodoc()
+      level.start_stop_menu( spwn, true )
     end
   end
 end
