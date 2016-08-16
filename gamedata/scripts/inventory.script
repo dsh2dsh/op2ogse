@@ -1,25 +1,28 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
-local belt        = {}
-local belt_id     = {}
-local belt_obj    = {}
-local need_update = true
-
-
-
-function update()
-
-	if (need_update == false) or has_alife_info("paused_on_load") then return end
-
-	belt = {}
-	belt_id = {}
-
-	-- Сканируем инвентарь
-	scan_inv()
-	need_update = false
-
+function attach(sm)
+  sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
 end
 
+
+function on_first_update()
+  rescan_belt()
+  local sm = ogse_signals.get_mgr()
+  sm:subscribe({ signal = "on_drop",         fun = this.on_belt_drop    })
+  sm:subscribe({ signal = "on_item_to_belt", fun = this.on_item_to_belt })
+  sm:subscribe({ signal = "on_item_to_ruck", fun = this.on_belt_drop    })
+  sm:subscribe({ signal = "on_item_to_slot", fun = this.on_belt_drop    })
+end
+
+
+function on_item_to_belt( obj )
+  rescan_belt()
+end
+
+
+local belt     = {}
+local belt_id  = {}
+local belt_obj = {}
 
 local hit_immunities = {
   [ "burn_immunity"          ] = 0,
@@ -44,37 +47,58 @@ local af_restore_speeds = {
 }
 
 
--- Перебор предметов инвентаря
-function scan_inv()
-  for k, total in pairs( hit_immunities ) do
+function rescan_belt()
+  for k, _ in pairs( hit_immunities ) do
     hit_immunities[ k ] = 0
   end
-  for k, total in pairs( af_restore_speeds ) do
+  for k, _ in pairs( af_restore_speeds ) do
     af_restore_speeds[ k ] = 0
   end
+  belt     = {}
+  belt_id  = {}
   belt_obj = {}
   for i = 0, db.actor:belt_count() - 1 do
     local item = db.actor:item_on_belt( i )
-    local it_section = item:section()
-    local it_id = item:id()
-    belt[it_section] = ( belt[it_section] or 0 ) + 1
+    local sect = item:section()
+    belt[ sect ] = ( belt[ sect ] or 0 ) + 1
     belt_id[ item:id() ] = true
-    if not belt_obj[ it_section ] then
-      belt_obj[ it_section ] = {}
-    end
-    table.insert( belt_obj[ it_section ], item )
-    ---- log1("CHECK0:"..tostring(section).." "..tostring(it_id))
-    local imm_sect = get_string( it_section, "hit_absorbation_sect" )
-    if imm_sect then
-      for k, total in pairs( hit_immunities ) do
-        local absorb_val = 1 - get_float( imm_sect, k, 1 )
-        hit_immunities[ k ] = total + absorb_val
-      end
+    if not belt_obj[ sect ] then belt_obj[ sect ] = {} end
+    table.insert( belt_obj[ sect ], item )
+    local props = get_af_props( sect )
+    for k, total in pairs( hit_immunities ) do
+      hit_immunities[ k ] = total + props[ k ]
     end
     for k, total in pairs( af_restore_speeds ) do
-      local val = get_float( it_section, k, 0 )
-      af_restore_speeds[ k ] = total + val
+      af_restore_speeds[ k ] = total + props[ k ]
     end
+  end
+end
+
+
+local cached_props = {}
+function get_af_props( sect )
+  if not cached_props[ sect ] then
+    local t = {}
+    local imm_sect = get_string( sect, "hit_absorbation_sect" )
+    if imm_sect then
+      for k, _ in pairs( hit_immunities ) do
+        local absorb_val = 1 - get_float( imm_sect, k, 1 )
+        t[ k ] = absorb_val
+      end
+    end
+    for k, _ in pairs( af_restore_speeds ) do
+      local val = get_float( sect, k, 0 )
+      t[ k ] = val
+    end
+    cached_props[ sect ] = t
+  end
+  return cached_props[ sect ]
+end
+
+
+function on_belt_drop( item )
+  if belt_ids[ item:id() ] then
+    rescan_belt()
   end
 end
 
@@ -89,45 +113,19 @@ function on_belt_restore_speed( k )
 end
 
 
--- Удаление из таблицы
-function remove_from_table(tbl, section)
-  if tbl[ section ] then
-	if tbl[section] == 1 then
-		tbl[section] = nil
-	else
-		tbl[section] = tbl[section] - 1
-	end
-  end
+function on_belt( sect )
+  return belt[ sect ]
 end
 
--- Открытие/закрытие инвентаря
-function on_inventory_info(info_id)
-	if info_id == "ui_inventory_hide" or info_id == "ui_trade_hide" then
-		need_update = true
-	end
-end
-
--- Принудительное обновление инвентаря
-function forced_inventory_update(mode)
-	need_update = true
-	if mode == true then
-		update()
-	end
-end
-
-
--- предмет на поясе
-function on_belt(sect)
-	return belt[sect]
-end
 
 function items_on_belt()
-	local count = 0
-	for k,v in pairs(belt) do
-		count = count+v
-	end
-	return count
+  local count = 0
+  for k, v in pairs( belt ) do
+    count = count + v
+  end
+  return count
 end
+
 
 function on_belt_obj( sect )
   return belt_obj[ sect ]
