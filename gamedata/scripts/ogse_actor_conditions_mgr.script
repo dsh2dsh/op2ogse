@@ -60,6 +60,12 @@ ASSERT(
   "ogse_actor_conditions_mgr: 'actor_condition:jump_weight_power' parameter not found!"
 )
 
+local overweight_jump_k = get_float( "actor_condition", "overweight_jump_k" )
+ASSERT(
+  overweight_jump_k,
+  "ogse_actor_conditions_mgr: 'actor_condition:overweight_jump_k' parameter not found!"
+)
+
 local def_walk_power = get_float( "actor_condition", "walk_power" )
 ASSERT(
   def_walk_power,
@@ -128,6 +134,12 @@ local function get_item_cond_effect( item )
     ef.psy_health_restore_speed = get_float(
       section, "psy_health_restore_speed", 0
     )
+    ef.additional_inventory_weight  = get_float(
+      section, "additional_inventory_weight",  0
+    )
+    ef.additional_inventory_weight2 = get_float(
+      section, "additional_inventory_weight2", 0
+    )
     cached_item_cond_effects[ section ] = ef
   end
   return ef
@@ -195,20 +207,19 @@ function on_update()
     + inventory.on_belt_restore_speed( "psy_health_restore_speed" )
   -- эффекты от брони
   local armor = db.actor:get_current_outfit()
+  local armor_ef
   if armor then
-    local ef = get_item_cond_effect( armor )
-    if ef then
-      local satiety_restore_speed = adjust_satiety_restore_speed(
-        ef.satiety_restore_speed
-      )
-      summary_satiety_effect = summary_satiety_effect + satiety_restore_speed
-      summary_health_effect  = summary_health_effect + ef.health_restore_speed
-      summary_power_effect   = summary_power_effect + ef.power_restore_speed
-      summary_bleeding_restore_effect = summary_bleeding_restore_effect
-        + ef.bleeding_restore_speed
-      summary_psy_health_effect = summary_psy_health_effect
-        + ef.psy_health_restore_speed
-    end
+    armor_ef = get_item_cond_effect( armor )
+    local satiety_restore_speed = adjust_satiety_restore_speed(
+      armor_ef.satiety_restore_speed
+    )
+    summary_satiety_effect = summary_satiety_effect + satiety_restore_speed
+    summary_health_effect  = summary_health_effect  + armor_ef.health_restore_speed
+    summary_power_effect   = summary_power_effect   + armor_ef.power_restore_speed
+    summary_bleeding_restore_effect = summary_bleeding_restore_effect
+      + armor_ef.bleeding_restore_speed
+    summary_psy_health_effect = summary_psy_health_effect
+      + armor_ef.psy_health_restore_speed
   end
   -- эффекты, связанные c голодом
   if act.satiety < light_hunger_limit then
@@ -278,12 +289,14 @@ function on_update()
     health_t = nil
   end
 
-  local inv_weight  = db.actor:get_inventory_weight()
-  local max_weight  = db.actor:get_actor_max_weight()
+  local inv_weight = db.actor:get_inventory_weight()
+  local max_weight = db.actor:get_actor_max_weight()
+    + ( armor_ef and armor_ef.additional_inventory_weight2 or 0 )
   local new_cam_inert
   if inv_weight > max_weight and use_overweight then
     has_overweight    = true
     local walk_weight = db.actor:get_actor_max_walk_weight()
+      + ( armor_ef and armor_ef.additional_inventory_weight or 0 )
     if inv_weight > walk_weight then inv_weight = walk_weight end
     local k1     = ( inv_weight - max_weight ) / ( walk_weight - max_weight )
     local k2     = 1 - k1
@@ -294,10 +307,14 @@ function on_update()
     else
       override_power = k2
     end
+    set_overweight_jump_k( overweight_jump_k )
+    set_overweight_walk_k( overweight_walk_k )
   else
     has_overweight = false
     override_power = 1
     new_cam_inert  = 0
+    set_overweight_jump_k( 1 )
+    set_overweight_walk_k( 1 )
   end
 
   if act.power < 0.7 then
