@@ -46,8 +46,7 @@ function remove_outfit( obj )
 end
 
 
-local pt, subscribed
-
+local subscribed
 function subscribe()
   if not subscribed then
     pt         = { game.get_game_time():get() }
@@ -56,7 +55,7 @@ function subscribe()
         signal = "on_before_set_actor_max_weights",
         fun    = this.set_actor_max_weights
       },
-      { signal = "on_update", fun = this.on_update },
+      { signal = "on_outfit_use_power", fun = this.on_outfit_use_power },
     }
     local sm = ogse_signals.get_mgr()
     for _, s in ipairs( subscribed ) do
@@ -78,32 +77,38 @@ function unsubscribe()
 end
 
 
+local on_turbo_weight = false
+
 function set_actor_max_weights( ext )
   if inventory.on_belt( "art_acumm" ) then
-    ext.outfit_max_walk_weight  = ext.outfit_max_walk_weight + addl_weight
-    ext.outfit_max_weight       = ext.outfit_max_weight      + addl_weight
+    if on_turbo_mode then
+      if
+        db.actor:get_inventory_weight() > (
+          db.actor:get_actor_max_weight() - addl_weight
+        )
+      then
+        ext.outfit_max_walk_weight  = ext.outfit_max_walk_weight + addl_weight
+        ext.outfit_max_weight       = ext.outfit_max_weight      + addl_weight
+      else
+        on_turbo_mode = false
+      end
+    else
+      if db.actor:get_inventory_weight() > db.actor:get_actor_max_weight() then
+        ext.outfit_max_walk_weight  = ext.outfit_max_walk_weight + addl_weight
+        ext.outfit_max_weight       = ext.outfit_max_weight      + addl_weight
+        on_turbo_mode = true
+      end
+    end
+  else
+    on_turbo_mode = false
   end
 end
 
 
-local warn_use
+local warn_low, warn_use = false, false
 
-function on_update()
-  ogse_signals.get_mgr():reschedule( 12000 )
-  if not db.actor:alive() then return end
-  local prev_check_time = game.CTime()
-  prev_check_time:set( unpack( pt ) )
-  local cur_time = game.get_game_time()
-  local dt       = cur_time:diffSec( prev_check_time )
-  if dt == 0 then return end
-  pt = { cur_time:get() }
-  if
-    inventory.on_belt( "art_acumm" )
-    and dsh_weight_control.get_power_mode()
-    and db.actor:get_inventory_weight() > (
-      db.actor:get_actor_max_weight() - addl_weight
-    )
-  then
+function on_outfit_use_power( dt )
+  if on_turbo_mode and inventory.on_belt( "art_acumm" ) then
     if not warn_use then
       news_manager.send_tip(
         db.actor,
@@ -120,7 +125,6 @@ function on_update()
 end
 
 
-local warn_low
 function use_art_acumm( dt )
   local items = inventory.on_belt_obj( "art_acumm" )
   if not items then return end

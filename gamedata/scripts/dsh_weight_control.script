@@ -9,10 +9,11 @@ local empty_power_loss = 2
 
 
 function attach( sm )
-  sm:subscribe({ signal = "on_drop",         fun = this.remove_outfit   })
-  sm:subscribe({ signal = "on_item_to_ruck", fun = this.remove_outfit   })
-  sm:subscribe({ signal = "on_item_to_slot", fun = this.use_outfit      })
-  sm:subscribe({ signal = "on_update",       fun = this.on_update       })
+  sm:subscribe({ signal = "on_drop",         fun = this.remove_outfit })
+  sm:subscribe({ signal = "on_item_to_ruck", fun = this.remove_outfit })
+  sm:subscribe({ signal = "on_item_to_slot", fun = this.use_outfit    })
+  sm:subscribe({ signal = "on_update",       fun = this.on_update     })
+  sm:subscribe({ signal = "on_update",       fun = this.use_power     })
 end
 
 
@@ -74,7 +75,6 @@ function set_weight_parameters()
   ogse_signals.get_mgr():call( "on_before_set_actor_max_weights", ext )
   local outfit = db.actor:get_current_outfit()
   if outfit then
-    if not pt then pt = { game.get_game_time():get() } end
     local cond   = outfit:condition()
     local params = get_outfit_params( outfit:section() )
     local outfit_max_walk_weight, outfit_max_weight = 0, 0
@@ -155,7 +155,7 @@ function get_outfit_params( sect )
     t.outfit_max_weight = get_float(
       sect, script_name() .. ".max_weight", 0
     )
-    t.use_power  = get_bool( sect, script_name() .. ".use_power", true )
+    t.use_power  = get_bool( sect, script_name() .. ".use_power", false )
     t.helmet     = get_bool( sect, "dynamic_hud_enable", false )
     t.power_loss = get_float( sect, "power_loss", 1.0 )
     t.radiation_protection = get_float( sect, "radiation_protection", 0 )
@@ -166,32 +166,55 @@ function get_outfit_params( sect )
 end
 
 
+local on_power_dt, on_power_dt_k = 0, 0
+
 function have_power( dt )
-  local valid = 0
-  local items = inventory.on_belt_obj( "docent_acumm" )
-  if items and table.getn( items ) >= 2 then
-    local accums = {}
-    for _, obj in ipairs( items ) do
-      if obj:condition() > 0 then
-        table.insert( accums, obj )
+  local found = find_power()
+  if table.getn( found ) >= 2 then
+    if dt > 0 then
+      local k = get_power_k()
+      if k > 0 then
+        on_power_dt   = on_power_dt   + dt
+        on_power_dt_k = on_power_dt_k + dt * k
       end
     end
-    local k = get_power_k()
-    valid   = table.getn( accums )
-    if valid >= 2 and dt > 0 and k > 0 then
-      local used = dt / ( use_time * 3600 * k )
-      for _, obj in ipairs( accums ) do
-        local cond = obj:condition()
-        if cond > used then
-          dsh.set_condition( obj, cond - used )
-        else
-          dsh.set_condition( obj, 0 )
-          valid = valid - 1
-        end
+    return true
+  end
+  return false
+end
+
+
+function find_power()
+  local found = {}
+  local items = inventory.on_belt_obj( "ekza_akkumul" )
+  if items and table.getn( items ) >= 2 then
+    for _, obj in ipairs( items ) do
+      if obj:condition() > 0 then
+        table.insert( found, obj )
       end
     end
   end
-  return valid >= 2 and true or false
+  return found
+end
+
+
+function use_power()
+  ogse_signals.get_mgr():reschedule( 10000 )
+  if not db.actor:alive() then return end
+  if on_power_mode then
+    local found = find_power()
+    local used  = on_power_dt_k / ( use_time * 3600 )
+    for _, obj in ipairs( found ) do
+      local cond = obj:condition()
+      if cond > used then
+        dsh.set_condition( obj, cond - used )
+      else
+        dsh.set_condition( obj, 0 )
+      end
+    end
+    ogse_signals.get_mgr():call( "on_outfit_use_power", on_power_dt )
+  end
+  on_power_dt, on_power_dt_k = 0, 0
 end
 
 
@@ -213,7 +236,7 @@ function get_power_k()
   elseif db.actor:is_actor_sprinting() then
     k = 2
   end
-  local overweight = ogse_actor_conditions.get_overweight_power()
+  local overweight = ogse_actor_conditions_mgr.get_overweight_power()
   if overweight < 1 then
     k = k * ( use_time / overweight_time * ( 1 - overweight ) )
   end
