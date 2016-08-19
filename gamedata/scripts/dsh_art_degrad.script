@@ -1,13 +1,9 @@
---[=[ -*- mode: lua; coding: windows-1251-dos -*-
+-- -*- mode: lua; coding: windows-1251-dos -*-
 
-
-Этот скрипт эмулирует поглощение энергии хита артефактами, размещенными на поясе.
-Каждый артефакт, находящийся под контролем скрипта, способен поглотить
-определенное кол-во энергии, после чего, он преобразуется в булыжник.
-
-Дополнительно, эмулируется пулезащита брони.
-
---]=]
+-- Этот скрипт эмулирует поглощение энергии хита артефактами,
+-- размещенными на поясе.  Каждый артефакт, находящийся под контролем
+-- скрипта, способен поглотить определенное кол-во энергии, после
+-- чего, он преобразуется в булыжник.
 
 local our_hits = {              -- какие типы хита будут обрабатываться
   [ hit.explosion ] = {
@@ -69,21 +65,23 @@ local our_hits = {              -- какие типы хита будут обрабатываться
 function attach( sm )
   sm:subscribe({ signal = "on_actor_before_hit", fun = this.before_hit })
   sm:subscribe({ signal = "on_hit",              fun = this.on_hit })
-  sm:subscribe({ signal = "on_spawn",            fun = this.on_spawn })
-  sm:subscribe({ signal = "on_update",           fun = this.on_update })
   sm:subscribe({ signal = "on_use",              fun = this.on_use  })
 end
 
 
 local pt
-function on_spawn()
+function on_first_update()
   pt = { game.get_game_time():get() }
+  local sm = ogse_signals.get_mgr()
+  sm:subscribe({ signal = "on_update", fun = this.process_hits })
+  sm:subscribe({ signal = "on_update", fun = this.process_arts })
 end
 
 
+local before_hit_outfit_cond, psy_block_t
 local got_hits = {}
 local has_hit  = false
-local before_hit_outfit_cond, psy_block_t
+local new_hit  = {}
 
 function before_hit( hit_data, p_s_hit, p_ignore_flags )
   local hit_type = hit_data.hit_type
@@ -98,6 +96,7 @@ function before_hit( hit_data, p_s_hit, p_ignore_flags )
         got_hits[ hit_type ] = real_power
       end
       has_hit = true
+      new_hit[ hit_type ] = true
     end
     if our_hit.ignored_outfit_protection then
       apply_outfit_protection( hit_data, p_s_hit )
@@ -188,23 +187,20 @@ function get_absorbations( af )
 end
 
 
-local last_t = 0
-function on_update()
-  if device().precache_frame > 0 then return end
+function process_hits()
   local previous_check_time = game.CTime()
   previous_check_time:set( unpack( pt ) )
   local current_time = game.get_game_time()
   local dt = current_time:diffSec( previous_check_time )
-  if dt == 0 then return end
   pt = { current_time:get() }
 
   if
     db.actor:get_bleeding() > 0
-    or got_hit( hit.explosion     )
-    or got_hit( hit.fire_wound    )
-    or got_hit( hit.strike        )
-    or got_hit( hit.wound         )
-    or got_hit( hit.chemical_burn )
+    or new_hit[ hit.explosion     ]
+    or new_hit[ hit.fire_wound    ]
+    or new_hit[ hit.strike        ]
+    or new_hit[ hit.wound         ]
+    or new_hit[ hit.chemical_burn ]
   then
     local hit_type = "bleeding"
     if got_hits[ hit_type ] then
@@ -217,10 +213,10 @@ function on_update()
 
   if
     db.actor.health < 1
-    or got_hit( hit.explosion  )
-    or got_hit( hit.fire_wound )
-    or got_hit( hit.strike     )
-    or got_hit( hit.wound      )
+    or new_hit[ hit.explosion  ]
+    or new_hit[ hit.fire_wound ]
+    or new_hit[ hit.strike     ]
+    or new_hit[ hit.wound      ]
   then
     local hit_type = "health"
     if got_hits[ hit_type ] then
@@ -247,7 +243,7 @@ function on_update()
 
   if
     db.actor.radiation > 0
-    or got_hit( hit.radiation )
+    or new_hit[ hit.radiation ]
   then
     local hit_type = "radiation"
     if got_hits[ hit_type ] then
@@ -258,44 +254,48 @@ function on_update()
     has_hit = true
   end
 
-  if has_hit and time_global() - last_t >= 1000 then
-    local empty = {}
-    local master_coef = 4 - level.get_game_difficulty()
-    for i = 0, db.actor:belt_count() - 1 do
-      local af = db.actor:item_on_belt( i )
-      if af:is_artefact() then
-        local af_sect = af:section()
-        local absorbs = get_absorbations( af )
-        if absorbs then
-          local cond_diff = 0
-          for hit_type, hit_power in pairs( got_hits ) do
-            local our_hit = our_hits[ hit_type ]
-            if absorbs[ our_hit.sect ] then
-              local absorb_val = absorbs[ our_hit.sect ] * hit_power
-              cond_diff = cond_diff + (
-                absorb_val / ( our_hit.max * master_coef )
-              )
-            end
+  new_hit = {}
+end
+
+
+function process_arts()
+  ogse_signals.get_mgr():reschedule( 1000 )
+  if not has_hit then return end
+  local empty       = {}
+  local master_coef = 4 - level.get_game_difficulty()
+  for i = 0, db.actor:belt_count() - 1 do
+    local af = db.actor:item_on_belt( i )
+    if af:is_artefact() then
+      local af_sect = af:section()
+      local absorbs = get_absorbations( af )
+      if absorbs then
+        local cond_diff = 0
+        for hit_type, hit_power in pairs( got_hits ) do
+          local our_hit = our_hits[ hit_type ]
+          if absorbs[ our_hit.sect ] then
+            local absorb_val = absorbs[ our_hit.sect ] * hit_power
+            cond_diff = cond_diff + (
+              absorb_val / ( our_hit.max * master_coef )
+            )
           end
-          if cond_diff > 0 then
-            if af:condition() > cond_diff then
-              dsh.set_condition( af, af:condition() - cond_diff )
-            else
-              table.insert( empty, af )
-            end
+        end
+        if cond_diff > 0 then
+          if af:condition() > cond_diff then
+            dsh.set_condition( af, af:condition() - cond_diff )
+          else
+            table.insert( empty, af )
           end
         end
       end
     end
-    for _, af in ipairs( empty ) do
-      degrade_artefact( af )
-    end
-    for hit_type, hit_power in pairs( got_hits ) do
-      got_hits[ hit_type ] = 0
-    end
-    has_hit = false
-    last_t  = time_global()
   end
+  for _, af in ipairs( empty ) do
+    degrade_artefact( af )
+  end
+  for hit_type, hit_power in pairs( got_hits ) do
+    got_hits[ hit_type ] = 0
+  end
+  has_hit = false
 end
 
 
@@ -340,9 +340,4 @@ end
 function degrade_artefact( af )
   zero_all_af_effects( af )
   dsh.set_condition( af, 0 )
-end
-
-
-function got_hit( t )
-  return ( got_hits[ t ] and got_hits[ t ] > 0 ) and true or false
 end
