@@ -48,9 +48,9 @@ function on_update()
       local dt      = math.floor( cur_t:diffSec( prev_pt ) )
       pt = { cur_t:get() }
       local cur_static = get_outfit_dirty_static()
-      set_outfit_use_time( outfit, dt )
+      set_outfit_use_time( dt )
       local new_static = get_outfit_dirty_static()
-      if new_static =~ cur_static then
+      if new_static ~= cur_static then
         ogse_dynamic_hud.check_my_suit_hud( true )
       end
     else
@@ -66,13 +66,13 @@ local cur_outfit = {}
 function get_outfit_dirty_static()
   local outfit = db.actor:get_current_outfit()
   if not outfit then return end
-  if ( not cur_outfit.id ) or cur_wpn.id ~= outfit:id() then
+  if ( not cur_outfit.id ) or cur_outfit.id ~= outfit:id() then
     local sobj = alife():object( outfit:id() )
     ASSERT( sobj, "can't find sobj: %s", outfit:name() )
-    local pk   = xr_netpk.net_alife_item_custom_outfit( sobj )
+    local pk   = xs_netpk.net_alife_item_custom_outfit( sobj )
     ASSERT( pk:isOk(), "can't read netpacket of %s", sobj:name() )
     local data = pk:get()
-    local ini  = create_ini_file( data.custom_data.getString() )
+    local ini  = create_ini_file( data.custom_data:getString() )
     local t = {}
     t.id = outfit:id()
     if ini:section_exist( script_name() ) then
@@ -95,63 +95,78 @@ function get_outfit_dirty_static()
 end
 
 
-function set_outfit_use_time( outfit, dt )
+function set_outfit_use_time( dt )
   local max = max_use_time * 3600
-  if cur_oufit.use_time >= max then return end
-  cur_oufit.use_time = cur_oufit.use_time + dt
+  if cur_outfit.use_time >= max then return end
+  cur_outfit.use_time = cur_outfit.use_time + dt
   if cur_outfit.use_time > max then cur_outfit.use_time = max end
-  local sobj = alife():object( outfit:id() )
+  local outfit = db.actor:get_current_outfit()
+  local sobj   = alife():object( outfit:id() )
   ASSERT( sobj, "can't find sobj: %s", outfit:name() )
-  local pk   = xr_netpk.net_alife_item_custom_outfit( sobj )
+  local pk   = xs_netpk.net_alife_item_custom_outfit( sobj )
   ASSERT( pk:isOk(), "can't read netpacket of %s", sobj:name() )
   local data = pk:get()
   local cd   = data.custom_data:getTable()
-  local t    = cd[ script_name() ]
-  if not t then
-    t = {}
-    cd[ script_name() ] = t
+  if cur_outfit.use_time > 0 then
+    local t = cd[ script_name() ]
+    if not t then
+      t = {}
+      cd[ script_name() ] = t
+    end
+    t.use_time = cur_outfit.use_time
+  else
+    cd[ script_name() ] = nil
   end
-  t.use_time = cur_oufit.use_time
   data.custom_data:set( cd )
   pk:set( data )
 end
 
 
-function reset_outfit_use_time( outfit )
+function reset_outfit_use_time()
   local outfit     = db.actor:get_current_outfit()
   local cur_static = get_outfit_dirty_static()
   cur_outfit.use_time = 0
-  set_outfit_use_time( outfit, 0 )
+  set_outfit_use_time( 0 )
   ogse_dynamic_hud.check_my_suit_hud( true )
 end
 
 
+local static_in_use
+
 function on_hud_hide()
-  local static_name = get_outfit_dirty_static()
-  if not static_name then return end
-  if get_hud():GetCustomStatic( static_name ) then
-    get_hud():RemoveCustomStatic( static_name )
+  if static_in_use then
+    if get_hud():GetCustomStatic( static_in_use ) then
+      get_hud():RemoveCustomStatic( static_in_use )
+      static_in_use = nil
+    end
   end
   if ogse_dynamic_hud.is_sniper_mode() then
-    get_statics():show_static( static_name, true )
+    local static_name = get_outfit_dirty_static()
+    if static_name then
+      get_statics():show_static( static_name, true )
+    end
   end
 end
 
 
 function on_before_hud_show()
+  get_statics():hide_static()
   local static_name = get_outfit_dirty_static()
-  if not static_name then return end
-  if not get_hud():GetCustomStatic( static_name ) then
-    get_hud():AddCustomStatic( static_name )
+  if static_name then
+    if not get_hud():GetCustomStatic( static_name ) then
+      get_hud():AddCustomStatic( static_name )
+      static_in_use = static_name
+    end
   end
 end
 
 
 function on_sniper_mode()
   local static_name = get_outfit_dirty_static()
-  if not static_name then return end
-  get_statics():hide_static( static_name )
-  get_statics():show_static( static_name, true )
+  if static_name then
+    get_statics():hide_static( static_name )
+    get_statics():show_static( static_name, true )
+  end
 end
 
 
@@ -239,16 +254,15 @@ function on_use( obj )
   local sect = obj:section()
   if sect == "flaska" then
     local fx
-    local outfit = db.actor:get_current_outfit()
-    if outfit and ogse_dynamic_hud.get_current_helmet() then
-      -- fx = "clean_mask"
-      reset_outfit_use_time( outfit )
+    if
+      db.actor:get_current_outfit()
+      and ogse_dynamic_hud.get_current_helmet()
+      and get_outfit_dirty_static()
+    then
+      fx = "clean_mask"
     else
       fx = "flaska"
-      dsh_medkit.apply_item( sect )
     end
-    if fx then
-      dsh_hud_fx.run_fx( sect, get_string( sect, fx )
-    end
+    dsh_hud_fx.run_fx( sect, fx )
   end
 end
