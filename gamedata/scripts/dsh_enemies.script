@@ -1,9 +1,13 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
-  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
+  sm:subscribe({ signal = "on_spawn",               fun = this.on_spawn })
+  sm:subscribe({ signal = "on_monster_death",       fun = this.on_death })
   sm:subscribe({ signal = "on_monster_enemy_callback", fun = this.enemy_callback })
+  sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_death })
+  sm:subscribe({ signal = "on_npc_death",           fun = this.on_death })
   sm:subscribe({ signal = "on_npc_enemy_callback", fun = this.enemy_callback })
+  sm:subscribe({ signal = "on_npc_net_destroy",     fun = this.on_death })
 end
 
 
@@ -23,6 +27,16 @@ function on_spawn()
         end
       end
     end
+  end
+end
+
+
+function on_death( obj )
+  local binder     = obj:binded_object()
+  local subscribed = binder[ script_name() .. ".subscribed" ]
+  if subscribed then
+    ogse_signals.get_mgr():unsubscribe( subscribed )
+    binder[ script_name() .. ".subscribed" ] = nil
   end
 end
 
@@ -48,10 +62,25 @@ function get_cache_rec( obj, enemy )
   local cached = binder[ script_name() .. ".cached" ]
   if cached and cached[ enemy:id() ] then
     local res, ttl = unpack( cached[ enemy:id() ] )
-    if ttl > time_global() then
-      is_enemy = res
-    else
-      cached[ enemy:id() ] = nil
+    is_enemy = res
+    if
+      ttl <= time_global()
+      and not binder[ script_name() .. ".subscribed" ]
+    then
+      local s = {
+        [ "signal" ] = "on_update",
+        [ "self"   ] = obj,
+        [ "fun"    ] = function( obj )
+          local res = check_is_enemy_always( obj, enemy )
+          add_cache_rec( obj, enemy, res, freq )
+          local subscribed = binder[ script_name() .. ".subscribed" ]
+          ASSERT( subscribed, "oops, isn't subscribed, can't be" )
+          ogse_signals.get_mgr():unsubscribe( subscribed )
+          binder[ script_name() .. ".subscribed" ] = nil
+        end
+      }
+      binder[ script_name() .. ".subscribed" ] = s
+      ogse_signals.get_mgr():subscribe( s )
     end
   end
   return is_enemy

@@ -6,14 +6,76 @@
 
 
 function attach( sm )
+  sm:subscribe({ signal = "on_npc_death",       fun = this.on_death })
   sm:subscribe({ signal = "on_npc_enemy_callback", fun = this.enemy_callback })
+  sm:subscribe({ signal = "on_npc_net_destroy", fun = this.on_death })
+end
+
+
+function on_death( obj )
+  local binder     = obj:binded_object()
+  local subscribed = binder[ script_name() .. ".subscribed" ]
+  if subscribed then
+    ogse_signals.get_mgr():unsubscribe( subscribed )
+    binder[ script_name() .. ".subscribed" ] = nil
+  end
+end
+
+
+local freq = 1000
+
+function add_cache_rec( obj, enemy, is_enemy, freq )
+  local binder = obj:binded_object()
+  local cached = binder[ script_name() .. ".cached" ]
+  if cached then
+    cached[ enemy:id() ] = { is_enemy, time_global() + freq }
+  else
+    binder[ script_name() .. ".cached" ] = {
+      [ enemy:id() ] = { is_enemy, time_global() + freq }
+    }
+  end
+end
+
+
+function get_cache_rec( obj, enemy, action )
+  local is_enemy
+  local binder = obj:binded_object()
+  local cached = binder[ script_name() .. ".cached" ]
+  if cached and cached[ enemy:id() ] then
+    local res, ttl = unpack( cached[ enemy:id() ] )
+    is_enemy = res
+    if
+      ttl <= time_global()
+      and not binder[ script_name() .. ".subscribed" ]
+    then
+      local s = {
+        [ "signal" ] = "on_update",
+        [ "self"   ] = obj,
+        [ "fun"    ] = function( obj )
+          local res = action:enemy_callback( obj, enemy )
+          add_cache_rec( obj, enemy, res, freq )
+          local subscribed = binder[ script_name() .. ".subscribed" ]
+          ASSERT( subscribed, "oops, isn't subscribed, can't be" )
+          ogse_signals.get_mgr():unsubscribe( subscribed )
+          binder[ script_name() .. ".subscribed" ] = nil
+        end
+      }
+      binder[ script_name() .. ".subscribed" ] = s
+      ogse_signals.get_mgr():subscribe( s )
+    end
+  end
+  return is_enemy
 end
 
 
 function enemy_callback( obj, enemy, result )
   local st = db.storage[ obj:id() ].combat_ignore
   if st and st.enabled then
-    local res = st.action:enemy_callback( obj, enemy )
+    local res = get_cache_rec( obj, enemy, st.action )
+    if res == nil then
+      res = st.action:enemy_callback( obj, enemy )
+      add_cache_rec( obj, enemy, res, freq )
+    end
     if not res then
       table.insert( result, res )
       return true
