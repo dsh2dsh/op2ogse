@@ -711,4 +711,4 @@ $mod_dir$   		= false|	false|	$fs_root$|		mods\
 - моду Новый Арсенал 3 за отличную сборку оружия
 
 - людям, чьи работы я использовал или кто мне помогал другим способом:
-  art0run, BlooderDen, Shitty, Assort.
+  art0run, BlooderDen, Shitty, Assort, Alkseur.
