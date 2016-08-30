@@ -1695,25 +1695,6 @@ function add_spawned_object( obj )
         end
       end
     end
---[=[
-    -- Проверим, не монолитовцы ли это...
-    if s_comm == "monolith" then
-      if
-        lev == "l10_radar"
-        or lev == "l10u_bunker"
-        or lev == "l11_pripyat"
-        or lev == "l12_stancia" or lev == "l12_stancia_2"
-        or lev == "l12u_control_monolith" or lev == "l12u_sarcofag"
-      then
-        return
-      end
-    end
-    if s_comm == "zombie" or s_comm == "zombied" then
-      if lev == "l08_yantar" then
-        return
-      end
-    end
---]=]
     local b_added = false
     local pos     = get_object_position( obj )
     if table_spawned then
@@ -2400,127 +2381,113 @@ local rnd = math.random
  end
 --[[--------------------------------- lsclon -----------------------------------]]
 
-function news_sort(a,b)
-	if (a.priority==1 and b.priority ~=1) then
-		return false
-	end
-	return a.created < b.created
-	--return a.timeout < b.timeout
+
+function news_sort( a, b )
+  if a.priority == 1 and b.priority ~= 1 then
+    return false
+  end
+  return a.created < b.created
 end
 
 
 function on_news()
-	local sim = alife()
-	local rnd = math.random
-	local avail = {}
-	if news_stack then 
-		amk.oau_reason="cn on_news first pass"
-		for k,v in pairs(news_stack) do
-			if v.activated == nil then
-				if (v.lifetime > amk.game_minutes()) then
-				else -- Новость устарела.
-						-- mylog("Too old - "..v.from..": "..v.text)
-					table_remove(news_stack, k)
-				end
-			else -- Новость уже была.
-				table_remove(news_stack, k)
-			end
-		end
-		amk.oau_reason="cn on_news sort"
-		-- Отсортируем.
-		table_sort(news_stack, news_sort)
-		--amk.dump_table(news_stack)
-		amk.oau_reason="cn on_news second pass"
-		for k,v in pairs(news_stack) do
-			if v.activated == nil then
-				if (v.lifetime > amk.game_minutes()) then
-					if (v.timeout < amk.game_minutes()) then -- Новость актуальна.
-						table.insert(avail, k)
-					else
-						if _debug == true then mylog("Not ready yet - ".. v.from..": "..v.text) end -- Еще не время.
-					end
-				else -- Новость устарела.
-						if _debug == true then mylog("Too old - "..v.from..": "..v.text) end
-					table_remove(news_stack, k)
-				end
-			else -- Новость уже была.
-				table_remove(news_stack, k)
-			end
-		end
-	end
-	
-	if avail and #avail > 0 then
-		amk.oau_reason="cn on_news get available"
-		--local t = avail[rnd(#avail)]
-		local t = avail[1]
-		local z = news_stack[t]
-		if (z) then
-			local bAlive = false
-			local m_author_id = tonumber(z.author_id)
-			if (m_author_id ~= nil) then
-				amk.oau_reason="cn on_news check author"
-				bAlive = false
-				local obj = sim:object(m_author_id)
-				amk.oau_reason="cn on_news check author obj"
-				if (obj) then
-					amk.oau_reason="cn on_news author obj exists"
-					if (IAmAStalker[obj:clsid()]) then
-						amk.oau_reason="cn on_news author obj is NPC"
-						if IsNpcStalker(obj) then
-							amk.oau_reason="cn on_news check author alive"
-					if (obj.alive and obj:alive()==true and obj.health and obj:health() > 0) then
-						if (_debug == true) then amk.add_spot_on_map(obj.id, "red_location", z.from..": "..z.text) end
-								amk.oau_reason="cn on_news author is alive"
-						bAlive = true
-					end
-				end
-					end
-				end
-			else
-				bAlive = true
-			end
-			if (bAlive == true) then
-				amk.oau_reason="cn on_news show_news"
-				--show_news(z.from, z.text, z.timeout, z.showtime, z.section)
-				show_news(z.text, z.from, 0, z.showtime, z.section)
-				amk.oau_reason="cn on_news set activated"
-				z.activated = amk.game_minutes()
-			else
-				amk.oau_reason="cn on_news show_news alive is false"
-			end
-		end
-	else
---		mylog("on_news [5] - no news ")
-	end	
+  amk.oau_reason = "cn on_news first pass"
+  local filtered = {}
+  for _, v in ipairs( news_stack ) do
+    if not v.activated then
+      if v.lifetime > amk.game_minutes() then
+        table.insert( filtered, v )
+      end
+    end
+  end
+  if table.getn( filtered ) < table.getn( news_stack ) then
+    news_stack = filtered
+  end
+  amk.oau_reason = "cn on_news sort"
+  -- Отсортируем.
+  table.sort( news_stack, news_sort )
+  amk.oau_reason = "cn on_news second pass"
+  for _, v in ipairs( news_stack ) do
+    if v.timeout < amk.game_minutes() then -- Новость актуальна.
+      on_avail_news( v )
+      break
+    else
+      if _debug == true then
+        mylog( "Not ready yet - ".. v.from .. ": " .. v.text )
+      end -- Еще не время.
+    end
+  end
 
-	amk.oau_reason="cn on_news continue"
+  amk.oau_reason = "cn on_news continue"
+  if timer_next_blow == 0 then
+    local next_time = ogse_weather_mgr.get_surge_time()
+    timer_next_blow = amk.game_minutes() + next_time * 60 -- в минутах
+  end
 
-	if (timer_next_blow == 0) then
-		local next_time = ogse_weather_mgr.get_surge_time()
-		timer_next_blow = amk.game_minutes() + next_time * 60 -- в минутах
-	end
-
-    local gtime = amk.game_minutes()
-
-	if gtime - timer_alife_showed > timer_alife_freq then
-	  amk.oau_reason = "cn on_news offline_alife start"
-	  amk_offline_alife.offline_alife()
-	  amk.oau_reason = "cn on_news offline_alife exit"
-	  timer_alife_showed = amk.game_minutes()
-	end
-	if (gtime - timer_blow_showed > timer_blow_freq) then
-		do_blow_news()
-	end
-	if (gtime - timer_eternal_stalker > timer_eternal_stalker_freq) then
-		do_eternal_stalker()	
-	end
-	if (gtime - timer_def_spawn > timer_def_spawn_freq) then
-		do_seen_monster()	
-	end	
-	if (gtime - timer_daytime_showed > timer_daytime_freq) then
-		on_daytime()
-	end
+  local gtime = amk.game_minutes()
+  if gtime - timer_alife_showed > timer_alife_freq then
+    amk.oau_reason = "cn on_news offline_alife start"
+    amk_offline_alife.offline_alife()
+    amk.oau_reason = "cn on_news offline_alife exit"
+    timer_alife_showed = amk.game_minutes()
+  end
+  if gtime - timer_blow_showed > timer_blow_freq then
+    do_blow_news()
+  end
+  if gtime - timer_eternal_stalker > timer_eternal_stalker_freq then
+    do_eternal_stalker()
+  end
+  if gtime - timer_def_spawn > timer_def_spawn_freq then
+    do_seen_monster()
+  end
+  if gtime - timer_daytime_showed > timer_daytime_freq then
+    on_daytime()
+  end
 end
+
+
+function on_avail_news( z )
+  amk.oau_reason = "cn on_news get available"
+  local z           = avail[ 1 ]
+  local bAlive      = false
+  local m_author_id = tonumber( z.author_id )
+  if m_author_id then
+    amk.oau_reason = "cn on_news check author"
+    local obj = alife():object( m_author_id )
+    amk.oau_reason = "cn on_news check author obj"
+    if obj then
+      amk.oau_reason = "cn on_news author obj exists"
+      if IsStalker( obj ) then
+        amk.oau_reason = "cn on_news author obj is NPC"
+        if IsNpcStalker( obj ) then
+          amk.oau_reason = "cn on_news check author alive"
+          if
+            obj.alive and obj:alive() and obj.health and obj:health() > 0
+          then
+            if _debug == true then
+              amk.add_spot_on_map(
+                obj.id, "red_location", z.from .. ": " .. z.text
+              )
+            end
+            amk.oau_reason = "cn on_news author is alive"
+            bAlive = true
+          end
+        end
+      end
+    end
+  else
+    bAlive = true
+  end
+  if bAlive then
+    amk.oau_reason = "cn on_news show_news"
+    show_news( z.text, z.from, 0, z.showtime, z.section )
+    amk.oau_reason = "cn on_news set activated"
+  else
+    amk.oau_reason = "cn on_news show_news alive is false"
+  end
+  z.activated = amk.game_minutes()
+end
+
 
 function on_offline_item_found(who, object)
 	if _debug == true then
