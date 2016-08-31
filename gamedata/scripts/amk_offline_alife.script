@@ -3,45 +3,55 @@
 -- Адаптирован для Менеджера оружия. Rulix aka Bak от 2.07.09
 -- Адатировал: Idler.
 
-off_npcs={}
-items={}
-relation_matrix={}
-tables_ready = false
-sell_table = {}
-local item_dependence = {}
+off_npcs = {}
+items    = {}
 always_keep_item = {}
 
-local wpn_fp = {}
 -- Как часто делать апдейты, реальные минуты
 local iFreq       = 0 --12
-local initialized = false
+-- Как часто генерить события в оффлайн (реальные секунды)
+local alife_freq  = 48
 
-local monster_params = {}
-
-local maps={
+local maps = {
+  "atp_for_test22",
+  "aver",
+  "dead_city",
+  "generators",
+  "hospital",
+  "jupiter",
+  -- "jupiter_underground",
+  -- "labx8",
   "l01_escape",
   "l02_garbage",
   "l03_agroprom",
---      "l03u_agr_underground",
+  "l03u_agr_underground",
   "l04_darkvalley",
---      "l04u_labx18",
+  -- "l04u_labx18",
   "l05_bar",
   "l06_rostok",
   "l07_military",
-  "l08_yantar"--,
-  --"l08u_brainlab",
-  --"l10_radar",
-  --"l10u_bunker",
-  --"l11_pripyat",
-  --"l12_stancia",
-  --"l12_stancia_2",
-  --"l12u_control_monolith",
-  --"l12u_sarcofag"
+  "l08_yantar",
+  -- "l08u_brainlab",
+  "l10_radar",
+  -- "l10u_bunker",
+  "l11_pripyat",
+  -- "l12_stancia",
+  -- "l12_stancia_2",
+  -- "l12u_control_monolith",
+  -- "l12u_sarcofag",
+  "limansk",
+  "lost_village",
+  "marsh",
+  "puzir",
+  "pripyat",
+  "red_forest",
+  "warlab",
+  "zaton",
 }
 
 protected = {
-  names = {},             -- имена объектов (стоит добавлять только уникальные имена!)
-  ids = {},               -- ID объектов
+  names     = {}, -- имена объектов (стоит добавлять только уникальные имена!)
+  ids       = {}, -- ID объектов
   story_ids = {   -- story ID объектов
     5008,
     5013,
@@ -90,21 +100,12 @@ protected = {
     "notebook_flash",
     "disk_flash",
     "pda_flash",
-    "taynik_podarok"
-  }
+    "taynik_podarok",
+  },
 }
-
-local smart_filters = {
-  "esc_bridge", "esc_blokpost"
-}
-
-
-local rel_enemy, rel_friend
 
 -- радиус "обзора"
 local look_radius        = 50
--- интенсивность поиска (количество отрабатываемых неписей)
-local search_intensivity = 60
 -- Вещи дешевле продает торговцам
 local sell_limit         = 3000
 local rate_art_found     = 100
@@ -120,14 +121,6 @@ local stalkers_comm = {
   [ "nebo"    ] = true,
   [ "stalker" ] = true,
 }
-
-
-function init()
-  if initialized == false then
-    build_tables()
-    initialized = true
-  end
-end
 
 
 function schedule_update()
@@ -187,8 +180,8 @@ function add_fresh_meat( obj )
       }
     end
     if
-      IsStalker( obj ) and obj.alive and obj:alive()
-      and obj.health and obj:health() > 0 and obj.m_story_id == 4294967296
+      IsStalker( obj ) and obj:alive() and obj:health() > 0
+      and obj.m_story_id == 4294967296
       and obj:community() ~= "zombied"
       and not xr_companion.is_companion( obj.id )
     then
@@ -234,98 +227,6 @@ function add_fresh_meat( obj )
 end
 
 
---строим таблицу неписей, монстров и оружия
-function build_tables()
-  -- Почистим таблицу
-  rel_enemy, rel_friend = utils.cfg_get_number(
-    system_ini(), "game_relations", "goodwill_enemy",  nil, false, -1000
-  ),
-  utils.cfg_get_number(
-    system_ini(), "game_relations", "goodwill_friend", nil, false,  1000
-  )
-  local s_comm_list = utils.cfg_get_string(
-    system_ini(), "game_relations", "communities", nil, false, "", ""
-  )
-  local comm_list = {}
-  local s_value = amk.str_explode( ",", string.trim(s_comm_list), true )
-  for a = 1, table.getn( s_value ), 2 do
-    local s_comm = s_value[ a ]
-    table.insert( comm_list, s_comm )
-  end
-
-  local tmp = {}
-  local result, id, value = nil, nil, nil
-  for a = 0, system_ini():line_count( "communities_relations" ) - 1 do
-    result, id, value = system_ini():r_line(
-      "communities_relations", a, "", ""
-    )
-    if id ~= nil and string.trim( id ) ~= "" and string.trim( id ) ~= nil then
-      relation_matrix[ string.trim( id ) ] = {}
-      table.insert( tmp, string.trim( id ) )
-    end
-  end
-
-  for a = 1, table.getn( tmp ) do
-    local value = utils.cfg_get_string(
-      system_ini(), "communities_relations", tmp[ a ], nil, false, "", ""
-    )
-    local idx = tmp[ a ]
-    local m_value = amk.str_explode( ",", string.trim( value ), true )
-    for i = 1, table.getn( m_value ) do
-      local idx2 = comm_list[ i ]
-      local v = m_value[ i ]
-      if relation_matrix[ idx ] and idx2 ~= nil and v ~= nil then
-        relation_matrix[ idx ][ idx2 ] = tonumber( string.trim( v ) )
-      end
-    end
-  end
-
-  sell_table = {}
-  local sini = dsh.cached_ini_file( "misc\\trade_generic.ltx" )
-  local cfg_sell = utils.cfg_get_string(
-    sini, "trader", "sell_condition", npc, false, false, ""
-  )
-  if sini and sini:section_exist( cfg_sell ) then
-    local result, id, value = nil, nil, nil
-    for a = 0, sini:line_count( cfg_sell ) - 1 do
-      result, id, value = sini:r_line( cfg_sell, a, "", "" )
-      if
-        id ~= nil and string.trim( id ) ~= "" and string.trim( id ) ~= nil
-        and
-        string.trim( value ) ~= "" and string.trim( value ) ~= nil
-      then
-        -- Добавим в таблицу, что можно продавать.
-        sell_table[ id ] = true
-      end
-    end
-  end
-
-  --' Заполняем таблицу зависимостей
-  item_dependence = {}
-  local n = sys_ini:line_count( "death_generic.item_dependence" )
-  local id, value = "", ""
-  for i = 0, n - 1 do
-    result, id, value = sys_ini:r_line( "death_generic.item_dependence", i, "", "" )
-    item_dependence[ id ] = {}
-    local vvv = parse_names( value )
-    for k,v in pairs( vvv ) do
-      item_dependence[ id ][ v ] = true
-    end
-  end
-  --' Предметы, которые нельзя продавать (квестовые например)
-  always_keep_item = {}
-  local n = sys_ini:line_count( "death_generic.keep_items" )
-  for i = 0, n - 1 do
-    result, id, value = sys_ini:r_line( "death_generic.keep_items", i, "", "" )
-    if value == "true" then
-      always_keep_item[ id ] = true
-    end
-  end
-
-  tables_ready = true
-end
-
-
 function update_npc_tables()
   items    = {}
   off_npcs = {}
@@ -336,6 +237,9 @@ function update_npc_tables()
     end
   end
   schedule_update()
+  dsh.timeout( math.random( alife_freq ), function()
+    offline_alife_timer():start()
+  end )
 end
 
 
@@ -414,65 +318,50 @@ function cleanup_this_level_items( lname )
 end
 
 
---генерируем оффлайн события
-function offline_alife()
-  local lname = maps[ math.random( table.getn( maps ) ) ]
-  local st    = 0
-  amk.oau_reason = "cn offline_alife chp1"
-  if off_npcs[ lname ] then st = table.getn( off_npcs[ lname ].stalkers ) end
-  if st > 0 then
-    amk.oau_reason = "cn offline_alife chp2"
-    for search = 1, search_intensivity do
-      amk.oau_reason = "cn offline_alife chp3"
-      local rnd = math.random( st )
-      amk.oau_reason = "cn offline_alife chp4"
-      if off_npcs[ lname ].stalkers[ rnd ] then
-        amk.oau_reason = "cn offline_alife chp5"
-        local victim = alife():object( off_npcs[ lname ].stalkers[ rnd ].id )
-        amk.oau_reason = "cn offline_alife chp6"
-        if
-          victim
-          and IsStalker( victim )
-          and object_level_name( victim ) == lname
-          and ( not victim.online ) and victim.health
-          and victim.can_switch_online and victim:health() > 0
-          and victim:can_switch_online()
-          and victim:name() == off_npcs[ lname ].stalkers[ rnd ].name
-        then
-          amk.oau_reason = "cn offline_alife chp7 "
-            .. tostring( victim and victim:name() )
-          local vdata = collect_info( victim, lname )
-          amk.oau_reason = "cn offline_alife chp8 "
-            .. tostring( victim and victim:name() )
-          if table.getn( vdata.artefacts ) > 0 then
-            -- есть арты
-            amk.oau_reason = "cn offline_alife chp14 "
-              .. tostring( victim and victim:name() )
-            on_artifacts_found( victim, vdata )
-            break   --прерываем цикл - событие отработано
-          elseif
-            table.getn( vdata.inv_boxes ) > 0 and victim:community() ~= "zombied"
-          then
-            -- есть контейнеры. Надо обыскать.
-            amk.oau_reason = "cn offline_alife chp18 "
-              .. tostring( victim and victim:name() )
-            on_inv_boxes_found( victim, vdata )
-            break   --прерываем цикл - событие отработано
-          elseif
-            items[ victim.id ] and table.getn( items[ victim.id ] ) > 0
-            and victim:community() ~= "zombied"
-          then
-            --попробуем продать всякого
-            amk.oau_reason = "cn offline_alife chp17 "
-              .. tostring( victim and victim:name() )
-            process_trade( victim )
-            break
-          end
-        end
-      end
+class "offline_alife_timer" ( ogse_qt.quick_timer )
+function offline_alife_timer:__init() super()
+  self.lname    = maps[ math.random( table.getn( maps ) ) ]
+  self.stalkers = {}
+  if off_npcs[ self.lname ] then
+    for _, v in ipairs( table.getn( off_npcs[ self.lname ].stalkers ) ) do
+      table.insert( self.stalkers, v )
+    end
+    if table.getn( self.stalkers ) > 1 then
+      dsh.shuffle( self.stalkers )
     end
   end
-  amk.oau_reason = "cn offline_alife end"
+end
+
+function offline_alife_timer:condition()
+  return table.getn( self.stalkers ) == 0
+end
+
+function offline_alife_timer:action()
+  dsh.timeout( alife_freq, function()
+    offline_alife_timer():start()
+  end )
+end
+
+function offline_alife_timer:update()
+  if table.getn( self.stalkers ) == 0 then return end
+  local st     = table.remove( self.stalkers )
+  local victim = alife():object( st.id )
+  if
+    victim and victim:name() == st.name
+    and object_level_name( victim ) == self.lname
+    and ( not victim.online ) and victim:alive()
+    and victim.can_switch_online and victim:can_switch_online()
+  then
+    local vdata = collect_info( victim, self.lname )
+    if table.getn( vdata.artefacts ) > 0 then
+      -- есть арты
+      on_artifacts_found( victim, vdata )
+    end
+    if table.getn( vdata.inv_boxes ) > 0 then
+      -- есть контейнеры. Надо обыскать.
+      on_inv_boxes_found( victim, vdata )
+    end
+  end
 end
 
 
@@ -482,19 +371,16 @@ function collect_info( victim, map )
   vdata.rank      = victim:rank()
   vdata.health    = victim:health()
   vdata.community = victim:community()
-  local sim = alife()
 
   --составляем список артов в зоне "видимости"
   vdata.artefacts = {}
-  if
-    off_npcs[ map ].artefacts and table.getn( off_npcs[ map ].artefacts ) > 0
-  then
-    for a = 1, table.getn( off_npcs[ map ].artefacts ) do
-      local artefact = sim:object( off_npcs[ map ].artefacts[ a ].id )
+  if off_npcs[ map ].artefacts then
+    for _, v in ipairs( off_npcs[ map ].artefacts ) do
+      local artefact = alife():object( v.id )
       if
         artefact and object_level_name( artefact ) == map
         and artefact.can_switch_online and artefact:can_switch_online()
-        and artefact:name() == off_npcs[ map ].artefacts[ a ].name
+        and artefact:name() == v.name
         and artefact.parent_id == 65535
         and victim.position:distance_to( artefact.position ) < look_radius
         and sobj_is_far( artefact, to_actor )
@@ -511,26 +397,23 @@ function collect_info( victim, map )
 
   --составляем список контейнеров в зоне "видимости"
   vdata.inv_boxes = {}
-  if
-    off_npcs[ map ].inv_boxes and table.getn( off_npcs[ map ].inv_boxes ) > 0
-  then
-    for a = 1, table.getn( off_npcs[ map ].inv_boxes ) do
-      local inv_box = sim:object( off_npcs[ map ].inv_boxes[ a ].id )
+  if off_npcs[ map ].inv_boxes then
+    for _, v in ipairs( off_npcs[ map ].inv_boxes ) do
+      local inv_box = alife():object( v.id )
       if
         inv_box
         and inv_box.can_switch_online and inv_box:can_switch_online()
-        and inv_box:name() == off_npcs[ map ].inv_boxes[ a ].name
+        and inv_box:name() == v.name
+        and inv_box.parent_id == 65535
         and victim.position:distance_to( inv_box.position ) < look_radius_box
         and sobj_is_far( inv_box, to_actor )
         and not treasure_manager.is_active( inv_box )
       then
         local zdist = victim.position:distance_to( inv_box.position ) / look_radius_box
         if math.random() > zdist then
-          if inv_box.parent_id == nil or inv_box.parent_id == 65535 then
-            table.insert(
-              vdata.inv_boxes, { id = inv_box.id, name = inv_box:name() }
-            )
-          end
+          table.insert(
+            vdata.inv_boxes, { id = inv_box.id, name = inv_box:name() }
+          )
         end
       end
     end
@@ -542,19 +425,13 @@ end
 
 -- Моя прелесссть
 function on_artifacts_found( victim, vdata )
-  local trade = false
-  for i = 1, table.getn( vdata.artefacts ) do
-    local v_obj  = vdata.artefacts[ i ]
+  for _, v_obj in ipairs( vdata.artefacts ) do
     local object = alife():object( v_obj.id )
     if object then
       local obj = pick_item( victim, object )
-      if obj and victim:community() ~= "zombied" then
-        victim:set_rank( victim:rank() + rate_art_found )
-        trade = true
-      end
+      victim:set_rank( victim:rank() + rate_art_found )
     end
   end
-  if trade then process_trade( victim ) end
 end
 
 
@@ -586,20 +463,16 @@ end
 
 
 function on_inv_boxes_found( victim, vdata )
-  local trade = false
-  for i = 1, table.getn( vdata.inv_boxes ) do
-    local v_obj  = vdata.inv_boxes[ i ]
+  for _, v_obj in ipairs( vdata.inv_boxes ) do
     local object = alife():object( v_obj.id )
     if object then
       -- Idler ++-- если нычка доступна - можно шмонать
       if inv_box_is_avail( victim, object ) then
         if object:section_name() == "dsh_treasure_item" then
           dsh_rukzak.on_inv_box_found( object.id, victim )
-          trade = true
-        elseif items[ v_obj.id ] and table.getn( items[ v_obj.id ] ) > 0 then
-          for a = 1, table.getn( items[ v_obj.id ] ) do
-            local v_itA = items[ v_obj.id ][ a ]
-            local itA   = alife():object( v_itA.id )
+        elseif items[ v_obj.id ] then
+          for _, v_itA in ipairs( items[ v_obj.id ] ) do
+            local itA = alife():object( v_itA.id )
             if
               itA
               and itA.parent_id == v_obj.id
@@ -608,18 +481,14 @@ function on_inv_boxes_found( victim, vdata )
               -- Решим, подбираем или нет?
               if is_valuable( itA ) then
                 pick_item( victim, itA )
-                trade = true
               end
             end
           end
         end
-        if victim:community() ~= "zombied" then
-          victim:set_rank( victim:rank() + rate_art_found )
-        end
+        victim:set_rank( victim:rank() + rate_art_found )
       end
     end
   end
-  if trade then process_trade( victim ) end
 end
 
 
@@ -688,26 +557,23 @@ function get_item_cost(item)
 end
 
 
---[=[
-Уникальные предметы НЕ ПРОДАЕМ. Максимум - в новости.
-Отсортировали оружие по firepower (можем еще ef_weapon_type добавить.)
-Оставили себе то, для которого есть патроны. (а) - wpn..ammo_class + item_dependence
-Оставили одно, которое лучше (а), но патронов нет (б) (%)
-Одно, которое лучше (а), но хуже (б) - в новости на продажу
-Остальное на продажу
-Патроны оставили только те, что подходят к (а), остальные на продажу
-Для вояк - только родной калаш надо бы... Не продавать вобще?
-Оставляем не более 2 аптечек и бинтов, антирада
-Оставляем 1-2 гранаты (%)
-Оставляем не более 1 шт: фонарик, рация, ПДА, бинокль, нож, детекторы
-Еда, водка - не более 1-2 шт (%)
-Броники наверное продаем...
-Части монстров? Тоже продаем наверное, максимум 1-2 оставим.
---]=]
+-- Уникальные предметы НЕ ПРОДАЕМ. Максимум - в новости.
+-- Отсортировали оружие по firepower (можем еще ef_weapon_type добавить.)
+-- Оставили себе то, для которого есть патроны. (а) - wpn..ammo_class
+-- Оставили одно, которое лучше (а), но патронов нет (б) (%)
+-- Одно, которое лучше (а), но хуже (б) - в новости на продажу
+-- Остальное на продажу
+-- Патроны оставили только те, что подходят к (а), остальные на продажу
+-- Для вояк - только родной калаш надо бы... Не продавать вобще?
+-- Оставляем не более 2 аптечек и бинтов, антирада
+-- Оставляем 1-2 гранаты (%)
+-- Оставляем не более 1 шт: фонарик, рация, ПДА, бинокль, нож, детекторы
+-- Еда, водка - не более 1-2 шт (%)
+-- Броники наверное продаем...
+-- Части монстров? Тоже продаем наверное, максимум 1-2 оставим.
 function process_trade( npc )
   local item_list = {}
   local sell_list = {}
-  local tb_ilist_size = table.getn( item_list )
   -- Имеет смысл проверять на наличие trade в секции [logic]...
   if
     npc and IsStalker( npc ) and npc:alive()
@@ -726,7 +592,7 @@ function process_trade( npc )
       return
     end
 
-    --Фильтруем квестовые items - always_keep_item, sell_table
+    --Фильтруем квестовые items - always_keep_item
     for _, ov in ipairs( items[ npc.id ] ) do
       local obj = alife():object( ov.id )
       if obj and obj.parent_id == npc.id and obj:name() == ov.name then
