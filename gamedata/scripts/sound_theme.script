@@ -5,17 +5,6 @@
 --      update: „угай јлександр (Chugai)
 --------------------------------------------------------------------------------
 
-function attach( sm )
-  sm:subscribe({ signal = "on_npc_before_spawn", fun = this.on_npc_spawn })
-end
-
-
-function on_npc_spawn( obj )
-  --' загрузка озвучки
-  load_sound( obj )
-end
-
-
 actor_theme   = sound_theme_data.actor_theme
 ph_snd_themes = sound_theme_data.ph_snd_themes
 theme         = sound_theme_data.theme
@@ -23,115 +12,144 @@ theme         = sound_theme_data.theme
 nstl = 64
 
 
-function select_sound_from_ltx( obj, section, ltx )
-  -- 1. проверка по story_id
-  local c = obj:story_id()
-  if ltx:line_exist( section, utils.to_str( c ) ) then
-    return ltx:r_string( section, utils.to_str( c ) )
-  end
+function attach( sm )
+  sm:subscribe({ signal = "on_npc_before_spawn", fun = this.on_npc_spawn })
+  sm:subscribe({ signal = "on_spawn",            fun = this.on_spawn     })
+end
 
-  -- 2. проверка по npc_profile
-  c = obj:profile_name()
-  if ltx:line_exist( section, c ) then
-    return ltx:r_string( section, c )
-  end
 
-  -- 3. проверка по character_community
-  c = obj:character_community()
-  if ltx:line_exist( section, c ) then
-    return ltx:r_string( section, c )
-  end
+function on_spawn()
+  preload_themes( themes )
+end
 
-  -- 4. загрузка дефолта
-  if ltx:line_exist( section, "stalker" ) then
-    return ltx:r_string( section, "stalker" )
+
+function on_npc_spawn( obj )
+  load_sound( obj )             -- загрузка озвучки
+end
+
+
+function preload_themes( t )
+  for k, v in pairs( t ) do
+    if v.types then
+      preload_themes( v.types )
+    else
+      preload_theme_sect( k )
+    end
   end
 end
 
 
-function check_prefix( s )
-  return string.sub( s, 1, 1 ), string.sub( s, 3 )
+local preloaded = {}
+
+function preload_theme_sect( name )
+  for _, sf in ipairs({ "_rnd", "_seq", "_single" }) do
+    local theme_name = name .. sf
+    ASSERT( not preloaded[ theme_name ], "%s already preloaded", theme_name )
+    local real_sect  = "script_sound." .. theme_name
+    if sys_ini:section_exist( real_sect ) then
+      preload[ theme_name ] = {}
+      local t = get_section_keys_and_values( real_sect )
+      for k, v in pairs( t ) do
+        local flag, path = parse_names( v )
+        if flag == "0" then
+          flag = true
+        else
+          flag = false
+        end
+        preload[ theme_name ][ k ] = { path, flag }
+      end
+    end
+  end
 end
 
 
+function select_sound_from_ltx( obj, section )
+  for _, k in ipairs(
+    {
+      tostring( obj:story_id() ), obj:profile_name(), obj:character_community(),
+      "stalker"
+    }
+  ) do
+    local t = preloaded[ section ][ k ]
+    if t then return unpack( t ) end
+  end
+end
+
+
+-- загрузка звуков на основе данных ltx
 local default_prefix = "characters_voice\\"
 
+function load_sound_from_ltx( obj, name, tbl )
+  tbl.max_ids[ obj:id() ] = {}
+  local n = name .. "_rnd"
+  if preloaded[ n ] then
+    local path, use_def = select_sound_from_ltx( obj, n )
+    if path then
+      local prefix
+      if use_def then
+        prefix = obj:sound_prefix()
+        obj:sound_prefix( default_prefix )
+      end
+      tbl.max_ids[ obj:id() ].rnd_max = obj:add_sound(
+        path, nstl, snd_type.talk, 2, 1, tbl.rnd_id
+      )
+      if prefix then
+        obj:sound_prefix( prefix )
+      end
+    end
+  end
+  n = name .. "_seq"
+  if preloaded[ n ] then
+    local path, use_def = select_sound_from_ltx( obj, n )
+    if path then
+      local prefix
+      if use_def then
+        prefix = obj:sound_prefix()
+        obj:sound_prefix( default_prefix )
+      end
+      local intomax = obj:add_sound(
+        path, nstl, snd_type.talk, 2, 1, tbl.into_id
+      )
+      tbl.max_ids[ obj:id() ].into_max    = intomax
+      tbl.max_ids[ obj:id() ].into_cycled = true
+      if prefix then
+        obj:sound_prefix( prefix )
+      end
+    end
+  end
+  n = name .. "_single"
+  if preloaded[ n ] then
+    local path, use_def = select_sound_from_ltx( obj, n )
+    if path then
+      local prefix
+      if use_def then
+        prefix = obj:sound_prefix()
+        obj:sound_prefix( default_prefix )
+      end
+      tbl.max_ids[ obj:id() ].into_max   = obj:add_sound(
+        path, nstl, snd_type.talk, 2, 1, tbl.into_id
+      )
+      tbl.max_ids[ obj:id() ].into_cycled = false
+      if prefix then
+        obj:sound_prefix( prefix )
+      end
+    end
+  end
+end
+
+
+function load_theme_sound( npc, tbl )
+  for k, v in pairs( tbl ) do
+    if v.types == nil then
+      load_sound_from_ltx( npc, k, v )
+    else
+      load_theme_sound( npc, v.types )
+    end
+  end
+end
+
+
 function load_sound( obj )
-  -- загрузка звуков на основе данных ltx
-  function load_sound_from_ltx( obj, name, tbl )
-    tbl.max_ids[ obj:id() ] = {}
-    if sys_ini:section_exist( "script_sound." .. name.."_rnd" ) then
-      local s = select_sound_from_ltx(
-        obj, "script_sound." .. name.."_rnd", sys_ini
-      )
-      if s then
-        local flag, path = check_prefix( s )
-        local prefix
-        if flag == "0" then
-          prefix = obj:sound_prefix()
-          obj:sound_prefix( default_prefix )
-        end
-        tbl.max_ids[ obj:id() ].rnd_max = obj:add_sound(
-          path, nstl, snd_type.talk, 2, 1, tbl.rnd_id
-        )
-        if prefix then
-          obj:sound_prefix( prefix )
-        end
-      end
-    end
-    if sys_ini:section_exist( "script_sound." .. name.."_seq" ) then
-      local s = select_sound_from_ltx(
-        obj, "script_sound." .. name.."_seq", sys_ini
-      )
-      if s then
-        local flag, path = check_prefix( s )
-        local prefix
-        if flag == "0" then
-          prefix = obj:sound_prefix()
-          obj:sound_prefix(default_prefix)
-        end
-        local intomax = obj:add_sound(
-          path, nstl, snd_type.talk, 2, 1, tbl.into_id
-        )
-        tbl.max_ids[ obj:id() ].into_max    = intomax
-        tbl.max_ids[ obj:id() ].into_cycled = true
-        if prefix then
-          obj:sound_prefix( prefix )
-        end
-      end
-    end
-    if sys_ini:section_exist( "script_sound." .. name.."_single" ) then
-      local s = select_sound_from_ltx(
-        obj, "script_sound." .. name.."_single", sys_ini
-      )
-      if s then
-        local flag, path = check_prefix( s )
-        local prefix
-        if flag == "0" then
-          prefix = obj:sound_prefix()
-          obj:sound_prefix( default_prefix )
-        end
-        tbl.max_ids[ obj:id() ].into_max   = obj:add_sound(
-          path, nstl, snd_type.talk, 2, 1, tbl.into_id
-        )
-        tbl.max_ids[ obj:id() ].into_cycled = false
-        if prefix then
-          obj:sound_prefix( prefix )
-        end
-      end
-    end
-  end
-
-  function load_theme_sound( npc, tbl )
-    for k, v in pairs( tbl ) do
-      if v.types == nil then
-        load_sound_from_ltx( npc, k, v )
-      else
-        load_theme_sound( npc, v.types )
-      end
-    end
-  end
-
   load_theme_sound( obj, theme )
   -- делаем заготовку в db.sound
   db.sound[ obj:id() ] = {}
