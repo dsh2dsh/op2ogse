@@ -1,43 +1,96 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm ) -- для менеджера сигналов
-  sm:subscribe({ signal = "on_destroy", fun = this.on_destroy })
-  sm:subscribe({ signal = "on_spawn",   fun = this.on_spawn   })
-  sm:subscribe({ signal = "on_update",  fun = this.on_update  })
+  sm:subscribe({ signal = "on_destroy", fun = this.on_destroy   })
+  sm:subscribe({ signal = "on_spawn",   fun = this.on_spawn     })
+  sm:subscribe({ signal = "on_update",  fun = this.on_update    })
+  sm:subscribe({ signal = "on_update",  fun = this.apply_weight })
+  sm:subscribe({ signal = "on_update",  fun = this.apply_conds  })
 end
 
 
 -- читаем глобальные параметры эффектов здоровья
-local satiety_v = get_float("actor_script_condition", "satiety_v")
-ASSERT(satiety_v, "ogse_actor_conditions_mgr: 'satiety_v' parameter not found!")
-local light_hunger_limit = get_float("actor_script_condition", "light_hunger_limit")
-ASSERT(light_hunger_limit, "ogse_actor_conditions_mgr: 'light_hunger_limit' parameter not found!")
-local critical_hunger_limit = get_float("actor_script_condition", "critical_hunger_limit")
-ASSERT(critical_hunger_limit, "ogse_actor_conditions_mgr: 'critical_hunger_limit' parameter not found!")
-local satiety_power_factor = get_float("actor_script_condition", "satiety_power_factor")
-ASSERT(satiety_power_factor, "ogse_actor_conditions_mgr: 'satiety_power_factor' parameter not found!")
-local satiety_health_v_base = get_float("actor_script_condition", "satiety_health_v")
-ASSERT(satiety_health_v_base, "ogse_actor_conditions_mgr: 'satiety_health_v' parameter not found!")
-local satiety_health_factor = get_float("actor_script_condition", "satiety_health_factor")
-ASSERT(satiety_health_factor, "ogse_actor_conditions_mgr: 'satiety_health_factor' parameter not found!")
-local max_stand_power = get_float("actor_condition", "stand_power")
-ASSERT(max_stand_power, "ogse_actor_conditions_mgr: 'stand_power' parameter not found!")
+local satiety_v = get_float( "actor_script_condition", "satiety_v" )
+ASSERT(
+  satiety_v, "ogse_actor_conditions_mgr: 'satiety_v' parameter not found!"
+)
+
+local light_hunger_limit = get_float(
+  "actor_script_condition", "light_hunger_limit"
+)
+ASSERT(
+  light_hunger_limit,
+  "ogse_actor_conditions_mgr: 'light_hunger_limit' parameter not found!"
+)
+
+local critical_hunger_limit = get_float(
+  "actor_script_condition", "critical_hunger_limit"
+)
+ASSERT(
+  critical_hunger_limit,
+  "ogse_actor_conditions_mgr: 'critical_hunger_limit' parameter not found!"
+)
+
+local satiety_power_factor = get_float(
+  "actor_script_condition", "satiety_power_factor"
+)
+ASSERT(
+  satiety_power_factor,
+  "ogse_actor_conditions_mgr: 'satiety_power_factor' parameter not found!"
+)
+
+local satiety_health_v_base = get_float(
+  "actor_script_condition", "satiety_health_v"
+)
+ASSERT(
+  satiety_health_v_base,
+  "ogse_actor_conditions_mgr: 'satiety_health_v' parameter not found!"
+)
+
+local satiety_health_factor = get_float(
+  "actor_script_condition", "satiety_health_factor"
+)
+ASSERT(
+  satiety_health_factor,
+  "ogse_actor_conditions_mgr: 'satiety_health_factor' parameter not found!"
+)
+
+local max_stand_power = get_float( "actor_condition", "stand_power" )
+ASSERT(
+  max_stand_power,
+  "ogse_actor_conditions_mgr: 'stand_power' parameter not found!"
+)
 local satiety_k = max_stand_power
   * ( 1 - satiety_power_factor ) / light_hunger_limit
 
-local engine_satiety_v = get_float("actor_condition", "satiety_v")
-ASSERT(engine_satiety_v, "ogse_actor_conditions_mgr: 'actor_condition:engine_satiety_v' parameter not found!")
-local engine_satiety_health_v = get_float("actor_condition", "satiety_health_v")
-ASSERT(engine_satiety_health_v, "ogse_actor_conditions_mgr: 'actor_condition:satiety_health_v' parameter not found!")
-local engine_satiety_power_v = get_float("actor_condition", "satiety_power_v")
-ASSERT(engine_satiety_power_v, "ogse_actor_conditions_mgr: 'actor_condition:satiety_power_v' parameter not found!")
+local engine_satiety_v = get_float( "actor_condition", "satiety_v" )
+ASSERT(
+  engine_satiety_v,
+  "ogse_actor_conditions_mgr: 'actor_condition:engine_satiety_v' parameter not found!"
+)
+
+local engine_satiety_health_v = get_float(
+  "actor_condition", "satiety_health_v"
+)
+ASSERT(
+  engine_satiety_health_v,
+  "ogse_actor_conditions_mgr: 'actor_condition:satiety_health_v' parameter not found!"
+)
+
+local engine_satiety_power_v = get_float(
+  "actor_condition", "satiety_power_v"
+)
+ASSERT(
+  engine_satiety_power_v,
+  "ogse_actor_conditions_mgr: 'actor_condition:satiety_power_v' parameter not found!"
+)
 
 local sprint_koef = get_float( "actor", "sprint_koef" )
 ASSERT(
   sprint_koef,
   "ogse_actor_conditions_mgr: 'actor:sprint_koef' parameter not found!"
 )
-local override_sprint_koef
+local cur_sprint_koef, override_sprint_koef
 
 local walk_accel = get_float( "actor", "walk_accel" )
 ASSERT(
@@ -52,7 +105,7 @@ ASSERT(
   def_jump_power,
   "ogse_actor_conditions_mgr: 'actor_condition:jump_power' parameter not found!"
 )
-local override_jump_power
+local cur_jump_power, override_jump_power
 
 local jump_weight_power = get_float( "actor_condition", "jump_weight_power" )
 ASSERT(
@@ -98,7 +151,7 @@ ASSERT(
 local override_jump_speed
 
 
-local cam_inert, cur_cam_inert
+local cam_inert, cur_cam_inert, new_cam_inert
 local health_t, satiety_t
 local pt
 
@@ -122,6 +175,7 @@ end
 
 
 local cached_item_cond_effects = {}
+
 local function get_item_cond_effect( item )
   local section = item:section()
   local ef      = cached_item_cond_effects[ section ]
@@ -150,10 +204,11 @@ has_overweight = false
 local cur_walk_accel = walk_accel - min_walk_accel
 local override_power = 1
 local use_overweight = true
+local overweight_k   = 0
 
 function on_update()
   if device().precache_frame > 0 then return end
-  if not ( db.actor and db.actor:alive() ) then return end
+  if not db.actor:alive() then return end
   local act = db.actor
   local previous_check_time = game.CTime()
   previous_check_time:set( unpack( pt ) )
@@ -244,32 +299,22 @@ function on_update()
   if not ogse_sleep_mgr.is_sleep_active() then
     act.power = summary_power_effect * dt
   end
-  if
-    summary_bleeding_restore_effect > 0
-    or summary_bleeding_restore_effect < 0
-  then
+  if math.abs( summary_bleeding_restore_effect ) > 0 then
     if act:get_bleeding() > 0 then
       act:heal_wounds( summary_bleeding_restore_effect * dt )
     end
   end
   act.radiation = summary_radiation_restore_effect * dt
-  if
-    summary_psy_health_effect > 0
-    or summary_psy_health_effect < 0
-  then
+  if math.abs( summary_psy_health_effect ) > 0 then
     act.psy_health = summary_psy_health_effect * dt
   end
-  if
-    summary_alcohol_effect > 0
-    or summary_alcohol_effect < 0
-  then
+  if math.abs( summary_alcohol_effect ) > 0 then
     act.alcohol = summary_alcohol_effect * dt
   end
 
-  local cur_sprint_koef = override_sprint_koef or (
+  cur_sprint_koef = override_sprint_koef or (
     sprint_koef + ext.sprint_koef_add
   )
-  set_sprint_factor( cur_sprint_koef )
 
   cur_walk_accel = walk_accel - min_walk_accel
   if act.satiety < light_hunger_limit then
@@ -289,32 +334,18 @@ function on_update()
     health_t = nil
   end
 
-  local inv_weight = db.actor:get_inventory_weight()
-  local max_weight = db.actor:get_actor_max_weight()
-    + ( armor_ef and armor_ef.additional_inventory_weight2 or 0 )
-  local new_cam_inert
-  if inv_weight > max_weight and use_overweight then
-    has_overweight    = true
-    local walk_weight = db.actor:get_actor_max_walk_weight()
-      + ( armor_ef and armor_ef.additional_inventory_weight or 0 )
-    if inv_weight > walk_weight then inv_weight = walk_weight end
-    local k1     = ( inv_weight - max_weight ) / ( walk_weight - max_weight )
-    local k2     = 1 - k1
+  if has_overweight and use_overweight then
+    local k2       = 1 - overweight_k
     cur_walk_accel = cur_walk_accel * k2
-    new_cam_inert  = k1
+    new_cam_inert  = overweight_k
     if k2 < 0.1 then
       override_power = 0.1
     else
       override_power = k2
     end
-    set_overweight_jump_k( overweight_jump_k )
-    set_overweight_walk_k( overweight_walk_k )
   else
-    has_overweight = false
     override_power = 1
     new_cam_inert  = 0
-    set_overweight_jump_k( 1 )
-    set_overweight_walk_k( 1 )
   end
 
   if act.power < 0.7 then
@@ -322,19 +353,9 @@ function on_update()
     local power_inert = 1 - act.power / 0.7
     if power_inert > new_cam_inert then new_cam_inert = power_inert end
   end
-  set_walk_accel(
-    override_walk_accel or (
-      min_walk_accel + cur_walk_accel + ext.walk_accel_add
-    )
-  )
+  cur_walk_accel = cur_walk_accel + ext.walk_accel_add
 
-  if cur_walk_accel < 1 then
-    set_jump_speed( 0 )
-  else
-    set_jump_speed( override_jump_speed or jump_speed )
-  end
-
-  local cur_jump_power = override_jump_power or def_jump_power
+  cur_jump_power = override_jump_power or def_jump_power
   if act.satiety < light_hunger_limit and satiety_t < time_global() then
     cur_jump_power = cur_jump_power + (
       ( 0.4 - cur_jump_power ) * ( 1 - ( act.satiety / light_hunger_limit ) )
@@ -348,24 +369,6 @@ function on_update()
       local health_inert = 0.8 - act.health
       if health_inert > new_cam_inert then new_cam_inert = health_inert end
     end
-  end
-  set_jump_power( cur_jump_power )
-
-  if new_cam_inert and new_cam_inert ~= cur_cam_inert then
-    if new_cam_inert > 0 then
-      local min_cam_inert = math.max( 0.4, cam_inert + 0.1 )
-      if min_cam_inert < 0.8 then
-        cmd(
-          "cam_inert",
-          min_cam_inert + (
-            math.round( ( 0.8 - min_cam_inert ) * new_cam_inert * 100 ) / 100
-          )
-        )
-      end
-    else
-      cmd( "cam_inert", cam_inert )
-    end
-    cur_cam_inert = new_cam_inert
   end
 end
 
@@ -417,4 +420,62 @@ end
 
 function switch_use_overweight( mode )
   use_overweight = mode and true or false
+end
+
+
+function apply_weight()
+  ogse_signals.get_mgr():reschedule( 1000 )
+  local armor = db.actor:get_current_outfit()
+  local armor_ef
+  if armor then
+    armor_ef = get_item_cond_effect( armor )
+  end
+  local inv_weight = db.actor:get_inventory_weight()
+  local max_weight = db.actor:get_actor_max_weight()
+    + ( armor_ef and armor_ef.additional_inventory_weight2 or 0 )
+  if inv_weight > max_weight and use_overweight then
+    has_overweight    = true
+    local walk_weight = db.actor:get_actor_max_walk_weight()
+      + ( armor_ef and armor_ef.additional_inventory_weight or 0 )
+    if inv_weight > walk_weight then inv_weight = walk_weight end
+    overweight_k = ( inv_weight - max_weight ) / ( walk_weight - max_weight )
+    set_overweight_jump_k( overweight_jump_k )
+    set_overweight_walk_k( overweight_walk_k )
+  else
+    has_overweight = false
+    overweight_k   = 0
+    set_overweight_jump_k( 1 )
+    set_overweight_walk_k( 1 )
+  end
+end
+
+
+function apply_conds()
+  ogse_signals.get_mgr():reschedule( 1000 )
+  set_sprint_factor( cur_sprint_koef )
+  set_walk_accel(
+    override_walk_accel or ( min_walk_accel + cur_walk_accel )
+  )
+  if cur_walk_accel < 1 then
+    set_jump_speed( 0 )
+  else
+    set_jump_speed( override_jump_speed or jump_speed )
+  end
+  set_jump_power( cur_jump_power )
+  if new_cam_inert ~= cur_cam_inert then
+    if new_cam_inert > 0 then
+      local min_cam_inert = math.max( 0.4, cam_inert + 0.1 )
+      if min_cam_inert < 0.8 then
+        cmd(
+          "cam_inert",
+          min_cam_inert + (
+            math.round( ( 0.8 - min_cam_inert ) * new_cam_inert * 100 ) / 100
+          )
+        )
+      end
+    else
+      cmd( "cam_inert", cam_inert )
+    end
+    cur_cam_inert = new_cam_inert
+  end
 end
