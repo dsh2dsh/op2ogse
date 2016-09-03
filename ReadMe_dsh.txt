@@ -2,9 +2,7 @@
 
 Репозиторий проекта: https://github.com/dsh2dsh/op2ogse
 
-Форумы проекта:
-
-- http://stalker-worlds.ru/forum/topic/3355-kovyriaemsia-v-ogse/?p=174181
+Форум проекта:
 
 - http://www.amk-team.ru/forum/index.php?showtopic=13176
 

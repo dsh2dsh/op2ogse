@@ -3,7 +3,6 @@ dsh mod для ОП-2
 
 Форум мода тут:
 
-- http://stalker-worlds.ru/forum/topic/3355-kovyriaemsia-v-ogse/?p=174181
 - http://www.amk-team.ru/forum/index.php?showtopic=13176
 
 Ссылки для скачивания:
