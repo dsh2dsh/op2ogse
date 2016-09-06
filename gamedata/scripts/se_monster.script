@@ -95,19 +95,29 @@ function se_monster:get_ini()
       if cfg then self.ini = dsh.cached_ini_file( cfg ) end
     end
 
+    self.spawner = self:dsh_get_spawner_cond()
     if self.ini:section_exist( "spawner" ) then
-      local cond = get_string( "spawner", "cond", nil, self.ini )
-      if cond then
-        self.spawner = xr_logic.parse_condlist(
-          db.actor, "spawner", "cond", cond
-        )
-      end
       self.day_night_switch = get_bool(
         "spawner", "day_night_switch", false, self.ini
       )
       self.day_begin = get_float( self:section_name(), "DayTime_Begin", -1 )
       self.day_end   = get_float( self:section_name(), "DayTime_End",   -1 )
     end
+  end
+end
+
+
+function se_monster:dsh_get_spawner_cond()
+  local cond
+  local dsh_sect = "dsh.se_monster." .. self:name() .. ".spawner"
+  if sys_ini:section_exist( dsh_sect ) then
+    cond = get_string( dsh_sect, "cond" )
+  end
+  if not cond and self.ini:section_exist( "spawner" ) then
+    cond = get_string( "spawner", "cond", nil, self.ini )
+  end
+  if cond then
+    return xr_logic.parse_condlist( db.actor, "spawner", "cond", cond )
   end
 end
 
@@ -124,6 +134,18 @@ end
 
 
 function se_monster:can_switch_offline()
+  local job_online = self:get_job_online()
+  if job_online ~= false then
+    local test = dsh_switch_distances.se_can_switch_offline( self )
+    if test ~= nil then
+      if self.online == true and self.spawner and test == false then
+        return xr_logic.pick_section_from_condlist(
+          db.actor, self, self.spawner
+        ) == nil
+      end
+      return test
+    end
+  end
   return true
 end
 
@@ -138,6 +160,13 @@ function se_monster:can_switch_online()
 
   local cse_can_switch = cse_alife_monster_base.can_switch_online( self )
     and is_creature_day( self, self.day_night_switch )
+  local dsh_can_switch = dsh_switch_distances.se_can_switch_offline( self )
+  if dsh_can_switch == false then
+    cse_can_switch = true
+  elseif cse_can_switch then
+    local test = dsh_switch_distances.se_can_switch_online( self )
+    if test ~= nil then cse_can_switch = test end
+  end
   
   if self.ini == nil or self.spawner == nil then
     return cse_can_switch
@@ -147,23 +176,16 @@ function se_monster:can_switch_online()
     return self.online
   end
   
-  local can = cse_can_switch
-  if self.online == false then
-    can = (
-      xr_logic.pick_section_from_condlist( db.actor, self, self.spawner ) ~= nil
-      and cse_can_switch
-    )
-  else
-    can = cse_can_switch
-  end
-
-  return can
+  return (
+    xr_logic.pick_section_from_condlist( db.actor, self, self.spawner ) ~= nil
+    and cse_can_switch
+  )
 end
 
 
 -- через Бар ходить не надо
 function se_monster:dsh_avoid_this_level()
-  local lname = level.name()
+  local lname = object_level_name( self )
   if lname == "l05_bar" or lname == "l07_military" then
     local strn_id = self:smart_terrain_id()
     if strn_id ~= 65535 then
