@@ -96,7 +96,15 @@ function sg_class_binder:load( reader )
   for k, v in pairs ( self.ammo_load ) do
     self.ammo_load[ k ] = reader:r_u16()
   end
-  self:unload()
+  self.try_unload = true
+end
+
+
+function sg_class_binder:update( delta )
+  if self.try_unload then
+    self:unload()
+    self.try_unload = false
+  end
 end
 
 
@@ -113,14 +121,23 @@ end
 
 
 function sg_class_binder:unload()
-  if self.load ~= self.ammo_load[ self.ammo_class_num ] then
+  local mag_size = get_u32( self.object:section(), "ammo_mag_size", 0 )
+  local elapsed  = self.ammo_load[ self.ammo_class_num ]
+  if self.load ~= elapsed or elapsed > mag_size then
+    if elapsed > mag_size then elapsed = mag_size end
     -- не все заряженные патроны были текущего типа
     -- оставляем только патроны текущего типа
-    self.object:set_ammo_elapsed( self.ammo_load[ self.ammo_class_num ] )
-    self.ammo_load[ self.ammo_class_num ] = 0 -- их возвращать не надо
+    self.object:set_ammo_elapsed( elapsed )
+    -- их возвращать не надо
+    self.ammo_load[ self.ammo_class_num ] =
+      self.ammo_load[ self.ammo_class_num ] - elapsed
     -- возврат остальных патронов
     local sobj = alife():object( self.object:id() )
-    local pid  = sobj.parent_id
+    ASSERT( sobj, "%s not found in alife()", self.object:name() )
+    local data = m_net_utils.get_weapon_data( sobj )
+    data.ammo_elapsed = elapsed
+    m_net_utils.set_weapon_data( data, sobj )
+    local pid = sobj.parent_id
     if pid == 65535 then
       local pos = vector():set(
         sobj.position.x,
