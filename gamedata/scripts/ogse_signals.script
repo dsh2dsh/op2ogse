@@ -14,8 +14,8 @@
 
 function some_global_function(arg1, arg2)
 end
-local slot_desc = {signal = "signal_name", fun = some_global_function, queued = true}
-ogse_signals.get_mgr():subscribe(slot_desc) -- подписали в низкоприоритетную очередь
+local slot_desc = {signal = "signal_name", fun = some_global_function}
+ogse_signals.get_mgr():subscribe(slot_desc) -- подписали в очередь
 --...
 ogse_signals.get_mgr():unsubscribe(slot_desc) -- отписали
 вызвали сигнал
@@ -173,9 +173,7 @@ end
 function signals_mgr:is_already_subscribed( slot_in_question )
   local slots = self.signals[ slot_in_question.signal ]
   if not slots then return false end
-  local check_slots = slot_in_question.queued
-    and { slots.queue }
-    or  { slots.normal, slots.scheduled }
+  local check_slots = { slots.normal, slots.scheduled }
   for _, cur in ipairs( check_slots ) do
     for _, slot in ipairs( cur ) do
       if slots_equal( slot, slot_in_question ) then
@@ -207,20 +205,14 @@ function signals_mgr:subscribe( slot_to_subscribe )
   local signal = slot_to_subscribe.signal
   self.signals[ signal ] = self.signals[ signal ]
     or self:make_empty_signal( signal )
-  if slot_to_subscribe.queued then
-    slot_to_subscribe.timeout = 0
-    table.insert( self.signals[ signal ].queue,  slot_to_subscribe )
-  else
-    table.insert( self.signals[ signal ].normal, slot_to_subscribe )
-  end
+  table.insert( self.signals[ signal ].normal, slot_to_subscribe )
 end
 
 
 function signals_mgr:make_empty_signal( signal )
   local t = {
-    [ "normal" ] = {}, [ "queue" ] = {}, [ "scheduled" ] = {},
+    [ "normal" ] = {}, [ "scheduled" ] = {},
     [ "next_in_normal"    ] = 1,
-    [ "next_in_queue"     ] = 1,
     [ "next_in_scheduled" ] = 1,
   }
   if
@@ -265,9 +257,7 @@ function signals_mgr:unsubscribe( slot_to_unsubscribe )
   else
     -- нет незавершЄнных вызовов, просто удал€ем слот
     local qn, qc
-    if slot_to_unsubscribe.queued then
-      qn, qc = "queue",     "next_in_queue"
-    elseif slot_to_unsubscribe.scheduled then
+    if slot_to_unsubscribe.scheduled then
       qn, qc = "scheduled", "next_in_scheduled"
     else
       qn, qc = "normal",    "next_in_normal"
@@ -330,14 +320,6 @@ function signals_mgr:call( signal_name, ... )
         end
       end
       self.to_unsubscribe = nil
-    end
-    if slots.reschedule_queue and slots.next_in_queue == 1 then
-      slots.reschedule_queue = false
-      if table.getn( slots.queue ) > 1 then
-        table.sort(
-          slots.queue, function( a, b ) return a.timeout < b.timeout end
-        )
-      end
     end
     if slots.reschedule_scheduled and slots.next_in_scheduled == 1 then
       slots.reschedule_scheduled = false
@@ -430,64 +412,12 @@ function signals_mgr:process_call( signal_name, slots, ... )
   end
   slots.next_in_normal    = 1
   slots.next_in_scheduled = 1
-  -- затем срабатывает очередной сигнал в очереди, если имеетс€
-  local wrapped = self:try_call_queued( slots, ... )
-  if wrapped then
-    -- если ничего не удалось выполнить и перешли в начало очереди
-    if slots.reschedule_queue then
-      -- пересортируем очередь, если нужно
-      slots.reschedule_queue = false
-      if table.getn( slots.queue ) > 1 then
-        table.sort(
-          slots.queue, function( a, b ) return a.timeout < b.timeout end
-        )
-      end
-    end
-    -- т.к. предыдуща€ попытка ничего не выполнила, попробуем
-    -- выполнить первый обработчик. Ќу, что бы этот апдейт не был
-    -- холостым. –езультат нам уже не важен, т.к. либо он будет
-    -- выполнен, либо нам просто сейчас нечего делать.
-    self:try_call_queued( slots, ... )
-  end
   if work_time > 30000 then
     log2(
       "dsh: [%s]: signal '%s' is too slow: %s",
       script_name(), signal_name, work_time
     )
   end
-end
-
-
-function signals_mgr:try_call_queued( slots, ... )
-  local slot    = slots.queue[ slots.next_in_queue ]
-  local wrapped = false
-  if slot then
-    if not slot.unsubscribed then -- очень маловеро€тно, но на вс€кий случай
-      if slot.timeout <= time_global() then
-        slot.timeout = 0
-        table.insert( self.slots_in_process, slot )
-        if slot.self then
-          slot.fun( slot.self, ... )
-        else
-          slot.fun( ... )
-        end
-        table.remove( self.slots_in_process )
-        if slot.timeout > 0 then
-          slots.reschedule_queue = true
-        end
-      else
-        if slots.next_in_queue > 1 then
-          wrapped = true
-        end
-        slots.next_in_queue = 1
-      end
-    end
-    slots.next_in_queue = slots.next_in_queue + 1
-    if slots.next_in_queue > table.getn( slots.queue ) then
-      slots.next_in_queue = 1
-    end
-  end
-  return wrapped
 end
 
 

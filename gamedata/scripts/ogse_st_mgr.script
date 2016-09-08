@@ -48,9 +48,7 @@ t:set_delay(600) -- сработает через 10 минут реального времени
 --t:set_gdelay(600) -- сработает через 10 минут игрового времени
 -- или
 --t:set_gtime(game.CTime():set(...)) -- сработает в заданный момент игрового времени
-t:start() -- запустить с низким приоритетом (по умолчанию)
--- или
---t:start(true) -- запустить с высоким приоритетом (проверка на каждом апдейте)
+t:start() -- запустить
 --]=]
 
 -- Пример таймера с произвольным условием. Следит за неким неписем, который
@@ -142,7 +140,7 @@ function on_load()
     local timer = f( timer_id )
     timer:_aux_load( pk )
     timer.loaded = true
-    timer:start( timer._high_priority )
+    timer:start()
   end
   sort_all_timers()
   log2( "[%s]: %s timers loaded", script_name(), table.getn( chunks ) )
@@ -158,7 +156,7 @@ function on_load_old()
     ASSERT( f, msg )
     local timer = f( timer_id )
     timer:_aux_load( timer_chunk )
-    timer:start( timer._high_priority )
+    timer:start()
     ogse.delete_var( storage_guid .. "_" .. timer_id )
   end
   ogse.delete_var( root_guid )
@@ -185,24 +183,21 @@ end
 
 
 local g_high_queue = {}
-local g_lowp_queue = {}
 local r_high_queue = {}
-local r_lowp_queue = {}
+
 function sort_all_timers()
-  for _, q in ipairs({
-    g_high_queue, g_lowp_queue, r_high_queue, r_lowp_queue
-  }) do
+  for _, q in ipairs({ g_high_queue, r_high_queue }) do
     sort_any_timers( q )
   end
 end
 
-function register_any_timer( t, prio )
+function register_any_timer( t )
   local q, sort_by
   if t._game_termination_time then
-    q       = prio and g_high_queue or g_lowp_queue
+    q       = g_high_queue
     sort_by = t._game_termination_time
   elseif t._residual_time then
-    q       = prio and r_high_queue or r_lowp_queue
+    q       = r_high_queue
     sort_by = t._residual_time
   else
     abort( "unknown timer type: %s.%s", t._class, t._id )
@@ -238,14 +233,11 @@ end
 
 
 function on_update()
-  process_r_queue( r_high_queue    )
-  process_r_queue( r_lowp_queue, 1 )
-  process_g_queue( g_high_queue    )
-  process_g_queue( g_lowp_queue, 1 )
+  process_r_queue( r_high_queue )
+  process_g_queue( g_high_queue )
 end
 
-function process_g_queue( q, n )
-  local cnt = 0
+function process_g_queue( q )
   while (
     table.getn( q ) > 0
     and q[ 1 ].timer._game_termination_time <= game.get_game_time()
@@ -254,13 +246,10 @@ function process_g_queue( q, n )
     table.remove( q, 1 )
     registry[ t._id ] = nil
     t:taction()
-    cnt = cnt + 1
-    if n and cnt == n then break end
   end
 end
 
-function process_r_queue( q, n )
-  local cnt = 0
+function process_r_queue( q )
   while table.getn( q ) > 0 do
     local t = q[ 1 ].timer
     local time_from_loading = 1.0e-3 * ( time_global() - t._loading_time )
@@ -268,8 +257,6 @@ function process_r_queue( q, n )
       table.remove( q, 1 )
       registry[ t._id ] = nil
       t:taction()
-      cnt = cnt + 1
-      if n and cnt == n then break end
     else
       break
     end
@@ -436,7 +423,6 @@ function savable_timer:start( high_priority )
     signal = "on_update",
     self   = self,
     fun    = self._aux_cond,
-    queued = not high_priority,
   }
   ogse_signals.get_mgr():subscribe( self._cond_slot_desc )
   registry[ self._id ] = self
@@ -540,7 +526,7 @@ end
 function delayed_fun_start:start( high_priority )
   self._start_time    = self._start_time or game.get_game_time()
   self._high_priority = high_priority
-  register_any_timer( self, high_priority )
+  register_any_timer( self )
   return self
 end
 
