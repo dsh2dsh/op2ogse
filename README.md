@@ -7,8 +7,8 @@ dsh mod для ОП-2
 
 Ссылки для скачивания:
 
-- https://yadi.sk/d/DKnjX18Gujz8n
-- Зеркало: https://drive.google.com/open?id=0B0h2HnCBW9H1OThUbWpacEhwMkE
+- https://yadi.sk/d/AWR1f3XiuzF2J
+- Зеркало: https://drive.google.com/open?id=0B0h2HnCBW9H1bTlUR3ctQWdfaG8
 - Худ под меня: https://yadi.sk/d/5G_TkvICmB4ty
 - Некоторые текстуры на любителя: https://yadi.sk/d/jQCakrvFkQtk7
 
@@ -707,4 +707,4 @@ $mod_dir$   		= false|	false|	$fs_root$|		mods\
 - моду Новый Арсенал 3 за отличную сборку оружия
 
 - людям, чьи работы я использовал или кто мне помогал другим способом:
-  art0run, BlooderDen, Shitty, Assort, Alkseur.
+  art0run, BlooderDen, Shitty, Assort, Alkseur, Sanchez69full.
