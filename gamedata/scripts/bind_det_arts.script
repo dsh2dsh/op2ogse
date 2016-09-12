@@ -4,26 +4,47 @@
 --//ƒата выхода: 10.01.2010
 --//-----------------------------------------
 
-local snd_obj = xr_sound.get_safe_sound_object( "ambient\\da_beep" )
+-- в каких слотах искать детектор
+local useful_slots = { 8, 12 }
+local snd_obj      = xr_sound.get_safe_sound_object( "ambient\\da_beep" )
 
 
 function attach( sm )
-  sm:subscribe({ signal = "on_drop",         fun = this.remove_art_det })
-  sm:subscribe({ signal = "on_item_to_ruck", fun = this.remove_art_det })
-  sm:subscribe({ signal = "on_item_to_slot", fun = this.use_art_det    })
+  sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
 end
 
 
+function on_first_update()
+  ogse_signals.get_mgr():subscribe({
+    signal = "on_item_to_slot", fun = this.use_art_det
+  })
+  use_art_det()
+end
+
+
+function find_detector()
+  for _, slot in ipairs( useful_slots ) do
+    local obj = db.actor:item_in_slot( slot )
+    if obj then
+      local level = get_u32( obj:section(), script_name() .. ".level" )
+      if level then return level end
+    end
+  end
+end
+
+
+local cur_det_level
 function use_art_det( obj )
-  local in_slot = db.actor:item_in_slot( 8 )
-  if in_slot and in_slot:id() == obj:id() then
+  cur_det_level = find_detector()
+  if cur_det_level then
     subscribe()
   end
 end
 
 
 function remove_art_det( obj )
-  if not db.actor:item_in_slot( 8 ) then
+  cur_det_level = find_detector()
+  if not cur_det_level then
     unsubscribe()
   end
 end
@@ -33,10 +54,9 @@ local signals
 function subscribe()
   if not signals then
     signals = {
-      {
-        signal = "on_update", fun = this.on_update,
-        script_name = script_name(),
-      },
+      { signal = "on_drop_before_all", fun = this.remove_art_det },
+      { signal = "on_item_to_ruck",    fun = this.remove_art_det },
+      { signal = "on_update",          fun = this.on_update      },
     }
     local sm = ogse_signals.get_mgr()
     for _, s in ipairs( signals ) do
@@ -63,14 +83,8 @@ end
 
 
 function update_det_arts()
-  local found = db.actor:item_in_slot( 8 )
-  if found then
-    found = found:section()
-    if found == "det_artefact_indy" then
-      return det_indy( 40, 1 )
-    else
-      return det_indy( 40, 2 )
-    end
+  if cur_det_level then
+    det_indy( 40, cur_det_level )
   end
 end
 
