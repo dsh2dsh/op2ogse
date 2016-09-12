@@ -1,0 +1,182 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+local slots = {
+  [ 1 ] = {
+    [ "coords"     ] = { 860, 402, 120, 72 },
+    [ "orig_slots" ] = {
+      [ 1 ] = true,
+    },
+  },
+  [ 8 ] = {
+    [ "coords"     ] = { 710, 602, 60, 72 },
+    [ "orig_slots" ] = {
+      [ 1 ] = true,
+    },
+  },
+}
+
+
+function attach( sm )
+  sm:subscribe({ signal = "on_first_update",   fun = this.on_first_update   })
+  sm:subscribe({ signal = "on_key_down",       fun = this.on_key_down       })
+  sm:subscribe({ signal = "on_save",           fun = this.on_save           })
+  sm:subscribe({ signal = "on_inventory_open", fun = this.on_show_inventory })
+  sm:subscribe({ signal = "on_inventory_hide", fun = this.on_hide_inventory })
+end
+
+
+local selected_item, selected_items_slot
+
+function on_select_item( obj, sobj )
+  selected_item = obj
+  if db.actor:is_in_slot( obj ) then
+    selected_items_slot = get_inv_item_slot( obj )
+  else
+    selected_items_slot = nil
+  end
+end
+
+
+local subscribed
+function on_show_inventory()
+  subscribed = {
+    { signal = "on_key_up",      fun = this.on_key_up      },
+    { signal = "on_select_item", fun = this.on_select_item }
+  }
+  local sm = ogse_signals.get_mgr()
+  for _, s in ipairs( subscribed ) do
+    sm:subscribe( s )
+  end
+end
+
+
+function on_hide_inventory()
+  local sm = ogse_signals.get_mgr()
+  for _, s in ipairs( subscribed ) do
+    sm:unsubscribe( s )
+  end
+  selected_item       = nil
+  selected_items_slot = nil
+  subscribed          = nil
+end
+
+
+function on_first_update()
+  restore_slots()
+end
+
+
+function restore_slots()
+  local items     = ogse.load_var_safe( script_name() .. ".items" )
+  if not items then return end
+  local active    = ogse.load_var( script_name() .. ".active" )
+  local new_slots = ogse.load_var( script_name() .. ".slots"  )
+  for i, id in ipairs( items ) do
+    local obj = level.object_by_id( id )
+    ASSERT( obj, "object with id = %s not found", id )
+    local slot = new_slots[ i ]
+    set_inv_item_slot( obj, slot )
+    if active[ i ] then
+      db.actor:move_to_slot_and_activate( obj )
+      if db.actor:active_slot() ~= slot then
+        db.actor:activate_slot( slot )
+      end
+    else
+      db.actor:move_to_slot( obj )
+    end
+  end
+end
+
+
+function on_save()
+  local active, items, new_slots = {}, {}, {}
+  for slot, v in pairs( slots ) do
+    local item_in_slot = db.actor:item_in_slot( slot )
+    if item_in_slot then
+      local orig_slot = get_u32( item_in_slot:section(), "slot" )
+      ASSERT(
+        orig_slot, "%s in slot %s without 'slot'", item_in_slot:name(), slot
+      )
+      if orig_slot ~= slot then
+        table.insert(
+          active, (
+            db.actor:active_item()
+            and db.actor:active_item():id() == item_in_slot:id()
+          ) and true or false
+        )
+        table.insert( items, item_in_slot:id() )
+        table.insert( new_slots, slot )
+        db.actor:move_to_ruck( item_in_slot )
+      end
+    end
+  end
+  if table.getn( items ) > 0 then
+    ogse.save_var( script_name() .. ".active", active,    "array", "bool" )
+    ogse.save_var( script_name() .. ".items",  items,     "array", "u16"  )
+    ogse.save_var( script_name() .. ".slots",  new_slots, "array", "u8"   )
+    dsh.exec_on_update( function() restore_slots() end )
+  else
+    ogse.delete_var( script_name() .. ".active" )
+    ogse.delete_var( script_name() .. ".items"  )
+    ogse.delete_var( script_name() .. ".slots"  )
+  end
+end
+
+
+function on_key_up( key, bind )
+  if not selected_item then return end
+  if key ~= DIK_keys.DIK_LMOUSE then return end
+  local wnd = level.get_inventory_wnd()
+  if not wnd:IsShown() then return end
+  local x, y = wnd:GetCursorX(), wnd:GetCursorY()
+  local slot = get_slot_by_xy( x, y )
+  if not slot then return end
+  if selected_items_slot and selected_items_slot == slot then return end
+  local orig_slot = get_u32( selected_item:section(), "slot" )
+  if
+    orig_slot and slots[ slot ].orig_slots[ orig_slot ]
+    and get_inv_item_slot( selected_item ) ~= slot
+  then
+    dsh.exec_on_update(
+      function()
+        move_item_to_slot( selected_item, slot )
+        db.actor:invalidate_inventory()
+        update_inventory_window()
+      end
+    )
+  end
+end
+
+
+function get_slot_by_xy( x, y )
+  for n, v in pairs( slots ) do
+    local sx, sy, sw, sh = unpack( v.coords )
+    if x > sx and x < sx + sw and y > sy and y < sy + sh then
+      return n
+    end
+  end
+end
+
+
+function move_item_to_slot( obj, slot )
+  if selected_items_slot then
+    db.actor:move_to_ruck( selected_item )
+  end
+  local item_in_slot = db.actor:item_in_slot( slot )
+  if item_in_slot then
+    db.actor:move_to_ruck( item_in_slot )
+  end
+  set_inv_item_slot( obj, slot )
+  db.actor:move_to_slot_and_activate( obj )
+end
+
+
+function on_key_down( key, bind )
+  if key ~= dsh.get_kbd_key( "next_pistol" ) then return end
+  if db.actor:active_slot() == 8 then
+    db.actor:activate_slot( -1 )
+  elseif db.actor:item_in_slot( 8 ) then
+    db.actor:activate_slot(  8 )
+  end
+  return true
+end
