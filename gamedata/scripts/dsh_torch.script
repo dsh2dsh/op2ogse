@@ -1,25 +1,32 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
+-- величина разряда
+local step = 0.007
+-- как часто выполняется разряд фонарика ( в милисекундах реального времени )
+local freq = 31 * 1000
+
+
 function attach( sm )
-  sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
-  sm:subscribe({ signal = "on_key_down",     fun = this.on_key_down     })
+  sm:subscribe({ signal = "on_first_update", fun = this.set_torch_mode })
+  sm:subscribe({ signal = "on_key_down",     fun = this.on_key_down    })
+  sm:subscribe({ signal = "on_update",       fun = this.on_update      })
 end
 
 
 local torch_mode = "off"
-function on_first_update()
+function set_torch_mode( k )
   if db.actor:alive() then
     local torch = db.actor:item_in_slot( 9 )
     if torch and torch:is_torch() then
       if torch:is_torch_enabled() then
-        torch_mode = ogse.load_var( script_name() .. ".torch_mode", "far" )
+        torch_mode = ogse.load_var( script_name() .. ".torch_mode", "near" )
         if torch_mode == "far" then
-          set_far_mode( torch )
+          set_far_mode( torch, k )
         elseif torch_mode == "near" then
-          set_near_mode( torch )
+          set_near_mode( torch, k )
         end
       else
-        set_far_mode( torch )
+        set_near_mode( torch, k )
       end
     end
   end
@@ -37,14 +44,14 @@ function on_key_down( key, bind )
       local snd = sound_object( "device\\nlc6\\pda\\dairy_click_1" )
       snd:play( db.actor, 0, sound_object.s2d )
       if torch:is_torch_enabled() then
-        if torch_mode == "far" then
-          set_near_mode( torch )
+        if torch_mode == "near" then
+          set_far_mode( torch )
         else
           torch:switch_torch( false )
           torch_mode = "off"
         end
       else
-        set_far_mode( torch )
+        set_near_mode( torch )
         torch:switch_torch( true )
       end
       ogse.save_var( script_name() .. ".torch_mode", torch_mode )
@@ -53,17 +60,31 @@ function on_key_down( key, bind )
 end
 
 
-function set_near_mode( torch )
-  torch:set_torch_range( 20 )
-  torch:set_torch_spot_angle( 90 )
+function set_near_mode( torch, r )
   torch_mode = "near"
+  local g, b
+  if r then
+    g, b = r, r
+  else
+    r, g, b = get_torch_rgb()
+  end
+  torch:set_torch_range( 20 * r )
+  torch:set_torch_spot_angle( 90 )
+  torch:set_torch_color( vector():set( r, g, b ) )
 end
 
 
-function set_far_mode( torch )
-  torch:set_torch_range( 60 )
-  torch:set_torch_spot_angle( 45 )
+function set_far_mode( torch, r )
   torch_mode = "far"
+  local g, b
+  if r then
+    g, b = r, r
+  else
+    r, g, b = get_torch_rgb()
+  end
+  torch:set_torch_range( 60 * r )
+  torch:set_torch_spot_angle( 45 )
+  torch:set_torch_color( vector():set( r, g, b ) )
 end
 
 
@@ -81,5 +102,65 @@ function play_click()
   snd_obj = xr_sound.get_safe_sound_object( [[device\click10b]] )
   if snd_obj then
     snd_obj:play_no_feedback( db.actor, sound_object.s2d, 0, vector(), 1.0 )
+  end
+end
+
+
+function get_torch_power( new )
+  local vname = script_name() .. ".power"
+  local power = ogse.load_var_safe( vname, 0.9 )
+  if new then
+    ogse.save_var( vname, new, "float" )
+  end
+  return power
+end
+
+
+function get_torch_rgb()
+  local power  = get_torch_power()
+  local mode_k = torch_mode == "near" and 1 or 2
+  local r_old  = power + ( mode_k - 1 ) * 0.1
+  local r_new, g_new = r_old, r_old - 0.07
+  return r_new, g_new, g_new
+end
+
+
+function recharge_torch()
+  get_torch_power( 0.9 )
+  set_torch_mode()
+end
+
+
+local flash_t
+function discharge_torch()
+  if torch_mode == "off" then return end
+  local power = get_torch_power()
+  if math.random() < 0.35 then
+    set_torch_mode( power * ( math.random( 3, 10 ) ) / 10 )
+    if flash_t then flash_t:stop() end
+    flash_t = dsh.timeout(
+      math.random( 3 ) * 1000,
+      function()
+        flash_t = nil
+        discharge_torch()
+      end
+    )
+  else
+    if power > 0.01 then
+      local mode_k = torch_mode == "near" and 1 or 2
+      get_torch_power( power - ( step * ( mode_k * 2 ) ) )
+    end
+    set_torch_mode()
+  end
+end
+
+
+local started = false
+function on_update()
+  ogse_signals.get_mgr():reschedule( freq )
+  if started then
+    discharge_torch()
+  else
+    started = true
   end
 end
