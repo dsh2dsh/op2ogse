@@ -218,15 +218,7 @@ function signals_mgr:make_empty_signal( signal )
     [ "next_in_normal"    ] = 1,
     [ "next_in_scheduled" ] = 1,
   }
-  if
-    signal == "on_update"
-    or signal == "on_monster_update"
-    or signal == "on_npc_update"
-    or signal == "on_physic_obj_update"
-    or string.find( signal, "on_monster_update.", 1, true )
-    or string.find( signal, "on_npc_update.", 1, true )
-    or string.find( signal, "on_ph_update.", 1, true )
-  then
+  if signal == "on_update" then
     t.time_limited = true
   else
     t.time_limited = false
@@ -336,6 +328,11 @@ function signals_mgr:call( signal_name, ... )
 end
 
 
+local time_limited_cnt = 0
+local time_limited_max = 10
+local work_time_inc    = 10000
+local work_time_limit  = 30000
+
 function signals_mgr:process_call( signal_name, slots, ... )
   local work_time = 0
   -- сперва срабатывают все высокоприоритетные сигналы
@@ -367,13 +364,14 @@ function signals_mgr:process_call( signal_name, slots, ... )
         slots.next_in_normal = slots.next_in_normal + 1
       end
       if slots.time_limited then
-        if work_time >= 30000 then
+        if work_time >= work_time_limit then
           log2(
             "dsh: [%s]: signal '%s' time limited in 'normal' queue: %s. Last call spent %s, script_name = %s. Next is %s from %s.",
             script_name(), signal_name, work_time,
             pt:time(), tostring( slot.script_name ),
             slots.next_in_normal, table.getn( slots.normal )
           )
+          time_limited_cnt = time_limited_cnt + 1
           return
         end
       else
@@ -402,24 +400,36 @@ function signals_mgr:process_call( signal_name, slots, ... )
       table.remove( self.slots_in_process )
       slots.reschedule_scheduled = true
       slots.next_in_scheduled = slots.next_in_scheduled + 1
-      if slots.time_limited and work_time >= 30000 then
+      if slots.time_limited and work_time >= work_time_limit then
         log2(
           "dsh: [%s]: signal '%s' time limited in 'scheduled' queue: %s. Last call spent %s, script_name = %s. Next is %s from %s.",
           script_name(), signal_name, work_time,
           pt:time(), tostring( slot.script_name ),
           slots.next_in_scheduled, table.getn( slots.scheduled )
         )
+        time_limited_cnt = time_limited_cnt + 1
         return
       end
     end
   end
   slots.next_in_normal    = 1
   slots.next_in_scheduled = 1
-  if work_time > 30000 then
+  if work_time > work_time_limit then
     log2(
       "dsh: [%s]: signal '%s' is too slow: %s",
       script_name(), signal_name, work_time
     )
+  end
+  if slots.time_limited then
+    if time_limited_cnt > time_limited_max then
+      log2(
+        "dsh: [%s]: signal '%s' limited too many times: %s. Increase time limit: %s -> %s.",
+        script_name(), signal_name, time_limited_cnt, work_time_limit,
+        work_time_limit + work_time_inc
+      )
+      work_time_limit = work_time_limit + work_time_inc
+    end
+    time_limited_cnt = 0
   end
 end
 
