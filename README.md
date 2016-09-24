@@ -11,8 +11,8 @@ dsh mod для ОП-2
 - https://yadi.sk/d/dx4qvrDovYVVr
 
 Последнее обновление:
-- https://yadi.sk/d/AWR1f3XiuzF2J
-- Зеркало: https://drive.google.com/open?id=0B0h2HnCBW9H1bTlUR3ctQWdfaG8
+- https://yadi.sk/d/4bfraMW5vfKFo
+- Зеркало: https://drive.google.com/open?id=0B0h2HnCBW9H1a1hjT3dLbDF3REE
 
 Измененный под меня Advancer's HUD, со шкалой пси здоровья:
 - https://yadi.sk/d/5G_TkvICmB4ty
