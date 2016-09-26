@@ -5,62 +5,51 @@
 -- сейве и восстанавливает ее при загрузке.
 
 function attach( sm )
-  sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
-  sm:subscribe({ signal = "on_save",         fun = this.on_save         })
+  sm:subscribe({ signal = "on_update", fun = this.on_update })
+  sm:subscribe({ signal = "on_save",   fun = this.on_save   })
 end
 
 
-function on_first_update()
-  local cond = ogse.load_var_safe( script_name() .. ".condition" )
-  if cond then
-    local outfit = db.actor:get_current_outfit()
-    ASSERT( outfit, "outfit not found" )
-    if outfit:condition() < cond then
-      log2(
-        "[%s]: unexpected outfit condition: %s < %s",
-        script_name(), outfit:condition(), cond
+local cur_outfit_id
+function on_update()
+  ogse_signals.get_mgr():reschedule( 1000 )
+  local outfit = db.actor:get_current_outfit()
+  if outfit then
+    if ( not cur_outfit_id ) or outfit:id() == cur_outfit_id then
+      local cond = ogse.load_var(
+        script_name() .. ".condition", outfit:condition()
       )
+      if outfit:condition() < cond then
+        if cur_outfit_id then
+          repair_outfit_af_armor_3( outfit, cond )
+        else
+          log2(
+            "[%s]: unexpected outfit condition after load: %s < %s",
+            script_name(), outfit:condition(), cond
+          )
+          dsh.set_condition( outfit, cond )
+        end
+      end
     end
-    dsh.set_condition( outfit, cond )
+    ogse.save_var( script_name() .. ".condition", outfit:condition(), "float" )
+    cur_outfit_id = outfit:id()
+  else
     ogse.delete_var( script_name() .. ".condition" )
-  end
-  if not ogse_st_mgr.timer_exists( script_name() .. ".apply_af_armor_3" ) then
-    apply_af_armor_3()
+    cur_outfit_id = nil
   end
 end
 
 
 function on_save()
   local outfit = db.actor:get_current_outfit()
-  if outfit then
-    ogse.save_var( script_name() .. ".condition", outfit:condition(), "float" )
-  else
+  if not ( outfit and cur_outfit_id and outfit:id() == cur_outfit_id ) then
     ogse.delete_var( script_name() .. ".condition" )
   end
 end
 
 
-function apply_af_armor_3( id, cond )
-  local outfit = db.actor:get_current_outfit()
-  if outfit then
-    if id and cond then
-      id = tonumber( id )
-      if outfit:id() == id then
-        cond = tonumber( cond )
-        if outfit:condition() < cond then
-          repair_outfit_af_armor_3( outfit, cond )
-        end
-      end
-    end
-    id, cond = outfit:id(), outfit:condition()
-  else
-    id, cond = nil, nil
-  end
-  ogse_st_mgr.start_timer(
-    script_name() .. ".apply_af_armor_3", 1,
-    script_name() .. ".apply_af_armor_3", id, cond
-  )
-end
+-- оставленно для совместимости, что бы из-за таймера не вылетело.
+function apply_af_armor_3( id, cond ) end
 
 
 function repair_outfit_af_armor_3( outfit, cond )
