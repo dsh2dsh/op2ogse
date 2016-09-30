@@ -1,13 +1,9 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
-  sm:subscribe({ signal = "on_spawn",               fun = this.on_spawn })
-  sm:subscribe({ signal = "on_monster_death",       fun = this.on_death })
   sm:subscribe({ signal = "on_monster_enemy_callback", fun = this.enemy_callback })
-  sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_death })
-  sm:subscribe({ signal = "on_npc_death",           fun = this.on_death })
   sm:subscribe({ signal = "on_npc_enemy_callback", fun = this.enemy_callback })
-  sm:subscribe({ signal = "on_npc_net_destroy",     fun = this.on_death })
+  sm:subscribe({ signal = "on_spawn",              fun = this.on_spawn })
 end
 
 
@@ -31,26 +27,20 @@ function on_spawn()
 end
 
 
-function on_death( obj )
-  local binder     = obj:binded_object()
-  local subscribed = binder[ script_name() .. ".subscribed" ]
-  if subscribed then
-    ogse_signals.get_mgr():unsubscribe( subscribed )
-    binder[ script_name() .. ".subscribed" ] = nil
-  end
-end
-
-
 local freq = 60000
 
 function add_cache_rec( obj, enemy, is_enemy, freq )
   local binder = obj:binded_object()
   local cached = binder[ script_name() .. ".cached" ]
   if cached then
-    cached[ enemy:id() ] = { is_enemy, time_global() + freq }
+    cached[ enemy:id() ] = {
+      is_enemy, time_global() + freq + math.random( freq / 10 )
+    }
   else
     binder[ script_name() .. ".cached" ] = {
-      [ enemy:id() ] = { is_enemy, time_global() + freq }
+      [ enemy:id() ] = {
+        is_enemy, time_global() + freq + math.random( freq / 10 )
+      }
     }
   end
 end
@@ -62,30 +52,14 @@ function get_cache_rec( obj, enemy )
   local cached = binder[ script_name() .. ".cached" ]
   if cached and cached[ enemy:id() ] then
     local res, ttl = unpack( cached[ enemy:id() ] )
-    is_enemy = res
-    if
-      ttl <= time_global()
-      and not binder[ script_name() .. ".subscribed" ]
-    then
-      local enemy_id, enemy_name = enemy:id(), enemy:name()
-      local s = {
-        [ "signal" ] = "on_update",
-        [ "self"   ] = obj,
-        [ "fun"    ] = function( obj )
-          local enemy = level.object_by_id( enemy_id )
-          if enemy and enemy:name() == enemy_name then
-            local res = check_is_enemy_always( obj, enemy )
-            add_cache_rec( obj, enemy, res, freq )
-          end
-          local subscribed = binder[ script_name() .. ".subscribed" ]
-          ASSERT( subscribed, "oops, isn't subscribed, can't be" )
-          ogse_signals.get_mgr():unsubscribe( subscribed )
-          binder[ script_name() .. ".subscribed" ] = nil
-        end
-      }
-      binder[ script_name() .. ".subscribed" ] = s
-      ogse_signals.get_mgr():subscribe( s )
+    if ttl <= time_global() then
+      res = check_is_enemy_always( obj, enemy )
+      add_cache_rec( obj, enemy, res, freq )
     end
+    is_enemy = res
+  else
+    is_enemy = check_is_enemy_always( obj, enemy )
+    add_cache_rec( obj, enemy, is_enemy, freq )
   end
   return is_enemy
 end
@@ -94,11 +68,7 @@ end
 function enemy_callback( obj, enemy, result )
   if db.actor and enemy:id() == db.actor:id() then return end
   local is_enemy = get_cache_rec( obj, enemy )
-  if is_enemy == nil then
-    is_enemy = check_is_enemy_always( obj, enemy )
-    add_cache_rec( obj, enemy, is_enemy, freq )
-  end
-  if not is_enemy then
+  if is_enemy == false then
     table.insert( result, is_enemy )
     return true
   end
