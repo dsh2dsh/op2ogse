@@ -3,7 +3,7 @@
  Description: Интерфейс чтения/записи net-пакетов (SHoC:6/7(118),CS:8(124),SCoP:12(128))
  Copyright  : 2008-2013 © STALKER-community
  Author     : Artos (по материалам: bardak, Red75, Sokol_jack, KD87 (uACDC), xStream (xs_netpk))
- Last edit  : 23.10.2015 (by Kirgudu)
+ Last edit  : 19.10.2016 (включены исправления авторов: Charsi, Kirgudu, naxac, dsh)
 --]] ----------------------------------------------------------------------------------------------
 
 --/ -----------------------------------------------------------------
@@ -86,7 +86,7 @@ if script_version > 7 then
 end
 --/ for manipulating read/write of properties dependent on the script_version
 local can_ver = function(ver)
-	return not ver or bit_and(ver, bit_ver) ~= 0 --/> boolean-flag
+	return (not ver) or bit_and(ver, bit_ver) ~= 0 --/> boolean-flag
 end
 --/ -----------------------------------------------------------------
 --/ constant for disabling read/write of state&update parts of subpackets
@@ -131,7 +131,7 @@ end
 local _parse_custom_data = function(str)
 	if type(str) == 'string' then
 		local tbl = {}
-		str = str:gsub(";.-\n", "\n"):trim() --/ cleanup comments, symbol ';' is denied in sections names and keys/values!
+		str = str:trim( str:gsub(";.-\n", "\n") ) --/ cleanup comments, symbol ';' is denied in sections names and keys/values!
 		for section,section_data in str:gmatch('%s*%[([^%]]*)%]%s*([^%[%z]*)%s*') do --/ get sections names and their's data
 			section = section:trim() --/#!# use trim
 			section_data = section_data:trim()
@@ -448,7 +448,7 @@ end
 --/ -------------------------
 _r_l8u16u16v = function(pk)
 	local tbl = {}
-	count = pk:r_u8()
+	local count = pk:r_u8()
 	for i=1, count do
 		local k = pk:r_u16()
 		tbl[k]  = pk:r_u16()
@@ -465,7 +465,7 @@ end
 --/ -------------------------
 _r_l8u16u8v = function(pk)
 	local tbl = {}
-	count = pk:r_u8()
+	local count = pk:r_u8()
 	for i=1, count do
 		local k = pk:r_u16()
 		tbl[k]  = pk:r_u8()
@@ -1213,6 +1213,9 @@ function net_base:get()
 			if self.dbg then log("net_base:get:obj=[%s]:(%s):mode=[%s]:tail(up)=[%s]:<%s>", self.obj:name(), self.name, self._mode, t.upd.__tail_size, "Info!") end --/#~#
 		end
 	end
+	if (stpk and stpk:r_elapsed()~=0) or (uppk and uppk:r_elapsed()~=0) then
+		if self.dbg then log(string.format("%s elapsed std: %i upd:%i",self.obj:name(),stpk:r_elapsed(),uppk:r_elapsed())) end --/#~#
+	end
 	return t --/>
 end
 --/ Set -----------
@@ -1922,9 +1925,9 @@ function net_cse_alife_object_physic:__init(obj,mode)
 		{ name = 'ph_force',            type = 'f32v3', default = vector():set(0,0,0), ver = 6 },
 		{ name = 'ph_torque',           type = 'f32v3', default = vector():set(0,0,0), ver = 6 },
 		{ name = 'ph_position',         type = 'f32v3', default = vector():set(0,0,0), ver = 6 },
-		{ name = 'ph_rotation',         type = 'q8v16', default = {0,0,0,0,0,0,0,0},   ver = 6 }, --/ quaterinon
-		{ name = 'ph_angular_velosity', type = 'q8v12', default = {0,0,0,0,0,0},       ver = 6 },
-		{ name = 'ph_linear_velosity',  type = 'q8v12', default = {0,0,0,0,0,0},       ver = 6 },
+		{ name = 'ph_rotation',         type = 'q8v4',  default = {0,0,0,0},           ver = 6 }, --/ quaterinon
+		{ name = 'ph_angular_velosity', type = 'q8v3',  default = {0,0,0},             ver = 6 },
+		{ name = 'ph_linear_velosity',  type = 'q8v3',  default = {0,0,0},             ver = 6 },
 		{ name = 'enabled',             type = 'b8',    default = true,                ver = 6 } --/#~# changed type 'u8'
 	}
 end
@@ -1936,10 +1939,10 @@ function net_cse_alife_object_physic:_read_up_props(ret,pk)
 			ret.upd[prop.name] = this["_r_"..prop.type](pk, prop.ver)
 			if prop.name == 'num_items' then
 				if ret.upd.num_items ~= 0 then
-					if bit_and(ret.upd.num_items, 64) == 0 then
+					if bit_and(ret.upd.num_items, 64) == 64 then
 						skip_props.ph_angular_vel = true
 					end
-					if bit_and(ret.upd.num_items, 128) == 0 then
+					if bit_and(ret.upd.num_items, 128) == 128 then
 						skip_props.ph_linear_vel = true
 					end
 				else
@@ -1958,10 +1961,10 @@ function net_cse_alife_object_physic:_write_up_props(data,pk)
 			if prop.name == 'num_items' then
 				local num_items = data.upd.num_items or 0
 				if num_items ~= 0 then
-					if bit_and(num_items, 64) == 0 then
+					if bit_and(num_items, 64) == 64 then
 						skip_props.ph_angular_vel = true
 					end
-					if bit_and(num_items, 128) == 0 then
+					if bit_and(num_items, 128) == 128 then
 						skip_props.ph_linear_vel = true
 					end
 				else
@@ -2256,7 +2259,7 @@ function net_cse_alife_trader_abstract:__init(obj,mode)
 		{ name = 'community_index',    type = 'h32', default = -1          },
 		{ name = 'rank',               type = 'h32', default = -2147483647 },
 		{ name = 'reputation',         type = 'h32', default = -2147483647 },
-		{ name = 'checked_characters', type = 'sz',  default = ''          },
+		{ name = 'character_name',     type = 'sz',  default = ''          },
 		{ name = 'cse_alife_trader_abstract__unk2', type = 'u8', default = 0, ver = 4 }, --/ SCoP
 		{ name = 'cse_alife_trader_abstract__unk3', type = 'u8', default = 0, ver = 4 }  --/ SCoP
 	}
@@ -2824,9 +2827,9 @@ function net_cse_alife_inventory_item:__init(obj,mode)
 		{ name = 'force',          type = 'f32v3', default = vector():set(0,0,0), ver = 6 }, --/ CS&SCoP
 		{ name = 'torque',         type = 'f32v3', default = vector():set(0,0,0), ver = 6 }, --/ CS&SCoP
 		{ name = 'ph_position',    type = 'f32v3', default = vector():set(0,0,0)          },
-		{ name = 'ph_rotation',    type = 'q8v16', default = {0,0,0,0,0,0,0,0}            }, --/ quaterinon
-		{ name = 'ph_angular_vel', type = 'q8v12', default = {0,0,0,0,0,0}                },
-		{ name = 'ph_linear_vel',  type = 'q8v12', default = {0,0,0,0,0,0}                },
+		{ name = 'ph_rotation',    type = 'q8v4',  default = {0,0,0,0}                    }, --/ quaterinon
+		{ name = 'ph_angular_vel', type = 'q8v3',  default = {0,0,0}                      },
+		{ name = 'ph_linear_vel',  type = 'q8v3',  default = {0,0,0}                      },
 		{ name = 'enabled',        type = 'b8',    default = false,               ver = 6 } --/#~# changed type 'u8'
 	}
 	self.co_props = {
@@ -2844,10 +2847,10 @@ function net_cse_alife_inventory_item:_read_up_props(ret,pk)
 			ret.upd[prop.name] = this["_r_"..prop.type](pk, prop.ver)
 			if prop.name == 'num_items' then
 				if ret.upd.num_items ~= 0 then
-					if bit_and(ret.upd.num_items, 64) == 0 then
+					if bit_and(ret.upd.num_items, 64) == 64 then
 						skip_props.ph_angular_vel = true
 					end
-					if bit_and(ret.upd.num_items, 128) == 0 then
+					if bit_and(ret.upd.num_items, 128) == 128 then
 						skip_props.ph_linear_vel = true
 					end
 				else
@@ -2866,10 +2869,10 @@ function net_cse_alife_inventory_item:_write_up_props(data,pk)
 			if prop.name == 'num_items' then
 				local num_items = data.upd.num_items or 0
 				if num_items ~= 0 then
-					if bit_and(num_items, 64) == 0 then
+					if bit_and(num_items, 64) == 64 then
 						skip_props.ph_angular_vel = true
 					end
-					if bit_and(num_items, 128) == 0 then
+					if bit_and(num_items, 128) == 128 then
 						skip_props.ph_linear_vel = true
 					end
 				else
@@ -3105,7 +3108,9 @@ function net_cse_alife_item_weapon_magazined_w_gl:_read(ret,stpk,uppk)
 	else
 		if self._can_up then
 			for _,prop in ipairs(self.up_props) do
-				ret.upd[prop.name] = this["_r_"..prop.type](uppk)
+				if can_ver(prop.ver) and not uppk:r_eof() then
+					ret.upd[prop.name] = this["_r_"..prop.type](uppk)
+				end
 			end
 		end
 		self:_read_bases(ret,stpk,uppk)
@@ -3118,7 +3123,9 @@ function net_cse_alife_item_weapon_magazined_w_gl:_write(data,stpk,uppk)
 	else
 		if self._can_up then
 			for _,prop in ipairs(self.up_props) do
-				this["_w_"..prop.type](uppk, data.upd[prop.name] or prop.default or 0)
+				if can_ver(prop.ver) then
+					this["_w_"..prop.type](uppk, data.upd[prop.name] or prop.default or 0)
+				end
 			end
 		end
 		self:_write_bases(data,stpk,uppk)
