@@ -692,6 +692,8 @@ $mod_dir$   		= false|	false|	$fs_root$|		mods\
 
 Дополнения:
 
+alex_hud.xdb: HUD Александрыча для ОП-2
+
 bigfont.xdb: увеличивает шрифт в игре
 
 dsh_advancers_hud_std.xdb: худ мода по умолчанию, но СМС показываются снизу
