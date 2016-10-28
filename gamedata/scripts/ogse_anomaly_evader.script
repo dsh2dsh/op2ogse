@@ -41,6 +41,7 @@ local last_position      = {}
 function attach( sm )
   sm:subscribe({ signal = "on_after_blowout",       fun = this.on_after_blowout })
   sm:subscribe({ signal = "on_anomaly_spawn",       fun = this.on_anomaly_spawn })
+  sm:subscribe({ signal = "on_anomaly_net_destroy", fun = this.on_anomaly_net_destroy })
   sm:subscribe({ signal = "on_monster_death",       fun = this.on_death   })
   sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_death   })
   sm:subscribe({ signal = "on_monster_spawn", fun = this.on_monster_spawn })
@@ -141,8 +142,9 @@ function cleanup( obj )
 end
 
 
--- как часто выполнять обход аномалий (в мс)
-local freq = 1000
+-- как часто выполнять обход аномалий (в мс) и в каком радиусе
+-- запоминать аномалии.
+local freq, detect_radius = 1000, 100
 
 function update_norm( obj )
   ogse_signals.get_mgr():reschedule( freq + math.random( freq ) )
@@ -150,7 +152,7 @@ function update_norm( obj )
   local curr_pos = obj:position()
   local prev_pos = last_position[ obj:id() ]
   if prev_pos then
-    if prev_pos:distance_to( curr_pos ) < 50 then
+    if prev_pos:distance_to( curr_pos ) < detect_radius / 2 then
       return
     else
       last_position[ obj:id() ] = curr_pos
@@ -164,7 +166,7 @@ function update_norm( obj )
   end
 
   local restr = {}
-  for _, o in ipairs( amk_anoms.get_anomaly_list( obj, 100 ) ) do
+  for _, o in ipairs( amk_anoms.get_anomaly_list( obj, detect_radius ) ) do
     local sobj = alife():object( o.id )
     if sobj and amk_anoms.get_anomaly_status( sobj ) ~= "del" then
       local sect_anom = sobj:section_name()
@@ -180,7 +182,7 @@ function update_norm( obj )
       end
     end
   end
-  
+
   local del = {}
   for k, _ in pairs( added_restrictions[ obj:id() ] ) do
     if restr[ k ] then
@@ -233,10 +235,15 @@ function init_monster_miss_cnt()
 end
 
 
+local known_anomaly = {}
+
 function on_spawn()
   monster_miss_cnt = ogse.load_var(
     script_name() .. ".monster_miss_cnt", init_monster_miss_cnt()
   )
+  for id, _ in pairs( amk_anoms.anom_list ) do
+    known_anomaly[ id ] = true
+  end
 end
 
 
@@ -263,5 +270,25 @@ end
 
 
 function on_anomaly_spawn( obj, binder )
+  if known_anomaly[ obj:id() ] then return end
+  known_anomaly[ obj:id() ] = true
+  local pos    = obj:position()
+  local radius = amk_anoms[ obj:id ].radius
+  local recalc = {}
+  for id, _ in pairs( last_position ) do
+    local npc = level.object_by_id( id )
+    if npc then
+      if npc:position():distance_to( pos ) - radius < detect_radius then
+        table.insert( recalc, id )
+      end
+    end
+  end
+  for _, id in ipairs( recalc ) do
+    last_position[ id ] = nil
+  end
 end
 
+
+function on_anomaly_net_destroy( obj, binder )
+  known_anomaly[ obj:id() ] = nil
+end
