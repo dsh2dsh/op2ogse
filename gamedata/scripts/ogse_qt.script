@@ -16,7 +16,7 @@
 -- Комментарии:
 --
 -- 1. Наличие вашего конструктора обязательно. Вызов конструктора
---    базового класса super(timeout) нужен только если используется
+--    базового класса super( timeout ) нужен только если используется
 --    возможность завершения по таймауту.
 --
 -- 2. При останове по таймауту действие, заданное методом action,
@@ -34,122 +34,62 @@
 --    помощью можно отслеживать только события, которые должны
 --    произойти "скоро", т.е. с гарантией до ближайшей загрузки или
 --    перехода на другой уровень.
---
--- 8. Частота срабатывания проверок регулируется параметром метода
---    start. Если параметр не задан, то таймер будет проверяться с
---    частотой апдейтов биндера актора. Если параметр задан и равен
---    true, то проверки будут выполняться с низким
---    приоритетом. Частота проверок при этом будет зависеть от
---    количества низкоприоритетных вызовов, завязанных на событие
---    "on_update".  Чем подписчиков больше, тем частота ниже. Это
---    имеет смысл для проверок с низкой точностью измерения момента
---    времени и относительно длительным интервалом.
-
 
 -- Пример 1 простейшего таймера, делающего что-то через заданное время
 -- после запуска:
 --
---class "simple_timer" (ogse_qt.quick_timer)
---function simple_timer:__init(time) super(time)
---end
---function simple_timer:taction() -- наше действие по таймауту
+-- class "simple_timer" ( ogse_qt.quick_timer )
+-- function simple_timer:__init( time ) super( time )
+-- end
+-- function simple_timer:taction() -- наше действие по таймауту
 --   здесь что-то делаем по факту срабатывания таймера
---end
+-- end
+--
 -- Использование:
--- simple_timer(3000):start() -- сработает через три секунды
--- simple_timer(3000):start(true) -- сработает через три секунды, но проверяться будет реже
-
+-- simple_timer( 3000 ):start() -- сработает через три секунды
 
 -- Пример 2 использования таймера для отслеживания удаления объекта из
 -- инвентаря:
 --
---class "release_watch_timer" (ogse_qt.quick_timer)
---function release_watch_timer:__init(id) -- здесь решили не использовать таймаут
+-- class "release_watch_timer" ( ogse_qt.quick_timer )
+-- function release_watch_timer:__init( id ) -- здесь решили не использовать таймаут
 --   self.client_id = id -- запомнили объект, за которым следим
---end
---function release_watch_timer:condition()
---  return not level.object_by_id(self.client_id) -- сработает по исчезновению клиентского объекта
---end
---function release_watch_timer:action() -- наше действие
+-- end
+-- function release_watch_timer:condition()
+--  return not level.object_by_id( self.client_id ) -- сработает по исчезновению клиентского объекта
+-- end
+-- function release_watch_timer:action() -- наше действие
 --   здесь что-то делаем по факту ухода объекта в оффлайн
---end
+-- end
+--
 -- Использование:
 -- alife():release(sobj, true)
 -- release_watch_timer(sobj.id):start()
 
 
 function attach(sm)
-  sm:subscribe({ signal = "on_update", fun = this.on_update })
 end
 
 
-local rh_queue = {}
-
-function on_update()
-  process_r_queue( rh_queue )
-end
-
-function sort_any_timers( q )
-  table.sort( q, function( a, b ) return a.sort_by < b.sort_by end )
-end
-
-function register_any_timer( t )
-  table.insert( rh_queue, {
-    [ "sort_by" ] = t.termination_time,
-    [ "timer"   ] = t,
-  })
-  t._queue = rh_queue
-  sort_any_timers( rh_queue )
-end
-
-function unregister_any_timer( t )
-  local q = t._queue
-  local found = false
-  for i = 1, table.getn( q ) do
-    if rawequal( t, q[ i ].timer ) then
-      table.remove( q, i )
-      found = true
-      break
-    end
-  end
-  ASSERT( found, "can't find requested timer" )
-end
-
-function process_r_queue( q )
-  while table.getn( q ) > 0 do
-    local t = q[ 1 ].timer
-    if time_global() >= t.termination_time then
-      table.remove( q, 1 )
-      t:taction()               -- выполняем действие по таймауту
-    else
-      break
-    end
-  end
-end
-
-
-class "quick_timer"
 -- конструктор таймера в базовом классе
+class "quick_timer"
 function quick_timer:__init( timeout )
+  self.sm      = ogse_signals.get_mgr()
   self.timeout = timeout
 end
 
 
--- Запуск таймера, аргумент задаёт использование проверки с низким
--- приоритетом
-function quick_timer:start( low_priority )
+-- Запуск таймера
+function quick_timer:start()
   self.start_time = time_global()
   if self.timeout then          -- если при создании задавали таймаут
     -- то запоминаем время останова
     self.termination_time = self.start_time + self.timeout
-    register_any_timer( self )
-  else
-    self.slot_desc = {
-      signal = "on_update",
-      self   = self, fun = self.aux_cond,
-    }
-    ogse_signals.get_mgr():subscribe( self.slot_desc )
   end
+  self.slot_desc = {
+    signal = "on_update", self = self, fun = self.aux_cond,
+  }
+  self.sm:subscribe( self.slot_desc )
   return self
 end
 
@@ -169,11 +109,7 @@ end
 -- функция принудительного останова, никаких действий при этом не
 -- выполняется
 function quick_timer:stop()
-  if self.timeout then          -- если при создании задавали таймаут
-    unregister_any_timer( self )
-  else
-    ogse_signals.get_mgr():unsubscribe( self.slot_desc )
-  end
+  self.sm:unsubscribe( self.slot_desc )
 end
 
 
@@ -181,10 +117,14 @@ end
 -- таймауту и возможность принудительной остановки
 function quick_timer:aux_cond()
   self:update()
-  -- если сработал таймаут
-  if self.termination_time and time_global() > self.termination_time then
-    self:taction()              -- выполняем действие по таймауту
-    self:stop()                 -- останавливаем проверки
+  if self.termination_time then -- если имеется таймаут
+    -- и он сработал на первом апдейте
+    if self.termination_time <= time_global() then
+      self:taction()            -- выполняем действие по таймауту
+      self:stop()               -- останавливаем проверки
+    else                        -- засыпаем до срабатывания
+      self.sm:reschedule( selt.termination_time - time_global() )
+    end
   elseif self:condition() then  -- если сработало условие
     self:action()               -- выполняем действие по условия
     self:stop()
