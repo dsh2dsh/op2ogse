@@ -80,7 +80,7 @@
 -- function conditional_timer:action()
 --   self.npc:kill( db.actor ) -- что-то делаем при появлении чувака
 -- end
--- создание таймера, инициализация и запуск с низким приоритетом
+-- создание таймера, инициализация и запуск
 -- conditional_timer( "my_timer" ):init( 12345 ):start()
 -- get_timer( "my_timer" ):stop() -- передумали и остановили
 
@@ -269,9 +269,8 @@ end
 --< базовый класс сохраняемого таймера для отслеживания произвольного события >
 -------------------------------------------------------------------------------
 
-class "savable_timer"
-
 -- конструктор таймера в базовом классе
+class "savable_timer"
 function savable_timer:__init( timer_id )
   self._class = "error: it is forbidden to create instances of a base savable timer class!"
   self.loaded = false
@@ -288,6 +287,7 @@ function savable_timer:__init( timer_id )
   else
     self._id = get_free_id()
   end
+  self.sm = ogse_signals.get_mgr()
 end
 
 
@@ -423,17 +423,14 @@ function savable_timer:set_delayDHMS( d, h, m, s )
 end
 
 
--- запустить таймер с указанием, в какую очередь поместить проверку
--- в отличие от "быстрых" таймеров приоритет по умолчанию - низкий
-function savable_timer:start( high_priority )
+-- запустить таймер
+function savable_timer:start()
   self._start_time     = self._start_time or game.get_game_time()
-  self._high_priority  = high_priority
+  self._high_priority  = false
   self._cond_slot_desc = {
-    signal = "on_update",
-    self   = self,
-    fun    = self._aux_cond,
+    signal = "on_update", self = self, fun = self._aux_cond,
   }
-  ogse_signals.get_mgr():subscribe( self._cond_slot_desc )
+  self.sm:subscribe( self._cond_slot_desc )
   registry[ self._id ] = self
   return self
 end
@@ -441,32 +438,30 @@ end
 
 -- останов таймера
 function savable_timer:stop()
-  ogse_signals.get_mgr():unsubscribe( self._cond_slot_desc )
+  self.sm:unsubscribe( self._cond_slot_desc )
   registry[ self._id ] = nil
 end
 
 
 -- метод для внутреннего использования таймером
 function savable_timer:_aux_cond()
-  if
-    self._game_termination_time
-    and game.get_game_time() > self._game_termination_time
-  then -- если сработал таймаут
-    self:stop()    -- останавливаем проверки            
-    self:taction() -- выполняем действие по таймауту
-    return
-  elseif self._residual_time then
-    local time_from_loading = 1.0e-3 * ( time_global() - self._loading_time )
-    if time_from_loading > self._residual_time then
-      self:stop()    -- останавливаем проверки          
-      self:taction() -- выполняем действие по таймауту
-      return
+  if self._game_termination_time then
+    -- если сработал таймаут по игровому времени
+    if self._game_termination_time <= game.get_game_time() then
+      self:stop()           -- останавливаем проверки
+      self:taction()        -- выполняем действие по таймауту
     end
-  end
-  if self:condition() then -- если сработало условие
-    self:stop() 
+  elseif self._residual_time then -- у нас таймаут в реальном времени
+    local time_from_loading = 1.0e-3 * ( time_global() - self._loading_time )
+    if self._residual_time <= time_from_loading then -- и он сработал
+      self:stop()               -- останавливаем проверки
+      self:taction()            -- выполняем действие по таймауту
+    else                        -- иначе засыпаем на оставшееся время
+      self.sm:reschedule( ( self._residual_time - time_from_loading ) * 1000 )
+    end
+  elseif self:condition() then -- если сработало условие
+    self:stop()
     self:action() -- выполняем действие по условия
-    return
   end
 end
 
@@ -477,8 +472,8 @@ function savable_timer:condition()
 end
 
 
--- пустые действия в базовом классе. Нужны для того случая, 
--- когда не используем соответствующее действие в унаследованном классе
+-- пустые действия в базовом классе. Нужны для того случая, когда не
+-- используем соответствующее действие в унаследованном классе
 function savable_timer:action()  end
 function savable_timer:taction() end
 
@@ -488,11 +483,11 @@ function savable_timer:load( packet ) end
 function savable_timer:save( packet ) end
 
 
-----------------------------------------------------------------------------------------------------
---| Обёртка для упрощённого запуска таймера                                                      |--
---| позволяет запустить простой таймер с временнОй задержкой,                                    |--
---| который запускает заданную функцию, передавая её заданные параметры                          |--
-----------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+--| Обёртка для упрощённого запуска таймера
+--| позволяет запустить простой таймер с временнОй задержкой,
+--| который запускает заданную функцию, передавая её заданные параметры
+--------------------------------------------------------------------------------
 class "delayed_fun_start" ( savable_timer )
 function delayed_fun_start:__init( name ) super( name )
   self._class = script_name() .. ".delayed_fun_start"
@@ -532,15 +527,23 @@ function delayed_fun_start:save( packet )
   ogse_unist.write_item_to_packet( packet, array_item )
 end
 
-function delayed_fun_start:start( high_priority )
-  self._start_time    = self._start_time or game.get_game_time()
-  self._high_priority = high_priority
-  register_any_timer( self )
+function delayed_fun_start:start()
+  if self._residual_time then
+    savable_timer.start( self )
+  else
+    self._start_time    = self._start_time or game.get_game_time()
+    self._high_priority = false
+    register_any_timer( self )
+  end
   return self
 end
 
 function delayed_fun_start:stop()
-  unregister_any_timer( self )
+  if self._cond_slot_desc then
+    savable_timer.stop( self )
+  else
+    unregister_any_timer( self )
+  end
 end
 
 function delayed_fun_start:condition()
