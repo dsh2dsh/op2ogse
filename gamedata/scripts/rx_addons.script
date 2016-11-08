@@ -1,42 +1,59 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 ---- Rulix aka Bak --- 2.7.2009
 
+local total_debug = false -- ogse_debug.verbose_debug
+
+
 function printf( s, ... )
-  -- rx_ai.printf("ads:"..s,...)
+  if total_debug then rx_ai.printf( "ads:" .. s, ... ) end
 end
 
-function printw(s, ...)
-        rx_ai.printf("ads:"..s.."!!!",...)
+
+function printw( s, ... )
+  if total_debug then rx_ai.printf( "ads:" .. s .. "!!!", ... ) end
 end
 
-function read_from_ini(ini,sec,val,def,typ)
-        return rx_utils.read_from_ini(ini,sec,val,def,typ)
+
+function read_from_ini( ini, sec, val, def, typ )
+  return rx_utils.read_from_ini( ini, sec, val, def, typ )
 end
+
 
 local sc = clsid.wpn_scope_s
 local sl = clsid.wpn_silencer
 local gl = clsid.wpn_grenade_launcher
 
-local names_table = {[sc] = "scope",[sl] = "silencer",[gl] = "grenade_launcher"}
-local flags_vals = {[sc] = 1,[sl] = 4,[gl] = 2}
-local flags_table = {[sc] = {[1] = true,[3] = true,[5] = true,[7] = true},
-                                        [sl] = {[4] = true,[5] = true,[6] = true,[7] = true},
-                                        [gl] = {[2] = true,[3] = true,[6] = true,[7] = true}}
-
-local remt,ctmp,cont = {},{},{}
-
-local ad_ini = ini_file("misc\\rx_addons.ltx")
-local addons_sets = {forbiddens = {addons = {},weapons = {},factions = {},npcs = {}},
-                                check_prd = read_from_ini(ad_ini,"main","check_period",60000),
-                                enabled = read_from_ini(ad_ini,"main","enabled",false,0),
-                                maxw = read_from_ini(ad_ini,"main","max_upg_weapons",5),
+local names_table = {
+  [ gl ] = "grenade_launcher",
+  [ sc ] = "scope",
+  [ sl ] = "silencer",
+}
+local flags_vals  = { [ sc ] = 1, [ sl ] = 4, [ gl ] = 2 }
+local flags_table = {
+  [ sc ] = { [ 1 ] = true, [ 3 ] = true, [ 5 ] = true, [ 7 ] = true },
+  [ sl ] = { [ 4 ] = true, [ 5 ] = true, [ 6 ] = true, [ 7 ] = true },
+  [ gl ] = { [ 2 ] = true, [ 3 ] = true, [ 6 ] = true, [ 7 ] = true },
 }
 
+local remt, ctmp, cont = {}, {}, {}
+
+local ad_ini      = ini_file( "misc\\rx_addons.ltx" )
+local addons_sets = {
+  forbiddens = { addons = {}, weapons = {}, factions = {}, npcs = {} },
+  check_prd  = read_from_ini( ad_ini, "main", "check_period", 60000 ),
+  enabled    = read_from_ini( ad_ini, "main", "enabled", false, 0 ),
+  maxw       = read_from_ini( ad_ini, "main", "max_upg_weapons", 5 ),
+}
+
+
 function init()
---      addons_sets.forbiddens.weapons = rx_utils.parse_list(ad_ini,"main","forbidden_weapons",true)
-        addons_sets.forbiddens.factions = rx_utils.parse_list(ad_ini,"main","forbidden_factions",true)
-        addons_sets.forbiddens.npcs = rx_utils.parse_list(ad_ini,"main","forbidden_npcs",true)
-        addons_sets.inited = true
+  addons_sets.forbiddens.factions = rx_utils.parse_list(
+    ad_ini, "main", "forbidden_factions", true
+  )
+  addons_sets.forbiddens.npcs = rx_utils.parse_list(
+    ad_ini, "main", "forbidden_npcs", true
+  )
+  addons_sets.inited = true
 end
 
 
@@ -60,7 +77,7 @@ function update()
             parent = wpn
           end
           if parent:id() ~= npc_id then
-            parent:transfer_item( wpn, npc )    
+            parent:transfer_item( wpn, npc )
           end
           local st = rx_ai.get_storage( npc_id )
           if st and st.wm then
@@ -95,7 +112,7 @@ function update()
       end
     end
   end
-  if #cont ~= 0 then
+  if table.getn( cont ) ~= 0 then
     table.sort( cont, function( a, b ) return a.pid < b.pid end )
     for i, t in ipairs( cont ) do
       local cwpn = alife():create( t.sec, t.pos, t.lvid, t.gvid )
@@ -110,15 +127,15 @@ end
 
 
 function actor_save()
-        local sim = alife()
-        for id,t in pairs(ctmp) do
-                local obj = sim:object(id)
-                if obj then
-                        sim:release(obj)
-                end             
-        end
-        ctmp = {}
-        printf("actor_save")
+  local sim = alife()
+  for id, t in pairs( ctmp ) do
+    local obj = sim:object( id )
+    if obj then
+      sim:release( obj )
+    end
+  end
+  ctmp = {}
+  printf( "actor_save" )
 end
 
 
@@ -156,236 +173,290 @@ function npc_update( npc, st )
 end
 
 
-function process(npc)
-        local wmgr,wm = rx_wmgr and rx_wmgr.wm_modes.enabled_ext
-        if wmgr == true then
-                wm = rx_wmgr.get_wm(npc)
-                if wm.disabled == true or wm.modes.process_mode == "0" then
---                      wmgr = nil
+function process( npc )
+  local wmgr, wm = rx_wmgr.wm_modes.enabled_ext
+  if wmgr then
+    wm = rx_wmgr.get_wm( npc )
+    if wm.disabled or wm.modes.process_mode == "0" then
+      -- wmgr = nil
+    end
+  end
+  local weapons, wcnt = get_weapon_list( npc, wm )
+  if wcnt > 0 then
+    local addons, acnt = get_addon_list( npc, weapons )
+    if acnt > 0 then
+      local sim     = alife()
+      local convert = {}
+      for i, w in ipairs( weapons ) do
+        convert[ w.id ] = 0
+      end
+      weapons = get_upd_weapons( npc, weapons, wmgr, wm )
+      if wmgr then
+        local fpt = {}
+        for i, w in ipairs( weapons ) do
+          if w.prm ~= 0 then
+            for c, f in pairs( flags_table ) do
+              local sect = w.ast[ c ]
+              if sect then
+                for ii, a in ipairs( addons[ c ] ) do
+                  if a.sec == sect then
+                    fpt[ w.id ] = {
+                      t   = w,
+                      adf = ( fpt[ w.id ] and fpt[ w.id ].adf or 0 )
+                        + flags_vals[ c ],
+                    }
+                    break
+                  end
                 end
+              end
+            end
+          end
         end
-        local weapons,wcnt = get_weapon_list(npc,wm)
-        if wcnt > 0 then
-                local addons,acnt = get_addon_list(npc,weapons)
-                if acnt > 0 then
-                        local sim = alife()
-                        local convert = {}
-                        for i,w in ipairs(weapons) do
-                                convert[w.id] = 0
-                        end
-                        weapons = get_upd_weapons(npc,weapons,wmgr,wm)
-                        if wmgr then
-                                local fpt = {}
-                                for i,w in ipairs(weapons) do
-                                        if w.prm ~= 0 then
-                                                for c,f in pairs(flags_table) do
-                                                        local sect = w.ast[c]
-                                                        if sect then
-                                                                for ii,a in ipairs(addons[c]) do
-                                                                        if a.sec == sect then
-                                                                                fpt[w.id] = {t = w,adf = (fpt[w.id] and fpt[w.id].adf or 0)+flags_vals[c]}
-                                                                                break
-                                                                        end
-                                                                end
-                                                        end
-                                                end
-                                        end
-                                end
-                                for id,w in pairs(fpt) do
-                                        local prm = wm:get_weapon_prior(level.object_by_id(id),w.adf)+w.t.adf/10
-                                        printf("process[%s] recalc for %s[%s]:(%s change to %s)",npc:character_name(),w.t.sec,id,w.t.prm,prm)
-                                        w.t.prm = prm
-                                end
-                                table.sort(weapons,function(a,b) return a.prm > b.prm end)
-                                while #weapons > addons_sets.maxw or weapons[#weapons].prm < weapons[1].prm/3 do
-                                        table.remove(weapons)
-                                end
-                        end
-                        local saveb = {}
-                        for c,t in pairs(addons) do
-                                for i,a in ipairs(t) do
-                                        local attach
-                                        for ii,w in ipairs(weapons) do
-                                                if w.ast[c] and w.ast[c] == a.sec and not flags_table[c][convert[w.id]] then
-                                                        convert[w.id] = convert[w.id]+flags_vals[c]
-                                                        if not a.wpn then
-                                                                if not saveb[w.id] then
-                                                                        saveb[w.id] = {}
-                                                                end
-                                                                table.insert(saveb[w.id],a.id)
-                                                        end
-                                                        attach = true
-                                                        printf("process[%s]:%s[%s] ---> %s[%s]",npc:character_name(),a.sec,a.id,w.sec,w.id)
-                                                        break
-                                                end
-                                        end
-                                        if a.wpn then
-                                                if not attach then
-                                                        printf("process[%s]:spawn addon %s",npc:character_name(),a.sec)
-                                                        spawn_addon(npc,a.sec)
-                                                end
-                                        end
-                                end
-                        end
-                        for id,f in pairs(convert) do
-                                printf("process[%s] convert %s(%s)",npc:character_name(),id,f)
-                                convert_weapon(npc,id,f,saveb[id])
-                        end
+        for id, w in pairs( fpt ) do
+          local prm = wm:get_weapon_prior( level.object_by_id( id ), w.adf )
+            + w.t.adf / 10
+          printf(
+            "process[%s] recalc for %s[%s]:(%s change to %s)",
+            npc:character_name(), w.t.sec, id, w.t.prm, prm
+          )
+          w.t.prm = prm
+        end
+        table.sort( weapons, function( a, b ) return a.prm > b.prm end )
+        while
+          table.getn( weapons ) > addons_sets.maxw
+          or weapons[ table.getn( weapons ) ].prm < weapons[1].prm / 3
+        do
+          table.remove( weapons )
+        end
+      end
+      local saveb = {}
+      for c, t in pairs( addons ) do
+        for i, a in ipairs( t ) do
+          local attach
+          for ii, w in ipairs( weapons ) do
+            if
+              w.ast[ c ] and w.ast[ c ] == a.sec
+              and not flags_table[ c ][ convert[ w.id ] ]
+            then
+              convert[ w.id ] = convert[ w.id ] + flags_vals[ c ]
+              if not a.wpn then
+                if not saveb[ w.id ] then
+                  saveb[ w.id ] = {}
                 end
+                table.insert( saveb[ w.id ], a.id )
+              end
+              attach = true
+              printf(
+                "process[%s]:%s[%s] ---> %s[%s]",
+                npc:character_name(), a.sec, a.id, w.sec, w.id
+              )
+              break
+            end
+          end
+          if a.wpn then
+            if not attach then
+              printf( "process[%s]:spawn addon %s", npc:character_name(), a.sec )
+              spawn_addon( npc, a.sec )
+            end
+          end
         end
+      end
+      for id, f in pairs( convert ) do
+        printf( "process[%s] convert %s(%s)", npc:character_name(), id, f )
+        convert_weapon( npc,id, f, saveb[ id ] )
+      end
+    end
+  end
 end
 
-function get_weapon_list(npc,wm)
-        local weapons = {[1] = {}}
-        local aws = {}
-        local cnt = wm and wm:update_weapon_list(true)
-        if cnt then
-                weapons = wm.weapons
-        else
-                cnt = 0
-                local function weapon_iterator(q,item)
-                        if item == nil then return end
-                        local item_srv = alife():object(item:id())
-                        if not item_srv then return end
-                        if rx_utils.item_is_fa(item_srv) then
-                                local id,sec = item_srv.id,item_srv:section_name()
-                                table.insert(weapons[1],{sec = sec,id = id,prm = 0,adf = rx_utils.get_addon_flag(item)})
-                                cnt = cnt+1
-                        end
-                end
-                npc:iterate_inventory(weapon_iterator)
+
+function get_weapon_list( npc, wm )
+  local weapons = { [ 1 ] = {} }
+  local aws     = {}
+  local cnt = wm and wm:update_weapon_list( true )
+  if cnt then
+    weapons = wm.weapons
+  else
+    cnt = 0
+    local function weapon_iterator( q, item )
+      if not item then return end
+      local item_srv = alife():object( item:id() )
+      if not item_srv then return end
+      if rx_utils.item_is_fa( item_srv ) then
+        local id, sec = item_srv.id, item_srv:section_name()
+        table.insert(
+          weapons[ 1 ], {
+            sec = sec, id = id, prm = 0, adf = rx_utils.get_addon_flag( item )
+          }
+        )
+        cnt = cnt + 1
+      end
+    end
+    npc:iterate_inventory( weapon_iterator )
+  end
+  if cnt > 0 then
+    for t, ws in pairs( weapons ) do
+      if table.getn( ws ) > 0 then
+        for i, w in ipairs( ws ) do
+          local wt = {
+            id  = w.id,
+            sec = w.sec,
+            prm = w.prm,
+            adf = rx_utils.get_addon_flag( level.object_by_id( w.id ) ),
+            ast = {},
+          }
+          local ast = get_addons_status( wt.sec, wt.id )
+          for c, s in pairs( ast ) do
+            if s == true then
+              wt.ast[ c ] = get_addon_section( wt.sec, c )
+            end
+          end
+          for c, s in pairs( wt.ast ) do
+            table.insert( aws, wt )
+            break
+          end
         end
-        if cnt > 0 then
-                for t,ws in pairs(weapons) do
-                        if #ws > 0 then
-                                for i,w in ipairs(ws) do
-                                        local wt = {id = w.id,sec = w.sec,prm = w.prm,adf = rx_utils.get_addon_flag(level.object_by_id(w.id)),ast = {}}
-                                        local ast = get_addons_status(wt.sec,wt.id)
-                                        for c,s in pairs(ast) do
-                                                if s == true then
-                                                        wt.ast[c] = get_addon_section(wt.sec,c)
-                                                end
-                                        end
-                                        for c,s in pairs(wt.ast) do
-                                                table.insert(aws,wt)
-                                                break
-                                        end
---                                      printf("gwl[%s] weapon[%s] cur_adf=%s s:cs=%s,sl=%s,gl=%s",npc:character_name(),wt.sec,wt.adf,tostring(ast[sc]==true),tostring(ast[sl]==true),tostring(ast[gl]==true))
-                                end
-                        end
-                end
-                table.sort(aws,function(a,b) return a.prm > b.prm end)
-        end
---      printf("get_weapon_list[%s]:cnt=[%s]",npc:character_name(),#aws)
-        return aws,#aws
+      end
+    end
+    table.sort( aws, function( a, b ) return a.prm > b.prm end )
+  end
+  return aws, table.getn( aws )
 end
 
-function get_addon_list(npc,weapons)
-        local addons = {[sc] = {},[sl] = {},[gl] = {}}
-        local cnt = 0
-        local function addon_iterator(q,item)
-                if item == nil then return end  
-                local item_srv = alife():object(item:id())
-                if not item_srv then return end 
-                local c = item_srv:clsid()
-                if item_is_addon(nil,c) then
-                        local id,sec = item_srv.id,item_srv:section_name()
-                        printf("gal[%s] addon! %s[%s](%s)",npc:character_name(),sec,id,c)
-                        table.insert(addons[c],{id = id,sec = sec})
-                        cnt = cnt+1
-                end
+
+function get_addon_list( npc, weapons )
+  local addons = { [ sc ] = {}, [ sl ] = {}, [ gl ] = {} }
+  local cnt    = 0
+  local function addon_iterator( q, item )
+    if not item then return end
+    local item_srv = alife():object( item:id() )
+    if not item_srv then return end
+    local c = item_srv:clsid()
+    if item_is_addon( nil, c ) then
+      local id, sec = item_srv.id, item_srv:section_name()
+      printf( "gal[%s] addon! %s[%s](%s)", npc:character_name(), sec, id, c )
+      table.insert( addons[ c ], { id = id, sec = sec } )
+      cnt = cnt + 1
+    end
+  end
+  for c, f in pairs( flags_table ) do
+    for i, w in ipairs( weapons ) do
+      if w.adf ~= 0 and w.ast[ c ] then
+        if flags_table[ c ][ w.adf ] then
+          local sec = get_addon_section( w.sec, c )
+          if sec then
+            printf(
+              "gal[%s]: %s on weapon %s[%s]!(adf = %s)",
+              npc:character_name(), sec, w.sec, w.id, w.adf
+            )
+            table.insert( addons[ c ], { id = w.id, sec = sec, wpn = true } )
+            cnt = cnt + 1
+          end
         end
-        for c,f in pairs(flags_table) do
-                for i,w in ipairs(weapons) do
-                        if w.adf ~= 0 and w.ast[c] then
-                                if flags_table[c][w.adf] then
-                                        local sec = get_addon_section(w.sec,c)
-                                        if sec then
-                                                printf("gal[%s]: %s on weapon %s[%s]!(adf = %s)",npc:character_name(),sec,w.sec,w.id,w.adf)
-                                                table.insert(addons[c],{id = w.id,sec = sec,wpn = true})
-                                                cnt = cnt+1
-                                        end
-                                end
-                        end
-                end
-        end
-        npc:iterate_inventory(addon_iterator)
---      printf("get_addon_list[%s]:cnt=[%s]",npc:character_name(),cnt)
-        return addons,cnt
+      end
+    end
+  end
+  npc:iterate_inventory( addon_iterator )
+  return addons, cnt
 end
 
-function get_upd_weapons(npc,weapons,wmgr,wm)
-        if wmgr ~= true then
-                weapons = {}
-                local bwpn = npc:best_weapon()
-                if bwpn then
-                        local id,sec = bwpn:id(),bwpn:section()
-                        local addonf = rx_utils.get_addon_flag(bwpn)
-                        local wt = {sec = sec,id = id,prm = 1,adf = addonf,ast = {}}
-                        local ast = get_addons_status(sec,id)
-                        for c,s in pairs(ast) do
-                                if s == true then
-                                        wt.ast[c] = get_addon_section(sec,c)
-                                end
-                                table.insert(weapons,wt)
-                        end
-                end
-        else
-                for i,t in ipairs(weapons) do
-                        local wpn = level.object_by_id(t.id)
-                        if not wpn or rx_wmgr.wm_modes.forbiddens[t.sec] ~= nil or wpn:condition() < rx_wmgr.wm_modes.min_cond or not wm:have_ammo(wpn) then
-                                t.prm = 0
-                        end
-                end
+
+function get_upd_weapons( npc, weapons, wmgr, wm )
+  if wmgr then
+    weapons = {}
+    local bwpn = npc:best_weapon()
+    if bwpn then
+      local id, sec = bwpn:id(), bwpn:section()
+      local addonf  = rx_utils.get_addon_flag( bwpn )
+      local wt      = { sec = sec, id = id, prm = 1, adf = addonf, ast = {} }
+      local ast     = get_addons_status( sec, id )
+      for c, s in pairs( ast ) do
+        if s == true then
+          wt.ast[ c ] = get_addon_section( sec, c )
         end
-        return weapons
+        table.insert( weapons, wt )
+      end
+    end
+  else
+    for i, t in ipairs( weapons ) do
+      local wpn = level.object_by_id( t.id )
+      if
+        ( not wpn ) or rx_wmgr.wm_modes.forbiddens[ t.sec ] ~= nil
+        or wpn:condition() < rx_wmgr.wm_modes.min_cond
+        or not wm:have_ammo( wpn )
+      then
+        t.prm = 0
+      end
+    end
+  end
+  return weapons
 end
 
-function spawn_addon(npc,sec)
-        alife():create(sec,npc:position(),npc:level_vertex_id(),npc:game_vertex_id(),npc:id())
+
+function spawn_addon( npc, sec )
+  alife():create(
+    sec, npc:position(), npc:level_vertex_id(), npc:game_vertex_id(), npc:id() )
 end
 
-function convert_weapon(npc,id,flags,at)
-        local sim = alife()
-        local wpn = sim:object(id)
-        if wpn then
-                local sect = wpn:section_name()
-                local data = rx_utils.get_weapon_data(wpn)
-                if data.addon_flags ~= flags then
-                        local pos = level.vertex_position(npc:level_vertex_id())
-                        pos.x = pos.x+1
-                        data.addon_flags = flags
-                        table.insert(cont,{pid = id,data = data,npc = npc:id(),sec = sect,pos = pos,lvid = npc:level_vertex_id(),gvid = npc:game_vertex_id(),at = at})
-                        run_ctmp_timer()
-                end
-        end     
+
+function convert_weapon( npc, id, flags, at )
+  local sim = alife()
+  local wpn = sim:object( id )
+  if wpn then
+    local sect = wpn:section_name()
+    local data = rx_utils.get_weapon_data( wpn )
+    if data.addon_flags ~= flags then
+      local pos = level.vertex_position( npc:level_vertex_id() )
+      pos.x = pos.x + 1
+      data.addon_flags = flags
+      table.insert(
+        cont, {
+          pid  = id,
+          data = data,
+          npc  = npc:id(),
+          sec  = sect,
+          pos  = pos,
+          lvid = npc:level_vertex_id(),
+          gvid = npc:game_vertex_id(),
+          at   = at,
+        }
+      )
+      run_ctmp_timer()
+    end
+  end
 end
 
-function item_is_addon(o,c)
-        if not c then
-                c = o and o:clsid()
-        end
-        if c == sc or c == sl or c == gl then
-                return true
-        end
-        return false    
+
+function item_is_addon( o, c )
+  if not c then
+    c = o and o:clsid()
+  end
+  if c == sc or c == sl or c == gl then
+    return true
+  end
+  return false
 end
 
-function get_addons_status(sec,id)
-        local wpn = level.object_by_id(id)
-        local ast = {[sc] = "sc",[sl] = "sl",[gl] = "gl"}
-        if wpn then
-                for c,s in pairs(ast) do
---                      printf("get_addons_status[%s]: %s = %s",sec,ast[c],tostring(rx_utils.get_addon_status(wpn,[c]) == 2))
-                        ast[c] = (rx_utils.get_addon_status(wpn,s) == 2)
-                end
-        end
-        return ast
+
+function get_addons_status( sec, id )
+  local wpn = level.object_by_id( id )
+  local ast = { [ sc ] = "sc", [ sl ] = "sl", [ gl ] = "gl" }
+  if wpn then
+    for c, s in pairs( ast ) do
+      ast[ c ] = ( rx_utils.get_addon_status( wpn, s ) == 2 )
+    end
+  end
+  return ast
 end
 
-function get_addon_section(sec,c)
-        local cvt = {[sc] = "scope_name",[sl] = "silencer_name",[gl] = "grenade_launcher_name"}
-        return read_from_ini(nil,sec,cvt[c],nil,1)
+
+function get_addon_section( sec, c )
+  local cvt = {
+    [ gl ] = "grenade_launcher_name",
+    [ sc ] = "scope_name",
+    [ sl ] = "silencer_name",
+  }
+  return read_from_ini( nil, sec, cvt[ c ], nil, 1 )
 end
 
 
