@@ -13,10 +13,16 @@ function on_before_sleep( hours )
 end
 
 
+local monsters_can_find_me = false
+
 function on_sleep_finished( sleep_seconds )
   local sleep_minutes = math.floor( sleep_seconds / 60 )
   reduce_need_sleep( sleep_minutes )
   run_gg_need_sleep_timer()
+  if monsters_can_find_me then
+    monsters_can_find_me = false
+    monsters_found_me()
+  end
 end
 
 
@@ -144,21 +150,28 @@ function test_for_need_sleep_matras()
       db.actor:disable_info_portion( "horror_time_begin" )
     end
   end
-  local actorPos      = db.actor:position()
-  local enemy         = false
-  local friends_count = 0
-  for npcId, is_stalker in pairs( db.storage ) do
+  local actorPos  = db.actor:position()
+  local enemy     = false
+  local friends   = false
+  for npcId, is_stalker in pairs( db.creature ) do
     local obj = level.object_by_id( npcId )
     if obj and obj:alive() then
       local dist = obj:position():distance_to( actorPos )
       local is_enemy_to_actor = ogse.get_npc_relation(
         obj, db.actor
       ) == "enemy"
+      if
+        string.find( obj:section(), "rat_", 1, true )
+        and not dsh_rats.rats_evil_here()
+      then
+        is_enemy_to_actor = false
+      end
       if is_enemy_to_actor and ( dist < 20 or obj:see( db.actor ) ) then
         enemy = true
         break
       elseif is_stalker and dist < 40 then
-        friends_count = friends_count + 1
+        friends = true
+        break
       end
     end
   end
@@ -198,12 +211,10 @@ function test_for_need_sleep_matras()
       if wnd then
         wnd:GetHolder():start_stop_menu( wnd, true )
       end
+      -- запоминаем, делать ли подлянку
+      monsters_can_find_me = ( not friends )
       -- открываем диалог сна
       level.start_stop_menu( ui_sleep.sleep(), true )
-      -- запоминаем, делать ли подлянку
-      ogse_sleep_mgr.actor_need_surprise = (
-        friends_count == 0 and math.random() < 0.8
-      )
     else
       ogse.autohiding_msg( game.translate_string( "not_need_sleep" ), 1500 )
     end
@@ -230,6 +241,66 @@ function are_cats_near()
     if obj and obj:clsid() == clsid.cat_s and obj:alive() then
       local dist = obj:position():distance_to( pos )
       if dist < 15 then return obj end
+    end
+  end
+end
+
+
+function monsters_found_me()
+  local monsters = {}
+  for id, is_npc in pairs( db.creature ) do
+    if not is_npc then
+      local obj = level.object_by_id( id )
+      if
+        obj and obj:alive() and obj:relation( db.actor ) == game_object.enemy
+        and not string.find( obj:section(), "rat_", 1, true )
+      then
+        table.insert( monsters, obj )
+      end
+    end
+  end
+  local actor_pos = db.actor:position()
+  table.sort(
+    monsters,
+    function( a, b )
+      a:position():distance_to( actor_pos ) < b:position():distance_to( actor_pos )
+    end
+  )
+  local need_cnt = math.min( math.random( 4 ), table.getn( monsters ) )
+  local lname    = level.name()
+  local lvx      = amk_anoms.level_vertexes[ lname ]
+  local lvids    = {}
+  for new_lv = 1, lvx do
+    local pos  = level.vertex_position( new_lv )
+    local dist = actor_pos:distance_to( pos )
+    if
+      dist > 10 and dist < 25
+      and amk_anoms.check_hideouts( pos, lname )
+    then
+      table.insert( lvids, new_lv )
+    end
+  end
+  if table.getn( lvids ) > need_cnt then
+    for i = 1, need_cnt do
+      local obj  = monsters[ i ]
+      local sobj = alife():object( obj:id() )
+      if sobj then
+        xr_companion.reset_npc_logic( obj )
+        xr_gulag.resetJob( obj )
+        smart_terrain.unregister_npc( sobj )
+        sobj:brain():can_choose_alife_tasks( false )
+        local lv  = lvids[ math.random( 1, table.getn( lvids ) ) ]
+        local pos = level.vertex_position( lv )
+        obj:set_actor_position( pos )
+        obj:set_custom_panic_threshold( 0 )
+        local blow = hit()
+        blow.power     = 0.001
+        blow.impulse   = 1
+        blow.draftsman = db.actor
+        blow.type      = hit.fire_wound
+        blow.direction = utils.vector_copy_by_val( obj:position() ):sub( actor_pos )
+        obj:hit( blow )
+      end
     end
   end
 end
