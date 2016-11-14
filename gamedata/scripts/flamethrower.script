@@ -1,22 +1,50 @@
-local math_random = math.random
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+function attach( sm )
+  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
+end
+
+
+function on_spawn()
+  if db.actor:has_info( "start_work" ) then return end
+  dsh.exec_on_update( function()
+    ogse_signals.get_mgr():subscribe({
+      signal = "on_take", fun = this.on_take
+    })
+  end )
+end
+
+
+function on_take( obj )
+  have_a_fire_kolobok()
+  have_a_trubki()
+  have_a_manometr()
+  have_a_vodko()
+  have_a_gorelka()
+end
+
 
 --Функции для квеста на огнемёт.
 -- flamethrower.script
 local min_fuel = 150
 local max_fuel = 300
 
+
 function remove_spot()
- local obj
- for a=1,65534 do
-  obj = alife():object(a)
-  if obj then
-   if obj:section_name()=="trubka" then
-    level.map_remove_object_spot(obj.id,"red_location")
-    break
-   end
+  for a = 1, 65534 do
+    local obj = alife():object( a )
+    if obj and obj.parent_id == 65535 then
+      if obj:section_name() == "trubka" then
+        level.map_remove_object_spot( obj.id, "red_location" )
+        break
+      end
+    end
   end
- end
+  if db.actor:dont_has_info( "find_815" ) then
+    remove_metka_na_npc()
+  end
 end
+
 
 function good_bye(first_speaker, second_speaker)
 	local actor, trader
@@ -122,31 +150,16 @@ end
 
 
 function set_metka()
-  local sobj=alife():story_object( 481516 )
-  if sobj then
-    level.map_remove_object_spot( sobj.id, "green_location" )
-    local pk = get_netpk( sobj, 1 )
-    if pk:isOk() then
-      local data = pk:get()
-      local cd   = data.custom_data:getTable()
-      cd.smart_terrains = nil
-      data.custom_data:set( cd )
-      pk:set( data )
+  remove_metka_na_npc()
+  for a = 1, 65534 do
+    sobj = alife():object( a )
+    if sobj and sobj.parent_id == 65535 then
+      if sobj:section_name() == "trubka" then
+        level.map_add_object_spot( sobj.id, "red_location", "Трубка" )
+        return
+      end
     end
-    smart_terrain.unregister_npc( sobj )
-    sobj.smart_terrain_conditions = nil
-    sobj:brain():update()
   end
- local obj
- for a=1,65534 do
-  obj = alife():object(a)
-  if obj then
-   if obj:section_name()=="trubka" then
-    amk.add_spot_on_map(obj.id,"red_location","Трубка")
-    return
-   end
-  end
- end
 end
 
 
@@ -192,12 +205,17 @@ function have_a_fire_kolobok()
     end
 end
 
+
 function have_a_trubki()
-    local actor = db.actor
-    if actor ~= nil and actor:object("trubka") ~= nil and actor:dont_has_info("flamethrower_quest_trubki") then
-		actor:give_info_portion("flamethrower_quest_trubki")
-	end
+  local actor = db.actor
+  if actor:dont_has_info( "flamethrower_quest_trubki" ) then
+    local obj = actor:object( "trubka" )
+    if obj then
+      actor:give_info_portion( "flamethrower_quest_trubki" )
+    end
+  end
 end
+
 
 function have_a_manometr()
     local actor = db.actor
@@ -293,15 +311,41 @@ function have_a_flamethrower()
 	return false
 end
 
+
 function metka_na_npc()
-local obj = dsh.create_free_mob("gar_stalker_flame_quest23",vector():set(24.86,0.40,209.75),198510,359)
-local params=amk.read_stalker_params(obj)
-params.custom="[logic]\nactive=walker\n[walker]\npath_walk = garb_tambovski_path\npath_look = garb_tambovski_look\non_info= {+find_815} nil\ncombat_ignore_cond=always"
-params.sid=481516
-amk.write_stalker_params(params,obj)
-amk.add_spot_on_map(obj.id,'green_location','Лёха Тамбовский')
+  local sobj = dsh.create_free_mob(
+    "gar_stalker_flame_quest23",
+    vector():set( 24.86, 0.40, 209.75 ), 198510, 359
+  )
+  local pk = get_netpk( sobj, 1 )
+  ASSERT( pk:isOk(), "can't read netpacket of %s", sobj:name() )
+  local data = pk:get()
+  data.custom_data:setString(
+    "[smart_terrains]\n"
+    .. "none = true\n" ..
+    "[logic]\n"
+    .. "active = walker\ncombat_ignore = combat_ignore\n" ..
+    "[walker]\n"
+    .. "path_walk = garb_tambovski_path\npath_look = garb_tambovski_look\non_info = {+find_815} nil\ncombat_ignore_cond = {=dist_to_enemy_ge(15)}\n"
+  )
+  data.story_id = story_ids.gar_stalker_flame_quest23
+  pk:set( data )
+  level.map_add_object_spot_ser( sobj.id, "green_location", "Лёха Тамбовский" )
 end
 
+
+function remove_metka_na_npc()
+  local sobj = alife():story_object( story_ids.gar_stalker_flame_quest23 ) -- 481516
+  if sobj then
+    level.map_remove_object_spot( sobj.id, "green_location" )
+    local pk = get_netpk( sobj, 1 )
+    ASSERT( pk:isOk(), "can't read netpacket of %s", sobj:name() )
+    local data = pk:get()
+    data.custom_data:setTable( {} )
+    data.story_id = -1
+    pk:set( data )
+  end
+end
 
 
 function start_work(first_speaker, second_speaker)
@@ -366,7 +410,7 @@ function start_find_and_reload(first_speaker, second_speaker)
 	dialogs.relocate_item_section(trader, "vodka", "out")	
 	dialogs.relocate_item_section(trader, "wpn_flame", "out")	
 	local gtime = amk.game_minutes()
-	amk.save_variable("flame_reload", gtime + math_random(12, 24) * 60)
+	amk.save_variable("flame_reload", gtime + math.random(12, 24) * 60)
 	amk.save_variable("flame_reload_count", max_fuel)
 	clear_flame(actor)
 end
