@@ -740,41 +740,18 @@ function pick_section_from_condlist( actor, npc, condlist )
           break
         end
       elseif infop.func then
-        -- log2( "_bp: infop.func = %s", infop.func )
-        if not xr_conditions[ infop.func ] then
-          abort(
-            "object '%s': pick_section_from_condlist: function '%s' is "
-            .. "not defined in xr_conditions.script",
-            npc:name(), infop.func
-          )
-        end
-        if infop.params then
-          if xr_conditions[ infop.func ]( actor, npc, infop.params ) then
-            if not infop.expected then
-              -- инфопоршен есть, но не должен присутствовать
-              infop_conditions_met = false
-              break
-            end
-          else
-            if infop.expected then
-              -- инфопоршен есть, но не должен присутствовать
-              infop_conditions_met = false
-              break
-            end
+        -- log2( "_bp: infop.func = %s", infop.fname )
+        if infop.func( actor, npc, infop.params ) then
+          if not infop.expected then
+            -- инфопоршен есть, но не должен присутствовать
+            infop_conditions_met = false
+            break
           end
         else
-          if xr_conditions[ infop.func ]( actor, npc ) then
-            if not infop.expected then
-              -- инфопоршен есть, но не должен присутствовать
-              infop_conditions_met = false
-              break
-            end
-          else
-            if infop.expected then
-              -- инфопоршен есть, но не должен присутствовать
-              infop_conditions_met = false
-              break
-            end
+          if infop.expected then
+            -- инфопоршен есть, но не должен присутствовать
+            infop_conditions_met = false
+            break
           end
         end
       elseif has_alife_info( infop.name ) then
@@ -801,27 +778,7 @@ function pick_section_from_condlist( actor, npc, condlist )
           abort( "TRYING TO SET INFOS THEN ACTOR IS NIL" )
         end
         if infop.func then
-          local func = nil
-          local module, fname = string.match( infop.func, "(.+)[.](.+)" )
-          if not fname then
-            func = xr_effects[ infop.func ]
-          else
-            if _G[ module ] and _G[ module ][ fname ] then
-              func=_G[ module ][ fname ]
-            end
-          end
-          if not func then
-            abort(
-              "object '%s': pick_section_from_condlist: function '%s' is "
-              .. "not defined in xr_effects.script",
-              if_then_else( npc, npc:name(), "nil" ), infop.func
-            )
-          end
-          if infop.params then
-            func( actor, npc, infop.params )
-          else
-            func( actor, npc )
-          end
+          infop.func( actor, npc, infop.params )
         elseif infop.required then
           if not has_alife_info( infop.name ) then
             actor:give_info_portion( infop.name )
@@ -1095,8 +1052,29 @@ function parse_func_params( str )
 end
 
 
+function parse_func_name( str )
+  local func
+  local module, fname = string.match( str, "(.+)[.](.+)" )
+  if not fname then
+    local func1 = xr_effects[ str ]
+    local func2 = xr_conditions[ str ]
+    ASSERT(
+      ( not ( func1 and func2 ) ),
+      "%s defined in both xr_effects.script and xr_conditions.script", str
+    )
+    func = func1 or func2
+  else
+    if _G[ module ] and _G[ module ][ fname ] then
+      func = _G[ module ][ fname ]
+    end
+  end
+  ASSERT( func, "function '%s' not found", str )
+  return func
+end
+
+
 function parse_infop( rslt, str )
-  -- printf( "_bp: parse_infop1: %s", utils.to_str( str ) )
+  -- printf( "_bp: parse_infop: %s", utils.to_str( str ) )
   if str then
     local infop_n = 1
     for s in string.gfind( str, "%s*([%-%+%~%=%!][^%-%+%~%=%!%s]+)%s*" ) do
@@ -1125,10 +1103,20 @@ function parse_infop( rslt, str )
         rslt[ infop_n ] = { prob = tonumber( infop_name )       }
       elseif sign == "=" then
         -- printf( "_bp: n = %s; r = %s", infop_name, utils.to_str( params ) )
-        rslt[ infop_n ] = { func = infop_name, expected = true,  params = params }
+        rslt[ infop_n ] = {
+          fname    = infop_name.
+          func     = parse_func_name( infop_name ),
+          expected = true,
+          params   = params
+        }
       elseif sign == "!" then
         -- printf( "_bp: n = %s; r = %s", infop_name, utils.to_str( params ) )
-        rslt[ infop_n ] = { func = infop_name, expected = false, params = params }
+        rslt[ infop_n ] = {
+          fname    = infop_name.
+          func     = parse_func_name( infop_name ),
+          expected = false,
+          params   = params
+        }
       else
         abort_syntax_error_in_cond( npc, section, field )
       end
@@ -1196,7 +1184,7 @@ function parse_condlist( npc, section, field, src )
     parse_infop( lst[ n ].infop_check, infop_check_lst )
     -- “о же самое дл€ устанавливаемых infoportions:
     lst[ n ].infop_set = {}
-    parse_infop( lst[ n ].infop_set, infop_set_lst )
+    parse_infop( lst[ n ].infop_set,   infop_set_lst   )
     n = n + 1
   end
 
