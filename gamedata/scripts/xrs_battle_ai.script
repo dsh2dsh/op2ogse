@@ -573,28 +573,6 @@ function evaluator_check_altcombat:evaluate()
 	end
 
 	local npc_rank = ranks.get_obj_rank_name(self.object)
---[=[
-	if not bw then
-		local knife = self.object:object("wpn_knife")
-		if not knife then
-			if not need_knife[self.object:id()] then
-				need_knife[self.object:id()] = time_global() + 3000
-			elseif need_knife[self.object:id()] and need_knife[self.object:id()] < time_global() then
-				ogse.spawn_item_in_inv("wpn_knife",self.object)
-				need_knife[self.object:id()] = nil
-				bw = self.object:best_weapon()
-			end
-		end
-	else	
-		need_knife[self.object:id()] = nil
-	end
-	if bw and isKnife(bw) and (npc_rank == "veteran" or npc_rank == "master") then
-		knife_scheme[self.object:id()] = true
-		self.object:set_mental_state(anim.danger)
-	else	
-		knife_scheme[self.object:id()] = nil
-	end
---]=]
 
 	if self.st.script_combat_type == "zombied"  then
 		-- monolith[self.object:id()] = true
@@ -675,7 +653,7 @@ function action_altcombat:initialize()
 	local npc = self.object
 	self.st.check_lvid = nil
 	npc:set_item(object.idle,nil)
-	self:check_objects(npc)
+	self:check_objects()
 end
 function action_altcombat:execute()
 	action_base.execute(self)
@@ -698,15 +676,6 @@ function action_altcombat:execute()
 		stop_play_sound(npc)
 		xr_sound.set_sound(npc, nil)
 	end
-	
-	process_restrictions(npc)	
-	self:check_objects(npc) --строим список врагов/друзей, проверяем линию огня - в своих и нейтралов чтоб не стрелять	
-	
-	self.object:movement_enabled(true)
-	self.object:set_desired_direction()
-	self.object:set_desired_position ()	
-	self.object:set_detail_path_type ( move.curve )
-	self.object:set_path_type        ( game_object.level_path )	
 	
 	local enemy = nil 				-- текущий враг
 	local change_flag = false		-- флаг смены цели
@@ -737,6 +706,17 @@ function action_altcombat:execute()
 	else
 		bw = (wm and wm:get_weapon()) or npc:best_weapon()
 	end
+	
+	process_restrictions(npc)
+	-- строим список врагов/друзей, проверяем линию огня - в своих и
+	-- нейтралов чтоб не стрелять	
+	self:check_objects( bw, enemy )
+	
+	self.object:movement_enabled(true)
+	self.object:set_desired_direction()
+	self.object:set_desired_position ()	
+	self.object:set_detail_path_type ( move.curve )
+	self.object:set_path_type        ( game_object.level_path )	
 
 	-- если ещё свежий труп
 	if primary_target[npc:id()] == nil and deadman ~= false then
@@ -1223,16 +1203,14 @@ function action_altcombat:execute()
 end
 
 
-function action_altcombat:check_objects( npc )
-  if not can_fire[ npc:id() ] then can_fire[ npc:id() ] = true end
-
+function action_altcombat:check_objects( bw, enemy )
+  local npc = self.object
   self.objects = {}
   self.objects.monsters = {}
   self.objects[ game_object.friend  ] = {}
   self.objects[ game_object.neutral ] = {}
   self.objects[ game_object.enemy   ] = {}
 
-  local npc = self.object
   for o in npc:memory_visible_objects() do
     self:check_single_object( o:object() )
   end
@@ -1241,22 +1219,18 @@ function action_altcombat:check_objects( npc )
     self:check_single_object( o:object() )
   end
 
-  local nnonf, fnonf = true, true
-  for k, v in pairs( self.objects[ game_object.friend ] ) do
-    if self:check_npc_on_fire_line( v ) == true then
-      fnonf = false
-      break
+  if enemy and weapon then
+    for _, t in ipairs({ game_object.friend, game_object.neutral }) do
+      for k, v in pairs( self.objects[ t ] ) do
+        if self:check_npc_on_fire_line( v, bw, enemy ) then
+          can_fire[ npc:id() ] = false
+          return
+        end
+      end
     end
   end
 
-  for k, v in pairs( self.objects[ game_object.neutral ] ) do
-    if self:check_npc_on_fire_line( v ) == true then
-      nnonf = false
-      break
-    end
-  end
-
-  can_fire[ npc:id() ] = nnonf and fnonf
+  can_fire[ npc:id() ] = true
 end
 
 
@@ -1274,42 +1248,36 @@ function action_altcombat:check_single_object( obj )
 end
 
 
-function action_altcombat:check_npc_on_fire_line( obj )
-  local npc     = self.object
-  local npc_pos = npc:bone_position( "bip01_spine" )
-  local weapon  = npc:item_in_slot( npc:active_slot() )
-  if primary_target[ npc:id() ] ~= nil then
-    local be = level.object_by_id( primary_target[ npc:id() ] )
-    if be then
-      local be_pos      = be:bone_position( "bip01_spine" )
-      local be_dist     = be_pos:distance_to( npc_pos )
-      local friend_pos  = obj:bone_position( "bip01_spine" )
-      local radius      = 3
-      local friend_dist = npc_pos:distance_to( be_pos ) - radius
-      if IsRPG( weapon ) then
-        local effective_radius   = be_pos:distance_to( friend_pos )
-        local effective_radius_2 = be_pos:distance_to( npc_pos )
-        local effective_radius_3 = friend_pos:distance_to( npc_pos )
-        if
-          effective_radius < 25 or effective_radius_2 < 25
-          or effective_radius_3 < 25
-        then
-          return true
-        end
-      end
-      if be_dist > 5 then --and friend_dist < be_dist then -- убрано чтобы не стреляли не только когда непись между врагом но и за ним непосредственно
-        -- направления на врага и друга
-        -- считаем попадает ли текущий солдат в сектор обстрела
-        local dir_aim = utils.vector_copy_by_val( be_pos ):sub( npc_pos )
-        local dir_obj = utils.vector_copy_by_val( friend_pos ):sub( npc_pos )
-        local x       =  dir_obj.x * dir_aim.x + dir_obj.z * dir_aim.z
-        -- повернули систему координат
-        local y       = -dir_obj.z * dir_aim.x + dir_obj.x * dir_aim.z
-        local angle   = math.atan2( y, x ) -- угол доворота от -180 до 180
-        local div     = radius / friend_dist
-        if angle >= -div and angle <= div then return true end
-      end
+function action_altcombat:check_npc_on_fire_line( obj, weapon, be )
+  local npc         = self.object
+  local npc_pos     = npc:bone_position( "bip01_spine" )
+  local be_pos      = be:bone_position( "bip01_spine" )
+  local be_dist     = be_pos:distance_to( npc_pos )
+  local friend_pos  = obj:bone_position( "bip01_spine" )
+  local radius      = 3
+  local friend_dist = npc_pos:distance_to( be_pos ) - radius
+  if IsRPG( weapon ) then
+    local effective_radius   = be_pos:distance_to( friend_pos )
+    local effective_radius_2 = be_pos:distance_to( npc_pos )
+    local effective_radius_3 = friend_pos:distance_to( npc_pos )
+    if
+      effective_radius < 25 or effective_radius_2 < 25
+      or effective_radius_3 < 25
+    then
+      return true
     end
+  end
+  if be_dist > 5 then --and friend_dist < be_dist then -- убрано чтобы не стреляли не только когда непись между врагом но и за ним непосредственно
+    -- направления на врага и друга
+    -- считаем попадает ли текущий солдат в сектор обстрела
+    local dir_aim = utils.vector_copy_by_val( be_pos ):sub( npc_pos )
+    local dir_obj = utils.vector_copy_by_val( friend_pos ):sub( npc_pos )
+    local x       =  dir_obj.x * dir_aim.x + dir_obj.z * dir_aim.z
+    -- повернули систему координат
+    local y       = -dir_obj.z * dir_aim.x + dir_obj.x * dir_aim.z
+    local angle   = math.atan2( y, x ) -- угол доворота от -180 до 180
+    local div     = radius / friend_dist
+    if angle >= -div and angle <= div then return true end
   end
   return false
 end
@@ -2913,29 +2881,9 @@ function set_weapons_fire( npc, enemy, weapon, override_vis, npc_rank )
   then
     local time_aim     = time_to_aim[ npc_rank ]
     local type_of_fire = object.aim1
-
-    write_log(
-      "--XRS_BATTLE_AI: RAYTRACE PREPARE " .. npc:name() .. " : "
-        .. tostring( enemy:id() )
-    )
-
-    local be_pos   = enemy:position()
-    local npc_pos  = weapon:position()
-    local distance = npc_pos:distance_to( be_pos )
-
-    write_log(
-      "--XRS_BATTLE_AI: WPNS_FIRE_1 " .. npc:name() .. " : "
-        .. tostring( enemy:id() )
-    )
-    write_log(
-      "--XRS_BATTLE_AI: WPNS_FIRE_2 " .. npc:name() .. " : "
-        .. tostring( enemy:id() )
-    )
-
-    write_log(
-      "--XRS_BATTLE_AI: WPNS_FIRE_2_RTC_1 " .. npc:name() .. " : "
-        .. tostring( enemy:id() )
-    )
+    local be_pos       = enemy:position()
+    local npc_pos      = weapon:position()
+    local distance     = npc_pos:distance_to( be_pos )
 
     if is_armor( enemy ) then
       if string.find( enemy:name(), "btr" ) then
@@ -2947,98 +2895,49 @@ function set_weapons_fire( npc, enemy, weapon, override_vis, npc_rank )
       be_pos = enemy:bone_position( "bip01_head" )
     end
 
-    write_log(
-      "--XRS_BATTLE_AI: WPNS_FIRE_2_RTC_2 " .. npc:name() .. " : "
-        ..tostring( enemy:id() )
-    )
-
     local dir_enemy = utils.vector_copy_by_val( be_pos ):sub( npc_pos )
-    write_log(
-      "--XRS_BATTLE_AI: WPNS_FIRE_2_RTC_3 " .. npc:name() .. " : "
-        .. tostring( enemy:id() )
-    )
-
-    local aim_point = npc_pos:add( dir_enemy:normalize() )
-    write_log(
-      "--XRS_BATTLE_AI: WPNS_FIRE_2_RTC_4 " .. npc:name() .. " : "
-        .. tostring( enemy:id() )
-    )
-
+    local aim_point = npc_pos --:add( dir_enemy:normalize() )
     ray_pick.init(
-      aim_point, dir_enemy, distance + 1, rq_target.rqtBoth, npc
+      aim_point, dir_enemy, distance + 5, rq_target.rqtBoth, npc
     )
-    write_log(
-      "--XRS_BATTLE_AI: WPNS_FIRE_2_RTC_5 " .. npc:name() .. " : "
-        .. tostring( enemy:id() )
-    )
-
     local res = ray_pick.check()
-    write_log(
-      "--XRS_BATTLE_AI: WPNS_FIRE_2_RTC_6 " .. npc:name() .. " : "
-        .. tostring( enemy:id() )
-    )
 
     if res then
-      write_log(
-        "--XRS_BATTLE_AI: RAYTRACE PHASE_1 " .. npc:name() .. " : "
-          .. tostring( enemy:id() )
-      )
-
       local dist = ray_pick.get_dist()
       local obj  = ray_pick.get_obj()
-      write_log(
-        "--XRS_BATTLE_AI: RAYTRACE PHASE_2 " .. npc:name() .. " : "
-          .. tostring( enemy:id() )
-      )
-
-      if obj and obj:id() == enemy:id() then
-        type_of_fire = object.fire1
-        write_log(
-          "--XRS_BATTLE_AI: RAYTRACE SUCCESS " .. npc:name() .. " : "
-            .. tostring( enemy:id() )
+      local is_alive_mob = obj and ( IsStalker( obj ) or IsMonster( obj ) )
+        and obj:alive()
+      if
+        obj and (
+          obj:id() == enemy:id()
+          or ( is_alive_mob and check_is_enemy( npc, obj ) )
         )
+      then
+        type_of_fire = object.fire1
       else
-        if obj then
-          write_log(
-            "--XRS_BATTLE_AI: RAYTRACE WRONG " .. npc:name() .. " : "
-              .. tostring( obj:id() ) .. " " .. obj:name()
-          )
+        if is_alive_mob then
+          -- log2(
+          --   "dsh: XRS_BATTLE_AI: RAYTRACE WRONG: %s -> %s, distance = %s: %s, dist = %s",
+          --   npc:name(), enemy:name(), distance, obj:name(), dist
+          -- )
           type_of_fire = object.aim1
         else
-          write_log(
-            "--XRS_BATTLE_AI: RAYTRACE FAIL " .. npc:name() .. " : "
-              .. tostring( enemy:id() )
-          )
           if npc:see( enemy ) and not in_hideout( npc ) then
-            write_log(
-              "--XRS_BATTLE_AI: RAYTRACE FAIL BUT SEE " .. npc:name() .. " : "
-                .. tostring( enemy:id() )
-            )
             type_of_fire = object.fire1
           end
         end
       end
     else                      -- if res
-      write_log(
-        "--XRS_BATTLE_AI: RAYTRACE CHECK DOESN RETURN RESULT! "
-          .. npc:name() .. " : " .. tostring( enemy:id() )
+      log2(
+        "dsh: XRS_BATTLE_AI: RAYTRACE CHECK DOESN RETURN RESULT: %s -> %s, distance = %s",
+        npc:name(), enemy:name(), distance
       )
       type_of_fire = object.fire1
     end
 
-    write_log(
-      "--XRS_BATTLE_AI: WPNS_FIRE_3 " .. npc:name() .. " : "
-        .. tostring( enemy:id() )
-    )
-
     if is_armor( enemy ) and armor_alive( enemy ) then
       type_of_fire = object.fire1
     end
-
-    write_log(
-      "--XRS_BATTLE_AI: WPNS_FIRE_4 " .. npc:name() .. " : "
-        .. tostring( enemy:id() )
-    )
 
     if hit_timeout[ npc:id() ] and hit_timeout[ npc:id() ] > time_global() then
       type_of_fire = object.aim1
@@ -3046,20 +2945,9 @@ function set_weapons_fire( npc, enemy, weapon, override_vis, npc_rank )
       hit_timeout[ npc:id() ] = nil
     end
 
-    write_log(
-      "--XRS_BATTLE_AI: WPNS_FIRE_5 " .. npc:name() .. " : "
-        .. tostring( enemy:id() )
-    )
-
     local enemy_cover       = enemy_covered_value( npc, enemy )
     local weapon_unstrapped = npc:weapon_unstrapped()
     local anim              = db.storage[ npc:id() ].state_mgr.animstate:state()
-
-    write_log(
-      "--XRS_BATTLE_AI: WPNS_FIRE_6 " .. npc:name() .. " : "
-        .. tostring( enemy:id() )
-    )
-
     if
       ( not weapon_unstrapped ) or not_ready_states[ anim ]
       or ( IsRPG( weapon ) and ( distance < 25 or enemy_cover > 0.4 ) )
@@ -3070,11 +2958,6 @@ function set_weapons_fire( npc, enemy, weapon, override_vis, npc_rank )
       )
       type_of_fire = object.aim1
     end
-
-    write_log(
-      "--XRS_BATTLE_AI: FIRING MODE [" .. tostring( type_of_fire ) .. "] "
-        .. npc:name() .. " : " .. tostring( enemy:id() )
-    )
 
     if IsShotgun( weapon ) then
       npc:set_item( type_of_fire, weapon, 1, time_aim.other )
@@ -3089,10 +2972,6 @@ function set_weapons_fire( npc, enemy, weapon, override_vis, npc_rank )
       npc:set_item( type_of_fire, weapon, qs, time_aim.other )
     end
 
-    write_log(
-      "--XRS_BATTLE_AI: WPNS_FIRE_END " .. npc:name() .. " : "
-        .. tostring( enemy:id() )
-    )
   end
 end
 
