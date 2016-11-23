@@ -789,6 +789,7 @@ function process_trade( npc )
         local sect   = w.obj:section_name()
         local params = rx_wmgr.read_wpn_params( sect )
         local t      = { obj = w.obj, ammo = w.ammo, prm = 0 }
+        t.ammo_mag_size = params.mag
         if modes.mode1 == "1" then
           t.prm = params.cst + modes.addcost
         elseif modes.mode1 == "2" then
@@ -807,11 +808,14 @@ function process_trade( npc )
           script_name(), t.obj:name()
         )
         local data = pk:get()
-        t.cond   = data.condition
-        t.has_gl = bit_and(
+        t.pk           = pk
+        t.pk_data      = data
+        t.ammo_elapsed = data.ammo_elapsed
+        t.cond         = data.condition
+        t.has_gl       = bit_and(
           data.addon_flags, ogse_wpn_utils.addons_flags.gl
         ) ~= 0
-        t.has_scope = bit_and(
+        t.has_scope    = bit_and(
           data.addon_flags, ogse_wpn_utils.addons_flags.scope
         ) ~= 0
         t.has_silencer = bit_and(
@@ -883,9 +887,16 @@ function process_trade( npc )
           end
         end
       end
+
       process_ammo_trade( sell_list, ammo, npc, our_weapons )
       if weapon_repair_allowed then
         process_weapon_repair( our_weapons )
+      end
+      for _, w in ipairs( our_weapons ) do
+        if w.commit then
+          w.pk:set( w.pk_data )
+          w.commit = nil
+        end
       end
 
       -- Так, с оружием закончили...
@@ -941,65 +952,129 @@ end
 
 function process_ammo_trade( sell_list, ammo, npc, our_weapons )
   for _, w in ipairs( our_weapons ) do
+    local data = w.pk_data
+    if data.ammo_elapsed < w.ammo_mag_size then
+      log2(
+        "[%s]: %s has no enough ammo in mag for %s: %s < %s, fixed",
+        script_name(), npc:name(), w.obj:section_name(), data.ammo_elapsed,
+        w.ammo_mag_size
+      )
+      data.ammo_elapsed = w.ammo_mag_size
+      w.commit          = true
+    end
     local vac = w.ammo
     if vac and table.getn( vac ) > 0 then
-      local has_ammo = false
-      for _, vv in ipairs( vac ) do
-        if ammo[ vv ] and table.getn( ammo[ vv ].objs ) > 0 then
-          ammo[ vv ].inuse = true
-          has_ammo = true
+      local has_ammo
+      for i = table.getn( vac ), 1, -1 do
+        local sect = vac[ i ]
+        if ammo[ sect ] and table.getn( ammo[ sect ].objs ) > 0 then
+          if has_ammo then
+            if not ammo[ sect ].inuse then
+              ammo[ sect ].sell = true
+              log2(
+                "[%s]: %s has extra ammo type for %s: %s < %s, marked for sell",
+                script_name(), npc:name(), w.obj:section_name(), sect, has_ammo
+              )
+            end
+          else
+            local ammo_type = data.ammo_type + 1
+            if ammo_type < i then
+              log2(
+                "[%s]: %s uses weak ammo for %s: %s < %s, changed",
+                script_name(), npc:name(), w.obj:section_name(),
+                vac[ ammo_type ], vac[ i ]
+              )
+              data.ammo_type = i - 1
+              w.commit       = true
+            end
+            ammo[ sect ].inuse = true
+            ammo[ sect ].sell  = false
+            has_ammo = sect
+          end
         end
       end
       if not has_ammo then
-        local sect = vac[ 1 ]
-        local data = m_net_utils.get_weapon_data( w.obj )
+        local ammo_type = data.ammo_type + 1
+        local sect      = vac[ ammo_type ]
         log2(
-          "[%s]: %s has no ammo for %s: %s",
-           script_name(), npc:name(),  w.obj:section_name(), data.ammo_elapsed
+          "[%s]: %s has no ammo in inv for %s, spawned %s",
+          script_name(), npc:name(), w.obj:section_name(), sect
         )
-        local need_boxes = data.ammo_elapsed > 0 and 1 or 2
-        for i = 1, need_boxes do
-          local sobj = alife():create(
-            sect,
-            npc.position, npc.m_level_vertex_id, npc.m_game_vertex_id,
-            npc.id
-          )
-          table.insert(
-            items[ npc.id ],
-            {
-              id    = sobj.id,
-              lname = object_level_name( npc ),
-              name  = sobj:name(),
-            }
-          )
-          ammo[ sect ] = {
-            [ "inuse" ] = true,
-            [ "objs"  ] = { sobj },
+        local sobj = alife():create(
+          sect,
+          npc.position, npc.m_level_vertex_id, npc.m_game_vertex_id,
+          npc.id
+        )
+        table.insert(
+          items[ npc.id ],
+          {
+            id    = sobj.id,
+            lname = object_level_name( npc ),
+            name  = sobj:name(),
           }
-        end
+        )
+        ammo[ sect ] = {
+          [ "inuse" ] = true,
+          [ "objs"  ] = { sobj },
+        }
       end
     end
   end
   for sect, v in pairs( ammo ) do
-    if table.getn( v.objs ) > 2 then
-      table.sort(
-        v.objs,
-        function( a, b )
-          return get_ammo_size( a ) > get_ammo_size( b )
-        end
-      )
-      while table.getn( v.objs ) > 2 do
-        table.insert( sell_list, table.remove( v.objs ) )
+    if not v.sell then
+      v.props = {}
+      for _, sobj in ipairs( v.objs ) do
+        local pk = get_netpk( sobj, 1 )
+        ASSERT(
+          pk:isOk(), "[%s]: can't parse netpk: %s", script_name(), sobj:name()
+        )
+        table.insert( v.props, {
+          sobj = sobj,
+          pk   = pk,
+          data = pk:get(),
+        })
       end
+      v.objs = nil
     end
-    if table.getn( v.objs ) > 0 then
+  end
+  for sect, v in pairs( ammo ) do
+    if v.sell then
+      if table.getn( v.objs ) > 0 then
+        log2(
+          "[%s]: %s has marked %s ammo box(es) of %s, sold",
+          script_name(), npc:name(), table.getn( v.objs ), sect
+        )
+        for _, sobj in ipairs( v.objs ) do
+          table.insert( sell_list, sobj )
+        end
+      end
+    else
+      if table.getn( v.props ) > 1 then
+        table.sort(
+          v.props,
+          function( a, b ) return a.data.ammo_left > b.data.ammo_left end
+        )
+        while table.getn( v.props ) > 1 do
+          local t = table.remove( v.props )
+          table.insert( sell_list, t.sobj )
+          log2(
+            "[%s]: %s has extra ammo box of %s: %s < %s, sold",
+            script_name(), npc:name(), sect, t.data.ammo_left,
+            v.props[ 1 ].data.ammo_left
+          )
+        end
+      end
       if v.inuse then
         local box_size = get_u32( sect, "box_size" )
-        for _, sobj in ipairs( v.objs ) do
-          local data = m_net_utils.get_ammo_data( sobj )
-          if data.ammo_left < box_size then
+        for _, t in ipairs( v.props ) do
+          if t.data.ammo_left < box_size then
+            log2(
+              "[%s]: %s has incomplete ammo box of %s: %s < %s, fixed",
+              script_name(), npc:name(), sect, t.data.ammo_left, box_size
+            )
+            local data = t.data
             data.ammo_left = box_size
-            m_net_utils.set_ammo_data( data, sobj )
+            t.pk:set( data )
           end
         end
       end
@@ -1022,14 +1097,14 @@ end
 function process_weapon_repair( our_weapons )
   for _, w in ipairs( our_weapons ) do
     if w.cond < 1 and not is_broken_wpn( w ) then
-      local data = m_net_utils.get_weapon_data( w.obj )
+      local data = w.pk_data
       if data.condition < 0.9 then
         data.condition = data.condition + 0.1
       else
         data.condition = 1
       end
-      m_net_utils.set_weapon_data( data, w.obj )
-      w.cond = data.condition
+      w.cond   = data.condition
+      w.commit = true
     end
   end
 end
