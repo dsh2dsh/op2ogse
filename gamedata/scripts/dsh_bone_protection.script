@@ -1,0 +1,84 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+function attach( sm )
+  sm:subscribe({ signal = "on_npc_before_hit", fun = this.on_npc_before_hit })
+  sm:subscribe({ signal = "on_npc_spawn",      fun = this.on_npc_spawn })
+end
+
+
+function on_npc_spawn( obj, binder )
+  if not obj:alive() then return end
+  local ini = obj:get_visual_ini()
+  if ini and ini:section_exist( "bone_protection" ) then
+    local sect = get_string(
+      "bone_protection", "bones_protection_sect", nil, ini
+    )
+    if sect and sys_ini:section_exist( sect ) then return end
+  end
+  local _, sect = amkii_equip.get_npc_current_visual( obj )
+  log2(
+    "[%s]: %s hasn't bone_protection in visual '%s', use '%s' instead",
+    script_name(), obj:name(), obj:get_visual_name(), tostring( sect )
+  )
+  if not sect then return end
+  local bkp_sect = get_string( sect, "bones_koeff_protection" )
+  if not bkp_sect then
+    log2(
+      "[%s]: %s hasn't 'bones_koeff_protection' configured",
+      script_name(), sect
+    )
+    return
+  end
+  binder[ script_name() ] = get_bones_koeff_protection( bkp_sect )
+end
+
+
+local cached_bones_koeff_protection = {}
+
+function get_bones_koeff_protection( sect )
+  if not cached_bones_koeff_protection[ sect ] then
+    local bones = get_section_keys_and_values( sect )
+    local t     = {}
+    if bones.hit_fraction then
+      t.hit_fraction     = tonumber( bones.hit_fraction )
+      bones.hit_fraction = nil
+    else
+      t.hit_fraction     = 0.1
+    end
+    for k, v in pairs( bones ) do
+      local koef, armour = unpack( parse_nums( v ) )
+      ASSERT(
+        armour,
+        "%s has broken 'bones_koeff_protection' for bone '%s'",
+        sect, k
+      )
+      t[ k ] = armour
+    end
+    cached_bones_koeff_protection[ sect ] = t
+  end
+  return cached_bones_koeff_protection[ sect ]
+end
+
+
+function on_npc_before_hit( obj, hit_data, p_s_hit, p_ignore_flags )
+  local binder = obj:binded_object()
+  local t      = binder[ script_name() ]
+  if not (
+    t and obj:alive()
+    and hit_data.hit_type == hit.fire_wound
+    and hit_data.power > 0
+  ) then
+    return
+  end
+  local bone_name     = get_bone_name_by_id( obj, hit_data.bone_id )
+  local bone_armour   = t[ bone_name ]
+  local new_hit_power = hit_data.power - bone_armour
+  if new_hit_power < hit_data.power * t.hit_fraction then
+    new_hit_power = hit_data.power * t.hit_fraction
+  end
+  log2(
+    "[%s]: %s got hit %s to %s -> %s",
+    script_name(), obj:name(), hit_data.power, bone_name, new_hit_power
+  )
+  write_memory_float( new_hit_power, p_s_hit, hit_offset.power )
+end
