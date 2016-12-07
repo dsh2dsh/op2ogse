@@ -447,26 +447,22 @@ end
 
 
 function actor_get_art_nl0( n )
-  local l0_arts = {}
+  local arts = {}
   for k, v in pairs( get_art_levels() ) do
     if table.getn( v.prev ) == 1 and table.getn( v.next ) > 0 then
-      l0_arts[ v.prev[ 1 ] ] = true
+      amk_utils.inventory_iterate_section(
+        v.prev[ 1 ],
+        function( obj )
+          if db.actor:is_in_ruck( obj ) then
+            table.insert( arts, obj )
+            if table.getn( arts ) == n then return true end
+          end
+        end
+      )
+      if table.getn( arts ) == n then break end
     end
   end
-  local arts = {}
-  db.actor:iterate_inventory(
-    function( npc, obj )
-      if l0_arts[ obj:section() ] then
-        if db.actor:is_in_ruck( obj ) then
-          table.insert( arts, obj )
-        end
-      end
-    end,
-    db.actor
-  )
-  if table.getn( arts ) >= n then
-    return arts
-  end
+  if table.getn( arts ) == n then return arts end
 end
 
 function actor_has_art_nl0( n )
@@ -1118,13 +1114,9 @@ end
 
 
 function map_remove_treasure_inv( sect )
-  db.actor:iterate_inventory(
-    function( npc, item )
-      if item:section() == sect then
-        map_remove_treasure( item:id() )
-      end
-    end,
-    db.actor
+  amk_utils.inventory_iterate_section(
+    sect,
+    function( obj ) map_remove_treasure( obj:id() ) end
   )
 end
 
@@ -1381,28 +1373,31 @@ end
 
 
 function find_capsule()
-  local obj = db.actor:object( "af_capsule" )
-  if not obj then
-    db.actor:iterate_inventory(
-      function( npc, item )
-        if not obj and item:section() == "arc_art_box_1basic" then
-          local idx  = arc_1containers.get_inv_index( item:id() )
-          local arts = arc_1containers.get_inv_container_arts( idx )
-          for _, n in pairs( arts ) do
-            if n > 0 then
-              local sect = arc_arts.get_art_section( n )
-              if sect == "af_capsule" then
-                obj = item
-                break
-              end
+  local res, t = amk_utils.inventory_search_check({
+    [ "af_capsule" ] = 1,
+  })
+  if res then
+    return t[ 1 ]
+  else
+    local found
+    amk_utils.inventory_iterate_section(
+      "arc_art_box_1basic",
+      function( item )
+        local idx  = arc_1containers.get_inv_index( item:id() )
+        local arts = arc_1containers.get_inv_container_arts( idx )
+        for _, n in pairs( arts ) do
+          if n > 0 then
+            local sect = arc_arts.get_art_section( n )
+            if sect == "af_capsule" then
+              found = item
+              return true
             end
           end
         end
-      end,
-      db.actor
+      end
     )
+    return found
   end
-  return obj
 end
 
 function have_capsule()
@@ -1705,19 +1700,16 @@ end
 
 function actor_get_art_bio( sect, n )
   local arts = {}
-  db.actor:iterate_inventory(
-    function( npc, obj )
-      if obj:section() == sect and is_zone_bio_art( obj ) then
-        if db.actor:is_in_ruck( obj ) then
-          table.insert( arts, obj )
-        end
+  amk_utils.inventory_iterate_section(
+    sect,
+    function( obj )
+      if is_zone_bio_art( obj ) and db.actor:is_in_ruck( obj ) then
+        table.insert( arts, obj )
+        if table.getn( arts ) == n then return true end
       end
-    end,
-    db.actor
+    end
   )
-  if table.getn( arts ) >= n then
-    return arts
-  end
+  if table.getn( arts ) == n then return arts end
 end
 
 function actor_has_art_bio( sect, n )
@@ -1889,13 +1881,13 @@ end
 
 function find_ekza_akkumul_discharged()
   local items = {}
-  db.actor:iterate_inventory(
-    function( npc, item )
-      if item:section() == "ekza_akkumul" and item:condition() < 1 then
+  amk_utils.inventory_iterate_section(
+    "ekza_akkumul",
+    function( item )
+      if db.actor:is_in_ruck( item ) and item:condition() < 1 then
         table.insert( items, item )
       end
-    end,
-    db.actor
+    end
   )
   table.sort(
     items, function( a, b ) return a:condition() < b:condition() end
