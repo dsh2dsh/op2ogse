@@ -226,23 +226,27 @@ function on_update()
     [ "walk_accel_add"           ] = 0,
   }
   ogse_signals.get_mgr():call( "on_before_actor_conditions_update", ext )
-  -- учитываем здесь естественное оголодание, а также
-  -- движковое(обнулять его нельзя, на нем основан показ свойств
-  -- артефактов)
+
+  -- учитываем здесь естественное оголодание, а также движковое (
+  -- обнулять его нельзя, на нем основан показ свойств артефактов )
   local cur_satiety_v = satiety_v + (
-    satiety_v * ( 1 - math.min( act.health, act.power ) )
+    satiety_v * ( 1 - math.min( act.health, act.power, override_power ) )
   )
-  local satiety_custom_k = 1
-  if
-    override_power < 1
-    or act:is_actor_sprinting() or act:is_actor_climbing()
-    or act.health < 0.99 or act:get_bleeding() > 0.1
-  then
-    satiety_custom_k = 2
+  if act:is_actor_sprinting() or act:is_actor_climbing() then
+    cur_satiety_v = cur_satiety_v + satiety_v
   end
-  cur_satiety_v = cur_satiety_v * satiety_custom_k
+  if act.health < 1 then
+    local belt_health_restore_speed = inventory.on_belt_restore_speed(
+      "health_restore_speed"
+    )
+    if belt_health_restore_speed > 0 then
+      cur_satiety_v = cur_satiety_v
+        + satiety_v * ( belt_health_restore_speed / engine_satiety_health_v )
+    end
+  end
   local summary_satiety_effect = cur_satiety_v + engine_satiety_v
-    + adjust_satiety_restore_speed( ext.satiety_restore_speed )
+    + inventory.on_belt_restore_speed( "satiety_restore_speed" )
+    + ext.satiety_restore_speed
   local summary_health_effect  = satiety_health_v_base - engine_satiety_health_v
     + ext.health_restore_speed
   local summary_power_effect   = - engine_satiety_power_v
@@ -251,20 +255,12 @@ function on_update()
   local summary_psy_health_effect        = ext.psy_health_restore_speed
   local summary_radiation_restore_effect = ext.radiation_restore_speed
   local summary_alcohol_effect           = ext.alcohol_restore_speed
-  -- неучтённые в движке эффекты от артефактов на поясе
-  local satiety_restore_speed = adjust_satiety_restore_speed(
-    inventory.on_belt_restore_speed( "satiety_restore_speed" )
-  )
-  summary_satiety_effect    = summary_satiety_effect + satiety_restore_speed
   -- эффекты от брони
   local armor = db.actor:get_current_outfit()
   local armor_ef
   if armor then
     armor_ef = get_item_cond_effect( armor )
-    local satiety_restore_speed = adjust_satiety_restore_speed(
-      armor_ef.satiety_restore_speed
-    )
-    summary_satiety_effect = summary_satiety_effect + satiety_restore_speed
+    summary_satiety_effect = summary_satiety_effect + armor_ef.satiety_restore_speed
     summary_health_effect  = summary_health_effect  + armor_ef.health_restore_speed
     summary_power_effect   = summary_power_effect   + armor_ef.power_restore_speed
     summary_bleeding_restore_effect = summary_bleeding_restore_effect
@@ -395,18 +391,6 @@ function change_walk_accel( k )
 end
 
 
-function adjust_satiety_restore_speed( v )
-  if db.actor:is_actor_sprinting() or db.actor:is_actor_climbing() then
-    if v > 0 then
-      v = v / 2
-    elseif v < 0 then
-      v = v * 2
-    end
-  end
-  return v
-end
-
-
 function get_overweight_power()
   return override_power
 end
@@ -478,4 +462,9 @@ end
 
 function on_mm_return_game()
   cur_cam_inert = 0
+end
+
+
+function get_satiety_v()
+  return satiety_v
 end
