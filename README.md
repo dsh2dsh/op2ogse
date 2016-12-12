@@ -682,5 +682,7 @@ op2_hud.xdb: стандартный худ ОП-2
 
 - моду Новый Арсенал 3 за отличную сборку оружия
 
+- Zagolski за интересные идеи
+
 - людям, чьи работы я использовал или кто мне помогал другим способом:
   art0run, BlooderDen, Shitty, Assort, Alkseur, [Sanchez69full](https://www.youtube.com/user/Sanchez69full/).
