@@ -230,7 +230,7 @@ function se_respawn:create( prob )
 
     local sini = self:spawn_ini()
     if sini:line_exist( "respawn", "creature_binded_logic" ) then
-      local cfg_name  = get_string(
+      local cfg_name = get_string(
         "respawn", "creature_binded_logic", nil, sini
       )
       local cfg_path = "scripts\\amk\\" .. cfg_name .. ".ltx"
@@ -282,7 +282,7 @@ function se_respawn:create( prob )
         then
           table.insert( self.spawned_obj, obj.id )
           all_spawned_obj[ obj.id ] = self.id
-          amk.on_REspawn( obj, self )
+          news_main.on_spawn( obj )
           return true
         else
           alife():release( obj, true )
@@ -292,7 +292,7 @@ function se_respawn:create( prob )
     end
     table.insert( self.spawned_obj, obj.id )
     all_spawned_obj[ obj.id ] = self.id
-    amk.on_REspawn( obj, self )
+    news_main.on_spawn( obj )
     return true
   end
 end
@@ -388,35 +388,23 @@ end
 function se_respawn:execute()
   if self.already_once_spawned == true then return end
   --' Выходим, если у нас установлен событийный спавн.
-  if self.idle_spawn_min == -1 then
-    return
-  end
-  if self.respawn_time < game.get_game_time() then
-    local idle_time = game.CTime()
-    local now       = game.get_game_time()
-    if ui_mm_opt_main.GetOption( "fast_respawn" ) then
-      -- частый респаун
-      idle_time:setHMSms( math.random( 10, 12 ), math.random( 0, 59 ), 0, 0 )
-    else
-      -- стандартный респаун
-      idle_time:setHMSms( math.random( 20, 48 ), math.random( 0, 59 ), 0, 0 )
-    end
-    self.respawn_time = now + idle_time
-    -- Производим попытку заспаунить объекты
-    self:spawn()
-  end
+  if self.idle_spawn_min == -1 then return end
+  self:set_next_update()
+  -- Производим попытку заспаунить объекты
+  self:spawn()
+  log2( "[%s]: %s: spawned", script_name(), self:name() )
 end
 
 
 -- Обновление в офлайне
-function se_respawn:update()
+function se_respawn:dsh_off_update()
   cse_alife_smart_zone.update( self )
   self:execute()
 end
 
 
 -- Обновление в онлайне
-function se_respawn:update_online()
+function se_respawn:dsh_off_update_online()
   if self.respawn_radius == -1 then
     return
   end
@@ -435,6 +423,30 @@ function se_respawn:dsh_cleanup_spawned_obj()
       alife():release( sobj )
     end
   end
+end
+
+
+function se_respawn:set_next_update()
+  local idle_time = game.CTime()
+  local now       = game.get_game_time()
+  if ui_mm_opt_main.GetOption( "fast_respawn" ) then
+    -- частый респаун
+    idle_time:setHMSms( math.random( 10, 12 ), math.random( 0, 59 ), 0, 0 )
+  else
+    -- стандартный респаун
+    idle_time:setHMSms( math.random( 20, 48 ), math.random( 0, 59 ), 0, 0 )
+  end
+  self:set_respawn_time( now + idle_time )
+end
+
+
+function se_respawn:set_respawn_time( t )
+  self.respawn_time = t
+  ogse_st_mgr.delayed_fun_start( script_name() .. "." .. self:name() )
+    :set_gtime( self.respawn_time )
+    :init( script_name() .. ".update_on_timer", self:name() )
+    :start()
+  log2( "[%s]: %s: set next update", script_name(), self:name() )
 end
 
 
@@ -629,4 +641,36 @@ function get_respawner_by_npc_id( id )
   if all_spawned_obj[ id ] then
     return alife():object( all_spawned_obj[ id ] )
   end
+end
+
+
+function update_on_timer( name )
+  local respawner = respawners[ name ]
+  ASSERT( respawner, "[%s]: not found", tostring( name ) )
+  log2( "[%s]: %s: execute", script_name(), respawner:name() )
+  respawner:execute()
+end
+
+
+function startup_respawners()
+  local cnt = 0
+  iterate_respawners(
+    function( respawner )
+      cnt = cnt + 1
+      if (
+        respawner.already_once_spawned == true
+        or respawner.idle_spawn_min == -1
+      ) then
+        log2( "[%s]: %s: skip startup", script_name(), respawner:name() )
+        return
+      end
+      log2( "[%s]: %s: startup", script_name(), respawner:name() )
+      if respawner.respawn_time <= game.get_game_time() then
+        respawner:execute()
+      else
+        respawner:set_respawn_time( respawner.respawn_time )
+      end
+    end
+  )
+  log2( "[%s]: %s respawners started", script_name(), cnt )
 end
