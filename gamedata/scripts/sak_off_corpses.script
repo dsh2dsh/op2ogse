@@ -81,153 +81,117 @@ local tabl_weapons = {}
 local parent_keep_items = {}
 function off_corpses()
   meceniy_outfit.is_pleer = false
+  local actor_level = level.name()
+  -- главный цикл
+  for a = 1, 65534 do
+    local obj = alife():object( a )
+    if obj then
+      local obj_level = object_level_name( obj )
+      local obj_name  = obj:name()
+      local obj_sect  = obj:section_name()
 
-  if game_graph():valid_vertex_id( db.actor:game_vertex_id() ) then
-    local actor_level = level.name()
-    -- главный цикл
-    for a = 1, 65534 do
-      local obj = alife():object( a )
-      if obj and game_graph():valid_vertex_id( obj.m_game_vertex_id ) then
-        local obj_level = object_level_name( obj )
-        local obj_name  = obj:name()
-
-        -- сталкер
-        if IsStalker( obj ) and obj_level ~= actor_level then
-          if not obj:alive() then
-            -- проверка трупа сталкера, если не в исключениях - в
-            -- таблицу и бум удалять
-            protected_items.unprotect_tabl_corps_keep( obj )
-            add_9510_exceptions( obj )
+      -- сталкер
+      if IsStalker( obj ) and obj_level ~= actor_level then
+        if not obj:alive() then
+          -- проверка трупа сталкера, если не в исключениях - в
+          -- таблицу и бум удалять
+          protected_items.unprotect_tabl_corps_keep( obj )
+          add_9510_exceptions( obj )
+          if
+            not protected_items.is_corps_keep_by_story_id( obj )
+            and not sak.can_be_resurrected( obj )
+            and not protected_items.obj_is_protected(
+              obj, "tabl_corps_keep", "exactly"
+            )
+          then
             if
-              not protected_items.is_corps_keep_by_story_id( obj )
-              and not sak.can_be_resurrected( obj )
-              and not protected_items.obj_is_protected(
-                obj, "tabl_corps_keep", "exactly"
-              )
+              obj.m_story_id > 9510 or exceptions_9510[ obj.m_story_id ]
             then
-              if
-                obj.m_story_id > 9510 or exceptions_9510[ obj.m_story_id ]
-              then
-                table.insert( tabl_corpses, obj )
-              else
-                table.insert( tabl_corpses_9510, obj ) -- эти трупы пысовские - не удаляются
-              end
+              table.insert( tabl_corpses, obj )
+            else
+              -- эти трупы пысовские - не удаляются
+              table.insert( tabl_corpses_9510, obj )
             end
           end
+        end
 
-          -- монстр
-        elseif IsMonster( obj ) and obj_level ~= actor_level then
-          if not obj:alive() then
-            -- труп
+      elseif obj_sect == "psy_dog_phantom" then
+        table.insert( tabl_monsters_dead, obj )
+        log2( "[%s]: found %s on %s", script_name(), obj_sect, obj_level )
+
+      -- монстр
+      elseif IsMonster( obj ) and obj_level ~= actor_level then
+        if not obj:alive() then
+          -- труп
+          table.insert( tabl_monsters_dead, obj )
+        end
+      end
+
+      -- предмет в инвентаре
+      if obj.parent_id then
+        -- валяется на земле
+        if obj.parent_id == 65535 then
+          -- оружие
+          if
+            (
+              string.find( obj_sect, "wpn_", 1, true )
+              or string.find( obj_sect, "grenade_", 1, true )
+            )
+            and obj_level ~= actor_level
+            and not protected_items.obj_is_protected(
+              obj, "tabl_wpn_keep", "like"
+            )
+          then
+            table.insert( tabl_weapons, obj )
+          elseif obj_sect == "mutant_crow" then
+            -- трупы ворон
             table.insert( tabl_monsters_dead, obj )
           end
-        end
-
-        -- предмет в инвентаре
-        if obj.parent_id then
-          -- валяется на земле
-          if obj.parent_id == 65535 then
-            -- оружие
-            if
-              string.find( obj_name, "wpn_" )
-              or
-              string.find( obj_name, "grenade_" )
-            then
-              if not protected_items.obj_is_protected( obj, "tabl_wpn_keep", "like" ) then
-                if
-                  (
-                    obj_level == "l10_radar"
-                    or
-                    obj_level == "hospital"
-                  )
-                  and
-                  obj_level ~= actor_level
-                then
-                  --убираем на Радаре и в Госпитале безо всяких
-                  --таблиц, когда ГГ не на Радаре и Госпитале
-                  --(исключения не трогаем)
-                  alife():release( obj, true )
-                elseif obj_level ~= actor_level then 
-                  table.insert( tabl_weapons, obj )
-                end
-              end
-            elseif
-              -- проблемые арты в Пещере
-              obj_level == "peshera"
-              and
-              (
-                string.find( obj_name, "af_ameba_slime" )
-                or
-                string.find( obj_name,"af_ameba_slug" )
-                or
-                string.find( obj_name,"af_ameba_mica" )
-              )
-            then
-              alife():release( obj, true )
-            elseif
-              -- проблемые арты в СД
-              obj_level == "lost_village"
-              and
-              (
-                string.find( obj_name,"af_life_heart" )
-                or
-                string.find( obj_name,"af_rusty_thorn" )
-                or
-                string.find( obj_name,"af_rusty_sea-urchin" )
-                or
-                string.find( obj_name,"af_rusty_kristall" )
-              )
-            then
-              alife():release( obj, true )
-            elseif string.find( obj_name, "mutant_crow" ) then
-              -- трупы ворон
-              alife():release( obj, true )
-            end
-          else
-            -- в инвентаре
-            if not parent_keep_items[ obj.parent_id ] and item_keep( obj ) then
-              parent_keep_items[ obj.parent_id ] = true
-            end
-          end
-        end
-
-        -- фикс кривых smart_terrain
-        if
-          ( IsStalker( obj ) or IsMonster( obj ) )
-          and
-          obj:alive()
-        then
-          local strn_id = obj:smart_terrain_id()
-          if strn_id ~= 65535 then
-            local strn = alife():object( strn_id )
-            if strn and strn:clsid() ~= clsid.smart_terrain then
-              log2("load ~~~ Уборщик: Обнаружена привязка к несуществующему smart_terrain: "..obj_name..", smart_terrain_id: "..tostring(strn_id)..". Привязка удалена.")
-              obj:clear_smart_terrain()
-            end
+        else
+          -- в инвентаре
+          if not parent_keep_items[ obj.parent_id ] and item_keep( obj ) then
+            parent_keep_items[ obj.parent_id ] = true
           end
         end
       end
-    end -- for
 
-    --зачистка мёртвых монстров
-    for _, corps in ipairs( tabl_monsters_dead ) do
-      if not parent_keep_items[ corps.id ] then
-        alife():release( corps, true )
+      -- фикс кривых smart_terrain
+      if
+        ( IsStalker( obj ) or IsMonster( obj ) )
+        and obj:alive()
+      then
+        local strn_id = obj:smart_terrain_id()
+        if strn_id ~= 65535 then
+          local strn = alife():object( strn_id )
+          if strn and strn:clsid() ~= clsid.smart_terrain then
+            log2(
+              "Уборщик: Обнаружена привязка к несуществующему smart_terrain: %s, smart_terrain_id: %s. Привязка удалена.",
+              obj_name, tostring( strn_id )
+            )
+            obj:clear_smart_terrain()
+          end
+        end
       end
     end
+  end -- for
+
+  --зачистка мёртвых монстров
+  for _, corps in ipairs( tabl_monsters_dead ) do
+    if not parent_keep_items[ corps.id ] then
+      alife():release( corps, true )
+    end
+  end
     
-    --зачистка мёртвых человеков
-    for _, corps in ipairs( tabl_corpses ) do
-      if not parent_keep_items[ corps.id ] then
-        alife():release( corps, true )
-      end
+  --зачистка мёртвых человеков
+  for _, corps in ipairs( tabl_corpses ) do
+    if not parent_keep_items[ corps.id ] then
+      alife():release( corps, true )
     end
+  end
 
-    --зачистка оружия
-    for _, wpn in ipairs( tabl_weapons ) do
-      alife():release( wpn, true )
-    end
-
+  --зачистка оружия
+  for _, wpn in ipairs( tabl_weapons ) do
+    alife():release( wpn, true )
   end
 end
 
