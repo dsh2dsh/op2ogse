@@ -137,6 +137,8 @@ function se_respawn:__init( section ) super( section )
   self.sectSpawnProps    = {}
   self.rt_read           = false
   self.proxy_initialized = false
+  self.not_yet_registered_cnt = 0
+  self.not_yet_registered_id  = 0
 end
 
 
@@ -152,6 +154,8 @@ function se_respawn:STATE_Write( packet )
   if not self.respawn_time then
     self.respawn_time = game.CTime()
   end
+  packet:w_u8(  self.not_yet_registered_cnt )
+  packet:w_u16( self.not_yet_registered_id  )
 end
 
 
@@ -168,6 +172,13 @@ function se_respawn:STATE_Read( packet, size )
   if not packet:r_eof() then
     self.respawn_time = utils.r_CTime( packet )
     self.rt_read = true
+  end
+  if not packet:r_eof() then
+    self.not_yet_registered_cnt = packet:r_u8()
+    self.not_yet_registered_id  = packet:r_u16()
+  end
+  if self.not_yet_registered_id > 0 then
+    log2( "dsh: %s: cnt = %s, id = %s", self:name(), self.not_yet_registered_cnt, self.not_yet_registered_id )
   end
 end
 
@@ -272,7 +283,9 @@ function se_respawn:create( prob )
     local tt = self.sectSpawnProps[ spawn_section ]
     if self.item_spawn == false then
       if tt.check == true and not self.amk_name then
-        obj:brain():update()
+        -- obj:brain():update()
+        table.insert( self.spawned_obj, obj.id )
+        all_spawned_obj[ obj.id ] = self.id
         if
           obj.smart_terrain_id
           and (
@@ -280,12 +293,15 @@ function se_respawn:create( prob )
             or dsh.is_free_logic_mob( obj )
           )
         then
-          table.insert( self.spawned_obj, obj.id )
-          all_spawned_obj[ obj.id ] = self.id
           news_main.on_spawn( obj )
           return true
         else
-          alife():release( obj, true )
+          -- alife():release( obj, true )
+          log2(
+            "[%s]: %s: create: wait until %s be registered",
+            script_name(), self:name(), obj:name()
+          )
+          self.not_yet_registered_id = obj.id
           return false
         end
       end
@@ -339,35 +355,68 @@ function se_respawn:spawn()
   if self.spawn_once and not self.already_once_spawned then
     self.already_once_spawned = true
   end
+  
+  if self.not_yet_registered_id == 0 then
+    -- экстренный спаун минимального количества объектов
+    if self:spawn_min_count() then return end
+    -- делаем несколько попыток заспаунить объект.
+    self:spawn_max_spawn()
+  else
+    log2(
+      "[%s]: %s: spawn: still waiting for id = %s",
+      script_name(), self:name(), self.not_yet_registered_id
+    )
+  end
+end
 
-  -- экстренный спаун минимального количества объектов
+
+function se_respawn:spawn_min_count()
   if table.getn( self.spawned_obj ) < self.min_count then
+    log2(
+      "[%s]: %s: spawn_min_count: %s < %s",
+      script_name(), self:name(),
+      table.getn( self.spawned_obj ), self.min_count
+    )
     while table.getn( self.spawned_obj ) < self.min_count do
       if self:create( 100 ) == false then
+        return true
+      end
+    end
+    return true
+  end
+end
+
+
+function se_respawn:spawn_max_spawn( max )
+  if not max then max = self.max_spawn end
+  self.not_yet_registered_cnt = max
+  log2(
+    "[%s]: %s: spawn_max_spawn: self.not_yet_registered_cnt = %s",
+    script_name(), self:name(), self.not_yet_registered_cnt
+  )
+  for i = 1, max do
+    if
+      not (
+        self.max_count ~= -1
+        and table.getn( self.spawned_obj ) >= self.max_count
+      )
+    then
+      if
+        self:create(
+          xr_logic.pick_section_from_condlist(
+            db.actor_proxy, self, self.conditions
+          )
+        ) == false
+      then
         return
       end
     end
-    return
   end
-
-  -- делаем несколько попыток заспаунить объект.
-  for i = 1, self.max_spawn do
-    if
-      self.max_count ~= -1
-      and table.getn( self.spawned_obj ) >= self.max_count
-    then
-      return
-    end
-    if
-      self:create(
-        xr_logic.pick_section_from_condlist(
-          db.actor_proxy, self, self.conditions
-        )
-      ) == false
-    then
-      return
-    end
-  end
+  self.not_yet_registered_cnt = 0
+  log2(
+    "[%s]: %s:   self.not_yet_registered_cnt = %s",
+    script_name(), self:name(), self.not_yet_registered_cnt
+  )
 end
 
 
@@ -378,8 +427,15 @@ function se_respawn:remove_spawned( id )
   for _, v in ipairs( self.spawned_obj ) do
     if id ~= v then table.insert( filtered, v ) end
   end
-  self.spawned_obj = filtered
+  self.spawned_obj      = filtered
   all_spawned_obj[ id ] = nil
+  if self:is_waiting_register_npc( id ) then
+    log2(
+      "[%s]: %s: removed not yet registered id = %s",
+      script_name(), self:name(), id
+    )
+    self:spawn_next_spawn( id )
+  end
 end
 
 
@@ -447,6 +503,48 @@ function se_respawn:set_respawn_time( t )
     :init( script_name() .. ".update_on_timer", self:name() )
     :start()
   log2( "[%s]: %s: set next update", script_name(), self:name() )
+end
+
+
+function se_respawn:on_smart_terrain_register_npc( sobj, strn )
+  if self.not_yet_registered_id == 0 then return end
+  log2(
+    "[%s]: %s: registered by smart_terrain: %s (%s)",
+    script_name(), self:name(), sobj:name(), strn:name()
+  )
+  ASSERT(
+    self:is_waiting_register_npc( sobj.id )
+    "[%s]: wrong on_smart_terrin_register_npc( %s ): %s",
+    self:name(), sobj:name(), tostring( self.not_yet_registered_id )
+  )
+  news_main.on_spawn( sobj )
+  self:spawn_next_spawn( sobj.id )
+end
+
+
+function se_respawn:spawn_next_spawn( id )
+  self.not_yet_registered_id = 0
+  if self.not_yet_registered_cnt > 0 then
+    local max = self.not_yet_registered_cnt - 1
+    if max > 0 then
+      log2(
+        "[%s]: %s: spawn_next_spawn: try spawn next",
+        script_name(), self:name()
+      )
+      self:spawn_max_spawn( max )
+    else
+      self.not_yet_registered_cnt = 0
+      log2( "[%s]: %s: spawn_next_spawn: done", script_name(), self:name() )
+    end
+  else
+    if self:spawn_min_count() then return end
+    self:spawn_max_spawn()
+  end
+end
+
+
+function se_respawn:is_waiting_register_npc( id )
+  return self.not_yet_registered_id == id
 end
 
 
@@ -563,7 +661,7 @@ function init_respawn_params( obj )
   end
 
   obj.str_conditions = get_string( sect, "conditions", 100, ini )
-  obj.conditions = xr_logic.parse_condlist(
+  obj.conditions     = xr_logic.parse_condlist(
     obj, sect, "conditions", obj.str_conditions
   )
   obj.respawn_radius = get_float( sect, "respawn_radius", -1, ini )
@@ -639,7 +737,12 @@ end
 
 function get_respawner_by_npc_id( id )
   if all_spawned_obj[ id ] then
-    return alife():object( all_spawned_obj[ id ] )
+    local sobj = alife():object( all_spawned_obj[ id ] )
+    ASSERT(
+      sobj,
+      "can't find se_respawn %s for %s in alife()", all_spawned_obj[ id ], id
+    )
+    return sobj
   end
 end
 

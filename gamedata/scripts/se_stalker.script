@@ -14,7 +14,8 @@ function se_stalker:__init (section) super (section)
 
   self.spawner_present = false
 
-  self.smart_terrain_conditions = nil
+  self.smart_terrain_conditions     = nil
+  self.smart_terrain_conditions_cnt = 0
   self.smart_terrain_conditions_initialized = false
 
   -- этот флаг берётся из работы смарта
@@ -80,6 +81,11 @@ end
 
 
 function se_stalker:can_be_spawned()
+  if self.se_respawn then
+    if self.se_respawn:is_waiting_register_npc( self.id ) then
+      return false
+    end
+  end
   if self.cached_spawner then
     return self.cached_spawner
       :pick_section_from_condlist( db.actor, self ) ~= nil
@@ -278,11 +284,11 @@ function se_stalker:on_before_register()
     on_before_register_callback( self )
     on_before_register_callback = nil
   end
-  event( "se_stalker:on_before_register"):trigger({ sobj = self })
-  self:fill_exclusives()
-  if self.has_none_true then
+  if dsh.is_free_logic_mob( self ) then
     self:brain():can_choose_alife_tasks( false )
   end
+  event( "se_stalker:on_before_register"):trigger({ sobj = self })
+  self:fill_exclusives()
 end
 
 
@@ -321,14 +327,7 @@ function se_stalker:on_register()
     --' Регистрация в таскменеджере
     task_manager.get_random_task():register_target( self )
   end
-
-  if
-    self:alive()
-    and self:smart_terrain_id() == 65535
-    and not self.has_none_true
-  then
-    self:brain():update()
-  end
+  self.se_respawn = se_respawn.get_respawner_by_npc_id( self.id )
 end
 
 
@@ -380,12 +379,20 @@ end
 
 function se_stalker:fill_exclusives()
   self:get_ini()
-  self.smart_terrain_conditions, self.has_none_true =
-    smart_terrain.read_smart_terrain_conditions( self )
-  if self.smart_terrain_conditions then
-    for name, condlist in pairs( self.smart_terrain_conditions ) do
+  local conds = smart_terrain.read_smart_terrain_conditions( self )
+  if conds then
+    self.smart_terrain_conditions = conds
+    local cnt = 0
+    for name, condlist in pairs( conds ) do
+      cnt = cnt + 1
       smart_terrain.exclusives[ name ] =
         ( smart_terrain.exclusives[ name ] or 0 ) + 1
+    end
+    self.smart_terrain_conditions_cnt = cnt
+    if cnt == 1 then
+      if conds[ "none" ] then
+        self:brain():can_choose_alife_tasks( false )
+      end
     end
   end
 end
