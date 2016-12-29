@@ -25,6 +25,11 @@ function attach( sm )
   sm:subscribe({ signal = "on_release_npc", fun = this.on_release_npc })
 end
 
+function init()
+  event( "se_monster:on_before_register" ):register( this.se_on_before_register )
+  event( "se_stalker:on_before_register" ):register( this.se_on_before_register )
+end
+
 
 --------------------------------------------------------------------------------
 -- Разные полезные функции
@@ -177,9 +182,6 @@ function se_respawn:STATE_Read( packet, size )
     self.not_yet_registered_cnt = packet:r_u8()
     self.not_yet_registered_id  = packet:r_u16()
   end
-  if self.not_yet_registered_id > 0 then
-    log2( "dsh: %s: cnt = %s, id = %s", self:name(), self.not_yet_registered_cnt, self.not_yet_registered_id )
-  end
 end
 
 
@@ -192,6 +194,7 @@ end
 
 
 -- Создаем объект
+local cur_se_respawn_create
 function se_respawn:create( prob )
   if     tostring( prob ) == "true" then
     prob = 80
@@ -260,6 +263,7 @@ function se_respawn:create( prob )
       end
     end
 
+    cur_se_respawn_create = self
     local obj
     if not parent_id then
       obj = alife():create(
@@ -273,30 +277,30 @@ function se_respawn:create( prob )
         parent_id
       )
     end
---    log1(
---      "load ~ Информация о спавне: ["
---        .. tostring( self:name() )
---        .. "] -> [" .. obj:name()
---        .. "]"
---    )
-
+    if IsStalker( obj ) or IsMonster( obj ) then
+      -- почему-то не выполнился se_on_before_register()
+      ASSERT(
+        ( not cur_se_respawn_create ),
+        "%s: %s: unexpected cur_se_respawn_create",
+        self:name(), obj:name()
+      )
+    end
+    if cur_se_respawn_create then
+      -- для предметов se_on_before_register() не вызывается, т.ч. в ручную
+      -- это сделаем
+      se_on_before_register({
+        [ "sobj" ] = obj,
+      })
+    end
+    
     local tt = self.sectSpawnProps[ spawn_section ]
     if self.item_spawn == false then
       if tt.check == true and not self.amk_name then
-        -- obj:brain():update()
-        table.insert( self.spawned_obj, obj.id )
-        all_spawned_obj[ obj.id ] = self.id
         if
           obj.smart_terrain_id
-          and (
-            obj:smart_terrain_id() ~= 65535
-            or dsh.is_free_logic_mob( obj )
-          )
+          and obj:smart_terrain_id() == 65535
+          and not dsh.is_free_logic_mob( obj )
         then
-          news_main.on_spawn( obj )
-          return true
-        else
-          -- alife():release( obj, true )
           log2(
             "[%s]: %s: create: wait until %s be registered",
             script_name(), self:name(), obj:name()
@@ -306,8 +310,6 @@ function se_respawn:create( prob )
         end
       end
     end
-    table.insert( self.spawned_obj, obj.id )
-    all_spawned_obj[ obj.id ] = self.id
     news_main.on_spawn( obj )
     return true
   end
@@ -332,14 +334,47 @@ function se_respawn:spawn()
         if IsStalker( obj ) or IsMonster( obj ) then
           if obj:alive() then
             table.insert( filtered, v )
+            if
+              self:is_waiting_register_npc( v )
+              and obj:smart_terrain_id() ~= 65535
+            then
+              log2(
+                "[%s]: %s: spawn: %s: unexpected smart_terrain_id = %s",
+                script_name(), self:name(), obj:name(), obj:smart_terrain_id()
+              )
+              self.not_yet_registered_cnt = 0
+              self.not_yet_registered_id  = 0
+            end
           else
             all_spawned_obj[ v ] = nil
+            obj.se_respawn       = nil
+            if self:is_waiting_register_npc( v ) then
+              log2(
+                "[%s]: %s: spawn: %s: unexpected dead",
+                script_name(), self:name(), obj:name()
+              )
+              self.not_yet_registered_cnt = 0
+              self.not_yet_registered_id  = 0
+            end
           end
         else
+          ASSERT(
+            ( not self:is_waiting_register_npc( v ) ),
+            "can't be: %s, %s", self:name(), obj:name()
+          )
           table.insert( filtered, v )
         end
       else
         all_spawned_obj[ v ] = nil
+        obj.se_respawn       = nil
+        if self:is_waiting_register_npc( v ) then
+          log2(
+            "[%s]: %s: spawn: id = %s: unexpected not found in alife()",
+            script_name(), self:name(), v
+          )
+          self.not_yet_registered_cnt = 0
+          self.not_yet_registered_id  = 0
+        end
       end
     end
     self.spawned_obj = filtered
@@ -429,12 +464,16 @@ function se_respawn:remove_spawned( id )
   end
   self.spawned_obj      = filtered
   all_spawned_obj[ id ] = nil
+  local sobj = alife():object( id )
+  if sobj then
+    sobj.se_respawn = nil
+  end
   if self:is_waiting_register_npc( id ) then
     log2(
       "[%s]: %s: removed not yet registered id = %s",
       script_name(), self:name(), id
     )
-    self:spawn_next_spawn( id )
+    self:spawn_next_spawn()
   end
 end
 
@@ -508,21 +547,18 @@ end
 
 function se_respawn:on_smart_terrain_register_npc( sobj, strn )
   if self.not_yet_registered_id == 0 then return end
-  log2(
-    "[%s]: %s: registered by smart_terrain: %s (%s)",
-    script_name(), self:name(), sobj:name(), strn:name()
-  )
-  ASSERT(
-    self:is_waiting_register_npc( sobj.id )
-    "[%s]: wrong on_smart_terrin_register_npc( %s ): %s",
-    self:name(), sobj:name(), tostring( self.not_yet_registered_id )
-  )
-  news_main.on_spawn( sobj )
-  self:spawn_next_spawn( sobj.id )
+  if self:is_waiting_register_npc( sobj.id ) then
+    log2(
+      "[%s]: %s: registered by smart_terrain: %s (%s)",
+      script_name(), self:name(), sobj:name(), strn:name()
+    )
+    news_main.on_spawn( sobj )
+    self:spawn_next_spawn()
+  end
 end
 
 
-function se_respawn:spawn_next_spawn( id )
+function se_respawn:spawn_next_spawn()
   self.not_yet_registered_id = 0
   if self.not_yet_registered_cnt > 0 then
     local max = self.not_yet_registered_cnt - 1
@@ -776,4 +812,15 @@ function startup_respawners()
     end
   )
   log2( "[%s]: %s respawners started", script_name(), cnt )
+end
+
+
+function se_on_before_register( e )
+  local respawn = cur_se_respawn_create
+  if respawn then
+    local sobj = e.sobj
+    table.insert( respawn.spawned_obj, sobj.id )
+    all_spawned_obj[ sobj.id ] = respawn.id
+    cur_se_respawn_create = nil
+  end
 end
