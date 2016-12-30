@@ -1,8 +1,14 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
-  sm:subscribe({ signal = "on_update", fun = this.on_update })
+  sm:subscribe({ signal = "on_actor_fire", fun = this.on_actor_fire })
+  sm:subscribe({ signal = "on_key_down",   fun = this.on_key_down   })
+  sm:subscribe({ signal = "on_key_up",     fun = this.on_key_up     })
+  sm:subscribe({ signal = "on_update",     fun = this.on_update     })
 end
+
+
+local stand_power = get_float( "actor_condition", "stand_power" )
 
 
 local cur_wpn = {}
@@ -15,10 +21,12 @@ function on_update( delta )
     t.ammo_n           = wpn:get_ammo_in_magazine()
     t.dispersion_start = get_u32( wpn:section(), "dispersion_start" )
     t.fire_dispersion_base = get_float( wpn:section(), "fire_dispersion_base", 0 )
+    t.fire_power_loss  = get_fire_power_loss( wpn )
     t.has_gl           = has_wpn_gl( wpn )
     t.has_silencer     = ( ogse_wpn_utils.get_silencer_status( wpn ) == 2 )
     t.highfire_mode    = get_u32( wpn:section(), "highfire_mode" )
     t.id               = wpn:id()
+    t.is_knife         = wpn:is_knife()
     t.lowfire_mode     = get_u32( wpn:section(), "lowfire_mode"  )
     t.rpm              = get_u32( wpn:section(), "rpm"      )
     t.rpm_high         = get_u32( wpn:section(), "rpm_high" )
@@ -39,25 +47,28 @@ function on_update( delta )
   configure_fire_dispersion( cur_wpn )
   local state = wpn:get_hud_item_state()
   if state == cur_wpn.weapon_state then
-    if state == weapon_states.fire then
+    if state == weapon_states.fire or state == weapon_states.fire2 then
       local ammo_n = wpn:get_ammo_in_magazine()
       if ammo_n ~= cur_wpn.ammo_n then
         cur_wpn.ammo_n = ammo_n
         cur_wpn.shot_n = cur_wpn.shot_n + 1
         configure_low_rpm( cur_wpn )
-        ogse_signals.get_mgr():call( "on_actor_fire", cur_wpn )
+        ogse_signals.get_mgr():call( "on_actor_fire", cur_wpn, state )
       end
     end
   else
     cur_wpn.shot_n = 0
-    if cur_wpn.weapon_state == weapon_states.fire then
+    if
+      cur_wpn.weapon_state == weapon_states.fire
+      or cur_wpn.weapon_state == weapon_states.fire2
+    then
       configure_low_rpm( cur_wpn )
     end
-    if state == weapon_states.fire then
+    if state == weapon_states.fire or state == weapon_states.fire2 then
       cur_wpn.ammo_n = wpn:get_ammo_in_magazine()
       cur_wpn.shot_n = cur_wpn.shot_n + 1
       configure_low_rpm( cur_wpn )
-      ogse_signals.get_mgr():call( "on_actor_fire", cur_wpn )
+      ogse_signals.get_mgr():call( "on_actor_fire", cur_wpn, state )
     elseif state == weapon_states.switch then
       if cur_wpn.has_gl then
         local gl_mode = ogse_wpn_utils.get_gl_mode( wpn )
@@ -77,6 +88,15 @@ function on_update( delta )
     end
     cur_wpn.weapon_state = state
   end
+end
+
+
+function get_fire_power_loss( wpn )
+  local sect = wpn:section()
+  local fire_power_loss_k = get_float(
+    sect, script_name() .. ".fire_power_loss_k", 1
+  )
+  return stand_power * fire_power_loss_k
 end
 
 
@@ -177,6 +197,43 @@ function get_zoom_body_state()
         or "zoom_normal"
     )
     or "no_zoom"
+end
+
+
+function on_actor_fire( t, state )
+  if t.fire_power_loss < 0 then
+    local k = 1
+    if t.is_knife then
+      if state == weapon_states.fire2 then
+        k = 2
+      end
+    else
+      local zoom_bs = t.zoom_body_state
+      k = ( zoom_bs == "zoom_crouch" and 0.5  )
+        or ( zoom_bs == "zoom_creep" and 0.25 ) or 1
+    end
+    db.actor.power = t.fire_power_loss * k
+  end
+end
+
+
+function on_key_down( key, bind )
+  if bind == key_bindings.kWPN_FIRE and db.actor:active_slot() == 3 then
+    local item = db.actor:active_item()
+    if item and item:is_grenade() then
+      db.actor.power = get_fire_power_loss( item )
+    end
+  end
+end
+
+
+function on_key_up( key, bind )
+  if bind == key_bindings.kWPN_ZOOM and db.actor:active_slot() == 3 then
+    local item = db.actor:active_item()
+    if item and item:is_grenade() then
+      db.actor.power = get_fire_power_loss( item ) * 2
+    end
+  end
 end
 
 
