@@ -3,7 +3,6 @@
 function attach( sm )
   sm:subscribe({ signal = "on_actor_fire", fun = this.on_actor_fire })
   sm:subscribe({ signal = "on_key_down",   fun = this.on_key_down   })
-  sm:subscribe({ signal = "on_key_up",     fun = this.on_key_up     })
   sm:subscribe({ signal = "on_update",     fun = this.on_update     })
 end
 
@@ -22,9 +21,12 @@ function on_update( delta )
     t.dispersion_start = get_u32( wpn:section(), "dispersion_start" )
     t.fire_dispersion_base = get_float( wpn:section(), "fire_dispersion_base", 0 )
     t.fire_power_loss  = get_fire_power_loss( wpn )
+    t.inv_weight       = get_float( wpn:section(), "inv_weight", 0 )
     t.has_gl           = has_wpn_gl( wpn )
     t.has_silencer     = ( ogse_wpn_utils.get_silencer_status( wpn ) == 2 )
     t.highfire_mode    = get_u32( wpn:section(), "highfire_mode" )
+    t.hit_power        = get_float( wpn:section(), "hit_power"   )
+    t.hit_power_2      = get_float( wpn:section(), "hit_power_2" )
     t.id               = wpn:id()
     t.is_knife         = wpn:is_knife()
     t.lowfire_mode     = get_u32( wpn:section(), "lowfire_mode"  )
@@ -96,7 +98,7 @@ function get_fire_power_loss( wpn )
   local fire_power_loss_k = get_float(
     sect, script_name() .. ".fire_power_loss_k", 1
   )
-  return stand_power * fire_power_loss_k
+  return stand_power * level.get_time_factor() * fire_power_loss_k
 end
 
 
@@ -200,38 +202,108 @@ function get_zoom_body_state()
 end
 
 
+local knife_anim_length = {}
+local knife_fire_t
+
 function on_actor_fire( t, state )
-  if t.fire_power_loss < 0 then
-    local k = 1
+  local fire_power_loss = t.fire_power_loss
+  if fire_power_loss < 0 then
     if t.is_knife then
+      local sect = t.wpn:section()
+      if not knife_anim_length[ sect ] then
+        knife_anim_length[ sect ] = {}
+      end
+      local power_loss_weight = fire_power_loss * (
+        t.inv_weight > 1 and inv_weight or 1
+      )
+      local max_power_loss = 0
       if state == weapon_states.fire2 then
-        k = 2
+        max_power_loss = fire_power_loss * ( t.hit_power_2 / t.hit_power )
+      end
+      if knife_fire_t then knife_fire_t:stop() end
+      local anim_len = knife_anim_length[ sect ][ state ]
+      if anim_len then
+        knife_fire_t = dsh.timeout( anim_len / 2, function()
+          db.actor.power = power_loss_weight + max_power_loss
+          knife_fire_t   = nil
+        end )
+      else
+        db.actor.power = power_loss_weight + max_power_loss
+        local id     = t.id
+        local fire_t = time_global()
+        knife_fire_t = dsh.wait_condition(
+          function()
+            local item = db.actor:active_item()
+            return not (
+              item and item:id() == id
+              and item:get_hud_item_state() == state
+            )
+          end,
+          function()
+            local item = db.actor:active_item()
+            if item and item:id() == id then
+              knife_anim_length[ sect ][ state ] = time_global() - fire_t
+            end
+            knife_fire_t = nil
+          end
+        )
       end
     else
       local zoom_bs = t.zoom_body_state
-      k = ( zoom_bs == "zoom_crouch" and 0.5  )
-        or ( zoom_bs == "zoom_creep" and 0.25 ) or 1
+      local k       = ( zoom_bs == "zoom_crouch" and 0.75  )
+        or ( zoom_bs == "zoom_creep" and 0.5 ) or 1
+      db.actor.power = fire_power_loss * k
     end
-    db.actor.power = t.fire_power_loss * k
   end
 end
 
+
+local grenade_fire_t, grenade_showing_t
 
 function on_key_down( key, bind )
-  if bind == key_bindings.kWPN_FIRE and db.actor:active_slot() == 3 then
-    local item = db.actor:active_item()
-    if item and item:is_grenade() then
-      db.actor.power = get_fire_power_loss( item )
-    end
-  end
-end
-
-
-function on_key_up( key, bind )
-  if bind == key_bindings.kWPN_ZOOM and db.actor:active_slot() == 3 then
-    local item = db.actor:active_item()
-    if item and item:is_grenade() then
-      db.actor.power = get_fire_power_loss( item ) * 2
+  if bind == key_bindings.kWPN_FIRE or bind == key_bindings.kWPN_ZOOM then
+    if db.actor:active_slot() == 3 then
+      local item = db.actor:active_item()
+      if item and item:is_grenade() then
+        if grenade_fire_t then grenade_fire_t:stop() end
+        grenade_showing_t     = nil
+        local fire_power_loss = get_fire_power_loss( item )
+        local id       = item:id()
+        local sect     = item:section()
+        grenade_fire_t = dsh.wait_condition(
+          function()
+            local item = db.actor:active_item()
+            if item and item:id() == id then
+              return item:get_hud_item_state() == weapon_states.hiding
+            end
+            return true
+          end,
+          function()
+            local max_power_loss = 0
+            if grenade_showing_t then
+              local force_max   = get_float( sect, "force_max" )
+              local force_min   = get_float( sect, "force_min" )
+              local force_speed = get_float( sect, "force_grow_speed" )
+              local max_t = ( force_max - force_min ) / force_speed * 1000
+              local t     = time_global() - grenade_showing_t
+              if t > max_t then t = max_t end
+              max_power_loss = fire_power_loss * 3 * ( t / max_t )
+            end
+            db.actor.power = fire_power_loss + max_power_loss
+            grenade_fire_t = nil
+          end,
+          function()
+            local item = db.actor:active_item()
+            if item and item:id() == id then
+              if not grenade_showing_t then
+                if item:get_hud_item_state() == weapon_states.showing then
+                  grenade_showing_t = time_global()
+                end
+              end
+            end
+          end
+        )
+      end
     end
   end
 end
