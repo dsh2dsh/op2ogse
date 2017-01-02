@@ -1,15 +1,13 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
--- С мутантами, имеющими такое название секции, нужно обращаться, как
--- с NPC.
-local monsters_like_npc = {
-  [ "skelet_ded" ] = true,      -- Лесник из Забытого леса
-}
 -- как часто выполнять проверку на занятость рук (в мс)
 local freq = 200
 
 
 function attach( sm )
+  sm:subscribe({
+    signal = "on_busy_hands_check", fun = this.on_busy_hands_check
+  })
   sm:subscribe({ signal = "on_monster_death",  fun = this.on_monster_death })
   sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_destroy  })
   sm:subscribe({ signal = "on_monster_spawn",  fun = this.on_monster_spawn })
@@ -28,59 +26,61 @@ function on_spawn()
 end
 
 
-function on_monster_spawn( obj, binder )
-  if obj:alive() then return end
+function on_any_spawn( obj, binder, cfg )
   local s = {
     [ "signal" ] = "on_update",
     [ "self"   ] = obj,
-    [ "fun"    ] = this.on_monster_update,
+    [ "fun"    ] = this.on_any_update,
   }
+  binder[ script_name() .. ".cfg"        ] = cfg
   binder[ script_name() .. ".subscribed" ] = s
   ogse_signals.get_mgr():subscribe( s )
+end
+
+
+function on_monster_spawn( obj, binder )
+  if obj:alive() then return end
+  if get_bool( obj:section(), script_name() .. ".need_hands", false ) then
+    on_npc_spawn( obj, binder )
+  else
+    on_any_spawn( obj, binder, {
+      [ "need_knife" ] = "dsh_cant_without_knife",
+    })
+  end
 end
 
 
 function on_npc_spawn( obj, binder )
   if obj:alive() then return end
-  local s = {
-    [ "signal" ] = "on_update",
-    [ "self"   ] = obj,
-    [ "fun"    ] = this.on_npc_update,
-  }
-  binder[ script_name() .. ".subscribed" ] = s
-  ogse_signals.get_mgr():subscribe( s )
+  on_any_spawn( obj, binder, {
+    [ "need_hands" ] = "dsh_busy_hands",
+  })
 end
 
 
 function on_monster_death( obj, who )
-  local binder = obj:binded_object()
-  on_monster_spawn( obj, binder )
+  on_monster_spawn( obj, obj:binded_object() )
   obj:set_tip_text_default()
   obj:set_nonscript_usable( true )
 end
 
 
 function on_npc_death( obj, who )
-  local binder = obj:binded_object()
-  on_npc_spawn( obj, binder )
+  on_npc_spawn( obj, obj:binded_object() )
   obj:set_tip_text_default()
   obj:set_nonscript_usable( true )
 end
 
 
 function on_ph_spawn( obj, binder )
-  if not (
+  if
     obj:is_inventory_box() or obj:section() == "dsh_treasure_item"
-  ) then
-    return
+  then
+    on_any_spawn( obj, binder, {
+      [ "need_hands"   ] = "dsh_busy_hands",
+      [ "tip_text_def" ] = "st_search_treasure",
+    })
   end
-  local s = {
-    [ "signal" ] = "on_update",
-    [ "self"   ] = obj,
-    [ "fun"    ] = this.on_ph_update,
-  }
-  binder[ script_name() .. ".subscribed" ] = s
-  ogse_signals.get_mgr():subscribe( s )
 end
 
 
@@ -89,43 +89,6 @@ function on_destroy( obj, binder )
   if subscribed then
     ogse_signals.get_mgr():unsubscribe( subscribed )
     binder[ script_name() .. ".subscribed" ] = nil
-  end
-end
-
-
-function on_ph_update( obj )
-  process_npc( obj, "st_search_treasure" )
-end
-
-
-function on_monster_update( obj )
-  if monsters_like_npc[ obj:section() ] then
-    return on_npc_update( obj )
-  end
-  ogse_signals.get_mgr():reschedule( 5000 )
-  if db.actor then
-    local dist = obj:position():distance_to( db.actor:position() )
-    ogse_signals.get_mgr():reschedule(
-      ( dist < 25 and freq )
-      or ( dist < 50 and 1000 ) or ( dist < 100 and 2000 )
-      or math.random( 5000, 6000 )
-    )
-    if dist < info_radius then
-      local binder = obj:binded_object()
-      if actor_has_knife() or GetShift() then
-        if binder.dsh_busy_hands_nonusable then
-          obj:set_tip_text_default()
-          obj:set_nonscript_usable( true )
-          binder.dsh_busy_hands_nonusable = nil
-        end
-      else
-        if not binder.dsh_busy_hands_nonusable then
-          obj:set_tip_text( "dsh_cant_without_knife" )
-          obj:set_nonscript_usable( false )
-          binder.dsh_busy_hands_nonusable = true
-        end
-      end
-    end
   end
 end
 
@@ -139,51 +102,73 @@ function actor_has_knife()
 end
 
 
-function on_npc_update( obj )
-  process_npc( obj )
+function actor_has_free_hands()
+  local active_item = db.actor:active_item()
+  return (
+    (
+      active_item
+      and string.find( active_item:section(), "wpn_fist_", 1, true )
+    )
+    or ( not active_item )
+  )
 end
 
 
-function process_npc( obj, tip_text_def )
+function on_any_update( obj )
   ogse_signals.get_mgr():reschedule( 5000 )
-  if db.actor then
-    local dist = obj:position():distance_to( db.actor:position() )
-    ogse_signals.get_mgr():reschedule(
-      ( dist < 25 and freq )
-      or ( dist < 50 and 1000 ) or ( dist < 100 and 2000 )
-      or math.random( 5000, 6000 )
-    )
-    if dist < info_radius then
-      local binder = obj:binded_object()
-      if actor_has_free_hands() then
-        if binder.dsh_busy_hands_nonusable then
-          if binder.dsh_tip_text then
-            obj:set_tip_text( binder.dsh_tip_text )
-          elseif tip_text_def then
-            obj:set_tip_text( tip_text_def )
-          else
-            obj:set_tip_text_default()
-          end
-          obj:set_nonscript_usable( true )
-          binder.dsh_busy_hands_nonusable = nil
+  if not db.actor then return end
+  local dist = obj:position():distance_to( db.actor:position() )
+  ogse_signals.get_mgr():reschedule(
+    ( dist < 25 and freq )
+    or ( dist < 50 and 1000 ) or ( dist < 100 and 2000 )
+    or math.random( 5000, 6000 )
+  )
+  if dist < info_radius then
+    local binder = obj:binded_object()
+    local data   = {}
+    ogse_signals.get_mgr():call( "on_busy_hands_check", obj, binder, data )
+    local tip_text = script_name() .. ".tip_text"
+    if data.usable then
+      if binder[ tip_text ] ~= data.tip_text then
+        if data.tip_text then
+          obj:set_tip_text( data.tip_text )
+        else
+          obj:set_tip_text_default()
         end
-      else
-        if not binder.dsh_busy_hands_nonusable then
-          obj:set_tip_text( "dsh_busy_hands" )
-          obj:set_nonscript_usable( false )
-          binder.dsh_busy_hands_nonusable = true
-        end
+        obj:set_nonscript_usable( true )
+        binder[ tip_text ] = data.tip_text
+        binder[ script_name() .. "_nonusable" ] = false
+      end
+    else
+      if binder[ tip_text ] ~= data.tip_text then
+        obj:set_tip_text( data.tip_text )
+        obj:set_nonscript_usable( false )
+        binder[ tip_text ] = data.tip_text
+        binder[ script_name() .. "_nonusable" ] = true
       end
     end
   end
 end
 
 
-function actor_has_free_hands()
-  local active_item = db.actor:active_item()
-  return (
-    ( active_item and string.find( active_item:section(), "wpn_fist_" ) )
-    or
-    ( not active_item )
-  )
+function on_busy_hands_check( obj, binder, data )
+  local cfg = binder[ script_name() .. ".cfg" ]
+  if not cfg then return end
+  if cfg.need_knife and not GetShift() then
+    if actor_has_knife() then
+      data.usable   = true
+    else
+      data.tip_text = cfg.need_knife
+      data.usable   = false
+    end
+  elseif actor_has_free_hands() then
+    data.usable     = true
+  else
+    data.tip_text   = cfg.need_hands or "dsh_busy_hands"
+    data.usable     = false
+  end
+  if data.usable then
+    data.tip_text = cfg.tip_text_def or binder.dsh_tip_text
+  end
+  return true
 end
