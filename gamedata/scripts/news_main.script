@@ -64,17 +64,38 @@ local dist_hear_max = 400
 local rel_enemy = -1000
 local rel_friend = 1000
 
-news_stack = {}
-table_spawned = {}
-table_killed_by_actor = {}
+local news_stack = {}
+local table_spawned = {}
+local table_killed_by_actor = {}
 local spammers = {}
 
 local friends_comm = {
   [ "dolg"    ] = true,
+  [ "ecolog"  ] = true,
   [ "freedom" ] = true,
   [ "green"   ] = true,
   [ "nebo"    ] = true,
   [ "stalker" ] = true,
+}
+
+local ignore_spawn_comm = {
+  [ "actor"         ] = true,
+  [ "actor_dolg"    ] = true,
+  [ "actor_freedom" ] = true,
+  [ "arena_enemy"   ] = true,
+  [ "boar"          ] = true,
+  [ "dog"           ] = true,
+  [ "dolg"          ] = true,
+  [ "ecolog"        ] = true,
+  [ "flesh"         ] = true,
+  [ "freedom"       ] = true,
+  [ "green"         ] = true,
+  [ "nebo"          ] = true,
+  [ "pseudodog"     ] = true,
+  [ "stalker"       ] = true,
+  [ "stranger"      ] = true,
+  [ "trader"        ] = true,
+  [ "tushkano"      ] = true,
 }
 
 
@@ -154,14 +175,7 @@ function on_spawn_group( community, level, position, count, o_type )
   if o_type == 2 then
     local mon = community
     if mon == "" then return end
-    local custom_coeffs = {
-      [ "boar"      ] = -0.65,
-      [ "dog"       ] = -0.65,
-      [ "flesh"     ] = -0.65,
-      [ "pseudodog" ] = -0.65,
-      [ "tushkano"  ] = -0.65,
-    }
-    if math.random() < ( prob + ( custom_coeffs[ mon ] or 0 ) ) then
+    if math.random() < prob then
       if count == 1 then
         m_str = format_template_spawn(
           level, position, get_monster_name_by_string( mon, 4 )
@@ -492,6 +506,7 @@ function get_current_time()
 end
 
 
+local cached_npc_names = {}
 function get_npc_name( obj )
   local m_s_name = ""
   if obj then
@@ -504,13 +519,18 @@ function get_npc_name( obj )
       if ob and ob.character_name then
         m_s_name = ob:character_name()
       else
-        if IsNpcStalker( obj ) then
-          local pk = get_netpk( obj, 1 )
-          ASSERT(
-            pk:isOk(), "[%s]: can't parse netpk: %s", script_name(), obj:name()
-          )
-          local data = pk:get()
-          m_s_name = data.character_name
+        if cached_npc_names[ obj:name() ] then
+          m_s_name = cached_npc_names[ obj:name() ]
+        else
+          if IsNpcStalker( obj ) then
+            local pk = get_netpk( obj, 1 )
+            ASSERT(
+              pk:isOk(), "[%s]: can't parse netpk: %s", script_name(), obj:name()
+            )
+            local data = pk:get()
+            m_s_name   = data.character_name
+            cached_npc_names[ obj:name() ] = m_s_name
+          end
         end
       end
     end
@@ -773,17 +793,19 @@ function IsNpcOther(obj)
 	end
 end
 
-function IsNpcStalker(obj)
-	if (obj and IAmAStalker[obj:clsid()]) then
-		local m_comm  = get_npc_community(obj)
-		if (m_comm == "actor" or m_comm == "actor_dolg" or m_comm == "actor_freedom" or m_comm == "stalker" or m_comm == "dolg" or m_comm == "freedom" or m_comm == "nebo" or m_comm == "green") then
-			if (obj.name and obj:name() ~= "agr_ratcatcher") then
-				return true
-			end
-		end
-	end
-	return false
+
+function IsNpcStalker( obj )
+  if obj and IAmAStalker[ obj:clsid() ] then
+    local m_comm = get_npc_community(obj)
+    if friends_comm[ m_comm ] then
+      if obj.name and obj:name() ~= "agr_ratcatcher" then
+        return true
+      end
+    end
+  end
+  return false
 end
+
 
 function IsNpcActor(obj)
 	if (obj and IAmAStalker[obj:clsid()]) then
@@ -833,10 +855,10 @@ function show_news( text, from, timeout, showtime, section )
   if text == "" then return end
   if from == "" then return end
   local blow = amk.load_variable( "blowout", -1 )
-  if blow > -1 and blow < 5 then return end	
+  if blow > -1 and blow < 5 then return end
   local now  = amk.game_minutes()
   local diff = 0
-  if timer_next_blow ~= 0 then	
+  if timer_next_blow ~= 0 then
     diff = ( timer_next_blow - now ) * 60 -- Разница в игровых секундах.
     local eventtime = timeout * time_factor -- Сколько пройдет игровых минут
     if eventtime >= diff then return end
@@ -847,8 +869,8 @@ function show_news( text, from, timeout, showtime, section )
   if timeout > 1000 then
     timeout = math.random( timer_general, timer_general * 4 )
   end
-  spammers[ from ] = true
-	
+  spammers[ from ] = time_global()
+
   if not (
     ogse_sleep_mgr.is_sleep_active()
     or dsh_broken_pda.is_pda_broken()
@@ -1647,24 +1669,7 @@ end
 function add_spawned_object( obj )
   if not ( obj and ( IsStalker( obj ) or IsMonster( obj ) ) ) then return end
   local s_comm = get_npc_community( obj )
-  if s_comm == "" then return end
-  local communities = {
-    [ "actor"         ] = true,
-    [ "stalker"       ] = true,
-    [ "dolg"          ] = true,
-    [ "freedom"       ] = true,
-    [ "stranger"      ] = true,
-    [ "trader"        ] = true,
-    [ "arena_enemy"   ] = true,
-    [ "actor_dolg"    ] = true,
-    [ "actor_freedom" ] = true,
-    [ "ecolog"        ] = true,
-    [ "nebo"          ] = true,
-    [ "green"         ] = true,
-  }
-  if s_comm and communities[ s_comm ] then
-    return -- это сталкер
-  end
+  if ( s_comm == "" or ignore_spawn_comm[ s_comm ] ) then return end
   local obj_type = 0
   if IsStalker( obj ) then
     obj_type = 1
@@ -2879,7 +2884,9 @@ end
 
 function is_spammer( stalker )
   local sn = get_npc_name( stalker )
-  return not ( sn ~= "" and spammers[ sn ] )
+  return (
+    sn ~= "" and spammers[ sn ] and spammers[ sn ] + 10000 > time_global()
+  )
 end
 
 
