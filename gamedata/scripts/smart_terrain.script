@@ -623,7 +623,29 @@ end
 -- вызывается симулятором при поиске задания для объекта/группы.
 -- если объект - группа, то вернёт true только если все объекты в
 -- группе вернут true
+local reject_timers = {}
 function se_smart_terrain:enabled( obj )
+  -- enabled(), suitable() и register_npc() вызываются из движка одним
+  -- непрерывным циклом и можно быть уверенным, что к моменту
+  -- следующего апдейта он будет завершен и моб либо будет принят
+  -- каким-нибудь смартом, либо не будет принят никаким.
+  if not reject_timers[ obj.id ] then -- начался цикл поиска смарта для моба
+    reject_timers[ obj.id ] = dsh.exec_on_update(
+      -- если на следующем апдейте этот таймер сработает, значит смарт
+      -- не был найден и нужно известить об этом респаунер
+      function( id )
+        reject_timers[ id ] = nil
+        local sobj = alife():object( id )
+        if
+          sobj and sobj.se_respawn
+          and sobj.se_respawn:is_waiting_register_npc( id )
+        then
+          sobj.se_respawn:on_smart_terrain_reject_npc( sobj )
+        end
+      end, obj.id
+    )
+  end
+
   if self.disabled then
     return false
   end
@@ -736,9 +758,18 @@ function se_smart_terrain:register_npc( obj )
   --   "[smart_terrain %s] register called obj=%s gulag_type=%s",
   --   self:name(), obj:name(), self.gparams.type
   -- )
+  if reject_timers[ obj.id ] then
+    -- моб был принять смартом и нужно остановить таймер, который
+    -- сработает на апдейте и уведомит респаунер, что моба никто не
+    -- принял
+    reject_timers[ obj.id ]:stop()
+    reject_timers[ obj.id ] = nil
+  end
+
   if obj.se_respawn then
     obj.se_respawn:on_smart_terrain_register_npc( obj, self )
   end
+
   local npc_info = {
     -- старые squad и group
     o_group   = obj:g_group(),
