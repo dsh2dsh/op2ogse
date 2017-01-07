@@ -856,16 +856,12 @@ end
 
 local function get_row_data( packet )
   local saved_reading_pos = packet:r_tell()
-  local buf64, buf8 = {}
+  local buf = {}
   while not packet:r_eof() do
-    if packet:r_elapsed() < 8 then
-      table.insert( buf8,  packet:r_u8()  )
-    else
-      table.insert( buf64, packet:r_u64() )
-    end
+    table.insert( buf, packet:r_u8() )
   end
   packet:r_seek( saved_reading_pos )
-  return buf64, buf8
+  return buf
 end
 
 function chunk_element:get_value()
@@ -878,32 +874,20 @@ function chunk_element:data_size()
 end
 
 function chunk_element:get_string()
-  local buf64, buf8 = get_row_data( self.value )
+  local buf  = get_row_data( self.value )
   local sbuf = {}
-  for _, byte in ipairs( buf64 ) do
-    table.insert( sbuf, string.format( "%0x", byte ) )
-  end
-  for _, byte in ipairs( buf8  ) do
+  for _, byte in ipairs( buf ) do
     table.insert( sbuf, string.format( "%0x", byte ) )
   end
   return table.concat( sbuf, ' ' )
 end
 
 function chunk_element:read_value( r_packet )
-  local count8  = r_packet:r_u16()
-  local count64 = 0
-  if bit_and( count8, 32768 ) == 32768 then
-    count8  = bit_xor( count8, 32768 )
-    count64 = bit_and( count8,  1023 )
-    count8  = bit_rshift( count8, 10 )
-  end
+  local count = r_packet:r_u16()
   self.value  = net_packet()
   self.value:w_begin( 123 )
   self.value:r_seek( self.value:w_tell() )
-  for i = 1, count64 do
-    self.value:w_u64( r_packet:r_u64() )
-  end
-  for i = 1, count8  do
+  for i = 1, count do
     self.value:w_u8( r_packet:r_u8() )
   end
   self:update_size()
@@ -911,17 +895,10 @@ function chunk_element:read_value( r_packet )
 end
 
 function chunk_element:write_value( w_packet )
-  local buf64, buf8 = get_row_data( self.value )
-  w_packet:w_u16(
-    32768
-    + bit_lshift( table.getn( buf8 ), 10 )
-    + table.getn( buf64 )
-  )
-  for _, byte in ipairs( buf64 ) do
-    w_packet:w_u64( byte )
-  end
-  for _, byte in ipairs( buf8  ) do
-    w_packet:w_u8(  byte )
+  local buf = get_row_data( self.value )
+  w_packet:w_u16( table.getn( buf ) )
+  for _, byte in ipairs( buf ) do
+    w_packet:w_u8( byte )
   end
 end
 
@@ -930,11 +907,8 @@ function chunk_element:clone_value( source )
   new_packet:w_begin( 123 )
   -- в общем-то всегда будет 2, но типа так правильнее
   new_packet:r_seek( new_packet:w_tell() )
-  local buf64, buf8 = get_row_data( source )
-  for _, byte in ipairs( buf64 ) do
-    new_packet:w_u64( byte )
-  end
-  for _, byte in ipairs( buf8  ) do
+  local buf = get_row_data( source )
+  for _, byte in ipairs( buf ) do
     new_packet:w_u8( byte )
   end
   return new_packet
