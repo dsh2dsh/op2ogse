@@ -273,12 +273,12 @@ function bad_situation(npc)
 		if db.storage[npc:id()].active_scheme == "wounded" then return true end --- если отыгрываем тяжелораненного
 		if db.storage[npc:id()].active_scheme == "actor_dialogs" then return true end --- если говорим с актором
 		
-		local hasanom, anomid, pos, cls, dist, radius, sect_anom = ogse_anomaly.get_nearest_anomaly_by_point(npc:position())	
-		if hasanom and ogse_anomaly.get_anomaly_mode(anomid) ~= "del" then
-			if dist <= radius * 1.5 then
-				return true -- если непись слишком близко к аномалии
-			end
-		end
+--		local hasanom, anomid, pos, cls, dist, radius, sect_anom = ogse_anomaly.get_nearest_anomaly_by_point(npc:position())	
+--		if hasanom and ogse_anomaly.get_anomaly_mode(anomid) ~= "del" then
+--			if dist <= radius * 1.5 then
+--				return true -- если непись слишком близко к аномалии
+--			end
+--		end
 
 		if xrs_battle_ai.cooldown[npc:id()] and xrs_battle_ai.cooldown[npc:id()] > time_global() then
 			return true 	-- ещё не успокоились после боя
@@ -299,24 +299,35 @@ function bad_situation(npc)
 	return false   
 end
 
-function item_inside_anomaly(item, storage)
-	if item then
-		local item_pos = item:position()
-		local hasanom, anomid, pos, cls, dist, radius, sect_anom = ogse_anomaly.get_nearest_anomaly_by_point(item_pos)	
-		if hasanom and radius and ogse_anomaly.get_anomaly_mode(anomid) ~= "del" then
-			if dist <= radius * 1.5 then
-				--- log1("BAD IDEA 1")
-				storage.disabled_objects[item:id()] = true
-				storage.dest_lvid = nil
-				claimed_pos[item:level_vertex_id()] = nil
-				freeGObject(storage)				
-				--- log1("BAD IDEA 2")
-				return true
-			end
-		end
-	end
-	return false
+
+function item_inside_anomaly( item, storage, npc )
+  if item and not npc:accessible( item:level_vertex_id() ) then
+    storage.disabled_objects[ item:id() ] = true
+    storage.dest_lvid = nil
+    claimed_pos[ item:level_vertex_id() ] = nil
+    freeGObject( storage )
+    return true
+  end
+  return false
 end
+
+function item_inside_anomaly_old( item, storage )
+  if item then
+    local item_pos = item:position()
+    local hasanom, anomid, pos, cls, dist, radius, sect_anom = ogse_anomaly.get_nearest_anomaly_by_point(item_pos)	
+    if hasanom and radius and ogse_anomaly.get_anomaly_mode(anomid) ~= "del" then
+      if dist <= radius * 1.5 then
+        storage.disabled_objects[ item:id() ] = true
+        storage.dest_lvid = nil
+        claimed_pos[ item:level_vertex_id() ] = nil
+        freeGObject( storage )
+        return true
+      end
+    end
+  end
+  return false
+end
+
 
 -- Вызывает closure раз в period, obj[var] хранит время следующего срабатывания
 function timed(obj,var,period,closure)
@@ -550,17 +561,16 @@ function clearGObject(st)
 	st.grabitemid = nil
 end
 
-function getGObject(st)
-	if st.grabitemid then
-		local ret = level.object_by_id(st.grabitemid)
-		if ret and item_inside_anomaly(ret, st) then return nil end
-		if ret == nil then
-			st.grabitemid = nil
-		end
-		return ret
-	end
-	return nil
+
+function getGObject( st, npc )
+  if st.grabitemid then
+    local ret = level.object_by_id( st.grabitemid )
+    if ret and item_inside_anomaly( ret, st, npc ) then return nil end
+    if not ret then st.grabitemid = nil end
+    return ret
+  end
 end
+
 
 function correct_position(gi,npc)
 	if IsStalker(gi) or IsMonster(gi) then
@@ -595,8 +605,8 @@ function ev_see_stuff:evaluate()
 	if not self.object:alive() or xr_wounded.is_wounded(self.object) or has_alife_info("pre_blowout") or self.object:best_enemy() then
 		return false
 	end
-	local res = getGObject(self.st) ~= nil
 	local npc = self.object
+	local res = getGObject( self.st, npc ) ~= nil
 	-- naxac: Это здесь вообще ни к чему, т.к. секции логики для данной
 	-- схемы значения не имеют, она работает всегда. Этот вызов может
 	-- порождать баги наподобии повторного включения одной и той же схемы,
@@ -608,7 +618,7 @@ function ev_see_stuff:evaluate()
 	local act_sec = db.storage[npc:id()].active_section or ""
 	if bad_situation(npc) then
 		if res then
-			local g_obj = getGObject(self.st)
+			local g_obj = getGObject( self.st, npc )
 			claimed_pos[g_obj:level_vertex_id()] = nil
 			freeGObject(self.st)
 		end
@@ -652,7 +662,7 @@ function ev_see_stuff:evaluate()
 					and (obj_owner[obj:id()]==nil or obj_owner[obj:id()]==npc:id()) 
 					and npc:accessible(obj:level_vertex_id()) 
 					and not (claimed_pos[obj:level_vertex_id()] and claimed_pos[obj:level_vertex_id()] ~= npc:id())
-					and not item_inside_anomaly(obj, self.st)
+					and not item_inside_anomaly( obj, self.st, npc )
 					and not do_not_touch(obj)
 					and (db.actor == nil or db.actor:alive() == false or db.actor:position():distance_to_sqr(obj:position())>6) then
 						local valuable,corpse = isValuable(obj)
@@ -686,7 +696,7 @@ function ev_see_stuff:evaluate()
 					check_item(o)
 				end
 				if res then 
-					-- ogse.log1(npc:character_name() .. " хочет забрать "..getGObject(self.st):name().." - действие "..tostring(npc:motivation_action_manager():current_action_id()))
+					-- ogse.log1(npc:character_name() .. " хочет забрать "..getGObject(self.st, npc):name().." - действие "..tostring(npc:motivation_action_manager():current_action_id()))
 				end
 			end
 		end
@@ -705,7 +715,7 @@ function ev_near_stuff:evaluate()
 		return false
 	end
 	local npc = self.object
-	local gi = getGObject(self.st)
+	local gi = getGObject( self.st, npc )
 	if gi then
 		if gi:position():distance_to(npc:position()) <= desired_distance then
 			ogse_debug.add_active_eval( self.object, script_name(), "ev_near_stuff" )
@@ -724,7 +734,7 @@ end
 function act_reach_item:initialize()
 	action_base.initialize(self)
 	local npc = self.object
-	local gi = getGObject(self.st)
+	local gi  = getGObject( self.st, npc )
 	self.st.dest_lvid = nil
 	if gi then
 		-- if npc:accessible(gi:level_vertex_id()) then
@@ -742,7 +752,7 @@ end
 function act_reach_item:execute()
 	action_base.execute(self)
 	local npc = self.object
-	local gi = getGObject(self.st)
+	local gi  = getGObject( self.st, npc )
 	if gi and gi:parent() ~= nil then
 		-- ГГ забрал вкусность. Можно добавить наезд на ГГ.
 		self.st.dest_lvid = nil
@@ -799,7 +809,7 @@ end
 function act_grab_item:initialize()
 	action_base.initialize(self)
 	local npc = self.object
-	local gi = getGObject(self.st)
+	local gi  = getGObject( self.st, npc )
 	if gi then 
 		npc:set_desired_direction()
 		npc:set_desired_position()			
@@ -823,7 +833,7 @@ end
 function act_grab_item:execute()
 	action_base.execute(self)
 	local npc = self.object
-	local gi = getGObject(self.st)
+	local gi  = getGObject( self.st, npc )
 	if not gi then
 		if self.st and self.st.dest_lvid then
 			claimed_pos[self.st.dest_lvid] = nil
