@@ -162,7 +162,8 @@ function create_item( name, value, typ, subtype )
     local constructor = item_types_registry[ typ ]
     ASSERT(
       constructor,
-      "ogse_unist.create_item: cant find type [" .. typ .. "] in types registry"
+      "ogse_unist.create_item: cant find type [%s] in types registry",
+      typ
     )
     return constructor( name, value, subtype )
   else
@@ -203,7 +204,8 @@ function read_item_from_packet( r_packet )
   local constructor = item_types_registry[ typ ]
   ASSERT(
     constructor,
-    "ogse_unist.read_item_from_packet: cant find type [" .. typ .. "] in types registry"
+    "ogse_unist.read_item_from_packet: cant find type [%s] in types registry",
+    typ
   )
   local name = r_packet:r_stringZ()
   local item = constructor( name )
@@ -211,9 +213,8 @@ function read_item_from_packet( r_packet )
   local pos2 = r_packet:r_tell()
   ASSERT(
     pos2 - pos1 == item.size,
-    "read_item_from_packet: item reported size is different from actually readed data: name_len="
-      .. item.name:len() .. " value=" .. item:get_string()
-      .. " item.size = " .. item.size .. " written=" .. ( pos2 - pos1 )
+    "read_item_from_packet: item reported size is different from actually readed data: name_len = %s value = %s item.size = %s written = %s",
+    item.name:len(), item:get_string(), item.size, ( pos2 - pos1 )
   )
   return item
 end
@@ -228,9 +229,8 @@ function write_item_to_packet( w_packet, item )
   local pos2 = w_packet:w_tell()
   ASSERT(
     pos2 - pos1 == item.size,
-    "write_item_to_packet: item reported size is different from actually written data: name_len="
-      .. item.name:len() .. " value=" .. item:get_string()
-      .. " item.size = " .. item.size .. " written=" .. ( pos2 - pos1 )
+    "write_item_to_packet: item reported size is different from actually written data: name_len = %s value = %s item.size = %s written = %s",
+    item.name:len(), item:get_string(), item.size, ( pos2 - pos1 )
   )
 end
 
@@ -239,7 +239,9 @@ local function add_storage()
   local st_count = st_count_item.value + 1
   local st = base_single_storage( st_count )
   ASSERT(
-    st, "ogse_unist.add_storage: can't create new storage. count = " .. st_count
+    st,
+    "ogse_unist.add_storage: can't create new storage. count = %s",
+    st_count
   )
   st_objects[ st_count ] = st
   st_count_item.value = st_count -- грязный трюк, не поступаем так
@@ -289,7 +291,7 @@ function on_load()
       ready, "[ogse_unist.on_load] cannot load game_id. Check the logic!"
     )
   end
-  --ASSERT(ready, "ogse_unist.on_init: storage was not succesfully created")
+  -- ASSERT( ready, "ogse_unist.on_init: storage was not succesfully created" )
   ogse_unist.print_storage_usage()
 end
 
@@ -418,7 +420,8 @@ function base_single_storage:add_item( item )
   ASSERT(
     self.data_size + item.size <= self.total_space,
     "base_single_storage:add_item: dude, you can't save it here. No space for the element:\nname: %s\ntype: %d\nsize: %s\nin the storage:\nnumber: %dtotal space: %d\nfree space: %d",
-    item.name, item.type, item.size, self.st_num, self.total_space, self:free_space()
+    item.name, item.type, item.size, self.st_num, self.total_space,
+    self:free_space()
   )
   -- добавить элемент в локальную таблицу
   self.data[ item.name ] = item
@@ -707,6 +710,9 @@ function array_element:__init( name, value, subtype )
 end
 
 function array_element:get_string()
+  return "[disabled for speed]"
+end
+function array_element:get_string_slow()
   local s = ""
   for i, v in ipairs( self.value ) do
     s = s .. i .. ": [" .. v.type .. "] " .. v:get_string() .. '\n'
@@ -774,10 +780,10 @@ function array_element:fragment_value( max_size )
     table.insert( fragments, array_element( self.name, t, self.subtype ) )
     check_sz = check_sz + sz
   end
-  ASSERT(
-    check_sz + 2 == self:data_size(),
-    "check_sz + 2 != self:data_size(): %s, %s", check_sz, self:data_size()
-  )
+  -- ASSERT(
+  --   check_sz + 2 == self:data_size(),
+  --   "check_sz + 2 != self:data_size(): %s, %s", check_sz, self:data_size()
+  -- )
   return fragments
 end
 
@@ -803,6 +809,9 @@ function table_element:__init( name, value ) super( name, value )
 end
 
 function table_element:get_string()
+  return "[disabled for speed]"
+end
+function table_element:get_string_slow()
   local s = ""
   for _, v in ipairs( self.value ) do
     s = s .. "[" .. v[1].type .. "] " .. tostring( v[ 1 ].value ) .. ": ["
@@ -893,6 +902,9 @@ function chunk_element:data_size()
 end
 
 function chunk_element:get_string()
+  return "[disabled for speed]"
+end
+function chunk_element:get_string_slow()
   local buf  = get_row_data( self.value )
   local sbuf = {}
   for _, byte in ipairs( buf ) do
@@ -991,7 +1003,8 @@ function chunk_template_element:data_size()
   local size = 0
   for i, v in ipairs( self.template ) do
     if type( v ) == "table" then
-      size = size + self.value[ i ].size
+      -- мы не сохраняем имя и тип, поэтому нужно вычесть 2 байта
+      size = size + self.value[ i ].size - 2
     elseif v == "string" then
       size = size + self.value[ i ]:len() + 1
     else
@@ -1007,11 +1020,15 @@ function chunk_template_element:header_size()
 end
 
 function chunk_template_element:get_string()
+  return "[disabled for speed]"
+end
+function chunk_template_element:get_string_slow()
   local s = {}
   for i, v in ipairs( self.template ) do
     local str
     if type( v ) == "table" then
       str = self.value[ i ]:get_string()
+      v   = v[ 1 ]
     elseif v == "vector" then
       local val = self.value[ i ]
       str = string.format( "%s, %s, %s", val.x, val.y, val.z )
@@ -1030,12 +1047,24 @@ end
 
 function chunk_template_element:read_value( r_packet )
   self.value = {}
-  for i, v in ipairs( self.template ) do
+  for i = 1, table.getn( self.template ) do
+    local v = self.template[ i ]
     if type( v ) == "table" then
       local item = create_item( "", nil, unpack( v ) )
-      table.insert( self.value, item:read_value( r_packet ) )
+      item:read_value( r_packet )
+      table.insert( self.value, item )
+    elseif v == "array" then
+      local item = create_item( "", nil, v )
+      item:read_value( r_packet )
+      self.template[ i ] = { v }
+      table.insert( self.value, item )
+    elseif v == "array_template" then
+      local item = create_item( "", nil, v )
+      item:read_value( r_packet )
+      self.template[ i ] = { v, item.template }
+      table.insert( self.value, item )
     elseif v == "string" then
-      table.insert( self.value, r_packet:w_stringZ() )
+      table.insert( self.value, r_packet:r_stringZ() )
     elseif v == "vector" then
       table.insert( self.value, r_packet:r_vec3() )
     elseif v == "time" then
@@ -1084,6 +1113,9 @@ function array_template_element:__init( name, value, template )
 end
 
 function array_template_element:get_string()
+  return "[disabled for speed]"
+end
+function array_template_element:get_string_slow()
   local s = {}
   for i, v in ipairs( self.value ) do
     table.insert( s, string.format( '[ %s ]:\n%s', i, v:get_string() ) )
@@ -1124,6 +1156,9 @@ end
 function array_template_element:write_value( w_packet )
   w_packet:w_u16( table.getn( self.template ) )
   for _, v in ipairs( self.template ) do
+    if type( v ) == "table" then
+      v = v[ 1 ]
+    end
     ASSERT( types[ v ], "unknown template type: %s", v )
     w_packet:w_u8( types[ v ] )
   end
@@ -1180,11 +1215,11 @@ function array_template_element:fragment_value( max_size )
     )
     check_sz = check_sz + sz
   end
-  ASSERT(
-    check_sz + ( 4 + table.getn( self.template ) ) == self:data_size(),
-    "wrong check_sz: %s, %s, %s",
-    check_sz, table.getn( self.template ), self:data_size()
-  )
+  -- ASSERT(
+  --   check_sz + ( 4 + table.getn( self.template ) ) == self:data_size(),
+  --   "wrong check_sz: %s, %s, %s",
+  --   check_sz, table.getn( self.template ), self:data_size()
+  -- )
   return fragments
 end
 
