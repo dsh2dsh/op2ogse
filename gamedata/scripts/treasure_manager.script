@@ -468,7 +468,9 @@ function remember_given_onetime( sect )
   for k, _ in pairs( given_onetime ) do
     table.insert( given, k )
   end
-  ogse.save_var( script_name() .. ".given_onetime", given, "array" )
+  ogse.save_var(
+    script_name() .. ".given_onetime", given, "array_template", { "string" }
+  )
 end
 
 
@@ -745,43 +747,69 @@ function CTreasure:is_active( sobj )
 end
 
 
---' Сохранение
-local dsh_save_var_name = "treasure_manager.treasure_info"
+-- Сохранение
 function CTreasure:save( p )
-  p = net_packet()
-  p:w_begin( 123 )
-  p:r_seek( 2 )
-  --' Сохраняем размер таблицы
-  local size = 0
+  local treasures = {}
+  local active_cnt, done_cnt = 0, 0
   for k, v in pairs( self.treasure_info ) do
     -- пишем состояние только активных тайников
     if v.active or v.done then
-      size = size + 1
+      table.insert( treasures, { v.target, v.active, v.done } )
+      if v.active then active_cnt = active_cnt + 1 end
+      if v.done   then done_cnt   = done_cnt   + 1 end
     end
   end
-  p:w_u16( size )
-  for k, v in pairs( self.treasure_info ) do
-    if v.active or v.done then
-      p:w_u16( v.target )
-      p:w_bool( v.active )
-      p:w_bool( v.done )
-    end
-  end
-  ogse.save_var( dsh_save_var_name, p, "chunk")
+  ogse.save_var(
+    script_name() .. ".treasures", treasures, "array_template",
+    { "u16", "bool", "bool" }
+  )
+  log2(
+    "[%s]: %s treasures saved (active/done): %s/%s",
+    script_name(), table.getn( treasures ), active_cnt, done_cnt
+  )
 end
 
 
---' Загрузка
+-- Загрузка
 function CTreasure:load( p )
+  local treasures = ogse.load_var_safe( script_name() .. ".treasures" )
+  if not treasures then return self:load_old( p ) end
+  local active_cnt, done_cnt = 0, 0
+  for _, item in ipairs( treasures ) do
+    local id, active, done = unpack( item )
+    local k    = self.treasure_by_target[ id ]
+    local info = self.treasure_info[ k ]
+    info.active = active
+    info.done   = done
+    if active then active_cnt = active_cnt + 1 end
+    if done   then done_cnt   = done_cnt   + 1 end
+  end
+  log2(
+    "[%s]: %s treasures loaded (active/done): %s/%s",
+    script_name(), table.getn( treasures ), active_cnt, done_cnt
+  )
+end
+
+local dsh_save_var_name = "treasure_manager.treasure_info"
+function CTreasure:load_old( p )
   if ogse.var_exists( dsh_save_var_name ) then
     p = ogse.load_var( dsh_save_var_name )
   end
+  local active, done = 0, 0
   local t = p:r_u16()
   for i = 1, t do
-    local k = self.treasure_by_target[ p:r_u16() ]
-    self.treasure_info[ k ].active = p:r_bool()
-    self.treasure_info[ k ].done   = p:r_bool()
+    local k    = self.treasure_by_target[ p:r_u16() ]
+    local info = self.treasure_info[ k ]
+    info.active = p:r_bool()
+    info.done   = p:r_bool()
+    if info.active then active = active + 1 end
+    if info.done   then done   = done   + 1 end
   end
+  log2(
+    "[%s]: %s treasures loaded (active/done): %s/%s",
+    script_name(), t, active, done
+  )
+  ogse.delete_var( dsh_save_var_name )
 end
 
 
