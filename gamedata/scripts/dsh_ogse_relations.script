@@ -22,20 +22,20 @@ function on_goodwill_change( from, to )
   if to == 0 then return end
   if not relation_seen[ to ] then relation_seen[ to ] = {} end
   if relation_seen[ to ][ from ] then
---    log1(
---      "[RELATIONS] REPEATED GOODWILL CHANGED FROM "
---        .. alife():object( from ):name() .. " TO " .. alife():object( to ):name()
---    )
+    -- log2(
+    --   "[%s] REPEATED GOODWILL CHANGED FROM %s TO %s",
+    --   script_name(), alife():object( from ):name(), alife():object( to ):name()
+    -- )
   else
     if not relation_table[ to ] then
       relation_table[ to ] = {}
     end
     table.insert( relation_table[ to ], from )
     relation_seen[ to ][ from ] = true
---    log1(
---      "[RELATIONS] GOODWILL CHANGED FROM "
---        .. alife():object( from ):name() .. " TO " .. alife():object( to ):name()
---    )
+    -- log1(
+    --   "[%s] GOODWILL CHANGED FROM %s TO %s",
+    --   script_name(), alife():object( from ):name(), alife():object( to ):name()
+    -- )
   end
 end
 
@@ -43,7 +43,7 @@ end
 function on_release( npc_id )
   if not db.actor then return end
   if npc_id == 0 then return end
---  log2( "[RELATIONS] NPC %s RELEASED", tostring( npc_id ) )
+  -- log2( "[%s] NPC %s RELEASED", script_name(), npc_id )
   if relation_table[ npc_id ] then
     clear_personal_records( npc_id )
   end
@@ -54,16 +54,18 @@ function clear_personal_records( npc_id )
   local from_table = relation_table[ npc_id ]
   for _, id in ipairs( from_table ) do
     db.actor:clear_personal_record( id, npc_id )
---    local sobj = alife():object( id )
---    if sobj then
---      log1(
---        "[RELATIONS] RELATION RECORD CLEARED FOR OBJECT " .. sobj:name()
---      )
---    else
---      log1(
---        "[RELATIONS] RELATION RECORD CLEARED FOR OBJECT WITH ID " .. id
---      )
---    end
+    -- local sobj = alife():object( id )
+    -- if sobj then
+    --   log2(
+    --     "[%s] RELATION RECORD CLEARED FOR OBJECT %s",
+    --     script_name(), sobj:name()
+    --   )
+    -- else
+    --   log2(
+    --     "[%s] RELATION RECORD CLEARED FOR OBJECT WITH ID %s",
+    --     script_name(), id
+    --   )
+    -- end
   end
   relation_seen[ npc_id  ] = nil
   relation_table[ npc_id ] = nil
@@ -71,44 +73,68 @@ end
 
 
 function save()
-  local chunks, cnt = {}, 0
-  for k, v in pairs( relation_table ) do
-    local pk = net_packet()
-    pk:w_begin( 123 )     -- двухбайтовая заглушка
-    pk:r_seek( 2 )        -- чтобы пропустить эти два байта при чтении
-    table.insert( chunks, pk )
-    local table_size = table.getn( v )
-    cnt = cnt + table_size
---    log1(
---      "[RELATIONS] SAVING RELATION TABLE RECORD "
---        .. tostring( k ) .. " WITH SIZE " .. tostring( table_size )
---    )
-    if k == "actor" then
-      pk:w_u16( 0 )
-    else
-      pk:w_u16( k )
-    end
-    pk:w_u16( table_size )
-    for _, id in ipairs( v ) do
-      pk:w_u16( id )
---      log1(
---        "[RELATIONS] SAVING RELATION TO "
---          .. tostring( k ) .. " FROM " .. tostring( id )
---      )
-    end
+  local records, cnt = {}, 0
+  for k, items in pairs( relation_table ) do
+    table.insert(
+      records,
+      {
+        ( k == "actor" and 0 or k ),
+        items,
+      }
+    )
+    cnt = cnt + table.getn( items )
   end
   log2(
-    "[RELATIONS] RELATION TABLE SIZE IS %s: %s items",
-    table.getn( chunks ), cnt
+    "[%s]: RELATION TABLE SIZE IS %s: %s items",
+    script_name(), table.getn( records ), cnt
   )
-  ogse.save_var( script_name() .. ".chunks", chunks, "array", "chunk" )
+  ogse.save_var(
+    script_name() .. ".records", records, "array_template",
+    {
+      "u16",
+      { "array_template", { "u16" } },
+    }
+  )
 end
 
 
 function load()
+  local records = ogse.load_var_safe( script_name() .. ".records" )
+  if not records then return load_old() end
+  log2(
+    "[%s]: RELATION TABLE SIZE IS %s", script_name(), table.getn( records )
+  )
+  local cnt = 0
+  for _, pk in ipairs( records ) do
+    local to_id, items = unpack( pk )
+    cnt = cnt + table.getn( items )
+    -- log2(
+    --   "[%s]: LOADING RELATION TABLE RECORD %s WITH SIZE %s",
+    --   script_name(), to_id, table.getn( items )
+    -- )
+    if to_id == 0 then to_id = "actor" end
+    relation_seen[ to_id  ] = {}
+    relation_table[ to_id ] = {}
+    for _, curr_id in ipairs( items ) do
+      ASSERT(
+        ( not relation_seen[ to_id ][ curr_id ] ),
+        "FOUND SECOND RECORD TO %s FROM %s", to_id, curr_id
+      )
+      table.insert( relation_table[ to_id ], curr_id )
+      relation_seen[ to_id ][ curr_id ] = true
+      -- log2(
+      --   "[%s]: LOADING RELATION TO %s FROM %s", script_name(), to_id, curr_id
+      -- )
+    end
+  end
+  log2( "[%s]: RELATION TABLE LOADED: %s items", script_name(), cnt )
+end
+
+
+function load_old()
   local old = ogse.load_var_safe( "dsh_ogse_relations" )
   if old then
-    return load_old( old )
+    return load_old2( old )
   end
   local chunks = ogse.load_var_safe( script_name() .. ".chunks" )
   local cnt    = 0
@@ -143,11 +169,12 @@ function load()
       end
     end
     log2( "[RELATIONS] RELATION TABLE LOADED: %s items!", cnt )
+    ogse.delete_var( script_name() .. ".chunks" )
   end
 end
 
 
-function load_old( pk )
+function load_old2( pk )
   if pk then
     local table_size = pk:r_u16()
     log2( "[RELATIONS] OLD RELATION TABLE SIZE IS %s", tostring( table_size ) )
