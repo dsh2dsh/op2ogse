@@ -1,5 +1,10 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
+function attach( sm )
+  sm:subscribe({ signal = "on_save", fun = this.save })
+end
+
+
 local table_remove = table.remove
 local string_len = string.len
 local string_sub = string.sub
@@ -293,116 +298,138 @@ local num_to_status = {
   [ 5 ] = "rewarded"
 }
 
--- Будем записывать не id задания а его хеш - семикратная экономия.
-local dsh_save_var_name = "task_manager.task_info"
-function CRandomTask:save( p )
-  p = net_packet()
-  p:w_begin( 123 )
-  p:r_seek( 2 )
-  -- Отметка того, что это новая версия формата.
-  p:w_u8( 255 )
-  --' Считаем количество записей
-  local i = 0
-  for k, v in pairs( self.task_info ) do
-    i = i + 1
-  end
-  p:w_u8( i )
+
+function CRandomTask:save()
+  local tasks = {}
   for k, v in pairs( self.task_info ) do
     ASSERT( id_to_hash[ k ], "Cannot find hash for id %s!", k )
-    p:w_u16( id_to_hash[ k ] )
-    p:w_bool( v.enabled )
-    p:w_bool( v.enabled_props )
-    ASSERT( status_to_num[ v.status ], "Wrong status '%s' for task %s!", v.status, k )
-    p:w_u8( status_to_num[ v.status ] )
-    p:w_u32( v.selected_target or 4294967295 )
-    p:w_u32( v.defend_target   or 4294967295 )
-    utils.w_CTime( p, v.last_task_time )
+    ASSERT(
+      status_to_num[ v.status ],
+      "Wrong status '%s' for task %s!", v.status, k
+    )
+    table.insert(
+      tasks,
+      {
+        id_to_hash[ k ],
+        v.enabled,
+        v.enabled_props,
+        status_to_num[ v.status ],
+        ( v.selected_target or 4294967295 ),
+        ( v.defend_target   or 4294967295 ),
+        v.last_task_time,
+      }
+    )
   end
+  ogse.save_var(
+    script_name() .. ".tasks", tasks, "array_template",
+    { "u16", "bool", "bool", "u8", "u32", "u32", "time" }
+  )
 
   --' Та же самая процедура с активными тасками
-  i = 0
-  for k, v in pairs( self.active_task_by_type ) do
-    i = i + 1
-  end
-  p:w_u8( i )
+  local active = {}
   for k, v in pairs( self.active_task_by_type ) do
     ASSERT( ct_to_hash[ k ], "Cannot find hash for complex type %s!", k )
-    p:w_u16( ct_to_hash[ k ] )
     ASSERT( id_to_hash[ v ], "Cannot find hash for task id %s!", v )
-    p:w_u16( id_to_hash[ v ] )
+    table.insert(
+      active,
+      {
+        ct_to_hash[ k ],
+        id_to_hash[ v ],
+      }
+    )
   end
-  ogse.save_var( dsh_save_var_name, p, "chunk")
+  ogse.save_var(
+    script_name() .. ".active", active, "array_template",
+    { "u16", "u16" }
+  )
+  log2(
+    "[%s]: %s tasks saved: %s active",
+    script_name(), table.getn( tasks ), table.getn( active )
+  )
 end
 
 
 --' Загрузка
 function CRandomTask:load( p )
+  local tasks = ogse.load_var_safe( script_name() .. ".tasks" )
+  if not tasks then return self:load_old( p ) end
+  for _, t in ipairs( tasks ) do
+    local hash, enabled, enabled_props, status, selected_target, defend_target, last_task_time = unpack( t )
+    local id   = hash_to_id[ hash ]
+    ASSERT( id, "Cannot find id for hash %d!", hash )
+    local info = self.task_info[ id ]
+    info.enabled       = enabled
+    info.enabled_props = enabled_props
+    info.status        = num_to_status[ status ]
+    if selected_target ~= 4294967295 then
+      info.selected_target = selected_target
+    end
+    if defend_target ~= 4294967295 then
+      info.defend_target = defend_target
+    end
+    info.last_task_time = last_task_time
+  end
+  --' Та же самая процедура с активными тасками
+  local active = ogse.load_var_safe( script_name() .. ".active" )
+  for _, t in ipairs( active ) do
+    local cthash, hash = unpack( t )
+    local id     = hash_to_ct[ cthash ]
+    ASSERT( id, "Cannot find complex type for hash %d", cthash )
+    self.active_task_by_type[ id ] = hash_to_id[ hash ]
+    ASSERT(
+      self.active_task_by_type[ id ], "Cannot find task id for hash %d!", hash
+    )
+  end
+  log2(
+    "[%s]: %s tasks loaded: %s active",
+    script_name(), table.getn( tasks ), table.getn( active )
+  )
+end
+
+
+local dsh_save_var_name = "task_manager.task_info"
+function CRandomTask:load_old( p )
   if ogse.var_exists( dsh_save_var_name ) then
     p = ogse.load_var( dsh_save_var_name )
   end
   --' Считаем количество записей
   local i = p:r_u8()
-  if i ~= 255 then
-
-    for k = 1, i do
-      local id = p:r_stringZ()
-      if id and self.task_info[ id ] then
-        self.task_info[ id ].enabled       = p:r_bool()
-        self.task_info[ id ].enabled_props = p:r_bool()
-        self.task_info[ id ].status        = p:r_stringZ()
-        local selected_target = p:r_u32()
-        if selected_target ~= 4294967295 then
-          self.task_info[ id ].selected_target = selected_target
-        end
-        local defend_target = p:r_u32()
-        if defend_target ~= 4294967295 then
-          self.task_info[ id ].defend_target = defend_target
-        end
-        self.task_info[ id ].last_task_time = utils.r_CTime( p )
-      end
+  i = p:r_u8()
+  local task_cnt = i
+  for k = 1, i do
+    local hash = p:r_u16()
+    local id   = hash_to_id[ hash ]
+    ASSERT( id, "Cannot find id for hash %d!", hash )
+    local info = self.task_info[ id ]
+    info.enabled       = p:r_bool()
+    info.enabled_props = p:r_bool()
+    info.status        = num_to_status[ p:r_u8() ]
+    local selected_target = p:r_u32()
+    if selected_target ~= 4294967295 then
+      info.selected_target = selected_target
     end
-    --' Та же самая процедура с активными тасками
-    local i = p:r_u8()
-    for k = 1, i do
-      local id = p:r_stringZ()
-      self.active_task_by_type[ id ] = p:r_stringZ()
+    local defend_target = p:r_u32()
+    if defend_target ~= 4294967295 then
+      info.defend_target = defend_target
     end
-
-  else
-
-    i = p:r_u8()
-    for k = 1, i do
-      local hash = p:r_u16()
-      local id   = hash_to_id[ hash ]
-      ASSERT( id, "Cannot find id for hash %d!", hash )
-      local info = self.task_info[ id ]
-      info.enabled       = p:r_bool()
-      info.enabled_props = p:r_bool()
-      info.status        = num_to_status[ p:r_u8() ]
-      local selected_target = p:r_u32()
-      if selected_target ~= 4294967295 then
-        info.selected_target = selected_target
-      end
-      local defend_target = p:r_u32()
-      if defend_target ~= 4294967295 then
-        info.defend_target = defend_target
-      end
-      info.last_task_time = utils.r_CTime( p )
-    end
-    --' Та же самая процедура с активными тасками
-    i = p:r_u8()
-    for k = 1, i do
-      local cthash = p:r_u16()
-      local id     = hash_to_ct[ cthash ]
-      ASSERT( id, "Cannot find complex type for hash %d", cthash )
-      local hash   = p:r_u16()
-      self.active_task_by_type[ id ] = hash_to_id[ hash ]
-      ASSERT(
-        self.active_task_by_type[ id ], "Cannot find task id for hash %d!", hash
-      )
-    end
-
+    info.last_task_time = utils.r_CTime( p )
   end
+  --' Та же самая процедура с активными тасками
+  i = p:r_u8()
+  local active_cnt = i
+  for k = 1, i do
+    local cthash = p:r_u16()
+    local id     = hash_to_ct[ cthash ]
+    ASSERT( id, "Cannot find complex type for hash %d", cthash )
+    local hash   = p:r_u16()
+    self.active_task_by_type[ id ] = hash_to_id[ hash ]
+    ASSERT(
+      self.active_task_by_type[ id ], "Cannot find task id for hash %d!", hash
+    )
+  end
+  log2(
+    "[%s]: %s tasks loaded: %s active", script_name(), task_cnt, active_cnt
+  )
 end
 
 
@@ -1481,12 +1508,17 @@ function cleanup_actor()
 	get_random_task():cleanup_actor()
 end
 
-function save(p)
-  get_random_task():save(p)
+
+function save()
+  get_random_task():save()
 end
-function load(p)
-  get_random_task():load(p)
+
+
+function load( p )
+  get_random_task():load( p )
 end
+
+
 function clear_task_manager()
   random_task  = nil
 end
