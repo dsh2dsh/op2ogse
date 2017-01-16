@@ -2,9 +2,83 @@
 
 function attach( sm )
   sm:subscribe({ signal = "on_before_spawn",  fun = this.on_spawn })
+  sm:subscribe({ signal = "on_load",          fun = this.load     })
   sm:subscribe({ signal = "on_monster_spawn", fun = this.on_monster_spawn })
-  sm:subscribe({ signal = "on_release_npc",   fun = this.on_release_npc })
+  sm:subscribe({ signal = "on_release_npc",   fun = this.on_release_npc   })
   sm:subscribe({ signal = "on_save",          fun = this.on_save  })
+end
+
+
+local loaded = {}
+
+function load()
+  local data = ogse.load_var_safe( script_name() .. ".active" )
+  if not data then return load_old() end
+  local spawned_cnt = 0
+  for _, t in ipairs( data ) do
+    local name, pos, lvid, gvid, spawned_obj = unpack( t )
+    loaded[ name ] = {
+      [ "spawned_obj" ] = spawned_obj,
+      [ "xyzlg"       ] = { pos, lvid, gvid },
+    }
+    spawned_cnt = spawned_cnt + table.getn( spawned_obj )
+  end
+  log2(
+    "[%s]: %s respawners loaded: %s spawned",
+    script_name(), table.getn( data ), spawned_cnt
+  )
+end
+
+
+function load_old()
+  local root_sect = "dsh.respawn.respawners"
+  if sys_ini:section_exist( root_sect ) then
+    local resp_cnt, spawned_cnt = 0, 0
+    for _, name in ipairs( get_section_keys( root_sect ) ) do
+      local enabled = get_bool( root_sect, name )
+      local tname   = "dsh_respawn." .. name
+      if enabled then
+        local objs = ogse.load_var_safe( tname .. ".spawned_obj" )
+        if objs then
+          for i = 1, table.getn( objs ) do
+            objs[ i ] = tonumber( objs[ i ] )
+          end
+          local xyzlg = ogse.load_var_safe(
+            script_name() .. "." .. name .. ".xyzlg"
+          )
+          if xyzlg then
+            if type( xyzlg ) == "table" then
+              if table.getn( xyzlg ) == 5 then
+                local x, y, z, l, g = unpack( xyzlg )
+                xyzlg = {
+                  vector():set( tonumber( x ), tonumber( y ), tonumber( z ) ),
+                  tonumber( l ), tonumber( g )
+                }
+              else
+                xyzlg = {}
+              end
+            else -- chunk
+              xyzlg = { xyzlg:r_vec3(), xyzlg:r_u32(), xyzlg:r_u32() }
+            end
+          else
+            xyzlg = {}
+          end
+          loaded[ name ] = {
+            [ "spawned_obj" ] = objs,
+            [ "xyzlg"       ] = xyzlg,
+          }
+          spawned_cnt = spawned_cnt + table.getn( objs )
+        end
+        resp_cnt = resp_cnt + 1
+      end
+      ogse.delete_var( tname .. ".spawned_obj" )
+      ogse.delete_var( script_name() .. "." .. name .. ".xyzlg" )
+    end
+    log2(
+      "[%s]: %s old respawners loaded: %s spawned",
+      script_name(), resp_cnt, spawned_cnt
+    )
+  end
 end
 
 
@@ -19,7 +93,7 @@ function on_spawn()
       local enabled = get_bool( root_sect, name )
       local tname   = "dsh_respawn." .. name
       if enabled then
-        local respawn  = dsh_respawner( name )
+        local respawn  = dsh_respawner( name, loaded[ name ] )
         active[ name ] = respawn
         resp_cnt       = resp_cnt + 1
         spawned_cnt    = spawned_cnt + table.getn( respawn.spawned_obj )
@@ -30,7 +104,7 @@ function on_spawn()
         if ogse_st_mgr.timer_exists( tname ) then
           local t = ogse_st_mgr.get_timer( tname )
           t:stop()
-          cleanup_spawned_obj( name )
+          cleanup_spawned_obj( name, loaded[ name ] )
         end
       end
     end
@@ -43,8 +117,9 @@ end
 
 
 class "dsh_respawner"
-function dsh_respawner:__init( name )
-  self.name = name
+function dsh_respawner:__init( name, loaded )
+  self.name   = name
+  self.loaded = loaded
   self:init_respawn_params()
   self:load_spawned_obj()
 end
@@ -101,24 +176,10 @@ function dsh_respawner:init_respawn_params()
     self.m_game_vertex_id  = get_u32( sect, "game_vertex_id"  )
   end
 
-  xyzlg = ogse.load_var_safe( script_name() .. "." .. self.name .. ".xyzlg" )
-  if xyzlg then
-    if type( xyzlg ) == "table" then
-      if table.getn( xyzlg ) == 5 then
-        local x, y, z, l, g = unpack( xyzlg )
-        self.xyzlg = {
-          vector():set( tonumber( x ), tonumber( y ), tonumber( z ) ),
-          tonumber( l ), tonumber( g )
-        }
-      else
-        self.xyzlg = {
-          self.position, self.m_level_vertex_id, self.m_game_vertex_id
-        }
-        ogse.delete_var( script_name() .. "." .. self.name .. ".xyzlg" )
-      end
-    else -- chunk
-      self.xyzlg = { xyzlg:r_vec3(), xyzlg:r_u32(), xyzlg:r_u32() }
-    end
+  if
+    self.loaded and table.getn( self.loaded.xyzlg ) == 5
+  then
+    self.xyzlg = self.loaded.xyzlg
   else
     self.xyzlg = {
       self.position, self.m_level_vertex_id, self.m_game_vertex_id
@@ -135,22 +196,7 @@ end
 
 
 function dsh_respawner:read_spawned_obj()
-  local tname = "dsh_respawn." .. self.name .. ".spawned_obj"
-  local objs  = {}
-  for _, id in ipairs( ogse.load_var( tname, {} ) ) do
-    table.insert( objs, tonumber( id ) )
-  end
-  return objs
-end
-
-
-function dsh_respawner:save()
-  local tname = "dsh_respawn." .. self.name .. ".spawned_obj"
-  if table.getn( self.spawned_obj ) > 0 then
-    ogse.save_var( tname, self.spawned_obj, "array", "u16" )
-  else
-    ogse.delete_var( tname )
-  end
+  return self.loaded and self.loaded.spawned_obj or {}
 end
 
 
@@ -210,21 +256,12 @@ function dsh_respawner:walk_respawner()
     level.name(), self.m_level_vertex_id,
     math.random( self.move_radius_min, self.move_radius_max )
   )
-  local tname = script_name() .. "." .. self.name .. ".xyzlg"
   if pos then
     self.xyzlg = { pos, lvid, gvid }
-    local pk = net_packet()
-    pk:w_begin( 123 )     -- двухбайтовая заглушка
-    pk:r_seek( 2 )        -- чтобы пропустить эти два байта при чтении
-    pk:w_vec3( pos )
-    pk:w_u32( lvid )
-    pk:w_u32( gvid )
-    ogse.save_var( tname, pk, "chunk" )
   else
     self.xyzlg = {
       self.position, self.m_level_vertex_id, self.m_game_vertex_id
     }
-    ogse.delete_var( tname )
   end
 end
 
@@ -400,26 +437,26 @@ function on_timer( name )
   if respawn then
     respawn:refresh_spawned_obj()
   else
-    cleanup_spawned_obj( name )
+    log2( "[%s]: on_timer for inactive respawner: %s", script_name(), name )
   end
 end
 
 
-function cleanup_spawned_obj( name )
-  local tname = "dsh_respawn." .. name .. ".spawned_obj"
-  for _, k in ipairs( ogse.load_var( tname, {} ) ) do
-    local id   = tonumber( k )
+function cleanup_spawned_obj( name, loaded )
+  if not loaded then return end
+  local cleaned_cnt = 0
+  for _, id in ipairs( loaded.spawned_obj ) do
     local sobj = alife():object( id )
     if sobj then
       if IsMonster( sobj ) or IsStalker( sobj ) then
         smart_terrain.unregister_npc( sobj )
       end
       alife():release( sobj )
+      cleaned_cnt = cleaned_cnt + 1
     end
     all_spawned_obj[ id ] = nil
   end
-  ogse.delete_var( tname )
-  ogse.delete_var( script_name() .. "." .. name .. ".xyzlg" )
+  log2( "[%s]: cleaned %s: % released", script_name(), name, cleaned_cnt )
 end
 
 
@@ -437,21 +474,28 @@ end
 
 
 function on_save()
-  for name, respawn in pairs( active ) do
-    respawn:save()
+  local data, spawned_cnt = {}, 0
+  for name, resp in pairs( active ) do
+    local t = {
+      name,
+      resp.xyzlg[ 1 ], resp.xyzlg[ 2 ], resp.xyzlg[ 3 ],
+      resp.spawned_obj,
+    }
+    table.insert( data, t )
+    spawned_cnt = spawned_cnt + table.getn( resp.spawned_obj )
   end
-end
-
-
-function remove_all_respawners()
-  for name, respawn in pairs( active ) do
-    local tname = "dsh_respawn." .. name
-    if ogse_st_mgr.timer_exists( tname ) then
-      local t = ogse_st_mgr.get_timer( tname )
-      t:stop()
-    end
-    cleanup_spawned_obj( name )
-  end
+  ogse.save_var(
+    script_name() .. ".active", data, "array_template",
+    {
+      "string",
+      "vector", "u32", "u32",
+      { "array_template", { "u16" } },
+    }
+  )
+  log2(
+    "[%s]: %s respawners saved: %s spawned",
+    script_name(), table.getn( data ), spawned_cnt
+  )
 end
 
 
