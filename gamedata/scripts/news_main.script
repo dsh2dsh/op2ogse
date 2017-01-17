@@ -19,9 +19,6 @@ local timer_general              = 30 -- Прочее
 local distance_close             = 100
 local timer_weather              = 60 -- При изменнии погоды
 local timer_heli                 = 10 -- При замеченном вертолетике
-local timer_last_showed          = 0  -- Последняя показанная новость
--- Сколько ждать между новостями минимально (игровые минуты)
-local timer_show_freq            = 6
 local time_factor                = 1
 local timer_next_blow            = 0 -- Тамер до след. выброса
 local timer_blow_showed          = 0 -- Последняя показанная новость о Выбросе
@@ -91,20 +88,18 @@ local table_sort   = table.sort
 local string_find  = string.find
 local string_gsub  = string.gsub
 
-local _debug                = false
-local bInit                 = false
-local news_stack            = {}
-local table_spawned         = {}
-local table_spawned_idx     = {}
-local table_killed_by_actor = {}
-local spammers              = {}
+local _debug            = false
+local bInit             = false
+local news_stack        = {}
+local table_spawned     = {}
+local table_spawned_idx = {}
+local spammers          = {}
 
 
 function init()
   if bInit then return end
   news_data.Init()
   time_factor           = level.get_time_factor()
-  timer_last_showed     = amk.game_minutes()
   timer_def_spawn       = amk.game_minutes() - math.random( timer_def_spawn_freq )
   timer_eternal_stalker = amk.game_minutes() - math.random( timer_eternal_stalker_freq )
   timer_blow_showed     = amk.game_minutes() - math.random( timer_blow_freq )
@@ -751,7 +746,6 @@ function show_news( text, from, timeout, showtime, section )
   ) then
     amk.send_tip( text, from, timeout, showtime, section )
   end
-  timer_last_showed = amk.game_minutes()
 end
 
 
@@ -1469,14 +1463,7 @@ function check_news()
   end
   table_spawned     = {}
   table_spawned_idx = {}
-  for _, v in ipairs( table_killed_by_actor ) do
-    on_hero_seen( v.community, v.level, v.position, v.count, v.o_type )
-  end
-  table_killed_by_actor = {}
-  if timer_last_showed + timer_show_freq < amk.game_minutes() then
-    -- Пора показывать, если есть что.
-    on_news()
-  end
+  on_news()
   spammers = {}
 end
 
@@ -1534,54 +1521,6 @@ function add_spawned_object( obj )
     table.insert( table_spawned, t )
     table_spawned_idx[ k ] = t
   end
-end
-
-
-function add_killed_by_actor(obj)
-	if (obj and (IAmAStalker[obj:clsid()] or IAmAMonster[obj:clsid()])) then
-		local s_comm = get_npc_community(obj)
-		if (s_comm and s_comm == "actor" or s_comm == "stalker" or s_comm == "dolg" or s_comm == "freedom" or s_comm == "trader" or s_comm == "ecolog" or s_comm == "nebo" or s_comm == "green") then 
-			return -- это сталкер
-		end
-		local s_id = ""
-		local lev = get_object_levelname(obj)
-		local pos = get_object_position(obj)
-		if (isGameObject(obj)) then
-			s_id = obj:id()
-		else
-			s_id = obj.id
-		end	
-		local b_added = false
-		local obj_type = 0
-		if IAmAStalker[obj:clsid()] then
-			obj_type = 1
-		elseif IAmAMonster[obj:clsid()] then
-			obj_type = 2
-		end
-		if table_killed_by_actor then
-			-- for k, v in pairs(table_killed_by_actor) do
-			for i=1, #table_killed_by_actor do
-				local v = table_killed_by_actor[i]
-				if (v.community == s_comm and v.level == lev) then
-					local mpos = v.position
-					if (mpos) then
-						local dist = pos:distance_to(mpos)
-						if (dist < distance_close) then
-							v.count = v.count + 1
-							b_added = true
-							break
-						end
-					end
-				end
-			end
-		end
-		if (b_added == false) then
-			t = {id = s_id, community = s_comm, count = 1, level = lev, position = pos, o_type = obj_type}
-			table.insert(table_killed_by_actor, t)
-		else
-			--
-		end
-	end	
 end
 
 function on_weather_change(old_weather, new_weather)
@@ -1687,69 +1626,6 @@ function on_daytime()
       end
     end
   end
-end
-
-
--- Видели, как ГГ что-то делал
-function on_hero_seen(community, level, position, count, o_type)
-	local rnd = math.random
-	if (community and level and position and count and o_type and o_type > 0) then		
-		local name, sname = amk_names_lists.get_strings()
-		local s_author = name.." "..sname
-		local m_str = ""
-		local aid = nil
-		local author = get_nearest_stalker(level, position, dist_seen, 30)
-		if (author) then
-			s_author = get_npc_name(author)
-			aid = author.id
-		else
-			if (_debug == true) then mylog("on_hero_seen - skip") end
-			return
-		end
-
-		-- o_type = 1 - НПС
-		-- o_type = 2 - монстры
-		if(o_type == 2) then
-			local coeff = 0.0
-			local mon = community
-			if (mon == "") then return end
-			if (mon == "tushkano" or mon == "flesh" or mon == "dog" or mon == "psy_dog" or mon == "pseudodog" or mon == "cat" or mon == "boar") then
-				coeff = -0.65
-			elseif (mon == "bloodsucker" or mon == "controller") then
-				coeff = 0.3					
-			end
-			if (rnd() < (prob + coeff)) then
-				if (count == 1) then
-					m_str = format_template_actor_seen(level, potition, get_monster_name_by_string(mon, 4))
-				else
-					m_str = format_template_actor_seen_group(level, position, get_monster_name_by_string(mon, 6), count)
-				end
-				do_news(m_str, s_author, rnd(timer_corpse*5, timer_corpse*10), 5, "gen_info", aid)
-			end
-		elseif(o_type == 1) then
-			if (rnd() < prob) then
-				local zz = community
-				local m_who = ""
-				if (zz and news_data.community_name[zz]) then
-					if (zz == "actor" or zz == "stalker" or zz == "dolg" or zz == "freedom" or zz== "trader" or zz=="ecolog" or zz=="nebo" or zz=="green") then -- это сталкер
-						return
-					end
-					if (count == 1) then
-					m_who = news_data.community_name[zz][3]
-					else
-						m_who = news_data.community_name[zz][4]					
-					end
-				end
-				if (m_who == "") then return end
-				if (count == 1) then
-					m_str = format_template_actor_seen(level, position, m_who)
-				else
-					m_str = format_template_actor_seen_group(level, position, m_who, count)
-				end
-				do_news(m_str, s_author, rnd(timer_corpse*5, timer_corpse*10), 5, "gen_info", aid)
-			end
-		end
-	end	
 end
 
 
