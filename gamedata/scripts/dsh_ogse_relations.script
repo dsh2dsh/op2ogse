@@ -6,37 +6,48 @@
 --| Ревизия: 14/03/2015                                                     |--
 -------------------------------------------------------------------------------
 
-function attach(sm) -- для менеджера сигналов
+function attach(sm)
   sm:subscribe({ signal = "on_goodwill_change", fun = this.on_goodwill_change })
   sm:subscribe({ signal = "on_load",            fun = this.load               })
+  sm:subscribe({ signal = "on_npc_before_hit",  fun = this.on_npc_before_hit  })
+  sm:subscribe({ signal = "on_npc_death",       fun = this.on_npc_death       })
   sm:subscribe({ signal = "on_npc_spawn",       fun = this.on_npc_spawn       })
   sm:subscribe({ signal = "on_release_npc",     fun = this.on_release         })
   sm:subscribe({ signal = "on_save",            fun = this.save               })
-  sm:subscribe({ signal = "on_spawn",           fun = this.on_spawn           })
 end
 
 
-local relation_seen  = {}
-local relation_table = {}
+local relation_from_to = {}
+local relation_to_from = {}
 
 function on_goodwill_change( from, to )
-  if to == 0 then return end
-  if not relation_seen[ to ] then relation_seen[ to ] = {} end
-  if relation_seen[ to ][ from ] then
-    -- log2(
-    --   "[%s] REPEATED GOODWILL CHANGED FROM %s TO %s",
-    --   script_name(), alife():object( from ):name(), alife():object( to ):name()
-    -- )
+  if from == 0 then return end
+  if not relation_seen[ from ] then relation_seen[ from ] = {} end
+  local goodwill = relation_registry.get_goodwill( from, to )
+  if relation_from_to[ from ][ to ] then
+    log2(
+      "[%s]: repeated goodwill change %s -> %s: %s",
+      script_name(), alife():object( from ):name(), alife():object( to ):name(),
+      goodwill
+    )
   else
-    if not relation_table[ to ] then
-      relation_table[ to ] = {}
+    if ( to == 0 and goodwill < 0 ) or to > 0 then
+      if not relation_from_to[ from ] then
+        relation_from_to[ from ] = {}
+      end
+      relation_from_to[ from ][ to ] = true
     end
-    table.insert( relation_table[ to ], from )
-    relation_seen[ to ][ from ] = true
-    -- log1(
-    --   "[%s] GOODWILL CHANGED FROM %s TO %s",
-    --   script_name(), alife():object( from ):name(), alife():object( to ):name()
-    -- )
+    if to > 0 then
+      if not relation_to_from[ to ] then
+        relation_to_from[ to ] = {}
+      end
+      relation_to_from[ to ][ from ] = true
+    end
+    log2(
+      "[%s]: goodwill changed %s -> %s: %s",
+      script_name(), alife():object( from ):name(), alife():object( to ):name(),
+      goodwill
+    )
   end
 end
 
@@ -44,53 +55,49 @@ end
 function on_release( npc_id )
   if not db.actor then return end
   if npc_id == 0 then return end
-  -- log2( "[%s] NPC %s RELEASED", script_name(), npc_id )
-  if relation_table[ npc_id ] then
-    clear_personal_records( npc_id )
+  log2( "[%s]: %s released", script_name(), npc_id )
+  if relation_from_to[ npc_id ] then
+    for to, _ in pairs( relation_from_to[ npc_id ] ) do
+      if to > 0 then
+        relation_to_from[ to ][ from ] = nil
+      end
+    end
+    relation_from_to[ npc_id ] = nil
   end
-end
-
-
-function clear_personal_records( npc_id )
-  local from_table = relation_table[ npc_id ]
-  for _, id in ipairs( from_table ) do
-    db.actor:clear_personal_record( id, npc_id )
-    -- local sobj = alife():object( id )
-    -- if sobj then
-    --   log2(
-    --     "[%s] RELATION RECORD CLEARED FOR OBJECT %s",
-    --     script_name(), sobj:name()
-    --   )
-    -- else
-    --   log2(
-    --     "[%s] RELATION RECORD CLEARED FOR OBJECT WITH ID %s",
-    --     script_name(), id
-    --   )
-    -- end
+  if relation_to_from[ npc_id ] then
+    for from, _ in pairs( relation_to_from[ npc_id ] ) do
+      db.actor:clear_personal_record( from, npc_id )
+      relation_from_to[ from ][ to ] = nil
+      local sobj = alife():object( from )
+      if sobj then
+        log2(
+          "[%s]: relation record cleared for %s", script_name(), sobj:name()
+        )
+      else
+        log2( "[%s]: relation record cleared for %s", script_name(), from )
+      end
+    end
+    relation_to_from[ npc_id ] = nil
   end
-  relation_seen[ npc_id  ] = nil
-  relation_table[ npc_id ] = nil
 end
 
 
 function save()
-  local records, cnt = {}, 0
-  for k, items in pairs( relation_table ) do
-    table.insert(
-      records,
-      {
-        ( k == "actor" and 0 or k ),
-        items,
-      }
-    )
+  local registry, cnt = {}, 0
+  for from, _ in pairs( relation_from_to ) do
+    local items = {}
+    for to, _ in pairs( relation_from_to[ from ] ) do
+      table.insert( items, to )
+    end
+    table.insert( registry, { from, items } )
     cnt = cnt + table.getn( items )
   end
   log2(
-    "[%s]: RELATION TABLE SIZE IS %s: %s items",
-    script_name(), table.getn( records ), cnt
+    "[%s]: relation table size is %s: %s items",
+    script_name(), table.getn( registry ), cnt
   )
   ogse.save_var(
-    script_name() .. ".records", records, "array_template",
+    script_name() .. ".relation_registry", registry, "array_template",
     {
       "u16",
       { "array_template", { "u16" } },
@@ -100,115 +107,36 @@ end
 
 
 function load()
-  local records = ogse.load_var_safe( script_name() .. ".records" )
-  if not records then return load_old() end
+  local registry = ogse.load_var_safe( script_name() .. ".relation_registry" )
+  if not registry then return end
   log2(
-    "[%s]: RELATION TABLE SIZE IS %s", script_name(), table.getn( records )
+    "[%s]: relation table size is %s", script_name(), table.getn( registry )
   )
   local cnt = 0
-  for _, pk in ipairs( records ) do
-    local to_id, items = unpack( pk )
+  for _, pk in ipairs( registry ) do
+    local from, items = unpack( pk )
     cnt = cnt + table.getn( items )
-    -- log2(
-    --   "[%s]: LOADING RELATION TABLE RECORD %s WITH SIZE %s",
-    --   script_name(), to_id, table.getn( items )
-    -- )
-    if to_id == 0 then to_id = "actor" end
-    relation_seen[ to_id  ] = {}
-    relation_table[ to_id ] = {}
-    for _, curr_id in ipairs( items ) do
+    log2(
+      "[%s]: loading relation table record %s with size %s",
+      script_name(), from, table.getn( items )
+    )
+    relation_from_to[ from ] = {}
+    for _, to in ipairs( items ) do
       ASSERT(
-        ( not relation_seen[ to_id ][ curr_id ] ),
-        "FOUND SECOND RECORD TO %s FROM %s", to_id, curr_id
+        ( not relation_from_to[ from ][ to ] ),
+        "found second record to %s from %s", from, to
       )
-      table.insert( relation_table[ to_id ], curr_id )
-      relation_seen[ to_id ][ curr_id ] = true
-      -- log2(
-      --   "[%s]: LOADING RELATION TO %s FROM %s", script_name(), to_id, curr_id
-      -- )
-    end
-  end
-  log2( "[%s]: RELATION TABLE LOADED: %s items", script_name(), cnt )
-end
-
-
-function load_old()
-  local old = ogse.load_var_safe( "dsh_ogse_relations" )
-  if old then
-    return load_old2( old )
-  end
-  local chunks = ogse.load_var_safe( script_name() .. ".chunks" )
-  local cnt    = 0
-  if chunks then
-    log2( "[RELATIONS] RELATION TABLE SIZE IS %s", table.getn( chunks ) )
-    for _, pk in ipairs( chunks ) do
-      local to_id   = pk:r_u16()
-      local to_size = pk:r_u16()
-      cnt = cnt + to_size
---      log1(
---        "[RELATIONS] LOADING RELATION TABLE RECORD "
---          .. tostring( to_id ) .. " WITH SIZE " .. tostring( to_size )
---      )
-      if to_id == 0 then
-        to_id = "actor"
-      end
-      relation_seen[ to_id  ] = {}
-      relation_table[ to_id ] = {}
-      for j = 1, to_size do
-        local curr_id = pk:r_u16()
-        ASSERT(
-          ( not relation_seen[ to_id ][ curr_id ] ),
-          "[RELATIONS] FOUND SECOND RECORD TO %s FROM %s",
-          tostring( to_id ), tostring( curr_id )
-        )
-        table.insert( relation_table[ to_id ], curr_id )
-        relation_seen[ to_id ][ curr_id ] = true
---        log1(
---          "[RELATIONS] LOADING RELATION TO "
---            .. tostring( to_id ) .. " FROM " .. tostring( curr_id )
---        )
+      relation_from_to[ from ][ to ] = true
+      log2( "[%s]: loading relation: %s -> %s", script_name(), from, to )
+      if to > 0 then
+        if not relation_to_from[ to ] then
+          relation_to_from[ to ] = {}
+        end
+        relation_to_from[ to ][ from ] = true
       end
     end
-    log2( "[RELATIONS] RELATION TABLE LOADED: %s items!", cnt )
-    ogse.delete_var( script_name() .. ".chunks" )
   end
-end
-
-
-function load_old2( pk )
-  if pk then
-    local table_size = pk:r_u16()
-    log2( "[RELATIONS] OLD RELATION TABLE SIZE IS %s", tostring( table_size ) )
-    for i = 1, table_size do
-      local to_id   = pk:r_u16()
-      local to_size = pk:r_u16()
---      log1(
---        "[RELATIONS] LOADING RELATION TABLE RECORD "
---          .. tostring( to_id ) .. " WITH SIZE " .. tostring( to_size )
---      )
-      if to_id == 0 then
-        to_id = "actor"
-      end
-      relation_seen[ to_id ] = {}
-      relation_table[ to_id ] = {}
-      for j = 1, to_size do
-        local curr_id = pk:r_u16()
-        ASSERT(
-          ( not relation_seen[ to_id ][ curr_id ] ),
-          "[RELATIONS] FOUND SECOND RECORD TO %s FROM %s",
-          tostring( to_id ), tostring( curr_id )
-        )
-        table.insert( relation_table[ to_id ], curr_id )
-        relation_seen[ to_id ][ curr_id ] = true
---        log1(
---          "[RELATIONS] LOADING RELATION TO "
---            .. tostring( to_id ) .. " FROM " .. tostring( curr_id )
---        )
-      end
-    end
-    log1( "[RELATIONS] OLD RELATION TABLE LOADED!" )
-    ogse.delete_var( "dsh_ogse_relations" )
-  end
+  log2( "[%s]: relation table loaded: %s items", script_name(), cnt )
 end
 
 
@@ -257,24 +185,20 @@ function on_npc_spawn( npc, binder )
     local c_gw = relation_registry.community_goodwill( comm, db.actor:id() )
     if
       c_gw >= attitude_neutal_threshold
-      and (
-        ( not relation_seen[ npc:id() ] )
-        or ( not relation_seen[ npc:id() ][ db.actor:id() ] )
+      and not (
+        relation_from_to[ npc:id() ]
+        and relation_from_to[ npc:id() ][ db.actor:id() ]
       )
     then
+      log2(
+        "[%s]: restore goodwill for %s: goowdill = %s, community_goodwill = %s",
+        script_name(), npc:name(), p_gw, c_gw
+      )
       npc:set_goodwill( 0, db.actor )
       npc:set_relation( game_object.neutral, db.actor )
+      db.actor:clear_personal_record( npc:id(), 0 )
     end
   end
-end
-
-
-local before_hit_subscribed
-function on_spawn()
-  before_hit_subscribed = {
-    signal = "on_npc_before_hit", fun = this.on_npc_before_hit
-  }
-  ogse_signals.get_mgr():subscribe( before_hit_subscribed )
 end
 
 
@@ -285,8 +209,14 @@ function on_npc_before_hit( obj, hit_data, p_s_hit, p_ignore_flags )
   then
     return
   end
-  ogse_signals.get_mgr():unsubscribe( before_hit_subscribed )
-  before_hit_subscribed = nil
+  local binder = obj:binded_object()
+  local t      = binder[ script_name() ]
+  if not t then
+    t = {}
+    binder[ script_name() ] = t
+  end
+  if t.ff_detected then return end
+  t.ff_detected = true
   local wpn, ammo
   if hit_data.weapon_id then
     wpn = level.object_by_id( hit_data.weapon_id )
@@ -298,5 +228,61 @@ function on_npc_before_hit( obj, hit_data, p_s_hit, p_ignore_flags )
   log2(
     "[%s]: friendly fire registered: %s, weapon = %s (%s)",
     script_name(), obj:name(), tostring( wpn ), tostring( ammo )
+  )
+end
+
+
+function on_npc_death( victim, who )
+  if not who then return end
+  if who:id() ~= db.actor:id() then return end
+  local binder = victim:binded_object()
+  local t      = binder[ script_name() ]
+  if not t.ff_detected then return end
+  if friends_comm[ victim:character_community() ] then
+    local timer_name = script_name() .. ".ff_detected_sms1"
+    if not ogse_st_mgr.timer_exists( timer_name ) then
+      ogse_st_mgr.start_gtimer( timer_name, 19 * 60 , timer_name )
+    end
+  end
+  local gulag = xr_gulag.get_npc_gulag( victim )
+  if gulag then
+    xr_gulag.setGulagEnemy( gulag.name, db.actor )
+  end
+end
+
+
+function ff_detected_sms1()
+  db.actor:change_character_reputation( -50 )
+  local timer_name = script_name() .. ".ff_detected_sms2"
+  if not ogse_st_mgr.timer_exists( timer_name ) then
+    ogse_st_mgr.start_gtimer( timer_name, 5 * 3600 + 11 * 60 , timer_name )
+  end
+  local name, sname = amk_names_lists.get_strings()
+  amk.send_tip(
+    "Видел, как один сталкер с харей покорёженной, парня завалил. От такого всё, что хочешь ждать можно.",
+    string.format( "%s %s", name, sname ),  0, 5, "uniq", "news"
+  )
+  name, sname = amk_names_lists.get_strings()
+  amk.send_tip(
+    "Это кто такой? Знал я одного. Морда ужас! Копчёный или не... На мы букву... В общем понятно всё с таким.",
+    string.format( "%s %s", name, sname ), 15, 5, "uniq", "news"
+  )
+end
+
+
+function ff_detected_sms2()
+  db.actor:change_character_reputation( -250 )
+  local name, sname = amk_names_lists.get_strings()
+  amk.send_tip(
+    string.format(
+      "Народ, слыхали? Один сталкер по кличке %s таким козлом оказался! Своих мужиков кидает... Скот.",
+      dsh.get_actor_name()
+    ),
+    string.format( "%s %s", name, sname ),  0, 5, "uniq","news"
+  )
+  name, sname = amk_names_lists.get_strings()
+  amk.send_tip(
+    "Да убивать за такое нужно! На месте! Чтоб другим неповадно было!",
+    string.format( "%s %s", name, sname ), 15, 5, "uniq", "news"
   )
 end
