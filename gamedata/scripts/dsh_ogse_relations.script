@@ -17,12 +17,16 @@ function attach(sm)
 end
 
 
+local attitude_neutal_threshold = get_float(
+  "game_relations", "attitude_neutal_threshold"
+)
+
 local relation_from_to = {}
 local relation_to_from = {}
 
 function on_goodwill_change( from, to )
   if from == 0 then return end
-  if not relation_seen[ from ] then relation_seen[ from ] = {} end
+  if not relation_from_to[ from ] then relation_from_to[ from ] = {} end
   local goodwill = relation_registry.get_goodwill( from, to )
   if relation_from_to[ from ][ to ] then
     log2(
@@ -31,10 +35,7 @@ function on_goodwill_change( from, to )
       goodwill
     )
   else
-    if ( to == 0 and goodwill < 0 ) or to > 0 then
-      if not relation_from_to[ from ] then
-        relation_from_to[ from ] = {}
-      end
+    if ( to == 0 and goodwill < attitude_neutal_threshold ) or to > 0 then
       relation_from_to[ from ][ to ] = true
     end
     if to > 0 then
@@ -89,8 +90,10 @@ function save()
     for to, _ in pairs( relation_from_to[ from ] ) do
       table.insert( items, to )
     end
-    table.insert( registry, { from, items } )
-    cnt = cnt + table.getn( items )
+    if table.getn( items ) > 0 then
+      table.insert( registry, { from, items } )
+      cnt = cnt + table.getn( items )
+    end
   end
   log2(
     "[%s]: relation table size is %s: %s items",
@@ -140,10 +143,6 @@ function load()
 end
 
 
-local attitude_neutal_threshold = get_float(
-  "game_relations", "attitude_neutal_threshold"
-)
-
 local fix_rel_exceptions = {
   [ "crazy_doctor_npc"    ] = true, -- сумасшедший доктор в X-16
   [ "mil_dolg"            ] = true, -- группа Черепа
@@ -156,32 +155,11 @@ local fix_rel_exceptions = {
   [ "mil_stalker0012"     ] = true, -- Псих на АС
 }
 
-local friends_comm = {
-  [ "ecolog"  ] = true,
-  [ "dolg"    ] = true,
-  [ "freedom" ] = true,
-  [ "green"   ] = true,
-  [ "nebo"    ] = true,
-  [ "stalker" ] = true,
-  [ "trader"  ] = true,
-}
-
 function on_npc_spawn( npc, binder )
-  if db.actor:character_community() ~= "actor" then return end
-  local sobj = alife():object( npc:id() )
-  if not sobj then return end
+  if not npc:alive() then return end
   local comm = npc:character_community()
-  if not friends_comm[ comm ] then return end
-  if
-    fix_rel_exceptions[ npc:name() ]
-    or fix_rel_exceptions[ npc:profile_name() ]
-  then
-    return
-  end
-  local strn_name = dsh_switch_distances.get_smart_terrain_name( sobj )
-  if strn_name and fix_rel_exceptions[ strn_name ] then return end
   local p_gw = npc:goodwill( db.actor )
-  if p_gw <= attitude_neutal_threshold then
+  if p_gw < attitude_neutal_threshold then
     local c_gw = relation_registry.community_goodwill( comm, db.actor:id() )
     if
       c_gw >= attitude_neutal_threshold
@@ -194,8 +172,8 @@ function on_npc_spawn( npc, binder )
         "[%s]: restore goodwill for %s: goowdill = %s, community_goodwill = %s",
         script_name(), npc:name(), p_gw, c_gw
       )
-      npc:set_goodwill( 0, db.actor )
       npc:set_relation( game_object.neutral, db.actor )
+      npc:set_goodwill( 0, db.actor )
       db.actor:clear_personal_record( npc:id(), 0 )
     end
   end
@@ -217,6 +195,10 @@ function on_npc_before_hit( obj, hit_data, p_s_hit, p_ignore_flags )
   end
   if t.ff_detected then return end
   t.ff_detected = true
+  local gulag = xr_gulag.get_npc_gulag( obj )
+  if gulag then
+    t.gulag = gulag.name
+  end
   local wpn, ammo
   if hit_data.weapon_id then
     wpn = level.object_by_id( hit_data.weapon_id )
@@ -232,21 +214,30 @@ function on_npc_before_hit( obj, hit_data, p_s_hit, p_ignore_flags )
 end
 
 
+local friends_comm = {
+  [ "ecolog"  ] = true,
+  [ "dolg"    ] = true,
+  [ "freedom" ] = true,
+  [ "green"   ] = true,
+  [ "nebo"    ] = true,
+  [ "stalker" ] = true,
+  [ "trader"  ] = true,
+}
+
 function on_npc_death( victim, who )
   if not who then return end
   if who:id() ~= db.actor:id() then return end
   local binder = victim:binded_object()
   local t      = binder[ script_name() ]
-  if not t.ff_detected then return end
+  if not ( t and t.ff_detected ) then return end
   if friends_comm[ victim:character_community() ] then
     local timer_name = script_name() .. ".ff_detected_sms1"
     if not ogse_st_mgr.timer_exists( timer_name ) then
       ogse_st_mgr.start_gtimer( timer_name, 19 * 60 , timer_name )
     end
   end
-  local gulag = xr_gulag.get_npc_gulag( victim )
-  if gulag then
-    xr_gulag.setGulagEnemy( gulag.name, db.actor )
+  if t.gulag then
+    xr_gulag.setGulagEnemy( t.gulag, db.actor )
   end
 end
 
