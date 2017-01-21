@@ -1,72 +1,82 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
+local expire_time = game.CTime()
+expire_time:setHMSms( 0, 30, 0, 0 )
+
+
 function attach(sm)
   sm:subscribe({ signal = "on_load", fun = this.on_load })
   sm:subscribe({ signal = "on_save", fun = this.on_save })
 end
 
+
+local deadmans_table = {}
+
 function on_load()
-  ogse.deadmans_table = ogse.load_var( "ogse.deadmans_table", {}, "table" )
-  run_deadmans_timer()
+  local t = ogse.load_var_safe( script_name() .. ".deadmans_table" )
+  if not t then return end
+  local expired_cnt, valid_cnt = 0, 0
+  for _, item in ipairs( t ) do
+    local victim_id, who_id, time = unpack( item )
+    if time > game.get_game_time() then
+      deadmans_table[ victim_id ] = {
+        [ "time"   ] = time,
+        [ "who_id" ] = who_id,
+      }
+      valid_cnt = valid_cnt + 1
+    else
+      expired_cnt = expired_cnt + 1
+    end
+  end
+  log2(
+    "[%s]: loaded: valid = %s, expired = %s",
+    script_name() valid_cnt, expired_cnt
+  )
 end
+
 
 function on_save()
-  ogse.save_var( "ogse.deadmans_table", ogse.deadmans_table, "table" )
-end
-
-function on_update()
-  -- зачистка таблички сохраненных трупиков
-  for k, v in pairs( ogse.deadmans_table ) do
-    local time_died, killer = 1, 1
-    local a = 0
-    for word in string.gfind( v, "%d+" ) do
-      if a == 0 then
-        time_died = tonumber( word )
-      else
-        killer = tonumber( word )
-      end
-      a = a + 1
-    end
-    local sobj = alife():object( k )
-    if not sobj then
-      ogse.deadmans_table[ k ] = nil
+  local expired, valid = {}, {}
+  for id, v in pairs( deadmans_table ) do
+    if v.time > game.get_game_time() then
+      table.insert( valid, { id, v.who_id, v.time } )
     else
-      sobj = alife():object( killer )
-      if not sobj then
-        ogse.deadmans_table[ k ] = nil
-      else
-        if time_died + ( 30 * 60 * 1000 ) <= game.time() then
-          ogse.deadmans_table[ k ] = nil
-        end
-      end
+      table.insert( expired, id )
     end
   end
-end
-
-
-local deadmans_t
-function run_deadmans_timer()
-  if not deadmans_t then
-    deadmans_t = check_deadmans_timer():start( true )
+  for _, id in ipairs( expired ) do
+    deadmans_table[ id ] = nil
   end
-end
-
-class "check_deadmans_timer" ( ogse_qt.quick_timer )
-function check_deadmans_timer:__init() super()
-end
-
-function check_deadmans_timer:condition()
-  for k, v in pairs( ogse.deadmans_table ) do
-    return false
+  if table.getn( valid ) > 0 then
+    ogse.save_var(
+      script_name() .. ".deadmans_table", valid, "array_template",
+      { "u16", "u16", "time" }
+    )
+  else
+    ogse.delete_var( script_name() .. ".deadmans_table" )
   end
-  return true
+  log2(
+    "[%s]: saved: valid = %s, expired = %s",
+    script_name() table.getn( valid ), table.getn( expired )
+  )
 end
 
-function check_deadmans_timer:action()
-  deadmans_t = nil
+
+function add_fresh_deadman( victim_id, who_id )
+  deadmans_table[ victim_id ] = {
+    [ "time"   ] = game.CTime( game.get_game_time() + expire_time ),
+    [ "who_id" ] = who_id,
+  }
 end
 
-function check_deadmans_timer:update()
-  ogse_signals.get_mgr():reschedule( math.random( 10000, 12000 ) )
-  on_update()
+
+function is_fresh_deadman( id )
+  local t = deadmans_table[ id ]
+  if t then
+    if t.time > game.get_game_time() then
+      return t.who_id
+    else
+      deadmans_table[ id ] = nil
+    end
+  end
 end
