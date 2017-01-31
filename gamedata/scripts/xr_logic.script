@@ -1425,47 +1425,32 @@ local pstor_boolean = 2
 local pstor_custom  = 3
 
 function pstor_is_registered_type( tv )
-  if
-    tv ~= "boolean" and tv ~= "string" and tv ~= "number" and tv ~= "userdata"
-  then
-    return false
-  end
-  return true
+  return (
+    tv == "boolean" or tv == "string" or tv == "number" or tv == "userdata"
+  )
 end
 
 
--- ¬ÂÌÂÚ Ë‰ ‡ÍÚÓ‡, ÂÒÎË ÔÂÂÏÂÌÌÓÈ ÌÂÚ ‚ Ú‡·ÎËˆÂ
--- tabl_netpda_varnames ·˚ÒÚÂÂ (˜ÚÓ·˚ ÌÂ ÔÂÂ·Ë‡Ú¸ Ú‡·ÎËˆÛ) - ÚÓÎ¸ÍÓ
--- ÛÍ‡Á˚‚‡Ú¸ Á‡ÔËÒ¸ ÍÓÌÍÂÚÌÓÈ ÔÂÂÏÂÌÌÓÈ Ì‡ œƒ¿
-function get_pda_id( var_name, action )
-  local pda_id = 0
-  if tabl_netpda_varnames[ var_name ] == true then
-    pda_id = netpacket_pda_create.create_pda()
-    -- log1(
-    --   "load ~#I#:" .. string.format(
-    --     "" .. action .. " " .. var_name .. " Ì‡ " .. pda_id
-    --   )
-    -- )
-    return pda_id
-  end
-  return pda_id
+function is_actor_pstor( obj )
+  if obj:id() == 0 then return true end
+  return obj:id() == netpacket_pda_create.create_pda()
 end
 
 
 function pstor_store( obj, varname, val )
   if not obj then return end
-  local npc_id = 0
-  if tabl_netpda_varnames[ varname ] == true then
-    npc_id = netpacket_pda_create.create_pda()
-  else
-    npc_id = obj:id()
-  end
+  local npc_id = obj:id()
   if db.storage[ npc_id ].pstor == nil then
     db.storage[ npc_id ].pstor = {}
   end
   local tv = type( val )
-  if not pstor_is_registered_type( tv ) then
-    -- log1( "xr_logic: pstor_store: not registered type encountered - write in pstor_store cancalled" )
+  ASSERT(
+    pstor_is_registered_type( tv ),
+    "[%s]: %s isn't registered type: %s",
+    script_name(), tostring( varname ), tv
+  )
+  if is_actor_pstor( obj ) and tv ~= "userdata" then
+    amk.save_variable( varname, val )
   else
     db.storage[ npc_id ].pstor[ varname ] = val
   end
@@ -1474,12 +1459,14 @@ end
 
 function pstor_retrieve( obj, varname, defval, delvar )
   if not obj then return defval end
-  local npc_id = 0
-  if tabl_netpda_varnames[ varname ] == true then
-    npc_id = netpacket_pda_create.create_pda()
-  else
-    npc_id = obj:id()
+  if is_actor_pstor( obj ) then
+    local value = amk.load_variable( varname, defval )
+    if delvar then
+      amk.del_variable( varname )
+    end
+    return value
   end
+  local npc_id = obj:id()
   if db.storage[ npc_id ].pstor ~= nil then
     local val = db.storage[ npc_id ].pstor[ varname ]
     if val ~= nil then
@@ -1496,10 +1483,7 @@ function pstor_retrieve( obj, varname, defval, delvar )
       return val
     end
   end
-  if defval ~= nil then
-    return defval
-  end
-  return nil
+  if defval ~= nil then return defval end
 end
 
 
@@ -1541,7 +1525,10 @@ function pstor_save_all( obj, packet )
   packet:w_u32( ctr )
 
   for k, v in pairs( pstor ) do
-    -- log2( "[%s]: %s: %s = %s", script_name(), obj:name(), tostring( k ), tostring( v )  )
+    -- log2(
+    --   "[%s]: %s: %s = %s",
+    --   script_name(), obj:name(), tostring( k ), tostring( v )
+    -- )
     packet:w_stringZ( k )
     local tv = type( v )
     if tv == "number" then
@@ -1563,10 +1550,8 @@ function pstor_save_all( obj, packet )
       v:save( packet )
     else
       abort(
-        "xr_logic: pstor_save_all: not registered type encountered in ",
-        " NPC " .. tostring( obj:name() )
-          .. " varname " .. tostring( k )
-          .. " value "   .. tostring( v )
+        "[%s]: %s: unknown type: %s = %s",
+        script_name(), obj:name(), tostring( k ), tostring( v )
       )
     end
   end
@@ -1577,18 +1562,16 @@ function pstor_save_all( obj, packet )
     script_name(), obj:name(), ctr, ( pos2 - pos1 )
   )
 
-  if db.actor then
-    if npc_id == db.actor:id() then
-      log2(
-        "[%s]: [actor]: pstor_save_all saved: ctr = %s, wrote %s",
-        script_name(), ctr, ( pos2 - pos1 )
-      )
-    elseif npc_id == netpacket_pda_create.create_pda() then
-      log2(
-        "[%s]: [netpacket_pda]: pstor_save_all saved: ctr = %s, wrote %s",
-        script_name(), ctr, ( pos2 - pos1 )
-      )
-    end
+  if npc_id == 0 then
+    log2(
+      "[%s]: [actor]: pstor_save_all saved: ctr = %s, wrote %s",
+      script_name(), ctr, ( pos2 - pos1 )
+    )
+  elseif npc_id == netpacket_pda_create.create_pda() then
+    log2(
+      "[%s]: [netpacket_pda]: pstor_save_all saved: ctr = %s, wrote %s",
+      script_name(), ctr, ( pos2 - pos1 )
+    )
   end
 end
 
@@ -1602,7 +1585,7 @@ function pstor_load_all( obj, reader )
   end
 
   if
-    obj:name() == "single_player"
+    npc_id == 0
     and ogse.var_exists( script_name() .. ".actor_pstor" )
   then
     reader = ogse.load_var( script_name() .. ".actor_pstor" )
@@ -1612,65 +1595,39 @@ function pstor_load_all( obj, reader )
   local ctr  = reader:r_u32()
   -- log2( "[%s]: %s: ctr = %s", script_name(), obj:name(), tostring( ctr ) )
 
-  if db.actor then
-    if
-      ctr > 20
-      and obj:name() ~= "single_player"
-      and npc_id ~= db.actor:id()
-      and npc_id ~= netpacket_pda_create.create_pda()
-    then
-      log2(
-        "Œ¡Õ¿–”∆≈Õ Œ¡⁄≈ “ — œŒ¬–≈∆ƒ≈ÕÕ€Ã PSTOR: %s ¡”ƒ≈“ œ–Œ»«¬≈ƒ≈Õ¿ œŒœ€“ ¿ ¬Œ——“¿ÕŒ¬À≈Õ»ﬂ",
-        obj:name()
-      )
-      remove_zavis.remove_obj( obj )
-      ctr = 0
-    end
-  else
-    if
-      ctr > 20
-      and obj:name() ~= "single_player"
-      and npc_id ~= netpacket_pda_create.create_pda()
-    then
-      log2(
-        "Œ¡Õ¿–”∆≈Õ Œ¡⁄≈ “ — œŒ¬–≈∆ƒ≈ÕÕ€Ã PSTOR: %s ¡”ƒ≈“ œ–Œ»«¬≈ƒ≈Õ¿ œŒœ€“ ¿ ¬Œ——“¿ÕŒ¬À≈Õ»ﬂ",
-        obj:name()
-      )
-      remove_zavis.remove_obj( obj )
-      ctr = 0
-    end
+  if ctr > 20 and not is_actor_pstor( obj ) then
+    log2(
+      "Œ¡Õ¿–”∆≈Õ Œ¡⁄≈ “ [%s] — œŒ¬–≈∆ƒ≈ÕÕ€Ã PSTOR, ¡”ƒ≈“ œ–Œ»«¬≈ƒ≈Õ¿ œŒœ€“ ¿ ¬Œ——“¿ÕŒ¬À≈Õ»ﬂ",
+      obj:name()
+    )
+    remove_zavis.remove_obj( obj )
+    ctr = 0
   end
 
   for i = 1, ctr do
     local varname = reader:r_stringZ()
     local tn      = reader:r_u8()
-    -- log2( "[%s]: %s: %s = %s", script_name(), obj:name(), tostring( varname ), tostring( tn )  )
+    -- log2(
+    --   "[%s]: %s: %s = %s",
+    --   script_name(), obj:name(), tostring( varname ), tostring( tn )
+    -- )
     if tn == pstor_number then
-      pstor[ varname ] = reader:r_float()
+      pstor_store( obj, varname, reader:r_float() )
     elseif tn == pstor_string then
-      pstor[ varname ] = reader:r_stringZ()
+      pstor_store( obj, varname, reader:r_stringZ() )
     elseif tn == pstor_boolean then
-      pstor[ varname ] = reader:r_bool()
+      pstor_store( obj, varname, reader:r_bool() )
     elseif tn == pstor_custom then
       local classname = reader:r_stringZ()
-      if classname == "" then
-        classname = varname
-      end
-      if pstor ~= nil then
-        pstor[ varname ] = pstor_custom_impl[ classname ]()
-        pstor[ varname ]:load( reader )
-      else
-        local text = obj:name() .. " id: " .. npc_id ..
-          " ctr: " .. tonumber( ctr ) .. " i = " .. i .. " pstor_custom ÔÛÒÚ!"
-        log1( "load ~#I#: pstor==nil:" .. string.format( text ) )
-      end
+      if classname == "" then classname = varname end
+      pstor[ varname ] = pstor_custom_impl[ classname ]()
+      pstor[ varname ]:load( reader )
     else
-      pstor[ varname ] = nil
+      abort(
+        "[%s]: %s: unknown type: %s ( %s )",
+        script_name(), obj:name(), tostring( varname ), tostring( tn )
+      )
     end
-    -- printf(
-    --   "_bp: pstor_load_all: loaded [%s]='%s'",
-    --   varname, utils.to_str( pstor[ varname ] )
-    -- )
   end
   local pos2 = reader:r_tell()
   ASSERT(
@@ -1679,7 +1636,7 @@ function pstor_load_all( obj, reader )
     script_name(), obj:name(), ctr, ( pos2 - pos1 )
   )
 
-  if obj:name() == "single_player" then
+  if npc_id == 0 then
     ogse.delete_var( script_name() .. ".actor_pstor" )
     log2(
       "[%s]: [actor]: pstor_load_all loaded: ctr = %s, read %s",
