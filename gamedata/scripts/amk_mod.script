@@ -533,7 +533,7 @@ function check_for_af_drop( obj, sobj )
   if not ( anom_id and dist < 3 ) then return end
   local a_obj = level.object_by_id( anom_id )
   -- предмет подходит - отправляем его на экспертизу
-  check_af_transform( obj, a_obj, anom_radius )
+  check_af_transform( obj, a_obj )
 end
 
 
@@ -543,206 +543,184 @@ function is_komponent( sect, recept )
   if not recept then recept = afs end
   local prop = amk_utils.get_item_props( sect )
   for _, aka in ipairs( prop.aliases ) do
-    if recept[ aka ] == true then return true end
+    if recept[ aka ] == true then return true, aka end
   end
   return false
 end
 
 
 -- возвра ает значение, возможно из умолчаний
-function get_af_transform_param(name, recept, recepti)
-        local result
-        --get_console():execute("load ~#I#:"..string.format(name.." имя"))
-        if recept[name] ~= nil then
-                result = recept[name]
-        elseif recepti["default"] ~= nil and recepti["default"][name] ~= nil then
-                result = recepti["default"][name]
-        elseif anom_recept_komp["default"] ~= nil and anom_recept_komp["default"][name] ~= nil then
-                result = anom_recept_komp["default"][name]
-        else
-                -- нет информации!!!
-                amk.send_tip("нет информации для "..name.."!","варка артефактов",0,15,"gen_info")
-                result = nil
-        end
-        return result
+function get_af_transform_param( name, recept, recepti )
+  local result
+  if recept[ name ] ~= nil then
+    result = recept[ name ]
+  elseif recepti.default and recepti.default[ name ] ~= nil then
+    result = recepti.default[ name ]
+  elseif
+    anom_recept_komp.default and anom_recept_komp.default[ name ] ~= nil
+  then
+    result = anom_recept_komp.default.[ name ]
+  else
+    abort( "[%s]: get_af_transform_param not found: %s", script_name(), name )
+  end
+  return result
 end
 
--- іолучаем полнvй набор рецептов для аномалии anom_sect
-function fill_recepti_est(anom_sect)
-        local recepti_est = {} -- рецептv для заданной аномалии
-        local anom_name = nil
-        for anom, recepti in pairs(anom_recept_komp["anomalii"]) do
-                if string_find(anom_sect, anom) ~= nil then --нашли в списке аномалиі.
-                        anom_name = anom_recept_komp["anomalii"][anom]["name"]
-                        if anom_recept_komp["anomalii"][anom]["recepti"] then
-                                for info, recept in pairs(recepti["recepti"]) do
-                                        if not recept["not_for_mutator"] and not recept["remove_anomaly"] and db.actor:has_info(info) then
-                                                -- есть рецепт: заносим в таблицу
-                                                recepti_est[info] = {}
-                                                for k, v in pairs(recept) do
-                                                        if type(v) == "table" then
-                                                                recepti_est[info][k] = {}
-                                                                for i, j in pairs(v) do
-                                                                        recepti_est[info][k][i] = j
-                                                                end
-                                                        else
-                                                                recepti_est[info][k] = v
-                                                        end
-                                                end
-                                        end
-                                end
-                        end
-                end
-        end
-        return recepti_est,anom_name
+
+class "af_transform_builder" ( ogse_qt.quick_timer )
+function af_transform_builder:__init( anom_id, pos )
+  self.active      = false
+  self.anom_id     = anom_id
+  self.check_pos   = pos
+  self.recepti_est = {}
+  self.script_name = script_name() .. ".af_transform_builder"
 end
 
+function af_transform_builder:condition()
+  return db.actor:position():distance_to( self.check_pos ) > 10
+end
+
+function af_transform_builder:action()
+  self.active      = false
+  self.recepti_est = {}
+end
+
+function af_transform_builder:update()
+  self.sm:reschedule( 1000 )
+end
 
 -- собираем рецепты, в которых участвует данный компонент
-function find_suitable_af_transform( recepti, sect )
-  local recepti_est     = {}
-  local recept_podhodit = false
+function af_transform_builder:add_object( recepti, obj )
+  local sect  = obj:section()
+  local found = false
   -- собираем рецепты, в которых участвует данный компонент
   for info, recept in pairs( recepti.recepti ) do
-    --есть рецепт и этот компонент в нем участвует
-    if
-      db.actor:has_info( info )
-      and is_komponent( sect, recept.komp )
-    then
-      recept_podhodit = true
-      -- копируем рецепт
-      recepti_est[ info ] = {}
-      for k, v in pairs( recept ) do
-        if type( v ) == "table" then
-          recepti_est[ info ][ k ] = {}
-          for i, j in pairs( v ) do
-            recepti_est[ info ][ k ][ i ] = j
+    -- есть рецепт и этот компонент в нем участвует
+    if db.actor:has_info( info ) and is_komponent( sect, recept.komp ) then
+      if not self.recepti_est[ info ] then
+        -- копируем рецепт
+        self.recepti_est[ info ] = table.clone( recept )
+        local count = 0
+        for _, v in pairs( self.recepti_est[ info ].komp ) do
+          count = count + 1
+        end
+        self.recepti_est[ info ].count = count
+      end
+      local r = self.recepti_est[ info ]
+      for k, v in pairs( r.komp ) do
+        if v ~= true then
+          local obj = level.object_by_id( v )
+          if
+            not ( obj and alife():object( obj:id() ) and not obj:parent() )
+          then
+            r.komp[ k ] = true
+            r.count = r.count + 1
           end
-        else
-          recepti_est[ info ][ k ] = v
         end
       end
-      local count = 0
-      for k, v in pairs( recepti_est[ info ].komp ) do
-        count = count + 1
+      local good, aka = is_komponent( sect, r.komp )
+      if good then
+        found         = true
+        r.komp[ aka ] = obj:id()
+        r.count       = r.count - 1
+        if r.count == 0 then
+          return found, r
+        end
       end
-      recepti_est[ info ].count = count
     end
   end
-  return recept_podhodit, recepti_est
+  return found
 end
 
 
--- проверяет рецептv и компонетv
--- если всї в порядке - запускает варку/мутациі
-function check_af_transform( obj, a_obj, anom_radius )
-  local obj_sect  = obj:section()
-  local obj_pos   = obj:position()
+-- проверяет рецепты и компонеты
+-- если все в порядке - запускает варку/мутации
+local build_af_transform
+function check_af_transform( obj, a_obj )
   local anom_sect = a_obj:section()
-  local anom_pos  = a_obj:position()
-  --поиск по аномалиям
-  local finish = false -- флаг для выхода из циклов
+  -- поиск по аномалиям
   for anom, recepti in pairs( anom_recept_komp.anomalii ) do
-    --нашли в списке аномалию, возле которой стоим
+    -- нашли в списке аномалию, возле которой стоим
     if string.find( anom_sect, anom ) then
-      local recept_podhodit, recepti_est = find_suitable_af_transform(
-        recepti, obj_sect
-      )
+      if build_af_transform then
+        if not build_af_transform.active then
+          build_af_transform = nil
+        elseif build_af_transform.anom_id ~= a_obj:id() then
+          build_af_transform:stop()
+          build_af_transform = nil
+        end
+      end
+      if not build_af_transform then
+        build_af_transform = af_transform_builder(
+          a_obj:id(), db.actor:position()
+        )
+      end
+      local found, rec = build_af_transform:add_object( recepti, obj )
       -- если нашли хоть один имеющийся, подходящий рецепт
-      if recept_podhodit then
-        --и рядом другие компоненты если находим их в выбранных
-        --рецептах, то удаляем их из рецептов как только какой-то
-        --рецепт остается без компонентов - рецепт сработал
-        for i = 1, 65534 do
-          local obj = level.object_by_id( i )
-          if obj and alife():object( i ) and not obj:parent() then
-            local dist = obj:position():distance_to( anom_pos )
-            if
-              ( anom_radius - obj:position():distance_to( anom_pos ) ) > -3
-            then
-              local obj_sect = obj:section()
-              --проверяем отобраннvе рецептv
-              for info, recept in pairs( recepti_est ) do
-                -- если компонент есть в рецепте
-                if is_komponent( obj_sect, recepti_est[ info ].komp ) then
-                  -- добавляем L- компонента для будущего удаления из игры
-                  recepti_est[ info ].komp[ obj_sect ] = obj:id()
-                  -- уменьшаем количество компонентов в рецепте
-                  recepti_est[ info ].count = recepti_est[ info ].count - 1
-                  -- если рецепт пуст, то он сработал
-                  if recepti_est[ info ].count == 0 then
-                    -- устанавливаем все параметры для рецепта,
-                    -- возможно из умолчаний
-                    local cel      = get_af_transform_param(
-                      "cel", recepti_est[ info ], recepti
-                    )
-                    local v_udachi = get_af_transform_param(
-                      "v_udachi", recepti_est[ info ], recepti
-                    )
-                    local v_virogd = get_af_transform_param(
-                      "v_virogd", recepti_est[ info ], recepti
-                    )
-                    local virogd   = get_af_transform_param(
-                      "virogd", recepti_est[ info ], recepti
-                    )
-                    local vremya   = get_af_transform_param(
-                      "vremya", recepti_est[ info ], recepti
-                    )
-                    local komp     = {}
-                    for k, v in pairs( recepti_est[ info ].komp ) do
-                      if v and v ~= true then
-                        komp[ k ] = v
-                      end
-                    end
-                    local remove_anomaly    = get_af_transform_param(
-                      "remove_anomaly", recepti_est[ info ], recepti
-                    )
-                    local remove_anomaly_id = a_obj:id()
-                    local result, udacha    = af_select_result(
-                      v_udachi, v_virogd, virogd, cel, komp
-                    )
-                    local info_portion      = recepti_est[ info ].info
-                    if
-                      cel == nil or v_udachi == nil or v_virogd == nil
-                      or virogd == nil or vremya == nil or remove_anomaly == nil 
-                      or cel == nil and remove_anomaly == false
-                      or v_udachi + v_virogd > 100
-                    then
-                      -- кривой рецепт - выходим
-                      finish = true
-                      break
-                    end
-                    -- неудача
-                    if not udacha then
-                      remove_anomaly = false
-                      info_portion   = nil
-                    end
-                    level.add_pp_effector( "teleport.ppe", 1524, false )
-                    -- запускаем варку/мутациі
-                    as_start_universal_transform_timer(
-                      komp, result, udacha, obj_pos, vremya,
-                      a_obj:game_vertex_id(), a_obj:level_vertex_id(),
-                      info_portion, remove_anomaly, remove_anomaly_id
-                    )
-                    -- удаляем из игрv компонентv рецепта
-                    db.actor:give_info_portion( "biznes_remove_special_item" )
-                    for k, v in pairs( komp ) do
-                      alife():release( alife():object( v ) )
-                    end
-                    db.actor:disable_info_portion( "biznes_remove_special_item" )
-                    -- выходим
-                    finish = true
-                    break
-                  end
-                end
-              end
-            end
+      if found then
+        if rec then
+          if build_af_transform.active then
+            build_af_transform:stop()
           end
-          if finish then break end
+          build_af_transform = nil
+          -- устанавливаем все параметры для рецепта,
+          -- возможно из умолчаний
+          local cel      = get_af_transform_param( "cel",      rec, recepti )
+          local v_udachi = get_af_transform_param( "v_udachi", rec, recepti )
+          local v_virogd = get_af_transform_param( "v_virogd", rec, recepti )
+          local virogd   = get_af_transform_param( "virogd",   rec, recepti )
+          local vremya   = get_af_transform_param( "vremya",   rec, recepti )
+          local komp     = rec.komp
+          local remove_anomaly = get_af_transform_param(
+            "remove_anomaly", rec, recepti
+          )
+          local remove_anomaly_id = a_obj:id()
+          local result, udacha = af_select_result(
+            v_udachi, v_virogd, virogd, cel, komp
+          )
+          local info_portion = rec.info
+          if
+            cel == nil or v_udachi == nil or v_virogd == nil
+            or virogd == nil or vremya == nil or remove_anomaly == nil
+            or cel == nil and remove_anomaly == false
+            or v_udachi + v_virogd > 100
+          then
+            -- кривой рецепт - выходим
+            return
+          end
+          -- неудача
+          if not udacha then
+            remove_anomaly = false
+            info_portion   = nil
+          end
+          level.add_pp_effector( "teleport.ppe", 1524, false )
+          -- запускаем варку / мутацию
+          as_start_universal_transform_timer(
+            komp, result, udacha, obj:position(), vremya,
+            a_obj:game_vertex_id(), a_obj:level_vertex_id(),
+            info_portion, remove_anomaly, remove_anomaly_id
+          )
+          -- удаляем из игрv компонентv рецепта
+          db.actor:give_info_portion( "biznes_remove_special_item" )
+          for k, v in pairs( komp ) do
+            alife():release( alife():object( v ) )
+          end
+          db.actor:disable_info_portion( "biznes_remove_special_item" )
+          -- выходим
+          return
+        else
+          if not build_af_transform.active then
+            build_af_transform:start()
+            build_af_transform.active = true
+          end
+        end
+      else
+        if not build_af_transform.active then
+          build_af_transform = nil
         end
       end
       -- аномалия с рецептами найдена, все дела сделаны - выходим
-      break
+      return
     end
   end
 end
