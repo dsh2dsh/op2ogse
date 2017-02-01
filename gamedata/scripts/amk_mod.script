@@ -522,6 +522,7 @@ end
 --'*****************************************************************************
 
 -- проверка на упавший предмет/артефакт
+local build_af_transform
 function check_for_af_drop( obj, sobj )
   if not level.get_inventory_wnd():IsShown() then return end
   if obj:parent() then return end
@@ -533,7 +534,17 @@ function check_for_af_drop( obj, sobj )
   if not ( anom_id and dist < 3 ) then return end
   local a_obj = level.object_by_id( anom_id )
   -- предмет подходит - отправляем его на экспертизу
-  check_af_transform( obj, a_obj )
+  if build_af_transform then
+    if not build_af_transform:is_same_anomaly( a_obj ) then
+      build_af_transform:shutdown()
+      build_af_transform = af_transform_builder( a_obj, db.actor:position() )
+    end
+  else
+    build_af_transform = af_transform_builder( a_obj, db.actor:position() )
+  end
+  if not build_af_transform:check_af_transform( obj ) then
+    build_af_transform = nil
+  end
 end
 
 
@@ -549,52 +560,65 @@ function is_komponent( sect, recept )
 end
 
 
--- возвра ает значение, возможно из умолчаний
-function get_af_transform_param( name, recept, recepti )
-  local result
-  if recept[ name ] ~= nil then
-    result = recept[ name ]
-  elseif recepti.default and recepti.default[ name ] ~= nil then
-    result = recepti.default[ name ]
-  elseif
-    anom_recept_komp.default and anom_recept_komp.default[ name ] ~= nil
-  then
-    result = anom_recept_komp.default[ name ]
-  else
-    abort( "[%s]: get_af_transform_param not found: %s", script_name(), name )
-  end
-  return result
-end
-
-
 class "af_transform_builder" ( ogse_qt.quick_timer )
-function af_transform_builder:__init( anom_id, pos )
+function af_transform_builder:__init( anom_obj, pos )
   self.active      = false
-  self.anom_id     = anom_id
+  self.anom_id     = anom_obj:id()
+  self.anom_obj    = anom_obj
   self.check_pos   = pos
   self.recepti_est = {}
   self.script_name = script_name() .. ".af_transform_builder"
+  self:find_recipes()
 end
+
 
 function af_transform_builder:condition()
   return db.actor:position():distance_to( self.check_pos ) > 10
 end
 
+
 function af_transform_builder:action()
-  self.active      = false
-  self.recepti_est = {}
+  self.active  = false
+  self.anom_id = nil
 end
+
 
 function af_transform_builder:update()
   self.sm:reschedule( 1000 )
 end
 
+
+function af_transform_builder:shutdown()
+  if self.active then
+    self:stop()
+    self.active = false
+  end
+end
+
+
+function af_transform_builder:find_recipes()
+  local anom_sect = self.anom_obj:section()
+  -- поиск по аномалиям
+  for anom, recipes in pairs( anom_recept_komp.anomalii ) do
+    if string.find( anom_sect, anom ) then
+      self.recipes = recipes
+      break
+    end
+  end
+end
+
+
+function af_transform_builder:is_same_anomaly( a_obj )
+  return ( self.anom_id and self.anom_id == a_obj:id() )
+end
+
+
 -- собираем рецепты, в которых участвует данный компонент
-function af_transform_builder:add_object( recepti, obj )
-  local sect  = obj:section()
+function af_transform_builder:add_object( obj )
   local found = false
+  local sect  = obj:section()
   -- собираем рецепты, в которых участвует данный компонент
-  for info, recept in pairs( recepti.recepti ) do
+  for info, recept in pairs( self.recipes.recepti ) do
     -- есть рецепт и этот компонент в нем участвует
     if db.actor:has_info( info ) and is_komponent( sect, recept.komp ) then
       if not self.recepti_est[ info ] then
@@ -633,96 +657,84 @@ function af_transform_builder:add_object( recepti, obj )
 end
 
 
+-- возвращает значение, возможно из умолчаний
+function af_transform_builder:af_transform_param( name, recept )
+  local result
+  if recept[ name ] ~= nil then
+    result = recept[ name ]
+  elseif self.recipes.default and self.recipes.default[ name ] ~= nil then
+    result = self.recipes.default[ name ]
+  elseif
+    anom_recept_komp.default and anom_recept_komp.default[ name ] ~= nil
+  then
+    result = anom_recept_komp.default[ name ]
+  else
+    abort( "af_transform_param not found: %s", name )
+  end
+  return result
+end
+
+
 -- проверяет рецепты и компонеты
 -- если все в порядке - запускает варку/мутации
-local build_af_transform
-function check_af_transform( obj, a_obj )
-  local anom_sect = a_obj:section()
-  -- поиск по аномалиям
-  for anom, recepti in pairs( anom_recept_komp.anomalii ) do
-    -- нашли в списке аномалию, возле которой стоим
-    if string.find( anom_sect, anom ) then
-      if build_af_transform then
-        if not build_af_transform.active then
-          build_af_transform = nil
-        elseif build_af_transform.anom_id ~= a_obj:id() then
-          build_af_transform:stop()
-          build_af_transform = nil
-        end
-      end
-      if not build_af_transform then
-        build_af_transform = af_transform_builder(
-          a_obj:id(), db.actor:position()
-        )
-      end
-      local found, rec = build_af_transform:add_object( recepti, obj )
-      -- если нашли хоть один имеющийся, подходящий рецепт
-      if found then
-        if rec then
-          if build_af_transform.active then
-            build_af_transform:stop()
-          end
-          build_af_transform = nil
-          -- устанавливаем все параметры для рецепта,
-          -- возможно из умолчаний
-          local cel      = get_af_transform_param( "cel",      rec, recepti )
-          local v_udachi = get_af_transform_param( "v_udachi", rec, recepti )
-          local v_virogd = get_af_transform_param( "v_virogd", rec, recepti )
-          local virogd   = get_af_transform_param( "virogd",   rec, recepti )
-          local vremya   = get_af_transform_param( "vremya",   rec, recepti )
-          local komp     = rec.komp
-          local remove_anomaly = get_af_transform_param(
-            "remove_anomaly", rec, recepti
-          )
-          local remove_anomaly_id = a_obj:id()
-          local result, udacha = af_select_result(
-            v_udachi, v_virogd, virogd, cel, komp
-          )
-          local info_portion = rec.info
-          if
-            cel == nil or v_udachi == nil or v_virogd == nil
-            or virogd == nil or vremya == nil or remove_anomaly == nil
-            or cel == nil and remove_anomaly == false
-            or v_udachi + v_virogd > 100
-          then
-            -- кривой рецепт - выходим
-            return
-          end
-          -- неудача
-          if not udacha then
-            remove_anomaly = false
-            info_portion   = nil
-          end
-          level.add_pp_effector( "teleport.ppe", 1524, false )
-          -- запускаем варку / мутацию
-          as_start_universal_transform_timer(
-            komp, result, udacha, obj:position(), vremya,
-            a_obj:game_vertex_id(), a_obj:level_vertex_id(),
-            info_portion, remove_anomaly, remove_anomaly_id
-          )
-          -- удаляем из игрv компонентv рецепта
-          db.actor:give_info_portion( "biznes_remove_special_item" )
-          for k, v in pairs( komp ) do
-            alife():release( alife():object( v ) )
-          end
-          db.actor:disable_info_portion( "biznes_remove_special_item" )
-          -- выходим
-          return
-        else
-          if not build_af_transform.active then
-            build_af_transform:start()
-            build_af_transform.active = true
-          end
-        end
-      else
-        if not build_af_transform.active then
-          build_af_transform = nil
-        end
-      end
-      -- аномалия с рецептами найдена, все дела сделаны - выходим
-      return
+function af_transform_builder:check_af_transform( obj )
+  if not self.recipes then return false end -- нет рецептов для этой аномалии
+  -- нашли в списке аномалию, возле которой стоим
+  local found, rec = self:add_object( obj )
+  if not found then return self.active end
+  -- предмет подходит к одному из рецептов
+  if not rec then
+    -- рецепт еще не полностью собран
+    if not self.active then
+      -- это был первый предмет из рецепта
+      self.active = true
+      self:start()
     end
+    return self.active
   end
+  -- собрали все предметы для этого рецепта, можно запускать варку
+  self:shutdown()
+  -- устанавливаем все параметры для рецепта, возможно из умолчаний
+  local cel      = self:af_transform_param( "cel",      rec )
+  local v_udachi = self:af_transform_param( "v_udachi", rec )
+  local v_virogd = self:af_transform_param( "v_virogd", rec )
+  local virogd   = self:af_transform_param( "virogd",   rec )
+  local vremya   = self:af_transform_param( "vremya",   rec )
+  local komp     = rec.komp
+  local result, udacha = af_select_result(
+    v_udachi, v_virogd, virogd, cel, komp
+  )
+  local remove_anomaly = self:af_transform_param( "remove_anomaly", rec )
+  ASSERT(
+    not (
+      cel == nil or v_udachi == nil or v_virogd == nil
+      or virogd == nil or vremya == nil or remove_anomaly == nil
+      or cel == nil and remove_anomaly == false
+      or v_udachi + v_virogd > 100
+    ),
+    "wrong recipe: anom_obj = %s, obj = %s",
+    self.anom_obj:name(), obj:name()
+  )
+  local info_portion = rec.info
+  -- неудача
+  if not udacha then
+    remove_anomaly = false
+    info_portion   = nil
+  end
+  level.add_pp_effector( "teleport.ppe", 1524, false )
+  -- запускаем варку / мутацию
+  as_start_universal_transform_timer(
+    komp, result, udacha, obj:position(), vremya,
+    self.anom_obj:game_vertex_id(), self.anom_obj:level_vertex_id(),
+    info_portion, remove_anomaly, self.anom_id
+  )
+  -- удаляем компоненты рецепта
+  db.actor:give_info_portion( "biznes_remove_special_item" )
+  for k, v in pairs( komp ) do
+    alife():release( alife():object( v ) )
+  end
+  db.actor:disable_info_portion( "biznes_remove_special_item" )
+  return false
 end
 
 
