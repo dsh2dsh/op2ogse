@@ -1,15 +1,20 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
-  sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
+  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
 end
 
 
-function on_first_update()
+function on_spawn()
   if has_alife_info( "peshera_go" ) then
-    ogse_signals.get_mgr():subscribe({
-      signal = "on_take", fun = this.peshera_go
-    })
+    init_peshera_table()
+    local sm = ogse_signals.get_mgr()
+    dsh.exec_on_update(
+      function()
+        sm:subscribe({ signal = "on_take", fun = this.peshera_go })
+      end
+    )
+    sm:subscribe({ signal = "on_save", fun = this.peshera_save })
   end
 end
 
@@ -90,98 +95,127 @@ local b = {
     alife():create("skelet_ded", vector():set(a.position.x,a.position.y,a.position.z), a.lv, a.gv)
 end
 
-local peshera_table
+
+local peshera_table = {}
 local function init_peshera_table()
-	if peshera_table == nil then
-		peshera_table = xr_logic.pstor_get_custom(db.actor, "peshera_clear", "peshera_clear")
-	end
+  local t = ogse.load_var_safe( script_name() .. ".peshera_clear" )
+  if t then
+    for _, k in ipairs( t ) do
+      peshera_table[ k ] = true
+    end
+  end
 end
 
-function peshera_drink(obj)
-	if obj:section() == "snotvornoe_tele" then
-		peshera_start()
-	elseif obj:section() == "shaxter_tele" then
-		peshera_end()
-	end
+
+function peshera_save()
+  local t = {}
+  for k, _ in pairs( peshera_table ) do
+    table.insert( t, k )
+  end
+  ogse.save_var(
+    script_name() .. ".peshera_clear", t, "array_template", { "u16" }
+  )
 end
 
-function peshera_go(obj)
-	if has_alife_info("peshera_go") and obj:section() ~= "separator" then
-		init_peshera_table()
-		peshera_table[obj:id()] = true
-	end
+
+function peshera_drink( obj )
+  if obj:section() == "snotvornoe_tele" then
+    peshera_start()
+  elseif obj:section() == "shaxter_tele" then
+    peshera_end()
+  end
 end
+
+
+function peshera_go( obj )
+  if has_alife_info( "peshera_go" ) then
+    peshera_table[ obj:id() ] = true
+  end
+end
+
 
 function peshera_start()
-	local box = obj_by_name("level_prefix_inventory_box_0003")
-	if box then
-		db.actor:give_info_portion("biznes_remove_special_item")
-		db.actor:iterate_inventory(
-			function(dummy,item)
-				if not protected_items.actor_items_keep(item:section()) then
-					db.actor:transfer_item(level.object_by_id(item:id()), box)
-				end
-			end
-		,db.actor)
-		alife():create("zamok", vector():set(0,0,0), 0, 0, box:id())
-		db.actor:disable_info_portion("biznes_remove_special_item")
-	end
-	
-	create_teleport("peshera_blok_tp",vector():set(-112.609199523926,-9.9281539916992,-34.9218902587891),12288,2868)
-
-	db.actor:give_info_portion("peshera_go")
-	init_peshera_table()
-	if level.get_game_difficulty() < 2 then
-		snp.invul_on()
-	end
+  local box = obj_by_name( "level_prefix_inventory_box_0003" )
+  if box then
+    db.actor:give_info_portion( "biznes_remove_special_item" )
+    db.actor:iterate_inventory(
+      function( dummy, item )
+        if not protected_items.actor_items_keep( item:section() ) then
+          db.actor:transfer_item( level.object_by_id( item:id() ), box )
+        end
+      end
+      , db.actor
+    )
+    alife():create( "zamok", vector():set( 0, 0, 0), 0, 0, box:id() )
+    db.actor:disable_info_portion("biznes_remove_special_item")
+  end
+  create_teleport(
+    "peshera_blok_tp",
+    vector():set( -112.609199523926, -9.9281539916992, -34.9218902587891 ),
+    12288, 2868
+  )
+  db.actor:give_info_portion( "peshera_go" )
+  if level.get_game_difficulty() < 2 then
+    snp.invul_on()
+  end
 end
+
 
 function peshera_end()
-	snp.invul_off()
-	db.actor:give_info_portion("biznes_remove_special_item")
-	db.actor:iterate_inventory(
-		function(dummy,item)
-			if not protected_items.actor_items_keep(item:section()) then
-				alife():release(alife():object(item:id()))
-			end
-		end
-	,db.actor)
-	
-	local obj
-	init_peshera_table()
-	for k,v in pairs(peshera_table) do
-		obj = alife():object(k)
-		if obj and obj.parent_id ~= db.actor:id() and not protected_items.actor_items_keep(obj:section_name()) then
-			alife():release(obj)
-		end
-	end
-	db.actor:disable_info_portion("biznes_remove_special_item")
-	xr_logic.pstor_clear_custom(db.actor, "peshera_clear")
+  snp.invul_off()
+  db.actor:give_info_portion( "biznes_remove_special_item" )
+  db.actor:iterate_inventory(
+    function( dummy, item )
+      if not protected_items.actor_items_keep( item:section() ) then
+        alife():release( alife():object( item:id() ) )
+      end
+    end
+    , db.actor
+  )
+  for k, v in pairs( peshera_table ) do
+    local obj = alife():object( k )
+    if
+      obj and obj.parent_id ~= db.actor:id()
+      and not protected_items.actor_items_keep( obj:section_name() )
+    then
+      alife():release( obj )
+    end
+  end
+  db.actor:disable_info_portion( "biznes_remove_special_item" )
+  ogse.delete_var( script_name() .. ".peshera_clear" )
+  local sm = ogse_signals.get_mgr()
+  for id, is_npc in pairs( db.creature ) do
+    if not is_npc then
+      local sobj = alife():object( id )
+      if sobj then
+        alife():release( sobj )
+        sm:call( "on_release_npc", id )
+      end
+    end
+  end
 
-	for id,obj in pairs(db.creatures) do
-		if obj and IAmAMonster[obj:clsid()] then
-			alife():release(alife():object(id))
-		end
-	end
+  for i = 1, 65534 do
+    local obj = alife():object( i )
+    if obj then
+      if
+        obj:section_name() == "af_part_monolit"
+        or obj:section_name() == "m_inventory_box16"
+      then
+        alife():release( obj )
+      elseif
+        obj:section_name() == "dsh_treasure_item"
+        and object_level_name( obj ) == "peshera"
+      then
+        dsh_rukzak.save_rukzak( obj.id, {} )
+        alife():release( obj )
+      end
+    end
+  end
 
-	for i=1,65535 do
-		obj = alife():object(i)
-		if obj then
-			if obj:section_name() == "af_part_monolit" or obj:section_name() == "m_inventory_box16" then
-				alife():release(obj)
-			elseif
-                          obj:section_name() == "dsh_treasure_item"
-                          and object_level_name( obj ) == "peshera"
-                        then
-                          dsh_rukzak.save_rukzak( obj.id, {} )
-                          alife():release( obj )
-			end
-		end
-	end
-
-	delete_teleport("peshera_blok_tp")
-	db.actor:disable_info_portion("peshera_go")
+  delete_teleport( "peshera_blok_tp" )
+  db.actor:disable_info_portion( "peshera_go" )
 end
+
 
 -- Поиск онлайнового объекта по его name в all.spawn
 function obj_by_name(name)
