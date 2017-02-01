@@ -1086,7 +1086,7 @@ function generate_anoms()
       local res = generate_anomaly()
       if res then
         cnt = cnt + 1
-        add_anomaly( res.id, res.position, res.radius, res )
+        add_anomaly( res.id, res.position, 5, res )
       elseif res == false then
         log2(
           "[%s]: I give up here: %s, %s / %s anomalies generated",
@@ -1436,6 +1436,15 @@ function spawn_anomaly( section, pos, gv, lv, shape, status )
 end
 
 
+function modify_anomaly_custom_data( cd, status )
+  cd = m_net_utils.parse_custom_data( cd )
+  if not cd then cd = {} end
+  if not cd.dyn_anom then cd.dyn_anom = {} end 
+  cd.dyn_anom.status = status
+  return m_net_utils.gen_custom_data( cd )
+end
+
+
 function spawn_art( section, pos, gv, lv )
   if section then
     return amk.spawn_item( section, pos, gv, lv )
@@ -1554,12 +1563,16 @@ end
 
 
 local anomaly_statuses = {}
-function get_anomaly_status( sobj )
+function get_anomaly_status( sobj, data )
   if not anomaly_statuses[ sobj.id ] then
-    local tbl = m_net_utils.get_anomaly_data( sobj )
-    local cd  = create_ini_file( tbl.custom )
-    anomaly_statuses[ sobj.id ] = cd:section_exist( "dyn_anom" )
-      and get_string( "dyn_anom", "status", "", cd )
+    if not data then
+      local pk = get_netpk( sobj, 1 )
+      ASSERT( ( pk and pk:isOk() ), "can't read netpacket of %s", sobj:name() )
+      data = pk:get()
+    end
+    local cd = data.custom_data:getTable()
+    anomaly_statuses[ sobj.id ] = cd.dyn_anom
+      and cd.dyn_anom.status
       or  ""
   end
   return anomaly_statuses[ sobj.id ]
@@ -1572,21 +1585,16 @@ function is_anomaly( class_id, sobj )
 end
 
 
-function modify_anomaly_custom_data( cd, status )
-  cd = m_net_utils.parse_custom_data( cd )
-  if not cd then cd = {} end
-  if not cd.dyn_anom then cd.dyn_anom = {} end 
-  cd.dyn_anom.status = status
-  return m_net_utils.gen_custom_data( cd )
-end
-
-
 function set_anomaly_status( sobj, status, fast )
   if sobj then
     if not fast then
-      local tbl = m_net_utils.get_anomaly_data( sobj )
-      tbl.custom = modify_anomaly_custom_data( tbl.custom, status )
-      m_net_utils.set_anomaly_data( tbl, sobj )
+      local pk = get_netpk( sobj, 1 )
+      ASSERT( ( pk and pk:isOk() ), "can't read netpacket of %s", sobj:name() )
+      local data = pk:get()
+      local cd   = data.custom_data:getTable()
+      if not cd.dyn_anom then cd.dyn_anom = {} end 
+      cd.dyn_anom.status = status
+      pk:set( data )
     end
     set_online_anomaly_status( sobj.id, status )
     anomaly_statuses[ sobj.id ] = status
@@ -1786,11 +1794,16 @@ function anom_binder:net_spawn( sobj )
   if not object_binder.net_spawn( self, sobj ) then
     return false
   end
-  local status = get_anomaly_status( sobj )
+  local pk = get_netpk( sobj, 1 )
+  ASSERT( ( pk and pk:isOk() ), "can't read netpacket of %s", sobj:name() )
+  local data   = pk:get()
+  local radius = data.shapes:getRadius()
+  sobj.radius  = radius
+  local status = get_anomaly_status( sobj, data )
   if status == "del" or status == "off" then
     self.object:disable_anomaly()
   else
-    add_anomaly( sobj.id, sobj.position, sobj.radius, sobj )
+    add_anomaly( sobj.id, sobj.position, radius, sobj )
     self.sm:call( "on_anomaly_spawn", self.object, self )
   end
   return true
@@ -1815,7 +1828,7 @@ function add_anomaly( id, pos, radius, sobj )
   anom_list[ id ] = {
     pos      = pos,
     clsid    = sobj:clsid(),
-    radius   = radius or 0.0,
+    radius   = radius or 0,
     section  = sobj:section_name(),
     location = lname
   }
