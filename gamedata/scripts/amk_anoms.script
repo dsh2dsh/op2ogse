@@ -967,18 +967,9 @@ function after_blow_on()
       end
     end
   )
-  for id = 1, 65534 do
-    local sobj = alife():object( id )
-    if
-      sobj and object_level_name( sobj ) == lname
-      and (
-        IsStalker( sobj ) or IsMonster( sobj )
-        or sobj:clsid() == clsid.smart_terrain
-      )
-    then
-      forbidden_lvids[ sobj.m_level_vertex_id ] = true
-      table.insert( forbidden_pos, sobj.position )
-    end
+  for _, sobj in ipairs( get_all_mobs( lname ) ) do
+    forbidden_lvids[ sobj.m_level_vertex_id ] = true
+    table.insert( forbidden_pos, sobj.position )
   end
   if level_vertexes[ lname ] and level_anoms[ lname ] then
     generate_anoms()
@@ -986,6 +977,28 @@ function after_blow_on()
   end
   generate_new_arts()
   forbidden_pos = {}
+end
+
+
+function get_all_mobs( lname )
+  local mobs = {}
+  for id, sobj in pairs( se_stalker.stalkers ) do
+    if
+      ( not lname )
+      or object_level_name( sobj ) == lname
+    then
+      table.insert( mobs, sobj )
+    end
+  end
+  for id, sobj in pairs( se_monster.monsters ) do
+    if
+      ( not lname )
+      or object_level_name( sobj ) == lname
+    then
+      table.insert( mobs, sobj )
+    end
+  end
+  return mobs
 end
 
 
@@ -1015,20 +1028,14 @@ function pre_blow_off()
       end
     end
   )
-  for id = 1, 65534 do
-    local sobj = alife():object( id )
-    if sobj then
-      local map = object_level_name( sobj )
-      if is_generated_anomaly( sobj ) then
-        alife():release( sobj, true )
-      elseif
-        map == level.name()
-        and ( IsStalker( sobj ) or IsMonster( sobj ) )
-      then
-        forbidden_lvids[ sobj.m_level_vertex_id ] = true
-        table.insert( forbidden_pos, sobj.position )
-      end
+  for id, sobj in pairs( se_zones.anoms ) do
+    if is_generated_anomaly( sobj ) then
+      alife():release( sobj, true )
     end
+  end
+  for _, sobj in ipairs( get_all_mobs( level.name() ) ) do
+    forbidden_lvids[ sobj.m_level_vertex_id ] = true
+    table.insert( forbidden_pos, sobj.position )
   end
 end
 
@@ -1567,220 +1574,9 @@ function check_coordinates( pos, lname )
 end
 
 
-local anomaly_statuses = {}
-function get_anomaly_status( sobj, data )
-  if not anomaly_statuses[ sobj.id ] then
-    if not data then
-      local pk = get_netpk( sobj, 1 )
-      ASSERT( ( pk and pk:isOk() ), "can't read netpacket of %s", sobj:name() )
-      data = pk:get()
-    end
-    local cd = data.custom_data:getTable()
-    anomaly_statuses[ sobj.id ] = cd.dyn_anom
-      and cd.dyn_anom.status
-      or  ""
-  end
-  return anomaly_statuses[ sobj.id ]
-end
-
-
 function is_anomaly( class_id, sobj )
   if sobj and is_generated_anomaly( sobj ) then return true end
   return ( class_id and anoms_classes[ class_id ] == true )
-end
-
-
-function set_anomaly_status( sobj, status, fast )
-  if sobj then
-    if not fast then
-      local pk = get_netpk( sobj, 1 )
-      ASSERT( ( pk and pk:isOk() ), "can't read netpacket of %s", sobj:name() )
-      local data = pk:get()
-      local cd   = data.custom_data:getTable()
-      if not cd.dyn_anom then cd.dyn_anom = {} end 
-      cd.dyn_anom.status = status
-      pk:set( data )
-    end
-    set_online_anomaly_status( sobj.id, status )
-    anomaly_statuses[ sobj.id ] = status
-  end
-end
-
-
-function set_online_anomaly_status( obj_id, status )
-  local obj = level.object_by_id( obj_id )
-  if obj then
-    if status == "off" or status=="del" then
-      obj:disable_anomaly()
-      remove_anomaly( obj_id )
-      restrictor_deleted( obj_id, obj:name() )
-    else
-      obj:enable_anomaly()
-      local sobj = alife():object( obj_id )
-      add_anomaly( obj_id, sobj.position, sobj.radius, sobj )
-    end
-  end
-end
-
-
---[[-------------------------- function for spawn ---------------------end--]]
---[[-------------------------- npc and anom_binder -------------------------]]
-local anoms_for_npc={}
-local npcs_for_anom={}
-local actual_anoms_for_npc={}
-local npc_restrictors_need_update={}
-
-
-function init_if_needed( nid )
-  if not anoms_for_npc[ nid ] then anoms_for_npc[ nid ] = {} end
-  if not actual_anoms_for_npc[ nid ] then
-    actual_anoms_for_npc[ nid ] = {}
-  end
-  return anoms_for_npc[ nid ], actual_anoms_for_npc[ nid ]
-end
-
-
-function add_restriction( npc, id, name )
-  local nid = npc:id()
-  if name == nil then
-    name = ( level.object_by_id( id ) and level.object_by_id( id ):name() )
-  end
-  if not name then
-    get_console():execute("load ~~~ add_restriction(): Warning! Nonexistent restrictor id "..id)
-    return
-  end
-  init_if_needed( nid )
-  if anoms_for_npc[ nid ][ id ] then
-  else
-    anoms_for_npc[ nid ][ id ] = name
-    npc_restrictors_need_update[ nid ]=true
-  end
-end
-
-
-function remove_restriction(npc,id,name,immed)
-  local nid=npc:id()
-  if name==nil then
-    name=(level.object_by_id(id) and level.object_by_id(id):name())
-  end
-  if not name then
-    abort("remove_restriction(): Nonexistent restrictor id "..id)
-    return
-  end
-  init_if_needed(nid)
-  if immed then
-    if actual_anoms_for_npc[nid][id] then
-      npc:remove_restrictions("",name) actual_anoms_for_npc[nid][id]=nil npcs_for_anom[id][nid]=nil
-    end
-    if anoms_for_npc[nid][id] then
-      anoms_for_npc[nid][id]=nil
-    end
-  else
-    if anoms_for_npc[nid][id] then
-      anoms_for_npc[nid][id]=nil npc_restrictors_need_update[nid]=true
-    end
-  end
-end
-
-
-function restrictor_deleted(id,name)
-  for nid,anoms in pairs(anoms_for_npc) do
-    if anoms[id] then
-      anoms[id]=nil npc_restrictors_need_update[nid]=true
-    end
-  end
-end
-
-
-function clear_to_release(id)
-  local cnt
-  if npcs_for_anom[id] then
-    for nid in pairs(npcs_for_anom[id]) do
-      cnt=cnt+1
-    end
-    return cnt==0
-  else
-    return true
-  end
-end
-
-
-function have_pending_sync( npc )
-  local nid = npc:id()
-  return npc_restrictors_need_update[ nid ] == true
-end
-
-
-local max_dynamic_restrictors_count=40
-
-function syncronize( npc )
-  local nid = npc:id()
-  local cnt = 0
-  local anoms, actual = init_if_needed( nid )
-  local disttbl = {}
-  for id in pairs( anoms ) do cnt = cnt + 1 end
-  if cnt > max_dynamic_restrictors_count then
-    local disttbl = {}
-    for id in pairs( anoms ) do
-      local dist = 0
-      local sobj = alife():object( id )
-      if sobj then
-        dist = npc:position():distance_to_sqr( sobj.position )
-      else
-        dist = 1000000
-      end
-      table.insert( disttbl, { id = id,dist = dist } )
-    end
-    table.sort( disttbl, function ( a, b ) return a.dist > b.dist end )
-    for i = 1, cnt - max_dynamic_restrictors_count do
-      anoms[ disttbl[ i ].id ] = nil
-    end
-  end
-  local add, rem = "", ""
-  local first = true
-  for id, name in pairs( actual ) do
-    if not anoms[ id ] then
-      if first then
-        first = false
-        rem = name
-      else
-        rem = name .. "," .. rem
-      end
-      if npcs_for_anom[ id ] then npcs_for_anom[ id ][ nid ] = nil end
-      actual[ id ] = nil
-    end
-  end
-  first = true
-  for id, name in pairs( anoms ) do
-    if not actual[ id ] then
-      if first then
-        first = false
-        add = name
-      else
-        add = name .. "," .. add
-      end
-      if not npcs_for_anom[ id ] then npcs_for_anom[ id ] = {} end
-      npcs_for_anom[ id ][ nid ] = true
-      actual[ id ] = name
-    end
-  end
-  npc:remove_restrictions( "", rem )
-  npc:add_restrictions( "",add )
-  npc_restrictors_need_update[ nid ] = false
-end
-
-
-function unreg_in_anom_manager(npc)
-  local nid=npc:id()
-  local anoms=anoms_for_npc[nid]
-  if anoms then
-    for aid in pairs(anoms) do
-      if npcs_for_anom[aid] then
-        npcs_for_anom[aid][nid]=nil
-      end
-    end
-    anoms_for_npc[nid]=nil
-  end
 end
 
 
@@ -1804,13 +1600,8 @@ function anom_binder:net_spawn( sobj )
   local data   = pk:get()
   local radius = data.shapes:getRadius()
   sobj.radius  = radius
-  local status = get_anomaly_status( sobj, data )
-  if status == "del" or status == "off" then
-    self.object:disable_anomaly()
-  else
-    add_anomaly( sobj.id, sobj.position, radius, sobj )
-    self.sm:call( "on_anomaly_spawn", self.object, self )
-  end
+  add_anomaly( sobj.id, sobj.position, radius, sobj )
+  self.sm:call( "on_anomaly_spawn", self.object, self )
   return true
 end
 
@@ -1842,7 +1633,6 @@ end
 
 function remove_anomaly( id )
   anom_list[ id ] = nil
-  anomaly_statuses[ id ] = nil
 end
 
 
