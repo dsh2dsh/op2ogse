@@ -1,8 +1,14 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
 ----------------------------------------------
 -- Copyright (c) 2007 Dmitri 'Red75' Roschin                                              
 ----------------------------------------------
 -- Blowout hide v0.25 Behavioral scheme 
 ----------------------------------------------
+
+function attach( sm )
+  sm:subscribe({ signal = "on_after_blowout", fun = this.on_after_blowout })
+end
+
 
 evid_blowout=18572
 evid_outside=evid_blowout+1
@@ -17,6 +23,23 @@ actid_monopray=evid_blowout+3
 actid_anomaly=evid_blowout+4
 
 
+local evaluate_blowout_until
+function on_after_blowout()
+  -- что бы evaluator_blowout отпускал неписей только после того, как
+  -- ogse_anomaly_evader обновит для них ограничения.
+  evaluate_blowout_until = time_global() + ogse_anomaly_evader.get_freq() * 3
+end
+
+
+function get_blowout_step()
+  local blowout = amk.load_variable( "blowout", 0 )
+  if evaluate_blowout_until and evaluate_blowout_until > time_global() then
+    blowout = 5
+  end
+  return blowout
+end
+
+
 class "evaluator_blowout" (property_evaluator)
 
 function evaluator_blowout:__init(st) super(nil,"evaluator_blowout")  
@@ -24,40 +47,41 @@ function evaluator_blowout:__init(st) super(nil,"evaluator_blowout")
   self.prevblow=0
 end
 
+
 function evaluator_blowout:evaluate()
-  local npc=self.object
-  --get_console():execute("load ~~~eval blowout "..npc:character_name())
-  --get_console():execute("flush")
-  if amk_mod.blowout_type()>0 or xr_wounded.is_wounded(npc) then return false end
-  local blowout=amk.load_variable("blowout",0)
-  if self.prevblow==3 and blowout~=3 then
-    self.prevblow=blowout
-    npc.health=1
+  local npc = self.object
+  if amk_mod.blowout_type() > 0 or xr_wounded.is_wounded( npc ) then
+    return false
   end
-  if blowout==0 and self.st.out_rest then
-    npc:add_restrictions(self.st.out_rest,"") --self.st.in_rest)
-    self.st.out_rest=nil
-    self.st.in_rest=nil
+  local blowout = get_blowout_step()
+  if self.prevblow == 3 and blowout ~= 3 then
+    self.prevblow = blowout
+    npc.health    = 1
   end
-  if blowout==0 then
-    self.st.need_run=false
-  end
-  if blowout==3 then
-    if self.hittime==nil or self.hittime<time_global() then
-      self.hittime=time_global()+1000
-      if amk_mod.on_blowout_hit(npc,self.st.hide) then
-        self.st.need_run=true
+  if blowout == 0 then
+    if self.st.out_rest then
+      npc:add_restrictions( self.st.out_rest, "" )
+      self.st.out_rest = nil
+      self.st.in_rest  = nil
+    end
+    self.st.need_run = false
+  elseif blowout == 3 then
+    if ( not self.hittime ) or self.hittime < time_global() then
+      self.hittime = time_global() + 1000
+      if amk_mod.on_blowout_hit( npc, self.st.hide ) then
+        self.st.need_run = true
         if npc:alive() then
-          xr_wounded.hit_callback(npc:id())
+          xr_wounded.hit_callback( npc:id() )
         end
       end
     end
   end
-  if self.st.washitat and self.st.washitat>time_global() then
+  if self.st.washitat and self.st.washitat > time_global() then
     return false
   end  
-  return blowout >= 2 and ( not self.st.nohide )
+  return ( blowout >= 2 and ( not self.st.nohide ) )
 end
+
 
 class "evaluator_monolith_blowout" (property_evaluator)
 
@@ -67,7 +91,7 @@ end
 
 function evaluator_monolith_blowout:evaluate()
   if amk_mod.blowout_type()>0 then return false end
-  local blowout=amk.load_variable("blowout",0)
+  local blowout=get_blowout_step()
   return blowout==3
 end
 
@@ -80,7 +104,7 @@ end
 function evaluator_preblowout:evaluate()
   if amk_mod.blowout_type()>0 then return false end
   local npc=self.object
-  local blowout=amk.load_variable("blowout",0)
+  local blowout=get_blowout_step()
   return blowout==1
 end
 
@@ -103,7 +127,7 @@ function evaluator_outside:evaluate()
   end
   self.st.washitat=nil
   if amk_mod.blowout_type()>0 then return false end
-  local blowout=amk.load_variable("blowout",0)
+  local blowout=get_blowout_step()
   if blowout>=2 then
     if self.st.nohide then
       -- Если укрытие невозможно найти, то игнорируем выброс
