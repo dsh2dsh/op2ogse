@@ -135,25 +135,28 @@ function show_must_go_on_real( lvl, btl, wave )
     end
   end
 
-  local sector = get_sector()
   db.actor:give_info_portion( "battle" )
-
-  -- проверяем, не заныкался ли где гг в закутке - можно ли заспавнить
-  -- на нормальном расстоянии от него
-  if cur_wave.dist then
-    local pos, lv = get_pos( cur_wave.dist, sector )
-    if pos:distance_to( db.actor:position() ) < min_good_distance then
-      -- заныкался - откладываем спавн, пока гг не выйдет из укрытия
-      battle_timer( min_good_distance_timeout, lvl, btl, wave )
-      return
-    end
-  end
 
   -- спавн монстров/неписей
   if cur_wave.enemy then
+    -- проверяем, не заныкался ли где гг в закутке - можно ли
+    -- заспавнить на нормальном расстоянии от него
+    local pos, lv
+    if cur_wave.dist then
+      pos, lv = get_pos( cur_wave.dist, get_sector() )
+      if pos:distance_to( db.actor:position() ) < min_good_distance then
+        -- заныкался - откладываем спавн, пока гг не выйдет из укрытия
+        battle_timer( min_good_distance_timeout, lvl, btl, wave )
+        return
+      end
+    end
+    ASSERT(
+      ( pos and lv ),
+      "[%s]: [%s, %s, %s]: enemy without dist found",
+      script_name(), lvl, btl, wave
+    )
     for s, p in pairs( cur_wave.enemy ) do
-      for i =1, p do
-        local pos, lv = get_pos( cur_wave.dist, sector )
+      for i = 1, p do
         dsh.create_free_mob( s, pos, lv, db.actor:game_vertex_id() )
         monster_cnt = monster_cnt + 1
       end
@@ -224,7 +227,7 @@ function reinforcement( lvl, btl, wave, last_monster_cnt )
   end
 
   -- рюкзак спавним с меткой и не далее 10 м от гг, чтобы нашел
-  local pos, lv = get_pos( math.random( 3,10 ) )
+  local pos, lv = get_pos( math.random( 3, 10 ) )
   local ruk = alife():create(
     "m_inventory_box", pos, lv, db.actor:game_vertex_id()
   )
@@ -302,88 +305,52 @@ end
 -- рюкзаков)
 -- Возвращает 2 значения: позицию спавна и левел_вертекс
 function get_pos( dist, sector )
-  local not_random_spawn = sector ~= nil
+  local random_spawn = ( sector == nil )
   if not sector then sector = math.random( 360 ) end
-  local pi2 = math.pi * 2
-  local math_pi_180 = 180 / math.pi
-  local dir = device().cam_dir
-  local actor_pos = db.actor:position()
-  local actor_lv  = db.actor:level_vertex_id()
-  local dist_ok = 1.4           -- двойной шаг АИ сетки
-  -- итератор вращения направления
-  local rotate_angle = math.asin( dist_ok / dist )
+
+  local actor_pos   = db.actor:position()
   -- угол обзора гг, если sector задан - то в видимой зоне не спавним
-  local actor_fov    = math.rad( device().fov / 2 )
-  local cur_angle = 0
-  local cur_pos, cur_vert, cur_dist
-  local best_pos, best_dist     -- наилучшая найденная позиция
+  local actor_fov   = math.rad( device().fov / 2 )
+  local ai_step     = 0.7 -- шаг AI сетки
+  local math_pi_180 = 180 / math.pi
+  local pi2         = math.pi * 2
 
   -- выравниваем вектора по горизонтали
+  local dir = device().cam_dir
   dir = vector():set( dir.x, 0, dir.z ):normalize()
   -- вектор взгляда актора, выравненный горизонтально
   local actor_dir = dir
 
   -- ищем вертекс по сектору
   dir = vector_rotate_y( dir, sector )
-  -- нужная нам позиция
-  local pos     = vector():mad( actor_pos, dir, dist )
-  -- ближайший подходящий вертекс, предложенный движком
-  local vert_ok = level.vertex_in_direction( actor_lv, dir, dist )
-  -- позиция ближайшего подходящего вертекса
-  local pos_ok = level.vertex_position( vert_ok )
-
-  if not_random_spawn then
-    -- Не рандомый спавн вокруг - нужно искать поточнее в указанном секторе
-    -- для начала исключаем очевидные случаи
-    if
-      pos:distance_to(pos_ok) < dist_ok
-      -- сплошная АИ сетка без препятствий - все нашлось само,
-      or actor_pos:distance_to( pos_ok ) > dist
-    then
-      -- либо актор далеко за аи сеткой - спавним в ближайшем
-      -- подходящем вертексе.
-    else
-      -- несплошная АИ сетка или препятствия - ищем вариант получше
-      -- выставляем направление вращения
-      if math.random() < 0.5 then
-        rotate_angle = -rotate_angle
-      end
-      -- продолжим искать от ближайшего предложенного движком вертекса
-      -- в нужном нам направлении
-      best_pos  = pos
-      best_dist = dist
-      repeat
-        -- поворачиваем направление поиска
-        cur_angle = cur_angle + rotate_angle
-        dir = vector_rotate_y( dir, rotate_angle * math_pi_180 )
-        if math.acos( actor_dir:dotproduct( dir ) ) > actor_fov then
-          -- подходящий угол, ищем вертекс
-          pos      = vector():mad( actor_pos, dir, dist )
-          cur_vert = level.vertex_in_direction( actor_lv, dir, dist )
-          cur_pos  = level.vertex_position( cur_vert )
-          cur_dist = pos:distance_to( cur_pos )
-          if cur_dist < dist_ok and no_anomaly_in( cur_pos ) then
-            -- нашли вертекс - выходим
-            pos_ok  = cur_pos
-            vert_ok = cur_vert
-            break
-          end
-          -- точного попадания пока нет - выбираем ближайший по
-          -- расстоянию вертекс
-          if cur_dist < best_dist and no_anomaly_in( cur_pos ) then
-            best_pos  = cur_pos
-            best_dist = cur_dist
-            pos_ok    = cur_pos
-            vert_ok   = cur_vert
+  while dist >= ai_step do
+    -- итератор вращения направления
+    local rotate_angle = math.asin( ai_step / dist )
+    local cur_angle, cur_dir = 0, dir
+    while math.abs( cur_angle ) < pi2 do
+      local d1 = actor_dir:normalize()
+      local d2 = cur_dir:normalize()
+      if math.acos( d1:dotproduct( d2 ) ) > actor_fov then
+        -- подходящий угол, ищем вертекс
+        -- нужная нам позиция
+        local pos     = vector():mad( actor_pos, cur_dir, dist )
+        local vert_ok = level.vertex_id_by_pos( pos )
+        if vert_ok ~= -1 then
+          local vert_pos = level.vertex_position( vert_ok )
+          if no_anomaly_in( vert_pos ) then
+            return vert_pos, vert_ok
           end
         end
-      until math.abs( cur_angle ) > pi2
-      -- обернулись вокруг - точного попадания нет, используем
-      -- ближайший к точке
+      end
+      -- поворачиваем направление поиска
+      cur_angle = cur_angle + rotate_angle
+      cur_dir   = vector_rotate_y( cur_dir, rotate_angle * math_pi_180 )
     end
+    dist = dist - ai_step
   end
 
-  return pos_ok, vert_ok
+  -- прошлись по спирали и ничего не нашли
+  return actor_pos, db.actor:level_vertex_id()
 end
 
 
@@ -407,8 +374,8 @@ end
 
 -- проверка попадания точки спавна в аномалию
 function no_anomaly_in( pos )
-  local anom_id,anom_pos,anom_radius,dist = amk_anoms.get_nearest_anomaly_for_pos( pos )
-  return not anom_id or dist - anom_radius > 5
+  local anom_id, anom_pos, anom_radius, dist = amk_anoms.get_nearest_anomaly_for_pos( pos )
+  return ( not anom_id ) or dist > 3
 end
 
 
