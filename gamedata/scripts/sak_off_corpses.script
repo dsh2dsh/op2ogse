@@ -105,7 +105,9 @@ function off_corpses()
   end
 
   -- главный цикл
-  local actor_level = level.name()
+  local actor_level           = level.name()
+  local dead_monster_on_level = {}
+  local has_item              = {}
   for a = 1, 65534 do
     local obj = alife():object( a )
     if obj then
@@ -124,8 +126,8 @@ function off_corpses()
         table.insert( tabl_monsters_dead, obj )
 
       -- сталкер
-      elseif IsStalker( obj ) and obj_level ~= actor_level then
-        if not obj:alive() then
+      elseif IsStalker( obj ) then
+        if obj_level ~= actor_level and not obj:alive() then
           -- проверка трупа сталкера, если не в исключениях - в
           -- таблицу и бум удалять
           protected_items.unprotect_tabl_corps_keep( obj )
@@ -149,10 +151,14 @@ function off_corpses()
         end
 
       -- монстр
-      elseif IsMonster( obj ) and obj_level ~= actor_level then
+      elseif IsMonster( obj ) then
+        -- труп
         if not obj:alive() then
-          -- труп
-          table.insert( tabl_monsters_dead, obj )
+          if obj_level == actor_level then
+            dead_monster_on_level[ obj.id ] = obj
+          else
+            table.insert( tabl_monsters_dead, obj )
+          end
         end
 
       else
@@ -183,9 +189,12 @@ function off_corpses()
               )
               table.insert( tabl_monsters_dead, obj )
             end
+          elseif get_bool( obj_sect, "monster_part", false ) then
+              table.insert( tabl_monsters_dead, obj )
           end
         else
           -- в инвентаре
+          has_item[ obj.parent_id ] = true
           if not parent_keep_items[ obj.parent_id ] and item_keep( obj ) then
             parent_keep_items[ obj.parent_id ] = true
           end
@@ -193,17 +202,14 @@ function off_corpses()
       end
 
       -- фикс кривых smart_terrain
-      if
-        ( IsStalker( obj ) or IsMonster( obj ) )
-        and obj:alive()
-      then
+      if ( IsStalker( obj ) or IsMonster( obj ) ) and obj:alive() then
         local strn_id = obj:smart_terrain_id()
         if strn_id ~= 65535 then
           local strn = alife():object( strn_id )
           if strn and strn:clsid() ~= clsid.smart_terrain then
             log2(
-              "Уборщик: Обнаружена привязка к несуществующему smart_terrain: %s, smart_terrain_id: %s. Привязка удалена.",
-              obj_name, tostring( strn_id )
+              "[%s]: Обнаружена привязка к несуществующему smart_terrain: %s, smart_terrain_id: %s. Привязка удалена.",
+              script_name(), obj_name, tostring( strn_id )
             )
             obj:clear_smart_terrain()
           end
@@ -212,14 +218,21 @@ function off_corpses()
     end
   end -- for
 
-  --зачистка мёртвых монстров
+  -- зачистка мёртвых монстров
   for _, corps in ipairs( tabl_monsters_dead ) do
     if not parent_keep_items[ corps.id ] then
       alife():release( corps, true )
     end
   end
 
-  --зачистка мёртвых человеков
+  -- удаление мертвых мутантов с пустым инвентарем на текущей локации
+  for id, sobj in pairs( dead_monster_on_level ) do
+    if not has_item[ id ] then
+      alife():release( sobj, true )
+    end
+  end
+
+  -- зачистка мёртвых человеков
   for _, corps in ipairs( tabl_corpses ) do
     if not parent_keep_items[ corps.id ] then
       alife():release( corps, true )
@@ -233,17 +246,18 @@ function off_corpses()
 end
 
 
+local cached_item = {}
 function item_keep( item )
   -- проверка на предметы, тела с которыми нужно оставить
-  if
-    protected_items.obj_is_protected( item, "tabl_items_keep", "like" )
-    or protected_items.is_unique_wpn_keep( item:section_name() )
-    or get_bool( item:section_name(), "quest_item" )
-  then
-    return true
+  local sect = item:section_name()
+  if cached_item[ sect ] == nil then
+    cached_item[ sect ] =
+      protected_items.obj_is_protected( item, "tabl_items_keep", "like" )
+      or protected_items.is_unique_wpn_keep( sect )
+      or get_bool( sect, "quest_item", false )
+      or protected_items.obj_is_protected( item, "tabl_wpn_keep", "like" )
   end
-  --проверка по списку оружия
-  return protected_items.obj_is_protected( item, "tabl_wpn_keep", "like" )
+  return cached_item[ item:section_name() ]
 end
 
 
