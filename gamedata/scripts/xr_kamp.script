@@ -4,158 +4,196 @@
 -- автор: Диденко Руслан (Stohe)
 -- TODO:
 
-function printf(fmt, ...)
-        local msg = string.format(fmt, ...)
-        local msg_no_ws = string.gsub(msg, "%s", "_")
-        get_console():execute("dbg:" .. msg_no_ws)
-end
 
-kamps = {}
-kamp_stalkers = {} -- могут ли сталкеры в лагере юзаться игроком.
+kamps           = {}
+kamp_stalkers   = {}    -- могут ли сталкеры в лагере юзаться игроком.
 -- Объявления итераторов
-deadmansids={} -- кто какой труп оттаскивает
-deadmansidsuses={} -- сколько попыток оттащить было сделано
-local k,v,kk,vv = 0,0,0,0
+deadmansids     = {}          -- кто какой труп оттаскивает
+deadmansidsuses = {}          -- сколько попыток оттащить было сделано
 
----------------------------------------------------------------------------------------------------------------------
---Evaluators
-----------------------------------------------------------------------------------------------------------------------
---' Условие завершения скрипта
-class "evaluator_kamp_end" (property_evaluator)
-function evaluator_kamp_end:__init(name, storage) super (nil, name)
-        self.a = storage
+
+function printf( ... )
+  log2( ... )
 end
+
+
+-- Evaluators
+-- Условие завершения скрипта
+class "evaluator_kamp_end" ( property_evaluator )
+function evaluator_kamp_end:__init( name, storage ) super( nil, name )
+  self.a = storage
+end
+
 function evaluator_kamp_end:evaluate()
-        return not xr_logic.is_active(self.object, self.a)
+  return not xr_logic.is_active( self.object, self.a )
 end
---' Находимся ли мы на заданной позиции
-local updates_passed = {}
 
-class "evaluator_on_position" (property_evaluator)
-function evaluator_on_position:__init(name, storage) super (nil, name)
-        self.a = storage
+
+-- Находимся ли мы на заданной позиции
+class "evaluator_on_position" ( property_evaluator )
+function evaluator_on_position:__init( name, storage ) super( nil, name )
+  self.a = storage
 end
+
 function evaluator_on_position:evaluate()
-        if not updates_passed[self.object:id()] then
-                updates_passed[self.object:id()] = 0
-        elseif updates_passed[self.object:id()] < 20 then
-                updates_passed[self.object:id()] = updates_passed[self.object:id()] + 1
-        end
-    if self.object:level_vertex_id() == self.a.pos_vertex then
-                if updates_passed[self.object:id()] < 10 then
-                        return false                    
-                end     
-                ogse_debug.add_active_eval( self.object, script_name(), "on_position" )
-                return true
-        end
-        return false
+  if not self.a.updates_passed then
+    self.a.updates_passed = 0
+  elseif self.a.updates_passed < 20 then
+    self.a.updates_passed = self.a.updates_passed + 1
+  end
+  if self.object:level_vertex_id() == self.a.pos_vertex then
+    if self.a.updates_passed < 10 then
+      return false
+    end
+    ogse_debug.add_active_eval( self.object, script_name(), "on_position" )
+    return true
+  end
+  return false
 end
+
+
 --added by xStream--
---' Оп-па! Увидели труп поблизости от костра, непорядок...
-class "evaluator_see_deadman" (property_evaluator)
-function evaluator_see_deadman:__init(name, storage) super (nil, name)
-        self.a = storage
+-- Оп-па! Увидели труп поблизости от костра, непорядок...
+class "evaluator_see_deadman" ( property_evaluator )
+function evaluator_see_deadman:__init( name, storage ) super( nil, name )
+  self.a = storage
 end
+
+
 function evaluator_see_deadman:evaluate()
-        local npc = self.object
-        -- Есть дела поважнее, чем трупы складировать...
-        if not xr_logic.is_active(self.object, self.a) then
-                if self.a.choosed_deadman then 
-                        deadmansids[self.a.choosed_deadman]=nil
-                        self.a.choosed_deadman=nil
-                        self.a.reached=nil
-                end
-                return false
-        end
+  local npc = self.object
+  -- Есть дела поважнее, чем трупы складировать...
+  if not xr_logic.is_active( self.object, self.a ) then
+    if self.a.choosed_deadman then
+      deadmansids[ self.a.choosed_deadman ] = nil
+      self.a.choosed_deadman = nil
+      self.a.reached         = nil
+    end
+    return false
+  end
 
-        -- Труп себе уже выбрали, не спускаем с него глаз...
-        if self.a.choosed_deadman then 
-                local obj = level.object_by_id(self.a.choosed_deadman)
-                if obj and obj:position():distance_to(patrol(self.a.center_point):point(0))<20 then
-                        ogse_debug.add_active_eval( self.object, script_name(), "see_deadman" )
-                        return true 
-                end
-                -- если утащен далеко, то ну его нафиг...
-                if self.a.choosed_deadman then
-                        deadmansids[self.a.choosed_deadman]=nil
-                        self.a.choosed_deadman=nil
-                        self.a.reached=nil                      
-                end
+  -- Труп себе уже выбрали, не спускаем с него глаз...
+  if self.a.choosed_deadman then
+    local obj = level.object_by_id( self.a.choosed_deadman )
+    if
+      obj
+      and obj:position():distance_to(
+        patrol( self.a.center_point ):point( 0 )
+      ) < 20
+    then
+      ogse_debug.add_active_eval( self.object, script_name(), "see_deadman" )
+      return true
+    end
+    -- если утащен далеко, то ну его нафиг...
+    deadmansids[ self.a.choosed_deadman ] = nil
+    self.a.choosed_deadman = nil
+    self.a.reached         = nil
+    return false
+  end
 
-                return false
-        end
-        
-        local function check_item(o)
-                        local obj=o:object()
-                        --если есть рядом с костром труп сталкера или монстра, его еще никто не прихватил себе и трупец нигде не застрял, то забираем его...
-                        if obj and obj.clsid and (IsStalker(obj) or IsMonster(obj)) and not obj:alive() and (not deadmansids[obj:id()] or not level.object_by_id(deadmansids[obj:id()]) or not level.object_by_id(deadmansids[obj:id()]):alive()) and obj:position():distance_to(patrol(self.a.center_point):point(0))<10 then
-                                if not deadmansidsuses[obj:id()] or deadmansidsuses[obj:id()]<3 then
-                                        deadmansids[obj:id()]=npc:id()
-                                        self.a.choosed_deadman=obj:id()
-                                        deadmansidsuses[obj:id()] = (deadmansidsuses[obj:id()] or 0) +1
-                                        -- ...заодно сразу прикидываем, куда бы его оттащить от костра, желательно под забор, стену дома и т.п., 
-                                        -- за неимением таковых - будем тащить куда попало, главное - подальше от костра
-                                  self.a.drop_lvid=npc:level_vertex_id()
-                                  local gi=level.object_by_id(self.a.choosed_deadman)
-                                  if gi then
-                                    local center = gi:level_vertex_id()
-                                    local center_pos = patrol(self.a.center_point):point(0)
-                                    local max_dist=0
-                                    local tgt_vertex=nil
-                                    local base_dir=gi:position():sub(center_pos)
-                                    local base_point=npc:vertex_in_direction(center,gi:position():sub(center_pos):mul(-1),20)
-                                    for ang=-90,90,20 do
-                                      local cur_vert=npc:vertex_in_direction(base_point,vector_rotate_y(base_dir,ang),20)
-                                      local dist=level.vertex_position(cur_vert):distance_to(center_pos)
-                                      if dist>11 and dist<17 then
-                                        if dist>max_dist then
-                                          max_dist=dist
-                                          tgt_vertex=cur_vert
-                                        end
-                                      end
-                                    end
-                                    if tgt_vertex==nil then
-                                      tgt_vertex=npc:vertex_in_direction(base_point,vector_rotate_y(base_dir,math.random()*180-90),20)
-                                    end
-                                    
-                                    self.a.drop_lvid = tgt_vertex
-                                    self.a.ps=gi:get_physics_shell()
-                                  end
-                                        ogse_debug.add_active_eval( self.object, script_name(), "see_deadman_2" )
-                                        return true
-                                end
-                        end
-        end     
-        
-        for o in npc:memory_visible_objects() do
-                check_item(o)
-        end
-        for o in npc:memory_sound_objects() do
-                check_item(o)
-        end
-        for o in npc:not_yet_visible_objects() do
-                check_item(o)
-        end
-        return false
+  for o in npc:memory_visible_objects() do
+    if self:check_item( o:object() ) then return true end
+  end
+  -- for o in npc:memory_sound_objects() do
+  --   self:check_item( o:object() )
+  -- end
+  -- for o in npc:not_yet_visible_objects() do
+  --   self:check_item( o:object() )
+  -- end
+  return false
 end
 
---' Тащим труп
-class "evaluator_can_move_deadman" (property_evaluator)
-function evaluator_can_move_deadman:__init(name, storage) super (nil, name)
-        self.a = storage
+
+function evaluator_see_deadman:check_item( obj )
+  local npc = self.object
+  -- если есть рядом с костром труп сталкера или монстра, его еще
+  -- никто не прихватил себе и трупец нигде не застрял, то забираем
+  -- его...
+  if
+    obj and obj.clsid and ( IsStalker( obj ) or IsMonster( obj ) )
+    and ( not obj:alive() )
+    and (
+      ( not deadmansids[ obj:id() ] )
+      or ( not level.object_by_id( deadmansids[ obj:id() ] ) )
+      or ( not level.object_by_id( deadmansids[ obj:id() ] ):alive() )
+    )
+    and obj:position():distance_to(
+      patrol( self.a.center_point ):point( 0 )
+    ) < 10
+  then
+    if
+      ( not deadmansidsuses[ obj:id() ] ) or deadmansidsuses[ obj:id() ] < 3
+    then
+      deadmansids[ obj:id() ]     = npc:id()
+      self.a.choosed_deadman      = obj:id()
+      deadmansidsuses[ obj:id() ] = ( deadmansidsuses[ obj:id() ] or 0 ) + 1
+      -- ...заодно сразу прикидываем, куда бы его оттащить от костра,
+      -- желательно под забор, стену дома и т.п., за неимением таковых
+      -- - будем тащить куда попало, главное - подальше от костра
+      self.a.drop_lvid = npc:level_vertex_id()
+      local gi = level.object_by_id( self.a.choosed_deadman )
+      if gi then
+        local center     = gi:level_vertex_id()
+        local center_pos = patrol( self.a.center_point ):point( 0 )
+        local max_dist   = 0
+        local tgt_vertex
+        local base_dir   = gi:position():sub( center_pos )
+        local base_point = npc:vertex_in_direction(
+          center, gi:position():sub( center_pos ):mul( -1 ), 20
+        )
+        for ang = -90, 90, 20 do
+          local cur_vert = npc:vertex_in_direction(
+            base_point, vector_rotate_y( base_dir, ang ), 20
+          )
+          local dist = level.vertex_position( cur_vert )
+            :distance_to( center_pos )
+          if dist > 11 and dist < 17 then
+            if dist > max_dist then
+              max_dist   = dist
+              tgt_vertex = cur_vert
+            end
+          end
+        end
+        if not tgt_vertex then
+          tgt_vertex = npc:vertex_in_direction(
+            base_point,
+            vector_rotate_y( base_dir, math.random() * 180 - 90 ),
+            20
+          )
+        end
+        self.a.drop_lvid = tgt_vertex
+        self.a.ps        = gi:get_physics_shell()
+      end
+      ogse_debug.add_active_eval(
+        self.object, script_name(), "see_deadman_2"
+      )
+      return true
+    end
+  end
+  return false
 end
+
+
+-- Тащим труп
+class "evaluator_can_move_deadman" ( property_evaluator )
+function evaluator_can_move_deadman:__init( name, storage ) super( nil, name )
+  self.a = storage
+end
+
 function evaluator_can_move_deadman:evaluate()
-  local npc=self.object
-        local obj = level.object_by_id(self.a.choosed_deadman)
-        --если труп застрял (расстояние увеличилось), то возвращаемся к нему
-        --или если ГГ подошел, то уделяем ему чуточку внимания
-  return self.a.reached==1 and obj and obj:bone_position("bip01_spine1"):distance_to(npc:position())<2 and obj:bone_position("bip01_spine1"):distance_to(db.actor:position())>3.0
+  local npc = self.object
+  local obj = level.object_by_id( self.a.choosed_deadman )
+  if not ( self.a.reached == 1 and obj ) then return false end
+  -- если труп застрял (расстояние увеличилось), то возвращаемся к
+  -- нему или если ГГ подошел, то уделяем ему чуточку внимания
+  local pos = obj:bone_position( "bip01_spine1" )
+  return pos:distance_to( npc:position() ) < 2
+    and pos:distance_to( db.actor:position() ) > 3
 end
---end--
-----------------------------------------------------------------------------------------------------------------------
---Actions
-----------------------------------------------------------------------------------------------------------------------
---' Идет в заданную область
+
+
+-- Actions
+-- ' Идет в заданную область
 class "action_go_position" (action_base)
 function action_go_position:__init (npc_name,action_name,storage) super (nil,action_name)
         self.a = storage
@@ -207,12 +245,9 @@ function action_go_position:execute ()
                 end
         end     
         
-        if not updates_passed[self.object:id()] then
-                updates_passed[self.object:id()] = 0
-                return
-        elseif updates_passed[self.object:id()] < 10 then
-                return                  
-        end             
+        if not ( self.a.updates_passed and self.a.updates_passed >= 10 ) then
+          return
+        end
         
         --log1("!!ACTION action_go_position ["..tostring(self.object:name()).."]")
         
