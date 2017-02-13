@@ -1,9 +1,16 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
---[=[
-Smart Terrain (механизм, организовывающий всех сталкеров и некоторых монстров в сцены)
-Чугай Александр
-!без симуляции не работает!
---]=]
+--
+-- Smart Terrain (механизм, организовывающий всех сталкеров и
+-- некоторых монстров в сцены)
+--
+-- Чугай Александр
+-- !без симуляции не работает!
+
+
+function attach( sm )
+  sm:subscribe({ signal = "on_destroy", fun = this.on_destroy })
+end
+
 
 local check_period
 if not editor() then
@@ -12,6 +19,7 @@ if not editor() then
   CTime_0 = game.CTime()
 end
 
+
 local monster_classes
 local disagreed, agreed, agreed_exclusive = 0, 1, 2
 local smart_section = "smart_terrains"
@@ -19,22 +27,15 @@ local smart_terrains = {}
 local smart_terrains_by_name = {}
 exclusives = {}
 
---[=[
-список всех серверных объектов смартов, которые зарегистрированы в симуляторе
-Формат:
-  smart_terrains = {
-    level_name = { id=obj, id=obj, ... },
-    level_name = { id=obj, id=obj, ... },
-    ...
-  }
---]=]
+-- список всех серверных объектов смартов, которые зарегистрированы в симуляторе
+-- Формат:
+--   smart_terrains = {
+--     level_name = { id=obj, id=obj, ... },
+--     level_name = { id=obj, id=obj, ... },
+--     ...
+--   }
 
 
---------------------------------------------------------------------------------
--- Разные полезные функции
---------------------------------------------------------------------------------
--------------- помощники для чтения ini (custom data) -------------------
--- TODO убрать их
 function r_str( spawn_ini, section, line, default )
   if spawn_ini:line_exist( section, line ) then
     return spawn_ini:r_string( section, line )
@@ -43,6 +44,7 @@ function r_str( spawn_ini, section, line, default )
   end
 end
 
+
 function r_num( spawn_ini, section, line, default )
   if spawn_ini:line_exist( section, line ) then
     return spawn_ini:r_float( section, line )
@@ -50,6 +52,7 @@ function r_num( spawn_ini, section, line, default )
     return default
   end
 end
+
 
 function r_2nums( spawn_ini, section, line, def1, def2 )
   if spawn_ini:line_exist( section, line ) then
@@ -887,6 +890,7 @@ function se_smart_terrain:update_obj_rank( obj )
   end
 end
 
+
 -- выгнать из-под смарттеррейна первого попавшегося неэксклюзивного
 -- персонажа, который занимает работу, подходящую новому персонажу.
 --
@@ -908,24 +912,40 @@ function se_smart_terrain:kick_someone_non_exclusive( new_npc_info )
   )
 end
 
+
 -- выдать объекту задание.
-function se_smart_terrain:task( obj )
-  if xr_companion.is_companion( obj.id ) then -- и как он здесь оказался?
-    self:unregister_npc( obj )
+local alife_task_hit, alife_task_miss = 0, 0
+function se_smart_terrain:task( sobj )
+  if sobj.alife_task and sobj.alife_task.id == self.id then
+    alife_task_hit = alife_task_hit + 1
+  else
+    sobj.alife_task = {
+      [ "id"   ] = self.id,
+      [ "task" ] = self:get_alife_task( sobj ),
+    }
+    alife_task_miss = alife_task_miss + 1
+  end
+  return sobj.alife_task.task
+end
+
+
+function se_smart_terrain:get_alife_task( sobj )
+  if xr_companion.is_companion( sobj.id ) then -- и как он здесь оказался?
+    self:unregister_npc( sobj )
     return CALifeSmartTerrainTask( "simulation_default_path" )
   end
   ASSERT(
-    ( not dsh.is_free_logic_mob( obj ) ),
+    ( not dsh.is_free_logic_mob( sobj ) ),
     "smart_terrain %s is trying to assign task to %s",
-    self:name(), obj:name()
+    self:name(), sobj:name()
   )
-  local path_name = self.gulag:get_obj_job_path_name( obj.id )
+  local path_name = self.gulag:get_obj_job_path_name( sobj.id )
   if not path_name then
-    -- log2(
-    --   "[smart_terrain %s] task: obj=%s job_path=nil, CLEARING",
-    --   self:name(), obj:name()
-    -- )
-    self:unregister_npc( obj )  --'Затычка против вылета.
+    log2(
+      "[smart_terrain %s] task: sobj=%s job_path=nil, CLEARING",
+      self:name(), sobj:name()
+    )
+    self:unregister_npc( sobj )  --'Затычка против вылета.
     return CALifeSmartTerrainTask( "simulation_default_path" )
   end
   return CALifeSmartTerrainTask( path_name )
@@ -1421,4 +1441,12 @@ end
 
 function se_smart_terrain:get_gulag_type()
   return self.gparams.type
+end
+
+
+function on_destroy()
+  log2(
+    "[%s]: task() cache stats (hit/miss): %s / %s",
+    script_name(), alife_task_hit, alife_task_miss
+  )
 end
