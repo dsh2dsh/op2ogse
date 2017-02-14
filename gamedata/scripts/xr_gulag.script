@@ -182,16 +182,18 @@ function gulag:prepare_jobs()
     local job_loaded = self.JobLoaded[ i ] or {}
     local path_name, is_center_point = self:get_job_path_name( job )
     local ptrl       = patrol( path_name )
-    job.num             = i
-    job.is_center_point = is_center_point
-    job.path_name       = path_name
-    job.game_vertex_id  = ptrl:game_vertex_id( 0 )
-    job.level_id        = game_graph():vertex( job.game_vertex_id ):level_id()
-    job.level_vertex_id = ptrl:level_vertex_id( 0 )
-    job.position        = ptrl:point( 0 )
+    job.alife_task      = CALifeSmartTerrainTask( path_name )
     job.begin           = job_loaded.begin
     job.fill_idle       = job_loaded.fill_idle
+    job.game_vertex_id  = ptrl:game_vertex_id( 0 )
     job.idle_after_death_end = job_loaded.idle_after_death_end
+    job.is_center_point = is_center_point
+    job.level_id        = game_graph():vertex( job.game_vertex_id ):level_id()
+    job.level_name      = alife():level_name( job.level_id )
+    job.level_vertex_id = ptrl:level_vertex_id( 0 )
+    job.num             = i
+    job.path_name       = path_name
+    job.position        = ptrl:point( 0 )
   end
   for obj_id, jobN in pairs( self.ObjectJob ) do
     local job = self.Job[ jobN ]
@@ -511,16 +513,14 @@ function gulag:can_obj_begin_job( obj_id, obj )
   end
   local job = self.gulag:get_obj_job( obj_id )
   if job and not self.Object_begin_job[ obj_id ] then
-    local sobj = self.npc_info[ obj_id ].se_obj
-    if sobj.alife_task then
-      local task = sobj.alife_task
-      if obj == true then
-        return sobj.m_game_vertex_id == task:game_vertex_id()
-      else
-        local job_dist = job.position_threshold or job_position_threshold
-        local task_pos = level.vertex_position( task:level_vertex_id() )
-        return obj:position():distance_to( task_pos ) < job_dist
-      end
+    if obj == true then
+      local sobj = self.npc_info[ obj_id ].se_obj
+      return sobj.m_game_vertex_id == job.game_vertex_id
+    elseif object_level_name( obj ) ~= job.level_name then
+      return obj:game_vertex_id() == job.game_vertex_id
+    else
+      local job_dist = job.position_threshold or job_position_threshold
+      return obj:position():distance_to( job.position ) < job_dist
     end
   end
   return false
@@ -970,7 +970,6 @@ function gulag:setJob( obj_id, job )
   self.ObjectJob   [ obj_id ] = job.num
   self.ObjectJobObj[ obj_id ] = job
   local sobj = self.npc_info[ obj_id ].se_obj
-  sobj.alife_task = nil
   sobj:smart_terrain_task_activate()
   self:setup_squad_and_group( obj_id, job )
 end
@@ -996,29 +995,18 @@ function gulag:beginJob( obj_id, obj )
   local sobj = self.npc_info[ obj_id ].se_obj
   self:setup_job_online( sobj, job )
   if self:get_stype( obj_id ) == modules.stype_mobile then
-    sobj.alife_task = nil
     sobj:smart_terrain_task_activate()
   end
 
   if obj == true then
-    if not job.is_center_point then
-      if
-        not (
-          object_level_name( sobj ) == level.name()
-          or sobj.m_level_vertex_id == job.level_vertex_id
-        )
-      then
-        log2(
-        "[%s]: [%s]: teleport %s to job point: ( %s, %s ) -> ( %s, %s )",
-        script_name(), self.name, sobj:name(),
-        sobj.m_level_vertex_id, sobj.m_game_vertex_id,
-        job.level_vertex_id, job.game_vertex_id
-        )
-        alife():teleport_object(
-          "", job.position, job.level_vertex_id, job.game_vertex_id,
-          sobj.id
-        )
-      end
+    if
+      not (
+        job.is_center_point
+        or object_level_name( sobj ) == level.name()
+        or sobj.m_level_vertex_id == job.level_vertex_id
+      )
+    then
+      self:teleport_to_job( sobj, job )
     end
   else
     if not self:dsh_is_free_logic() then
@@ -1043,6 +1031,31 @@ function gulag:beginJob( obj_id, obj )
     sobj:clear_smart_terrain()
     sobj:brain():can_choose_alife_tasks( false )
     dsh.remember_mobs_smart_terrain( obj_id, self.smrttrn, true )
+  end
+end
+
+
+function gulag:teleport_to_job( sobj, job )
+  local level_vertexes = amk_anoms.level_vertexes[ job.level_name ]
+  if job.level_vertex_id > level_vertexes then
+    log2(
+      "[%s]: [%s]: unable teleport %s to job point: ( %s, %s ) -> ( %s, %s ): max level_vertex_id is %s",
+      script_name(), self.name, sobj:name(),
+      sobj.m_level_vertex_id, sobj.m_game_vertex_id,
+      job.level_vertex_id, job.game_vertex_id,
+      level_vertexes
+    )
+  else
+    log2(
+      "[%s]: [%s]: teleport %s to job point: ( %s, %s ) -> ( %s, %s )",
+      script_name(), self.name, sobj:name(),
+      sobj.m_level_vertex_id, sobj.m_game_vertex_id,
+      job.level_vertex_id, job.game_vertex_id
+    )
+    alife():teleport_object(
+      "", job.position, job.level_vertex_id, job.game_vertex_id,
+      sobj.id
+    )
   end
 end
 
@@ -1186,7 +1199,6 @@ function gulag:free_obj( obj_id )
       local sobj = self.npc_info[ obj_id ].se_obj
       self:setup_job_online( sobj, nil )
       if self:get_stype( obj_id ) == modules.stype_mobile then
-        sobj.alife_task = nil
         sobj:smart_terrain_task_deactivate()
       end
     end
