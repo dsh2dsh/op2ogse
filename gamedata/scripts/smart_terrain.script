@@ -919,9 +919,11 @@ function se_smart_terrain:task( sobj )
   if sobj.alife_task and sobj.alife_task.id == self.id then
     alife_task_hit = alife_task_hit + 1
   else
+    local path_name, can_teleport = self:get_job_path_name( sobj )
     sobj.alife_task = {
-      [ "id"   ] = self.id,
-      [ "task" ] = self:get_alife_task( sobj ),
+      [ "can_teleport" ] = can_teleport,
+      [ "id"           ] = self.id,
+      [ "task"         ] = CALifeSmartTerrainTask( path_name ),
     }
     alife_task_miss = alife_task_miss + 1
   end
@@ -929,26 +931,26 @@ function se_smart_terrain:task( sobj )
 end
 
 
-function se_smart_terrain:get_alife_task( sobj )
+function se_smart_terrain:get_job_path_name( sobj )
   if xr_companion.is_companion( sobj.id ) then -- и как он здесь оказалс€?
     self:unregister_npc( sobj )
-    return CALifeSmartTerrainTask( "simulation_default_path" )
+    return "simulation_default_path", false
   end
   ASSERT(
     ( not dsh.is_free_logic_mob( sobj ) ),
     "smart_terrain %s is trying to assign task to %s",
     self:name(), sobj:name()
   )
-  local path_name = self.gulag:get_obj_job_path_name( sobj.id )
-  if not path_name then
+  local job = self.gulag:get_obj_job( sobj.id )
+  if not job.path_name then
     log2(
       "[smart_terrain %s] task: sobj=%s job_path=nil, CLEARING",
       self:name(), sobj:name()
     )
     self:unregister_npc( sobj )  --'«атычка против вылета.
-    return CALifeSmartTerrainTask( "simulation_default_path" )
+    return "simulation_default_path", false
   end
-  return CALifeSmartTerrainTask( path_name )
+  return job.path_name, ( not job.is_center_point )
 end
 
 
@@ -1205,6 +1207,27 @@ function se_smart_terrain:dsh_begin_job( id )
   )
   t:add( game.get_game_time() )
   self.npc_info[ id ].stay_end = t
+  local sobj = self.npc_info[ id ].se_obj
+  if sobj.alife_task and sobj.alife_task.can_teleport then
+    local task = sobj.alife_task.task
+    if
+      not (
+        object_level_name( sobj ) == level.name()
+        or sobj.m_level_vertex_id == task:level_vertex_id()
+      )
+    then
+      log2(
+        "[%s]: [%s]: teleport %s to job point: ( %s, %s ) -> ( %s, %s )",
+        script_name(), self:name(), sobj:name(),
+        sobj.m_level_vertex_id, sobj.m_game_vertex_id, 
+        task:level_vertex_id(), task:game_vertex_id()
+      )
+      alife():teleport_object(
+        "", task:position(), task:level_vertex_id(), task:game_vertex_id(),
+        sobj.id
+      )
+    end
+  end
 end
 
 

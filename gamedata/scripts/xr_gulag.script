@@ -136,10 +136,10 @@ end
 
 -- подготовка гулага к работе
 function gulag:initialize()
-  --' по id. имя патрульного пути места работы персонажа
-  self.ObjectJobPathName = {}
+  -- по id. описание работы персонажа
+  self.ObjectJobObj = {}
   --' по id. назначенные гулагом рестрикторы для каждого персонажа
-  self.restrictors       = {}
+  self.restrictors  = {}
 
   self:prepare_jobs()
   self.calculateStates = gulag_tasks.loadStates( self.name, self.type )
@@ -179,24 +179,25 @@ end
 -- в custom data)
 function gulag:prepare_jobs()
   for i, job in ipairs( self.Job ) do
-    job.num              = i
-    local path_name      = self:get_job_path_name( job )
-    local ptrl           = patrol( path_name )
-    job.path_name        = path_name
-    job.game_vertex_id   = ptrl:game_vertex_id( 0 )
-    job.level_id         = game_graph():vertex( job.game_vertex_id ):level_id()
-    job.level_vertex_id  = ptrl:level_vertex_id( 0 )
-    job.position         = ptrl:point( 0 )
-    local job_loaded     = self.JobLoaded[ i ] or {}
-    job.begin            = job_loaded.begin
-    job.fill_idle        = job_loaded.fill_idle
+    local job_loaded = self.JobLoaded[ i ] or {}
+    local path_name, is_center_point = self:get_job_path_name( job )
+    local ptrl       = patrol( path_name )
+    job.num             = i
+    job.is_center_point = is_center_point
+    job.path_name       = path_name
+    job.game_vertex_id  = ptrl:game_vertex_id( 0 )
+    job.level_id        = game_graph():vertex( job.game_vertex_id ):level_id()
+    job.level_vertex_id = ptrl:level_vertex_id( 0 )
+    job.position        = ptrl:point( 0 )
+    job.begin           = job_loaded.begin
+    job.fill_idle       = job_loaded.fill_idle
     job.idle_after_death_end = job_loaded.idle_after_death_end
   end
   for obj_id, jobN in pairs( self.ObjectJob ) do
     local job = self.Job[ jobN ]
     if job ~= nil then
       job.object = obj_id
-      self.ObjectJobPathName[ obj_id ] = job.path_name
+      self.ObjectJobObj[ obj_id ] = job
     end
   end
 end
@@ -278,12 +279,15 @@ function gulag:get_job_path_name( job )
     "[%s]: [%s]: ltx=%s, there is no path in section %s, field %s",
     script_name(), self.name, self.ltx_name, active_section, path_field
   )
+  local is_center_point = false
   if path_field == "center_point" then --' TODO убрать затык
     if level.patrol_path_exists( path_name .. "_task" ) then
       path_name = path_name .. "_task"
+    else
+      is_center_point = true
     end
   end
-  return path_name
+  return path_name, is_center_point
 end
 
 
@@ -966,8 +970,8 @@ function gulag:setJob( obj_id, job )
   then
     self.Object_begin_job[ obj_id ] = false
   end
-  self.ObjectJob        [ obj_id ] = job.num
-  self.ObjectJobPathName[ obj_id ] = job.path_name
+  self.ObjectJob   [ obj_id ] = job.num
+  self.ObjectJobObj[ obj_id ] = job
 
   self:setup_squad_and_group( obj_id, job )
 end
@@ -1142,8 +1146,8 @@ end
 
 
 -- возвращает имя пути места работы персонажа
-function gulag:get_obj_job_path_name( obj_id )
-  return self.ObjectJobPathName[ obj_id ]
+function gulag:get_obj_job( obj_id )
+  return self.ObjectJobObj[ obj_id ]
 end
 
 
@@ -1154,7 +1158,7 @@ function gulag:free_obj( obj_id )
     self.ObjectJob[ obj_id ] = nil
     self.Job[ jobN ].object  = nil
 
-    self.ObjectJobPathName[ obj_id ] = nil
+    self.ObjectJobObj[ obj_id ] = nil
 
     if self.npc_info[ obj_id ] then
       self:setup_job_online( self.npc_info[ obj_id ].se_obj, nil )
