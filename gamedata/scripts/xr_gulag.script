@@ -488,7 +488,7 @@ end
 function gulag:update_beginning_jobs()
   for obj_id, obj in pairs( self.Object ) do
     if self:can_obj_begin_job( obj_id, obj ) then
-      self:beginJob( obj_id )
+      self:beginJob( obj_id, obj )
     end
   end
 end
@@ -509,26 +509,21 @@ function gulag:can_obj_begin_job( obj_id, obj )
       return true
     end
   end
-  local jobN = self.ObjectJob[ obj_id ]
-  if jobN and not self.Object_begin_job[ obj_id ] then
-    local job = self.Job[ jobN ]
-    --' Спешл кейс, проверка только по вертексам графа
-    if job ~= nil then
-      if job.position_threshold == "graph" then
-        local obj_gv, obj_pos = self:get_obj_game_vertex_and_position( obj_id )
-        local job_gv = game_graph():vertex( job.game_vertex_id )
-        if obj_gv:level_vertex_id() == job_gv:level_vertex_id() then
-          return true
-        end
-        return false
+  local job = self.gulag:get_obj_job( obj_id )
+  if job and not self.Object_begin_job[ obj_id ] then
+    local sobj = self.npc_info[ obj_id ].se_obj
+    if sobj.alife_task then
+      local task = sobj.alife_task
+      if obj == true then
+        return sobj.m_game_vertex_id == task:game_vertex_id()
+      else
+        local job_dist = job.position_threshold or job_position_threshold
+        local task_pos = level.vertex_position( task:level_vertex_id() )
+        return obj:position():distance_to( task_pos ) < job_dist
       end
-    else
-      return false
     end
-    return self:distance_to_job_location( obj_id, job ) < ( job.position_threshold or job_position_threshold )
-  else
-    return false
   end
+  return false
 end
 
 
@@ -958,10 +953,12 @@ end
 
 -- установить npc работу, к ней рестрикторы, настроить логику, поменять squad, group
 function gulag:setJob( obj_id, job )
---  log2( "[smart_terrain %s] gulag: setJob: obj=%s job=%d %s", self.name, self.npc_info[obj_id].name, job.num, job.section )
+  -- log2(
+  --   "[smart_terrain %s] gulag: setJob: obj=%s job=%d %s",
+  --   self.name, self.npc_info[ obj_id ].name, job.num, job.section
+  -- )
   job.object = obj_id
   job.idle_after_death_end = nil
-
   if
     not (
       self:dsh_is_free_logic()
@@ -972,7 +969,9 @@ function gulag:setJob( obj_id, job )
   end
   self.ObjectJob   [ obj_id ] = job.num
   self.ObjectJobObj[ obj_id ] = job
-
+  local sobj = self.npc_info[ obj_id ].se_obj
+  sobj.alife_task = nil
+  sobj:smart_terrain_task_activate()
   self:setup_squad_and_group( obj_id, job )
 end
 
@@ -982,23 +981,46 @@ end
 -- установка времени начала работы.
 -- если в онлайне, то настройка логики и рестрикторов.
 -- вызвать спавнер.
-function gulag:beginJob( obj_id )
-  local job = self.Job[ self.ObjectJob[ obj_id ] ]
-  --log2( "[smart_terrain %s] gulag: beginJob: obj=%s job=%d %s", self.name, self.npc_info[obj_id].name, job.num, job.section )
+function gulag:beginJob( obj_id, obj )
+  local job = self.gulag:get_obj_job( obj_id )
+  -- log2(
+  --   "[smart_terrain %s] gulag: beginJob: obj=%s job=%d %s",
+  --   self.name, self.npc_info[ obj_id ].name, job.num, job.section
+  -- )
   self.Object_begin_job[ obj_id ] = true
   job.begin = amk.game_milliseconds()
   if job.fill_idle == idle_once then
     job.fill_idle = idle_none
   end
 
-  local se_obj = self.npc_info[ obj_id ].se_obj
-  self:setup_job_online( se_obj, job )
+  local sobj = self.npc_info[ obj_id ].se_obj
+  self:setup_job_online( sobj, job )
   if self:get_stype( obj_id ) == modules.stype_mobile then
-    se_obj:smart_terrain_task_activate()
+    sobj.alife_task = nil
+    sobj:smart_terrain_task_activate()
   end
 
-  if self.Object[ obj_id ] ~= true then
-    local obj = self.Object[ obj_id ]
+  if obj == true then
+    if not job.is_center_point then
+      if
+        not (
+          object_level_name( sobj ) == level.name()
+          or sobj.m_level_vertex_id == job.level_vertex_id
+        )
+      then
+        log2(
+        "[%s]: [%s]: teleport %s to job point: ( %s, %s ) -> ( %s, %s )",
+        script_name(), self.name, sobj:name(),
+        sobj.m_level_vertex_id, sobj.m_game_vertex_id,
+        job.level_vertex_id, job.game_vertex_id
+        )
+        alife():teleport_object(
+          "", job.position, job.level_vertex_id, job.game_vertex_id,
+          sobj.id
+        )
+      end
+    end
+  else
     if not self:dsh_is_free_logic() then
       self:dsh_fix_gulags_relation( obj )
       self:set_restrictions( obj, job.out_rest, job.in_rest, job.info_rest )
@@ -1013,26 +1035,26 @@ function gulag:beginJob( obj_id )
     self.Object_didnt_begin_job[ obj_id ] = false
     self.smrttrn:dsh_begin_job( obj_id )
     if self.population_comed == 1 then
-      news_main.on_spawn( se_obj )
+      news_main.on_spawn( sobj )
     end
   end
 
   if self:dsh_is_free_logic() then
-    se_obj:clear_smart_terrain()
-    se_obj:brain():can_choose_alife_tasks( false )
+    sobj:clear_smart_terrain()
+    sobj:brain():can_choose_alife_tasks( false )
     dsh.remember_mobs_smart_terrain( obj_id, self.smrttrn, true )
   end
 end
 
 
 -- установить серверному объекту персонажа упраление переключения онлайн/офлайн
-function gulag:setup_job_online( se_obj, job )
+function gulag:setup_job_online( sobj, job )
   if job then
-    se_obj.job_online_condlist = job.online_condlist
-    se_obj.job_online          = job.online
+    sobj.job_online_condlist = job.online_condlist
+    sobj.job_online          = job.online
   else
-    se_obj.job_online_condlist = nil
-    se_obj.job_online          = nil
+    sobj.job_online_condlist = nil
+    sobj.job_online          = nil
   end
 end
 
@@ -1146,7 +1168,7 @@ end
 
 
 -- возвращает имя пути места работы персонажа
-function gulag:get_obj_job( obj_id )
+function gulag:get_obj_job( obj_id, job )
   return self.ObjectJobObj[ obj_id ]
 end
 
@@ -1161,9 +1183,11 @@ function gulag:free_obj( obj_id )
     self.ObjectJobObj[ obj_id ] = nil
 
     if self.npc_info[ obj_id ] then
-      self:setup_job_online( self.npc_info[ obj_id ].se_obj, nil )
+      local sobj = self.npc_info[ obj_id ].se_obj
+      self:setup_job_online( sobj, nil )
       if self:get_stype( obj_id ) == modules.stype_mobile then
-        self.npc_info[ obj_id ].se_obj:smart_terrain_task_deactivate()
+        sobj.alife_task = nil
+        sobj:smart_terrain_task_deactivate()
       end
     end
 
