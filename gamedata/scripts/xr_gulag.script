@@ -40,38 +40,34 @@ function end_walking_stalker()
 end
 
 
------------------------------------------------------------------------
-class "gulag"
-
 -- конструктор
-function gulag:__init(smrttrn, type, squad, groups, npc_info, capacity)
-	self.smrttrn  = smrttrn
-	self.name     = smrttrn:name()
-	self.type     = type
-	self.squad    = squad
-	self.groups   = groups or {}
-	self.npc_info = npc_info
-	self.capacity = capacity     -- общая ёмкость гулага
---	self.capacity_non_exclusive  -  ёмкость гулага для неэксклюзивных персонажей
-	
-	self.population = 0					-- Население гулага
-	self.population_comed = 0			-- Уже пришедшее население гулага
-	self.population_non_exclusive = 0	-- Неэксклюзивное население
+class "gulag"
+function gulag:__init( smrttrn, type, squad, groups, npc_info, capacity )
+  self.smrttrn  = smrttrn
+  self.name     = smrttrn:name()
+  self.type     = type
+  self.squad    = squad
+  self.groups   = groups or {}
+  self.npc_info = npc_info
+  self.capacity = capacity     -- общая ёмкость гулага
+  self.population = 0					-- Население гулага
+  self.population_comed = 0			-- Уже пришедшее население гулага
+  self.population_non_exclusive = 0	-- Неэксклюзивное население
 
+  self.Object                 = {} -- объекты по id. Значения: nil-нету такого, true-есть в офлайне, game_object-есть в онлайн
+  self.Object_begin_job       = {} -- по id. true/nil достиг ли объект места своей работы
+  self.Object_didnt_begin_job = {} -- по id. начинал ли объект хотя бы раз любую работу с момента добавления под смарт
+  self.ObjectJob              = {} -- по id. номер работы для каждого персонажа
+  self.JobLoaded              = {} -- для каждой работы загруженные из save данные
+  self.Job_avail_in_state     = nil
 
+  self.state      = 0
+  self.stateBegin = nil
 
-	self.Object                 = {} -- объекты по id. Значения: nil-нету такого, true-есть в офлайне, game_object-есть в онлайн
-	self.Object_begin_job       = {} -- по id. true/nil достиг ли объект места своей работы
-	self.Object_didnt_begin_job = {} -- по id. начинал ли объект хотя бы раз любую работу с момента добавления под смарт
-	self.ObjectJob              = {} -- по id. номер работы для каждого персонажа
-	self.JobLoaded              = {} -- для каждой работы загруженные из save данные
-	self.Job_avail_in_state     = nil
-
-	self.state      = 0
-	self.stateBegin = nil
-
-	self.casualities = 0
+  self.casualities = 0
+  self.need_teleport_to_job = false
 end
+
 
 -- загрузка работ
 function gulag:load_jobs()
@@ -142,12 +138,19 @@ function gulag:initialize()
   self.restrictors  = {}
 
   self:prepare_jobs()
-  self.calculateStates = gulag_tasks.loadStates( self.name, self.type )
+  if not self:dsh_is_free_logic() then
+    self.calculateStates = gulag_tasks.loadStates( self.name, self.type )
+  end
 
   local ini  = self.smrttrn:spawn_ini()
   local sect = "smart_terrain"
   if not ini:section_exist( sect ) then
     sect = "gulag1"
+  end
+
+  local dsh_sect = dsh_walking_stalkers.get_smart_ini_section( self.smrttrn )
+  if sys_ini:section_exist( dsh_sect ) then
+    self.need_teleport_to_job = get_bool( dsh_sect, "teleport_to_job", false )
   end
 
   local switch_0, switch_1 = self:dsh_get_gulag_switches( ini, sect )
@@ -288,6 +291,8 @@ function gulag:get_job_path_name( job )
     else
       is_center_point = true
     end
+  elseif path_field == "path_home" then
+    is_center_point = true
   end
   return path_name, is_center_point
 end
@@ -447,7 +452,7 @@ function gulag:update()
   end
   self:update_objs()
   self:update_beginning_jobs()
-  if self.calculateStates ~= nil and db.actor then
+  if self.calculateStates and db.actor then
     self:changeState( self.calculateStates( self ) )
   end
   self:updateJob()
@@ -511,7 +516,7 @@ function gulag:can_obj_begin_job( obj_id, obj )
       return true
     end
   end
-  local job = self.gulag:get_obj_job( obj_id )
+  local job = self:get_obj_job( obj_id )
   if job and not self.Object_begin_job[ obj_id ] then
     if obj == true then
       local sobj = self.npc_info[ obj_id ].se_obj
@@ -981,7 +986,7 @@ end
 -- если в онлайне, то настройка логики и рестрикторов.
 -- вызвать спавнер.
 function gulag:beginJob( obj_id, obj )
-  local job = self.gulag:get_obj_job( obj_id )
+  local job = self:get_obj_job( obj_id )
   -- log2(
   --   "[smart_terrain %s] gulag: beginJob: obj=%s job=%d %s",
   --   self.name, self.npc_info[ obj_id ].name, job.num, job.section
@@ -998,17 +1003,7 @@ function gulag:beginJob( obj_id, obj )
     sobj:smart_terrain_task_activate()
   end
 
-  if obj == true then
-    if
-      not (
-        job.is_center_point
-        or object_level_name( sobj ) == level.name()
-        or sobj.m_level_vertex_id == job.level_vertex_id
-      )
-    then
-      self:teleport_to_job( sobj, job )
-    end
-  else
+  if obj ~= true then
     if not self:dsh_is_free_logic() then
       self:dsh_fix_gulags_relation( obj )
       self:set_restrictions( obj, job.out_rest, job.in_rest, job.info_rest )
@@ -1022,6 +1017,9 @@ function gulag:beginJob( obj_id, obj )
     self.smrttrn:call_respawn()
     self.Object_didnt_begin_job[ obj_id ] = false
     self.smrttrn:dsh_begin_job( obj_id )
+    if obj == true and self.need_teleport_to_job then
+      self:teleport_to_job( sobj, job )
+    end
     if self.population_comed == 1 then
       news_main.on_spawn( sobj )
     end
@@ -1036,6 +1034,13 @@ end
 
 
 function gulag:teleport_to_job( sobj, job )
+  if
+    job.is_center_point
+    or object_level_name( sobj ) == level.name()
+    or sobj.m_level_vertex_id == job.level_vertex_id
+  then
+    return
+  end
   local level_vertexes = amk_anoms.level_vertexes[ job.level_name ]
   if job.level_vertex_id > level_vertexes then
     log2(
