@@ -18,6 +18,7 @@ function on_update( delta )
   if ( not cur_wpn.id ) or cur_wpn.id ~= wpn:id() then
     local t = {}
     t.ammo_n           = wpn:get_ammo_in_magazine()
+    t.binded           = wpn:binded_object()
     t.dispersion_start = get_u32( wpn:section(), "dispersion_start" )
     t.fire_dispersion_base = get_float( wpn:section(), "fire_dispersion_base", 0 )
     t.fire_power_loss  = get_fire_power_loss( wpn )
@@ -87,6 +88,10 @@ function on_update( delta )
         db.actor:drop_item( wpn )
         dsh.say_blin()
       end
+    end
+    if cur_wpn.weapon_state == weapon_states.switch then
+      -- закончили переключение с подствольника или на него
+      check_hidden_ammo( cur_wpn )
     end
     cur_wpn.weapon_state = state
   end
@@ -309,6 +314,36 @@ function on_key_down( key, bind )
 end
 
 
+function check_hidden_ammo( cur_wpn )
+  if not cur_wpn.has_gl then return end
+  local has_gl = cur_wpn.binded and cur_wpn.binded.has_gl or false
+  if not has_gl then return end
+  local wpn      = cur_wpn.wpn
+  local cur_t    = ogse_wpn_utils.get_active_ammo_type( wpn )
+  local hidden_t = has_gl.hidden_t
+  if cur_t ~= hidden_t then
+    local ammo_class = parse_names(
+      get_string(
+        wpn:section(),
+        ( has_gl.gl_mode and "ammo_class" or "grenade_class" )
+      )
+    )
+    local ammo     = ammo_class[ hidden_t + 1 ]
+    local hidden_n = has_gl.hidden_n
+    log2(
+      "[%s]: wrong hidden ammo detected for %s, returning %s (%s)",
+      script_name(), wpn:name(), ammo, hidden_n
+    )
+    wpn:set_ammo_elapsed( 0 )
+    cur_wpn.ammo_n = 0
+    se_respawn.create_ammo(
+      ammo, vector():set( 0, 0, 0 ), 1, 1, db.actor:id(), hidden_n
+    )
+  end
+  cur_wpn.binded.has_gl = nil
+end
+
+
 function bind( obj )
   obj:bind_object( wpn_binder( obj ) )
 end
@@ -316,27 +351,45 @@ end
 
 class "wpn_binder"( object_binder )
 function wpn_binder:__init( obj ) super( obj )
-  self.sm = ogse_signals.get_mgr()
-  self.sm:call( "on_wpn_init", obj )
 end
 
 
-function wpn_binder:net_spawn( data )
-  if not object_binder.net_spawn( self, data ) then
-    return false
-  end
-  self.sm:call( "on_wpn_spawn", self.object )
+function wpn_binder:net_save_relevant()
   return true
 end
 
 
-function wpn_binder:update()
-  self:check_gl_mode()
-  self.sm:call( "on_wpn_update", self.object )
+function wpn_binder:load( packet )
+  object_binder.load( self, packet )
+  if packet:r_eof() then return end
+  local has_gl = packet:r_bool()
+  if has_gl then
+    self.has_gl = {
+      [ "gl_mode"  ] = packet:r_bool(),
+      [ "hidden_t" ] = packet:r_u8(),
+      [ "hidden_n" ] = packet:r_u8(),
+    }
+  end
 end
 
 
-function wpn_binder:net_destroy()
-  self.sm:call( "on_wpn_destroy", self.object )
-  object_binder.net_destroy( self )
+function wpn_binder:save( packet )
+  object_binder.save( self, packet )
+  local has_gl = has_wpn_gl( self.object )
+  packet:w_bool( has_gl )
+  if has_gl then
+    local gl_mode, hidden_t, hidden_n
+    if self.has_gl then
+      gl_mode  = self.has_gl.gl_mode
+      hidden_t = self.has_gl.hidden_t
+      hidden_n = self.has_gl.hidden_n
+    else
+      gl_mode  = ogse_wpn_utils.get_gl_mode( self.object )
+      hidden_t = ogse_wpn_utils.get_hidden_ammo_type( self.object )
+      hidden_n = ogse_wpn_utils.get_ammo_elapsed2( self.object )
+    end
+    packet:w_bool( gl_mode  )
+    packet:w_u8(   hidden_t )
+    packet:w_u8(   hidden_n )
+  end
 end
