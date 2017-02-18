@@ -2,6 +2,7 @@
 
 function attach( sm )
   sm:subscribe({ signal = "on_actor_fire", fun = this.on_actor_fire })
+  sm:subscribe({ signal = "on_inventory_hide", fun = this.on_inventory_hide })
   sm:subscribe({ signal = "on_key_down",   fun = this.on_key_down   })
   sm:subscribe({ signal = "on_update",     fun = this.on_update     })
 end
@@ -13,8 +14,7 @@ local stand_power = get_float( "actor_condition", "stand_power" )
 local cur_wpn = {}
 function on_update( delta )
   local wpn = db.actor:active_item()
-  if not wpn then return end
-  if not wpn:is_weapon() then return end
+  if not ( wpn and wpn:is_weapon() ) then return end
   if ( not cur_wpn.id ) or cur_wpn.id ~= wpn:id() then
     local t = {}
     t.ammo_n           = wpn:get_ammo_in_magazine()
@@ -23,8 +23,6 @@ function on_update( delta )
     t.fire_dispersion_base = get_float( wpn:section(), "fire_dispersion_base", 0 )
     t.fire_power_loss  = get_fire_power_loss( wpn )
     t.inv_weight       = get_float( wpn:section(), "inv_weight", 0 )
-    t.has_gl           = has_wpn_gl( wpn )
-    t.has_silencer     = ( ogse_wpn_utils.get_silencer_status( wpn ) == 2 )
     t.highfire_mode    = get_u32( wpn:section(), "highfire_mode" )
     t.hit_power        = get_float( wpn:section(), "hit_power"   )
     t.hit_power_2      = get_float( wpn:section(), "hit_power_2" )
@@ -40,10 +38,16 @@ function on_update( delta )
     t.wpn              = wpn
     t.zoom_body_state  = "unknown"
     cur_wpn = t
+  end
+  if cur_wpn.has_gl == nil then
+    cur_wpn.has_gl = has_wpn_gl( wpn )
     if cur_wpn.has_gl then
       cur_wpn.gl_mode = ogse_wpn_utils.get_gl_mode( wpn )
       cur_wpn.gl_name = get_string( wpn:section(), "grenade_launcher_name" )
     end
+  end
+  if cur_wpn.has_silencer == nil then
+    cur_wpn.has_silencer = ( ogse_wpn_utils.get_silencer_status( wpn ) == 2 )
   end
   check_silencer( wpn )
   configure_high_rpm( cur_wpn )
@@ -315,32 +319,21 @@ end
 
 
 function check_hidden_ammo( cur_wpn )
-  if not cur_wpn.has_gl then return end
-  local has_gl = cur_wpn.binded and cur_wpn.binded.has_gl or false
-  if not has_gl then return end
-  local wpn      = cur_wpn.wpn
-  local cur_t    = ogse_wpn_utils.get_active_ammo_type( wpn )
-  local hidden_t = has_gl.hidden_t
-  if cur_t ~= hidden_t then
-    local ammo_class = parse_names(
-      get_string(
-        wpn:section(),
-        ( has_gl.gl_mode and "ammo_class" or "grenade_class" )
-      )
-    )
-    local ammo     = ammo_class[ hidden_t + 1 ]
-    local hidden_n = has_gl.hidden_n
-    log2(
-      "[%s]: wrong hidden ammo detected for %s, returning %s (%s)",
-      script_name(), wpn:name(), ammo, hidden_n
-    )
-    wpn:set_ammo_elapsed( 0 )
+  if
+    not ( cur_wpn.has_gl and cur_wpn.binded and cur_wpn.binded.has_gl )
+  then
+    return
+  end
+  if cur_wpn.binded:check_hidden_ammo() then
     cur_wpn.ammo_n = 0
-    se_respawn.create_ammo(
-      ammo, vector():set( 0, 0, 0 ), 1, 1, db.actor:id(), hidden_n
-    )
   end
   cur_wpn.binded.has_gl = nil
+end
+
+
+function on_inventory_hide()
+  cur_wpn.has_gl       = nil
+  cur_wpn.has_silencer = nil
 end
 
 
@@ -355,6 +348,63 @@ end
 
 
 function wpn_binder:net_save_relevant()
+  return true
+end
+
+
+function wpn_binder:reinit()
+  self.object:set_callback(
+    callback_ex.init_addons, self.init_addons, self
+  )
+  self.object:set_callback(
+    callback_ex.update_addons_visibility, self.update_addons_visibility, self
+  )
+end
+
+
+function wpn_binder:net_destroy()
+  self.object:set_callback( callback_ex.init_addons, nil )
+  self.object:set_callback( callback_ex.update_addons_visibility, nil )
+end
+
+
+function wpn_binder:init_addons( a )
+  if a == 1 and self.object:is_weapon_gl() then return end
+  ogse_wpn_utils.activate_visibility_updates( self.object, true )
+end
+
+
+function wpn_binder:update_addons_visibility()
+  if not self.has_gl then return end
+  if has_wpn_gl( self.object ) then return end
+  -- подствольник сняли
+  if self.has_gl.gl_mode then
+    self:check_hidden_ammo()
+  end
+  self.has_gl = nil
+end
+
+
+function wpn_binder:check_hidden_ammo()
+  local cur_t    = ogse_wpn_utils.get_active_ammo_type( self.object )
+  local hidden_t = self.has_gl.hidden_t
+  if cur_t == hidden_t then return false end
+  local ammo_class = parse_names(
+    get_string(
+      self.object:section(),
+      ( self.has_gl.gl_mode and "ammo_class" or "grenade_class" )
+    )
+  )
+  local ammo     = ammo_class[ hidden_t + 1 ]
+  local hidden_n = self.has_gl.hidden_n
+  log2(
+    "[%s]: wrong hidden ammo detected for %s, returning %s (%s)",
+    script_name(), self.object:name(), ammo, hidden_n
+  )
+  self.object:set_ammo_elapsed( 0 )
+  se_respawn.create_ammo(
+    ammo, vector():set( 0, 0, 0 ), 1, 1, db.actor:id(), hidden_n
+  )
   return true
 end
 
@@ -374,6 +424,12 @@ end
 
 
 function wpn_binder:save( packet )
+  ASSERT(
+    db.saving_obj == nil ,
+    "found saving_obj = %s",
+    tostring( db.saving_obj and db.saving_obj:name() or nil )
+  )
+  db.saving_obj = self.object
   object_binder.save( self, packet )
   local has_gl = has_wpn_gl( self.object )
   packet:w_bool( has_gl )
@@ -392,4 +448,5 @@ function wpn_binder:save( packet )
     packet:w_u8(   hidden_t )
     packet:w_u8(   hidden_n )
   end
+  db.saving_obj = nil
 end
