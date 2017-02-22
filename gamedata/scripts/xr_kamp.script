@@ -99,544 +99,630 @@ function CKampManager:parse_patrol()
 end
 
 
-function CKampManager:selectPosition(npc_id, bind)
-        --пытаемся разместить в заданном в логике месте. А если занято, то как обычно
-        if bind and self.position[bind] and self.position[bind].used == nil then
-                self.position[bind].used = npc_id
-                self.npc[npc_id].position = bind
-                return
-        end
-
-        -- создаем список доступных позиций
-        local free = {}
-        for k,v in pairs(self.position) do
-                if v.used == nil then
-                        table.insert(free, k)
-                end
-        end
-        --' затем из доступных позиций выбрать рандомно одну.
-        if table.getn(free) > 0 then
-                --printf("KAMP [%s] free node > 0", npc_id)
-                local rr = math.random(table.getn(free))
-                self.position[free[rr]].used = npc_id
-                self.npc[npc_id].position = free[rr]
-        end
+function CKampManager:selectPosition( npc_id, bind )
+  -- пытаемся разместить в заданном в логике месте. А если занято, то как обычно
+  if bind and self.position[ bind ] and self.position[ bind ].used == nil then
+    self.position[ bind ].used = npc_id
+    self.npc[ npc_id ].position = bind
+    return
+  end
+  -- создаем список доступных позиций
+  local free = {}
+  for k, v in pairs( self.position ) do
+    if v.used == nil then
+      table.insert( free, k )
+    end
+  end
+  -- затем из доступных позиций выбрать рандомно одну.
+  if table.getn( free ) > 0 then
+    local rr = free[ math.random( table.getn( free ) ) ]
+    self.position[ rr ].used    = npc_id
+    self.npc[ npc_id ].position = rr
+  end
 end
-function CKampManager:getDestVertex(npc_id, radius)
 
-        if npc_id == nil then return nil end
-        
-        if self.npc[npc_id] == nil then return nil end
 
-        if self.npc[npc_id].position == nil then
-                abort("get dest Vertex: nil [%s]", npc_id)
-                return nil
-        end
-        
-        local position = self.position[self.npc[npc_id].position]
-        if position.vertex ~= nil then
-                return position.vertex
-        end
-        -- высчитываем вертех по направлению
-        local pp = level.vertex_in_direction(self.center, self.position[self.npc[npc_id].position].dir, radius)
-        pp = level.vertex_in_direction(pp, vector():set(math.random(-1,1), 0, math.random(-1,1)), math.random(0,0.5))
-        return pp               
+function CKampManager:getDestVertex( npc_id, radius )
+  if npc_id == nil then return nil end
+  if self.npc[ npc_id ] == nil then return nil end
+  ASSERT( self.npc[ npc_id ].position, "get dest Vertex: nil [%s]", npc_id )
+  local position = self.position[ self.npc[ npc_id ].position ]
+  if position.vertex ~= nil then
+    return position.vertex
+  end
+  -- высчитываем вертех по направлению
+  local pp = level.vertex_in_direction( self.center, position.dir, radius )
+  pp = level.vertex_in_direction(
+    pp, vector():set( math.random( -1,1 ), 0, math.random( -1, 1 ) ),
+    math.random( 0, 0.5 )
+  )
+  return pp
 end
-function CKampManager:proceedState(npc)
-        -- Проверка на таймаут
-        local npc_id = npc:id()
-                if self.npc == nil or self.npc[npc_id] == nil then return end
-        local active_sound_count = npc:active_sound_count()
-        if self.npc[npc_id].need_sound_begin == true then
-                if active_sound_count == 0 then
-                        return
-                else                    
-                        self.npc[npc_id].need_sound_begin = false
-                end
-        end
-        if self.begin ~= nil and
-           time_global() - self.begin < self.timeout[self.kamp_state].min
-        then
-                return
-        end
 
-        -- Если режиссер не закончил говорить - ждем конца фразы.
-        if active_sound_count > 0 then
-                return
-        end
 
-        -- В случае с историей переход обрабатывается отдельно
-        if self.kamp_state == "post_story" then
-                if self.story_last < self.story_max - 1 then
-                        self.npc[npc_id].begin = nil
-                        self.npc[npc_id].need_sound_begin = true
-                        self.director = npc_id
-                        self.kamp_state = "story"
-                        self.begin = time_global()
-                        for kk,vv in pairs(self.npc) do
-                                vv.new = true
-                        end             
-                        return
-                else
-                        self.selected_story = nil
-                end
+function CKampManager:proceedState( npc )
+  -- Проверка на таймаут
+  local npc_id = npc:id()
+  if self.npc[ npc_id ] == nil then return end
+  local active_sound_count = npc:active_sound_count()
+  if self.npc[ npc_id ].need_sound_begin == true then
+    if active_sound_count == 0 then
+      return
+    else
+      self.npc[ npc_id ].need_sound_begin = false
+    end
+  end
+  if self.begin ~= nil and
+    time_global() - self.begin < self.timeout[ self.kamp_state ].min
+  then
+    return
+  end
+
+  -- Если режиссер не закончил говорить - ждем конца фразы.
+  if active_sound_count > 0 then
+    return
+  end
+
+  -- В случае с историей переход обрабатывается отдельно
+  if self.kamp_state == "post_story" then
+    if self.story_last < self.story_max - 1 then
+      self.npc[ npc_id ].begin            = nil
+      self.npc[ npc_id ].need_sound_begin = true
+      self.director   = npc_id
+      self.kamp_state = "story"
+      self.begin      = time_global()
+      for kk, vv in pairs( self.npc ) do
+        vv.new = true
+      end
+      return
+    else
+      self.selected_story = nil
+    end
+  end
+  -- Определяются допустимые в данный момент переходы.
+  local temp    = {}
+  local max_rnd = 0
+  for k, v in pairs( self.trans_kamp[ self.kamp_state ] ) do
+    -- Определяются допустимые состояния для лагеря.
+    if self.kamp_states[ k ] == true then
+      temp[ k ] = v
+      max_rnd   = max_rnd + v
+    end
+  end
+  -- Осуществляется рандомный взвешенный переход.
+  if max_rnd == 0 then
+    -- Если переходить некуда - переходим в айдл
+    temp.idle = 100
+    max_rnd   = 100
+  end
+  local p = math.random( 0, max_rnd )
+  for k, v in pairs( temp ) do
+    p = p - v
+    if p <= 0 then
+      if k == "idle" then
+        self.director = nil
+        if self.kamp_state ~= "idle" then
+          self.npc[ npc_id ].begin = nil
         end
-        -- Определяются допустимые в данный момент переходы.
-        local temp = {}
-        local max_rnd = 0
-        for k,v in pairs(self.trans_kamp[self.kamp_state]) do           
-                -- Определяются допустимые состояния для лагеря.
-                if self.kamp_states[k] == true then
-                        temp[k] = v
-                        max_rnd = max_rnd + v
-                end
+      else
+        self.npc[ npc_id ].begin = nil
+        if self.timeout[ k ].soundstart == true then
+          self.npc[ npc_id ].need_sound_begin = true
         end
-        -- Осуществляется рандомный взвешенный переход.
-        if max_rnd == 0 then
-                -- Если переходить некуда - переходим в айдл
-                temp["idle"] = 100
-                max_rnd = 100
+        self.director = npc_id
+        self.censor   = nil
+      end
+      self.kamp_state = k
+      self.begin      = time_global()
+      -- Меняем таймаут для истории
+      if k == "post_story" then
+        local dep = sound_theme_data.theme[ self.selected_story ].depence[ self.story_last ]
+        if dep and dep.min and dep.max then
+          self.timeout[ "post_story" ].min = math.random( dep.min, dep.max ) * 1000
         end
-        local p = math.random(0,max_rnd)
-        for k,v in pairs(temp) do
-                p = p - v
-                if p <= 0 then
-                        if k == "idle" then
-                                self.director = nil
-                                if self.kamp_state ~= "idle" then
-                                        self.npc[npc_id].begin = nil
-                                end
-                        else
-                                self.npc[npc_id].begin = nil
-                                if self.timeout[k].soundstart == true then
-                                        self.npc[npc_id].need_sound_begin = true
-                                end
-                                self.director = npc_id
-                                self.censor = nil
-                        end                     
-                        self.kamp_state = k
-                        self.begin = time_global()
-                        -- Меняем таймаут для истории
-                        if k == "post_story" then
-                                local dep = sound_theme.theme[self.selected_story].depence[self.story_last]
-                                if dep and dep.min and dep.max then
-                                        self.timeout["post_story"].min = math.random(dep.min, dep.max)*1000
-                                end
-                        end
-                        for kk,vv in pairs(self.npc) do
-                                vv.new = true
-                        end
-                        return
-                end
-        end
+      end
+      for kk, vv in pairs( self.npc ) do
+        vv.new = true
+      end
+      return
+    end
+  end
 end
-function CKampManager:proceedRole(npc, director)
-        -- Определить список доступных анимаций по состоянию лагеря.
-        -- определить список доступных анимаций по наличию предметов
-        -- выбрать одну из них (то же самое со звуком).
-        local states = 0
-        local sound = ""
-        local state = ""
-        local npc_id = npc:id()
-                if self.npc == nil or self.npc[npc_id] == nil then return nil, nil end
-        if self.npc[npc_id].begin == nil or
-           time_global() - self.npc[npc_id].begin >= self.npc[npc_id].state_idle
-        then
-                if director then
-                        states = self.avail_state[self.kamp_state].directed
-                        sound = self.avail_sound[self.kamp_state].directed
-                else
-                        states = self.avail_state[self.kamp_state].undirected
-                        sound = self.avail_sound[self.kamp_state].undirected
-                end
-                -- Выбирать новое состояние только раз в какое то время.
-                local temp = {}
-                for k,v in pairs(states) do
-                        if self.npc[npc_id].states[v] == true then
-                                table.insert(temp, v)
-                        end
-                end
-                
-                -- Если мы решили говорить историю, надо выбрать какую именно говорить.
-                if sound == "play_story" and self.selected_story == nil and db.story_by_id[npc_id] ~= nil then
-                        local story_num = table.getn(db.story_by_id[npc_id])
-                        if story_num > 0 then
-                                self.selected_story = db.story_by_id[npc_id][math.random(story_num)]
-                        end                     
-                end
-                if table.getn(temp) > 0 then
-                        self.npc[npc_id].begin = time_global()
-                        state = temp[math.random(table.getn(temp))]
-                        self.npc[npc_id].state_selected = state
-                        self.npc[npc_id].state_idle = math.random(15000,20000)          
-                else
-                        state = self.npc[npc_id].state_selected 
-                end
+
+
+function CKampManager:proceedRole( npc, director )
+  -- Определить список доступных анимаций по состоянию лагеря.
+  -- определить список доступных анимаций по наличию предметов
+  -- выбрать одну из них (то же самое со звуком).
+  local states = 0
+  local sound  = ""
+  local state  = ""
+  local npc_id = npc:id()
+  if self.npc[ npc_id ] == nil then return nil, nil end
+  if
+    self.npc[ npc_id ].begin == nil
+    or time_global() - self.npc[ npc_id ].begin >= self.npc[ npc_id ].state_idle
+  then
+    if director then
+      states = self.avail_state[ self.kamp_state ].directed
+      sound  = self.avail_sound[ self.kamp_state ].directed
+    else
+      states = self.avail_state[ self.kamp_state ].undirected
+      sound  = self.avail_sound[ self.kamp_state ].undirected
+    end
+    -- Выбирать новое состояние только раз в какое то время.
+    local temp = {}
+    for k, v in pairs( states ) do
+      if self.npc[ npc_id ].states[ v ] == true then
+        table.insert( temp, v )
+      end
+    end
+
+    -- Если мы решили говорить историю, надо выбрать какую именно говорить.
+    if
+      sound == "play_story" and self.selected_story == nil
+      and db.story_by_id[ npc_id ] ~= nil
+    then
+      local story_num = table.getn( db.story_by_id[ npc_id ] )
+      if story_num > 0 then
+        self.selected_story = db.story_by_id[ npc_id ][ math.random( story_num ) ]
+      end
+    end
+    if table.getn( temp ) > 0 then
+      state = temp[ math.random( table.getn( temp ) ) ]
+      self.npc[ npc_id ].begin          = time_global()
+      self.npc[ npc_id ].state_selected = state
+      self.npc[ npc_id ].state_idle     = math.random( 15000,20000 )
+    else
+      state = self.npc[ npc_id ].state_selected
+    end
+  else
+    if director then
+      sound = self.avail_sound[ self.kamp_state ].directed
+    else
+      sound = self.avail_sound[ self.kamp_state ].undirected
+    end
+    state = self.npc[ npc_id ].state_selected
+  end
+  return state, sound
+end
+
+
+function CKampManager:updateNpc( npc )
+  -- Проверка что сталкер может делать, а что нет.
+  self:checkNpcAbility( npc )
+  -- Просим лагерь выбрать текущее состояние. Менять состояние лагеря
+  -- имеет право только режиссер.
+  local npc_id = npc:id()
+  if self.npc[ npc_id ] == nil then return nil, nil, nil end
+  local director = ( self.director == nil or self.director == npc_id )
+    and npc_id ~= self.forbiddendirector
+  if director then
+    self:proceedState( npc )
+  end
+  -- Говорим чудаку выбрать себе состояние для текущего состояния лагеря.
+  local state, sound = self:proceedRole( npc, director )
+
+  local substate
+  if state == "wait_harmonica" then
+    if sound == "pre_harmonica" and self.npc[ npc_id ].new == true then
+      xr_sound.set_sound_play( npc, "intro_music", math.random( 2000,3000 ) )
+      self.npc[ npc_id ].new = false
+    end
+    state = "harmonica"
+    kamp_stalkers[ npc_id ] = false
+  elseif state == "play_harmonica" then
+    state    = "harmonica"
+    substate = 1
+    kamp_stalkers[ npc_id ] = false
+  elseif state == "wait_guitar" then
+    if sound == "pre_guitar" and self.npc[ npc_id ].new == true then
+      xr_sound.set_sound_play( npc, "intro_music", math.random( 2000,3000 ) )
+      self.npc[ npc_id ].new = false
+    end
+    state = "guitar"
+    kamp_stalkers[ npc_id ] = false
+  elseif state == "play_guitar" then
+    state    = "guitar"
+    substate = 1
+    kamp_stalkers[ npc_id ] = false
+  elseif state == "wait_balalaika" then
+    if sound == "pre_balalaika" and self.npc[ npc_id ].new == true then
+      xr_sound.set_sound_play( npc, "intro_music", math.random( 2000,3000 ) )
+      self.npc[ npc_id ].new = false
+    end
+    state = "balalaika"
+    kamp_stalkers[ npc_id ] = false
+  elseif state == "play_balalaika" then
+    state    = "balalaika"
+    substate = 1
+    kamp_stalkers[ npc_id ] = false
+  elseif state == "declarate" then
+    if self.npc[ npc_id ].new == true then
+      if sound == "pre_joke" then
+        xr_sound.set_sound_play( npc, "intro_joke", math.random( 2000,3000 ) )
+      elseif sound == "play_joke" then
+        xr_sound.set_sound_play( npc, "joke", math.random( 2000, 3000 ) )
+      elseif sound == "play_story" then
+        xr_sound.set_sound_play( npc, self.selected_story )
+        self.story_last, self.story_max = xr_sound.get_last_IDS(
+          npc, self.selected_story
+        )
+        if self.story_last == nil then
+          self.story_last = 0
+          self.story_max  = 1
+          xr_sound.set_sound_play( npc, "threat_back", math.random( 1000,2000 ) )
+          --- dirty hack
+          self.kamp_state        = "idle"
+          self.forbiddendirector = self.director
+          self.director          = nil
+        end
+      end
+      self.npc[ npc_id ].new = false
+    end
+    if npc:character_community() == "monolith" then
+      local t = math.mod( npc_id, 2 )
+      if t == 0 then
+        state = "trans_0"
+      else
+        state = "trans_1"
+      end
+    elseif npc:character_community() == "zombied" then
+      state = "trans_zombied"
+    else
+      local t = math.mod( npc_id, 3 )
+      if t == 0 then
+        state = "sit"
+      elseif t == 1 then
+        state = "sit_ass"
+      else
+        state = "sit_knee"
+      end
+    end
+    kamp_stalkers[ npc_id ] = false
+  elseif state == "trans" then
+    if npc:character_community() == "monolith" then
+      local t = math.mod( npc_id, 2 )
+      if t == 0 then
+        state = "trans_0"
+      else
+        state = "trans_1"
+      end
+    elseif npc:character_community() == "zombied" then
+      state = "trans_zombied"
+    end
+    kamp_stalkers[ npc_id ] = false
+  else
+    kamp_stalkers[ npc_id ] = true
+  end
+  -- Выбор реальных звуков
+  if sound == "idle" then
+    sound = "weather, state"
+  elseif sound == "reac_guitar" then
+    sound = "reac_music"
+  elseif sound == "reac_balalaika" then
+    sound = "reac_music"
+  elseif sound == "reac_harmonica" then
+    sound = "reac_music"
+  elseif sound == "reac_joke" then
+    sound = ""
+    if self.npc[ npc_id ].new == true then
+      if self.censor == nil then
+        xr_sound.set_sound_play( npc, "reac_joke", math.random( 2000,3000 ) )
+        self.censor = npc_id
+      else
+        xr_sound.set_sound_play(
+          npc, "story_reac_laughter", math.random( 100,300 )
+        )
+      end
+      self.npc[ npc_id ].new = false
+    end
+  elseif sound == "reac_story" then
+    sound = ""
+    if self.npc[ npc_id ].new == true then
+      local dep
+      if self.story_last then
+        dep = sound_theme.theme[ self.selected_story ].depence[ self.story_last + 1 ]
+      end
+      if dep then
+        if dep.type == "all" then
+          xr_sound.set_sound_play( npc, dep.theme, math.random( 100,300 ) )
         else
-                if director then
-                        sound = self.avail_sound[self.kamp_state].directed
-                else
-                        sound = self.avail_sound[self.kamp_state].undirected
-                end
-                state = self.npc[npc_id].state_selected 
+          sound = dep.theme
         end
-        return state, sound
-end
-function CKampManager:updateNpc(npc)
-        -- Проверка что сталкер может делать, а что нет.
-        self:checkNpcAbility(npc)
-        -- Просим лагерь выбрать текущее состояние. Менять состояние лагеря
-        -- имеет право только режиссер.
-        local npc_id = npc:id()
-                if self.npc == nil or self.npc[npc_id] == nil then return nil, nil, nil end
-        local director = ( self.director == nil or self.director == npc_id ) and npc_id~=self.forbiddendirector
-        if director     then
-                self:proceedState(npc)
-        end
-        -- Говорим чудаку выбрать себе состояние для текущего состояния лагеря.
-        local state, sound = self:proceedRole(npc, director)
-        
-        local substate = nil
-        if state == "wait_harmonica" then -- and not has_alife_info("horror_time") then
-                if sound == "pre_harmonica" and self.npc[npc_id].new == true then
-                        xr_sound.set_sound_play(npc, "intro_music", math.random(2000,3000))
-                        self.npc[npc_id].new = false
-                end
-                state = "harmonica"
-                xr_kamp.kamp_stalkers[npc_id] = false
-        elseif state == "play_harmonica" then
-                state = "harmonica"
-                substate = 1
-                xr_kamp.kamp_stalkers[npc_id] = false
-        elseif state == "wait_guitar" then -- and not has_alife_info("horror_time") then
-                if sound == "pre_guitar" and self.npc[npc_id].new == true then
-                        xr_sound.set_sound_play(npc, "intro_music", math.random(2000,3000))
-                        self.npc[npc_id].new = false
-                end
-                state = "guitar"
-                xr_kamp.kamp_stalkers[npc_id] = false
-        elseif state == "play_guitar" then -- and not has_alife_info("horror_time") then
-                state = "guitar"
-                substate = 1
-                xr_kamp.kamp_stalkers[npc_id] = false
-        elseif state == "wait_balalaika" then -- and not has_alife_info("horror_time") then
-                if sound == "pre_balalaika" and self.npc[npc_id].new == true then
-                        xr_sound.set_sound_play(npc, "intro_music", math.random(2000,3000))
-                        self.npc[npc_id].new = false
-                end
-                state = "balalaika"
-                xr_kamp.kamp_stalkers[npc_id] = false
-        elseif state == "play_balalaika" then -- and not has_alife_info("horror_time") then
-                state = "balalaika"
-                substate = 1
-                xr_kamp.kamp_stalkers[npc_id] = false
-        elseif state == "declarate" then
-                if self.npc[npc_id].new == true then
-                        if sound == "pre_joke" then
-                                xr_sound.set_sound_play(npc, "intro_joke", math.random(2000,3000))
-                        elseif sound == "play_joke" then -- and not has_alife_info("horror_time") then
-                                xr_sound.set_sound_play(npc, "joke", math.random(2000,3000))
-                        elseif sound == "play_story" then -- and not has_alife_info("horror_time") then
-                                xr_sound.set_sound_play(npc, self.selected_story)
-                                self.story_last, self.story_max = xr_sound.get_last_IDS(npc, self.selected_story)
-                                if self.story_last==nil then
-                                        self.story_last=0
-                                        self.story_max=1
-                                        xr_sound.set_sound_play(npc, "threat_back", math.random(1000,2000))
-                                        --- dirty hack
-                                        self.kamp_state="idle"
-                                        self.forbiddendirector=self.director
-                                        self.director=nil
-                                end
-                        end
-                        self.npc[npc_id].new = false
-                end
-                if npc:character_community() == "monolith" then
-                        local t = math.mod(npc_id, 2)
-                        if t == 0 then
-                                state = "trans_0"
-                        else
-                                state = "trans_1"
-                        end
-                elseif npc:character_community() == "zombied" then
-                        state = "trans_zombied"
-                else
-                        local t = math.mod(npc_id, 3)
-                        if t == 0 then
-                                state = "sit"
-                        elseif t == 1 then
-                                state = "sit_ass"
-                        else
-                                state = "sit_knee"
-                        end
-                end
-                xr_kamp.kamp_stalkers[npc_id] = false
-        elseif state == "trans" then
-                if npc:character_community() == "monolith" then
-                        local t = math.mod(npc_id, 2)
-                        if t == 0 then
-                                state = "trans_0"
-                        else
-                                state = "trans_1"
-                        end
-                elseif npc:character_community() == "zombied" then
-                        state = "trans_zombied"
-                end
-                xr_kamp.kamp_stalkers[npc_id] = false
-        else
-                xr_kamp.kamp_stalkers[npc_id] = true
-        end
-        -- Выбор реальных звуков
-        if sound == "idle" then
-                sound = "weather, state"
-        elseif sound == "reac_guitar" then
-                sound = "reac_music"
-        elseif sound == "reac_balalaika" then
-                sound = "reac_music"
-        elseif sound == "reac_harmonica" then
-                sound = "reac_music"
-        elseif sound == "reac_joke" then
-                sound = ""      
-                if self.npc[npc_id].new == true then
-                        if self.censor == nil then
-                                xr_sound.set_sound_play(npc, "reac_joke", math.random(2000,3000))
-                                self.censor = npc_id
-                        else
-                                xr_sound.set_sound_play(npc, "story_reac_laughter", math.random(100,300))
-                        end
-                        self.npc[npc_id].new = false
-                end
-        elseif sound == "reac_story" then
-                sound = ""
-                if self.npc[npc_id].new == true then
-                        local dep
-                        if self.story_last then
-                                dep = sound_theme.theme[self.selected_story].depence[self.story_last+1]
-                        end
-                        if dep then
-                                if dep.type == "all" then
-                                        xr_sound.set_sound_play(npc, dep.theme, math.random(100,300))
-                                else
-                                        sound = dep.theme
-                                end
-                        end
-                end
-        elseif sound == "reac_story" then
-                sound = ""
-        else
-                sound = ""
-        end
+      end
+    end
+  elseif sound == "reac_story" then
+    sound = ""
+  else
+    sound = ""
+  end
 
-        return state, sound, substate
-end
-function CKampManager:checkNpcAbility(npc)
-        local npc_id = npc:id()
-        
-        if npc:character_community() ~= "monolith" and
-           npc:character_community() ~= "zombied"
-        then
-        
-                if not self.npc[npc_id] then return end
-                
-                local can_eat = ogse_kamp_eating.can_eat(npc)
-                
-                -- есть колбасу
-                        self.npc[npc_id].states["trans"] = false
-                if npc:object("kolbasa") and can_eat and math.random(99) > 20 then              -- вероятность 80%
-                        self.npc[npc_id].states["eat_kolbasa"] = true
-                else
-                        self.npc[npc_id].states["eat_kolbasa"] = false
-                end
-                if npc:object("kolbasa_a") and can_eat and math.random(99) > 20 then            -- вероятность 80%
-                        self.npc[npc_id].states["eat_kolbasa"] = true
-                else
-                        self.npc[npc_id].states["eat_kolbasa"] = false
-                end
-                -- пить водку
-                if npc:object("vodka") and can_eat and math.random(99) > 60 then                -- вероятность 40%
-                        self.npc[npc_id].states["eat_vodka"] = true
-                else
-                        self.npc[npc_id].states["eat_vodka"] = false
-                end
-                if npc:object("vodka_a") and can_eat and math.random(99) > 60 then              -- вероятность 40%
-                        self.npc[npc_id].states["eat_vodka"] = true
-                else
-                        self.npc[npc_id].states["eat_vodka"] = false
-                end
-                -- втыкать в интернеты
-                if npc:object("device_pda") and math.random(99) > 50 then               -- вероятность 50%
-                        self.npc[npc_id].states["use_pda"] = true
-                else
-                        self.npc[npc_id].states["use_pda"] = false
-                end             
-                -- пить енергитический напиток
-                if npc:object("energy_drink") and can_eat and math.random(99) > 40 then         -- вероятность 60%
-                        self.npc[npc_id].states["eat_energy"] = true
-                else
-                        self.npc[npc_id].states["eat_energy"] = false
-                end
-                -- есть хлеб
-                if npc:object("bread") and can_eat and math.random(99) > 20 then                -- вероятность 80%
-                        self.npc[npc_id].states["eat_bread"] = true
-                else
-                        self.npc[npc_id].states["eat_bread"] = false
-                end
-                if npc:object("bread_a") and can_eat and math.random(99) > 20 then              -- вероятность 80%
-                        self.npc[npc_id].states["eat_bread"] = true
-                else
-                        self.npc[npc_id].states["eat_bread"] = false
-                end
-                -- курит
-                if npc:object("sigaret") and can_eat and math.random(99) > 20 then              -- вероятность 80%
-                        self.npc[npc_id].states["kurit"] = true
-                else
-                        self.npc[npc_id].states["kurit"] = false
-                end
-                -- пить из фляжки
-                if npc:object("flaska") and can_eat and math.random(99) > 20 then               -- вероятность 80%
-                        self.npc[npc_id].states["flaska"] = true
-                else
-                        self.npc[npc_id].states["flaska"] = false
-                end
-                -- пить пиво
-                if npc:object("beer_a") and can_eat and math.random(99) > 20 then               -- вероятность 80%
-                        self.npc[npc_id].states["beer_a"] = true
-                else
-                        self.npc[npc_id].states["beer_a"] = false
-                end
-                -- курит сигару
-                if npc:object("cigara") and can_eat and math.random(99) > 20 then               -- вероятность 80%
-                        self.npc[npc_id].states["kurit_cigara"] = true
-                else
-                        self.npc[npc_id].states["kurit_cigara"] = false
-                end
-                -- есть бутерброд
-                if npc:object("sandwich") and can_eat and math.random(99) > 20 then             -- вероятность 80%
-                        self.npc[npc_id].states["eat_sandwich"] = true
-                else
-                        self.npc[npc_id].states["eat_sandwich"] = false
-                end
-                -- играть на гармошке
-                if npc:object("harmonica_a") and can_eat then
-                        self.npc[npc_id].states["play_harmonica"] = true
-                        self.npc[npc_id].states["wait_harmonica"] = true
-                        self.kamp_states["pre_harmonica"] = true
-                        self.kamp_states["harmonica"] = true
-                        self.kamp_states["post_harmonica"] = true
-                else
-                        self.npc[npc_id].states["play_harmonica"] = false
-                        self.npc[npc_id].states["wait_harmonica"] = false
-                        self.kamp_states["pre_harmonica"] = false
-                        self.kamp_states["harmonica"] = false
-                        self.kamp_states["post_harmonica"] = false
-                end
-                -- играть на гитаре
-                if npc:object("guitar_a") then
-                        self.npc[npc_id].states["play_guitar"] = true
-                        self.npc[npc_id].states["wait_guitar"] = true
-                        self.kamp_states["pre_guitar"] = true
-                        self.kamp_states["guitar"] = true
-                        self.kamp_states["post_guitar"] = true
-                else
-                        self.npc[npc_id].states["play_guitar"] = false
-                        self.npc[npc_id].states["wait_guitar"] = false
-                        self.kamp_states["pre_guitar"] = false
-                        self.kamp_states["guitar"] = false
-                        self.kamp_states["post_guitar"] = false
-                end
-                -- играть на балалайке
-                if npc:object("balalaika_a") then
-                        self.npc[npc_id].states["play_balalaika"] = true
-                        self.npc[npc_id].states["wait_balalaika"] = true
-                        self.kamp_states["pre_balalaika"] = true
-                        self.kamp_states["balalaika"] = true
-                        self.kamp_states["post_balalaika"] = true
-                else
-                        self.npc[npc_id].states["play_balalaika"] = false
-                        self.npc[npc_id].states["wait_balalaika"] = false
-                        self.kamp_states["pre_balalaika"] = false
-                        self.kamp_states["balalaika"] = false
-                        self.kamp_states["post_balalaika"] = false
-                end
-                -- анекдоты
-                if self.population > 1 then
-                        self.kamp_states["pre_joke"] = true
-                        self.kamp_states["joke"] = true
-                        self.kamp_states["post_joke"] = true
-                else
-                        self.kamp_states["pre_joke"] = false
-                        self.kamp_states["joke"] = false
-                        self.kamp_states["post_joke"] = false
-                end     
-        end
-        
-        -- Если чувак знает истории, надо добавить их к лагерю
-        
-        if self.population > 1 and db.story_by_id[npc:id()] ~= nil then
-                self.kamp_states["story"] = true
-                self.kamp_states["post_story"] = true
-        else
-                self.kamp_states["story"] = false
-                self.kamp_states["post_story"] = false  
-        end
-
+  return state, sound, substate
 end
 
-function CKampManager:addNpc(npc, bind)
-        if self.npc[npc:id()] ~= nil then
-                return
-        end
-        
-        if npc:character_community() == "monolith" or
-           npc:character_community() == "zombied"
-        then
-                self.npc[npc:id()] = {name = npc:name(), position = nil, current = nil, speak = 0, states = {
-                                                                stand_wait = false, sit = false, sit_ass = false, sit_knee = false, declarate = true,
-                                                                use_pda = false, eat_kolbasa = false, flaska = false, sweetness = false, beer_a = false, kurit_cigara = false, eat_sandwich = false, eat_vodka = false, eat_energy = false, eat_bread = false, kurit = false, trans = true,
-                                                                play_harmonica = false, play_guitar = false, play_balalaika = false, play_joke = false, play_story = false}}
-        
-        else
-                self.npc[npc:id()] = {name = npc:name(), position = nil, current = nil, speak = 0, states = {
-                                                                stand_wait = true, sit = true, sit_ass = true, sit_knee = true, declarate = true,
-                                                                use_pda = false, eat_kolbasa = false, flaska = false, sweetness = false, beer_a = false, kurit_cigara = false, eat_sandwich = false, eat_vodka = false, eat_energy = false, eat_bread = false, kurit = false, trans = false,
-                                                                play_harmonica = false, play_guitar = false, play_balalaika = false, play_joke = false, play_story = false}}
-        end
-        self:selectPosition(npc:id(), bind)     
-        if db.story_by_id[npc:id()] == nil then
-                local char_ini1 = ini_file("scripts\\stories.ltx")
-                xr_info.loadInfo(npc, char_ini1)
-        end
+
+function CKampManager:checkNpcAbility( npc )
+  local npc_id = npc:id()
+  if
+    npc:character_community() ~= "monolith"
+    and npc:character_community() ~= "zombied"
+  then
+    if not self.npc[ npc_id ] then return end
+    local states = self.npc[ npc_id ].states
+    states[ "trans" ] = false
+
+    if self.npc[ npc_id ].can_eat then
+      -- есть колбасу
+      if
+        ( npc:object( "kolbasa" ) or npc:object( "kolbasa_a" ) )
+        and math.random( 99 ) > 20
+      then
+        -- вероятность 80%
+        states[ "eat_kolbasa" ] = true
+      else
+        states[ "eat_kolbasa" ] = false
+      end
+      -- пить водку
+      if
+        ( npc:object( "vodka" ) or npc:object( "vodka_a" ) )
+        and math.random( 99 ) > 60
+      then
+        -- вероятность 40%
+        states[ "eat_vodka" ] = true
+      else
+        states[ "eat_vodka" ] = false
+      end
+      -- пить енергитический напиток
+      if npc:object( "energy_drink" ) and math.random( 99 ) > 40 then
+        -- вероятность 60%
+        states[ "eat_energy" ] = true
+      else
+        states[ "eat_energy" ] = false
+      end
+      -- есть хлеб
+      if
+        ( npc:object( "bread" ) or npc:object( "bread_a" ) )
+        and math.random( 99 ) > 20
+      then
+        -- вероятность 80%
+        states[ "eat_bread" ] = true
+      else
+        states[ "eat_bread" ] = false
+      end
+      -- курит
+      if npc:object( "sigaret" ) and math.random( 99 ) > 20 then
+        -- вероятность 80%
+        states[ "kurit" ] = true
+      else
+        states[ "kurit" ] = false
+      end
+      -- пить из фляжки
+      if npc:object( "flaska" ) and math.random( 99 ) > 20 then
+        -- вероятность 80%
+        states[ "flaska" ] = true
+      else
+        states[ "flaska" ] = false
+      end
+      -- пить пиво
+      if npc:object( "beer_a" ) and math.random( 99 ) > 20 then
+        -- вероятность 80%
+        states[ "beer_a" ] = true
+      else
+        states[ "beer_a" ] = false
+      end
+      -- курит сигару
+      if npc:object( "cigara" ) and math.random( 99 ) > 20 then
+        -- вероятность 80%
+        states[ "kurit_cigara" ] = true
+      else
+        states[ "kurit_cigara" ] = false
+      end
+      -- есть бутерброд
+      if npc:object( "sandwich" ) and math.random( 99 ) > 20 then
+        -- вероятность 80%
+        states[ "eat_sandwich" ] = true
+      else
+        states[ "eat_sandwich" ] = false
+      end
+      -- играть на гармошке
+      if npc:object( "harmonica_a" ) then
+        states[ "play_harmonica" ] = true
+        states[ "wait_harmonica" ] = true
+        self.kamp_states[ "pre_harmonica"  ] = true
+        self.kamp_states[ "harmonica"      ] = true
+        self.kamp_states[ "post_harmonica" ] = true
+      else
+        states[ "play_harmonica" ] = false
+        states[ "wait_harmonica" ] = false
+        self.kamp_states[ "pre_harmonica"  ] = false
+        self.kamp_states[ "harmonica"      ] = false
+        self.kamp_states[ "post_harmonica" ] = false
+      end
+    else
+        states[ "eat_kolbasa"    ] = false
+        states[ "eat_vodka"      ] = false
+        states[ "eat_energy"     ] = false
+        states[ "eat_bread"      ] = false
+        states[ "kurit"          ] = false
+        states[ "flaska"         ] = false
+        states[ "beer_a"         ] = false
+        states[ "kurit_cigara"   ] = false
+        states[ "eat_sandwich"   ] = false
+        states[ "play_harmonica" ] = false
+        states[ "wait_harmonica" ] = false
+        self.kamp_states[ "pre_harmonica"  ] = false
+        self.kamp_states[ "harmonica"      ] = false
+        self.kamp_states[ "post_harmonica" ] = false
+    end
+
+    -- втыкать в интернеты
+    if npc:object( "device_pda" ) and math.random( 99 ) > 50 then
+      -- вероятность 50%
+      states[ "use_pda" ] = true
+    else
+      states[ "use_pda" ] = false
+    end
+    -- играть на гитаре
+    if npc:object( "guitar_a" ) then
+      states[ "play_guitar" ] = true
+      states[ "wait_guitar" ] = true
+      self.kamp_states[ "pre_guitar"  ] = true
+      self.kamp_states[ "guitar"      ] = true
+      self.kamp_states[ "post_guitar" ] = true
+    else
+      states[ "play_guitar" ] = false
+      states[ "wait_guitar" ] = false
+      self.kamp_states[ "pre_guitar"  ] = false
+      self.kamp_states[ "guitar"      ] = false
+      self.kamp_states[ "post_guitar" ] = false
+    end
+    -- играть на балалайке
+    if npc:object( "balalaika_a" ) then
+      states[ "play_balalaika" ] = true
+      states[ "wait_balalaika" ] = true
+      self.kamp_states[ "pre_balalaika"  ] = true
+      self.kamp_states[ "balalaika"      ] = true
+      self.kamp_states[ "post_balalaika" ] = true
+    else
+      states[ "play_balalaika" ] = false
+      states[ "wait_balalaika" ] = false
+      self.kamp_states[ "pre_balalaika"  ] = false
+      self.kamp_states[ "balalaika"      ] = false
+      self.kamp_states[ "post_balalaika" ] = false
+    end
+    -- анекдоты
+    if self.population > 1 then
+      self.kamp_states[ "pre_joke"  ] = true
+      self.kamp_states[ "joke"      ] = true
+      self.kamp_states[ "post_joke" ] = true
+    else
+      self.kamp_states[ "pre_joke"  ] = false
+      self.kamp_states[ "joke"      ] = false
+      self.kamp_states[ "post_joke" ] = false
+    end
+  end
+
+  -- Если чувак знает истории, надо добавить их к лагерю
+  if self.population > 1 and db.story_by_id[ npc:id() ] ~= nil then
+    self.kamp_states[ "story"      ] = true
+    self.kamp_states[ "post_story" ] = true
+  else
+    self.kamp_states[ "story"      ] = false
+    self.kamp_states[ "post_story" ] = false
+  end
 end
 
-function CKampManager:removeNpc(npc)
-        local npc_id = npc:id()
-        if self.npc[npc_id] ~= nil then
-                -- Если удаляем режиссера - необходимо форсированно перевести лагерь в идловое состояние.
-                if self.director == npc_id then
-                        self.director = nil
-                        self.npc[npc_id].begin = nil
-                        self.censor = nil
-                        self.kamp_state = "idle"
-                        self.begin = time_global()
-                        for kk,vv in pairs(self.npc) do
-                                vv.new = true
-                        end
-                        xr_sound.set_sound(npc, nil)
-                        stop_play_sound(npc)
-                end
-                if self.npc[npc_id].position ~= nil then
-                        self.position[self.npc[npc_id].position].used = nil
-                end
-                self.npc[npc_id] = nil
-        end
+
+function CKampManager:addNpc( npc, bind )
+  if self.npc[ npc:id() ] ~= nil then return end
+  if
+    npc:character_community() == "monolith"
+    or npc:character_community() == "zombied"
+  then
+    self.npc[ npc:id() ] = {
+      name     = npc:name(),
+      can_eat  = ogse_kamp_eating.can_eat( npc ),
+      position = nil,
+      current  = nil,
+      speak    = 0,
+      states   = {
+        beer_a         = false,
+        declarate      = true,
+        eat_bread      = false,
+        eat_energy     = false,
+        eat_kolbasa    = false,
+        eat_sandwich   = false,
+        eat_vodka      = false,
+        flaska         = false,
+        kurit          = false,
+        kurit_cigara   = false,
+        play_balalaika = false,
+        play_guitar    = false,
+        play_harmonica = false,
+        play_joke      = false,
+        play_story     = false,
+        sit            = false,
+        sit_ass        = false,
+        sit_knee       = false,
+        stand_wait     = false,
+        sweetness      = false,
+        trans          = true,
+        use_pda        = false,
+      },
+    }
+  else
+    self.npc[ npc:id() ] = {
+      name     = npc:name(),
+      can_eat  = ogse_kamp_eating.can_eat( npc ),
+      position = nil,
+      current  = nil,
+      speak    = 0,
+      states   = {
+        beer_a         = false,
+        declarate      = true,
+        eat_bread      = false,
+        eat_energy     = false,
+        eat_kolbasa    = false,
+        eat_sandwich   = false,
+        eat_vodka      = false,
+        flaska         = false,
+        kurit          = false,
+        kurit_cigara   = false,
+        play_balalaika = false,
+        play_guitar    = false,
+        play_harmonica = false,
+        play_joke      = false,
+        play_story     = false,
+        sit            = true,
+        sit_ass        = true,
+        sit_knee       = true,
+        stand_wait     = true,
+        sweetness      = false,
+        trans          = false,
+        use_pda        = false,
+      },
+    }
+  end
+  self:selectPosition( npc:id(), bind )
+  if db.story_by_id[ npc:id() ] == nil then
+    local char_ini1 = ini_file( "scripts\\stories.ltx" )
+    xr_info.loadInfo( npc, char_ini1 )
+  end
 end
 
-function CKampManager:increasePops(npc)
-        self.population = self.population + 1
+
+function CKampManager:removeNpc( npc )
+  local npc_id = npc:id()
+  if self.npc[ npc_id ] == nil then return end
+  -- Если удаляем режиссера - необходимо форсированно перевести лагерь
+  -- в идловое состояние.
+  if self.director == npc_id then
+    self.npc[ npc_id ].begin = nil
+    self.director   = nil
+    self.censor     = nil
+    self.kamp_state = "idle"
+    self.begin      = time_global()
+    for kk, vv in pairs( self.npc ) do
+      vv.new = true
+    end
+    xr_sound.set_sound( npc, nil )
+    stop_play_sound( npc )
+  end
+  if self.npc[ npc_id ].position ~= nil then
+    self.position[ self.npc[ npc_id ].position ].used = nil
+  end
+  self.npc[ npc_id ] = nil
 end
 
-function CKampManager:decreasePops(npc)
-        self.population = self.population - 1
+
+function CKampManager:increasePops( npc )
+  self.population = self.population + 1
+end
+
+
+function CKampManager:decreasePops( npc )
+  self.population = self.population - 1
 end
 
 
