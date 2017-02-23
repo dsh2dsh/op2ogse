@@ -105,7 +105,7 @@ function CKampManager:__init( path )
   -- затеявший необычное поведение.
   self.director    = nil
   self:parse_patrol()
-  self:init_drop_point()
+  self:init_drop_points()
 end
 
 
@@ -769,27 +769,32 @@ function CKampManager:decreasePops( npc )
 end
 
 
-function CKampManager:init_drop_point()
+function CKampManager:init_drop_points()
   local found = get_pos( self.center, 20 )
-  ASSERT(
-    table.getn( found ) > 0,
-    "[%s]: can't find any drop point for %s",
-    script_name(), self.kamp_name
-  )
-  local usable = {}
+  self.drop_points = {}
   for _, vertex in ipairs( found ) do
     local pos = level.vertex_position( vertex )
     if pos:distance_to( self.point0 ) > 10 then
-      table.insert( usable, vertex )
+      table.insert( self.drop_points, vertex )
     end
   end
-  ASSERT(
-    table.getn( usable ) > 0,
-    "[%s]: can't find any usuable drop point for %s",
-    script_name(), self.kamp_name
+  if table.getn( self.drop_points ) == 0 and table.getn( found ) > 0 then
+    self.drop_points = found
+  end
+end
+
+
+function CKampManager:get_nearest_drop_point( obj )
+  local obj_pos = obj:position()
+  table.sort(
+    self.drop_points,
+    function( a, b )
+      local dist_a = level.vertex_position( a ):distance_to( obj_pos )
+      local dist_b = level.vertex_position( b ):distance_to( obj_pos )
+      return dist_a < dist_b
+    end
   )
-  usable = dsh.shuffle( usable )
-  self.drop_lvid = usable[ 1 ]
+  return self.drop_points[ 1 ]
 end
 
 
@@ -839,7 +844,12 @@ end
 function evaluator_see_deadman:evaluate()
   local npc = self.object
   -- Есть дела поважнее, чем трупы складировать...
-  if not xr_logic.is_active( self.object, self.a ) then
+  if
+    not (
+      xr_logic.is_active( self.object, self.a )
+      and table.getn( self.a.kamp.drop_point ) > 0
+    )
+  then
     if self.a.choosed_deadman then
       deadmansids[ self.a.choosed_deadman ] = nil
       self.a.choosed_deadman = nil
@@ -907,9 +917,10 @@ function evaluator_see_deadman:check_item( obj )
     if
       not ( deadmansidsuses[ obj:id() ] and deadmansidsuses[ obj:id() ] == 3 )
     then
-      deadmansids[ obj:id() ]     = npc:id()
       self.a.choosed_deadman      = obj:id()
       self.a.deadman_timeout      = time_global() + 30000
+      self.a.drop_lvid            = self.a.kamp:get_nearest_drop_point( obj )
+      deadmansids[ obj:id() ]     = npc:id()
       deadmansidsuses[ obj:id() ] = ( deadmansidsuses[ obj:id() ] or 0 ) + 1
       ogse_debug.add_active_eval(
         self.object, script_name(), "see_deadman_2"
@@ -932,10 +943,9 @@ function evaluator_can_move_deadman:evaluate()
   local obj = level.object_by_id( self.a.choosed_deadman )
   if not ( self.a.reached == 1 and obj ) then return false end
   -- если труп застрял (расстояние увеличилось), то возвращаемся к
-  -- нему или если ГГ подошел, то уделяем ему чуточку внимания
+  -- нему
   local pos = obj:bone_position( "bip01_spine1" )
   return pos:distance_to( npc:position() ) < 2
-    and pos:distance_to( db.actor:position() ) > 3
 end
 
 
@@ -1215,7 +1225,7 @@ function action_moving_deadman:execute()
 
   local ps = gi:get_physics_shell()
   if ps and self.a.time_drag < time_global() then
-    npc:set_dest_level_vertex_id( self.a.kamp.drop_lvid )
+    npc:set_dest_level_vertex_id( self.a.drop_lvid )
     -- непись сильный - тащит левой рукой за туловище трупа
     local bone = "bip01_spine1"
     local dir  = npc:bone_position( "bip01_l_hand" )
@@ -1232,7 +1242,7 @@ function action_moving_deadman:execute()
   end
 
   -- уф! дотащили... всем спасибо, все свободны...
-  if self.a.kamp.drop_lvid == npc:level_vertex_id() then
+  if self.a.drop_lvid == npc:level_vertex_id() then
     if self.a.choosed_deadman then
       deadmansids[ self.a.choosed_deadman ] = nil
       self.a.choosed_deadman = nil
