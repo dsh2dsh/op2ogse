@@ -32,11 +32,6 @@ local body_grab_bones = {
 }
 
 
-function printf( ... )
-  log2( ... )
-end
-
-
 function get_my_kamp( npc, path )
   local patrol = patrol( path )
   local vertex = patrol:level_vertex_id( 0 )
@@ -92,16 +87,6 @@ function CKampManager:__init( path )
   self.patrol       = patrol( path )
   self.center       = self.patrol:level_vertex_id( 0 )
   self.point0       = self.patrol:point( 0 )
-  self.position     = {
-    { dir = vector():set(  1, 0,  0 ) },
-    { dir = vector():set(  1, 0,  1 ) },
-    { dir = vector():set(  0, 0,  1 ) },
-    { dir = vector():set( -1, 0,  1 ) },
-    { dir = vector():set( -1, 0,  0 ) },
-    { dir = vector():set( -1, 0, -1 ) },
-    { dir = vector():set(  0, 0, -1 ) },
-    { dir = vector():set(  1, 0, -1 ) },
-  }
   self.npc         = {}
   self.population  = 0
   self.population_comed = 0
@@ -114,65 +99,9 @@ function CKampManager:__init( path )
   -- Хранилище для режиссера лагеря. Режиссерем является сталкер,
   -- затеявший необычное поведение.
   self.director    = nil
-  self:parse_patrol()
   self:init_drop_points()
   self:init_seats()
   self.seats_assigned = false
-end
-
-
-function CKampManager:parse_patrol()
-  -- Где то здесь распарсим патрульный путь и проапдейтим вектор позиций.
-  -- 0 вершина - центр лагеря.
-  -- 1 флаг - сектор занят, в поинте можно сидеть.
-  -- 2 флаг - сектор занят, в поинте нельзя сидеть.
-  for k = 1, self.patrol:count() - 1 do
-    -- если есть 1 или 2 флажок - отметить сектор как занятый
-    if self.patrol:flag( k, 1 ) or self.patrol:flag( k, 2 ) then
-      -- отметить сектор как занятый
-      for key, value in pairs( self.position ) do
-        local pos = level.vertex_position( self.patrol:level_vertex_id( k ) )
-        local dir = vector():sub( pos, level.vertex_position( self.center ) )
-        if value.dir then
-          local yaw = yaw_degree( dir, value.dir )
-          if yaw <= 23 then
-            value.used = -1
-            break
-          end
-        end
-      end
-    end
-    -- если есть 1 флажок - создать место для сидения в точке пути
-    if self.patrol:flag( k, 1 ) then
-      -- создать точку для сидения
-      table.insert(
-        self.position, { vertex = self.patrol:level_vertex_id( k ) }
-      )
-    end
-  end
-end
-
-
-function CKampManager:selectPosition( npc_id, bind )
-  -- пытаемся разместить в заданном в логике месте. А если занято, то как обычно
-  if bind and self.position[ bind ] and self.position[ bind ].used == nil then
-    self.position[ bind ].used = npc_id
-    self.npc[ npc_id ].position = bind
-    return
-  end
-  -- создаем список доступных позиций
-  local free = {}
-  for k, v in pairs( self.position ) do
-    if v.used == nil then
-      table.insert( free, k )
-    end
-  end
-  -- затем из доступных позиций выбрать рандомно одну.
-  if table.getn( free ) > 0 then
-    local rr = free[ math.random( table.getn( free ) ) ]
-    self.position[ rr ].used    = npc_id
-    self.npc[ npc_id ].position = rr
-  end
 end
 
 
@@ -671,7 +600,6 @@ function CKampManager:addNpc( npc, bind )
     self.npc[ npc:id() ] = {
       name     = npc:name(),
       can_eat  = ogse_kamp_eating.can_eat( npc ),
-      position = nil,
       current  = nil,
       speak    = 0,
       states   = {
@@ -702,7 +630,6 @@ function CKampManager:addNpc( npc, bind )
     self.npc[ npc:id() ] = {
       name     = npc:name(),
       can_eat  = ogse_kamp_eating.can_eat( npc ),
-      position = nil,
       current  = nil,
       speak    = 0,
       states   = {
@@ -730,7 +657,6 @@ function CKampManager:addNpc( npc, bind )
       },
     }
   end
-  self:selectPosition( npc:id(), bind )
   if db.story_by_id[ npc:id() ] == nil then
     local char_ini1 = ini_file( "scripts\\stories.ltx" )
     xr_info.loadInfo( npc, char_ini1 )
@@ -756,9 +682,6 @@ function CKampManager:removeNpc( npc )
     end
     xr_sound.set_sound( npc, nil )
     stop_play_sound( npc )
-  end
-  if self.npc[ npc_id ].position ~= nil then
-    self.position[ self.npc[ npc_id ].position ].used = nil
   end
   self:free_seat( npc )
   self.npc[ npc_id ] = nil
@@ -1063,39 +986,6 @@ function action_go_position:initialize()
 end
 
 
-local already_catched = {}
-function clear_catch( npc )
-  local del = {}
-  for k, v in pairs( already_catched ) do
-    if v == npc:id() then
-      table.insert( del, k )
-    end
-  end
-  for _, k in ipairs( del ) do
-    already_catched[ k ] = nil
-  end
-end
-
-
-function action_go_position:check_npc_block( object, dest_vtx )
-  local blocked_vtx = {}
-  for npc_id, is_npc in pairs( db.creature ) do
-    if is_npc then
-      local npc = level.object_by_id( npc_id )
-      if npc and object:id() ~= npc_id then
-        blocked_vtx[ npc:level_vertex_id() ] = npc_id
-      end
-    end
-  end
-  for k, v in pairs( blocked_vtx ) do
-    if k == dest_vtx then
-      return true
-    end
-  end
-  return false
-end
-
-
 function action_go_position:execute()
   action_base.execute( self )
   if
@@ -1174,7 +1064,6 @@ end
 
 
 function action_wait:finalize()
-  clear_catch( self.object )
   -- убираем сразу звук гитары
   local stop_sound
   for _, s in ipairs({ "guitar_a", "harmonica_a", "balalaika_a" }) do
@@ -1191,19 +1080,16 @@ end
 
 
 function action_wait:deactivate( npc )
-  clear_catch( self.object )
   self.a.kamp:removeNpc( npc )
 end
 
 
 function action_wait:death_callback( npc )
-  clear_catch( self.object )
   self.a.kamp:removeNpc( npc )
 end
 
 
 function action_wait:net_destroy( npc )
-  clear_catch( self.object )
   self.a.kamp:decreasePops( self.object )
   self.a.kamp:removeNpc( npc )
 end
