@@ -32,12 +32,48 @@ local body_grab_bones = {
 }
 
 
-function get_my_kamp( npc, path )
+function get_my_kamp( npc, path, scheme )
   local patrol = patrol( path )
   local vertex = patrol:level_vertex_id( 0 )
-  if not kamps[ vertex ] then
-    local kamp = CKampManager( path )
-    kamps[ vertex ] = kamp
+  local kamp   = kamps[ vertex ]
+  if not kamp then
+    local nearest = {}
+    for lvid, k in pairs( kamps ) do
+      table.insert(
+        nearest,
+        {
+          [ "kamp" ] = k,
+          [ "pos"  ] = level.vertex_position( lvid ),
+        }
+      );
+    end
+    local pos = level.vertex_position( vertex )
+    table.sort(
+      nearest,
+      function( a, b )
+        return pos:distance_to( a.pos ) < pos:distance_to( b.pos )
+      end
+    )
+    if
+      table.getn( nearest ) > 0 and pos:distance_to( nearest[ 1 ].pos ) < 10
+    then
+      kamp = nearest[ 1 ].kamp
+    end
+  end
+  if kamp then
+    local sobj = alife():object( npc:id() )
+    ASSERT(
+      sobj,
+      "[%s]: [%s]: %s not found in alife()",
+      script_name(), path, npc:name()
+    )
+    if kamp.smart_terrain_id <= sobj:smart_terrain_id() then
+      kamps[ vertex ] = kamp
+    else
+      kamps[ vertex ] = CKampManager( path, scheme, kamp )
+    end
+  else
+    kamps[ vertex ] = CKampManager( path, scheme )
   end
   return kamps[ vertex ]
 end
@@ -82,7 +118,8 @@ end
 
 
 class "CKampManager"
-function CKampManager:__init( path )
+function CKampManager:__init( path, scheme, src_kamp )
+  self.scheme       = scheme
   self.kamp_name    = path
   self.patrol       = patrol( path )
   self.center       = self.patrol:level_vertex_id( 0 )
@@ -102,6 +139,23 @@ function CKampManager:__init( path )
   self:init_drop_points()
   self:init_seats()
   self.seats_assigned = false
+  if src_kamp then
+    for npc_id, v in pairs( src_kamp.npc ) do
+      local npc = level.object_by_id( npc_id )
+      if npc and npc:alive() then
+        local st = db.storage[ npc_id ][ src_kamp.scheme ]
+        ASSERT(
+          st,
+          "[%s]: [%s]: storage not found for %s from %s: scheme = %s",
+          script_name(), self.kamp_name, npc:name(), src_kamp.kamp_name,
+          src_kamp.scheme
+        )
+        src_kamp:removeNpc( npc )
+        st.kamp = self
+        self:addNpc( npc )
+      end
+    end
+  end
 end
 
 
@@ -591,7 +645,7 @@ function CKampManager:checkNpcAbility( npc )
 end
 
 
-function CKampManager:addNpc( npc, bind )
+function CKampManager:addNpc( npc )
   if self.npc[ npc:id() ] ~= nil then return end
   if
     npc:character_community() == "monolith"
@@ -663,6 +717,18 @@ function CKampManager:addNpc( npc, bind )
   end
   self.population     = self.population + 1
   self.seats_assigned = false
+  local sobj = alife():object( npc:id() )
+  ASSERT(
+    sobj,
+    "[%s]: [%s]: %s not found in alife()",
+    script_name(), self.kamp_name, npc:name()
+  )
+  if
+    ( not self.smart_terrain_id )
+    or sobj:smart_terrain_id() < self.smart_terrain_id
+  then
+    self.smart_terrain_id = sobj:smart_terrain_id()
+  end
 end
 
 
@@ -1471,8 +1537,8 @@ function set_scheme( npc, ini, scheme, section, gulag_name )
     ini, section, "radius", npc, false, 2
   )
   local bind      = utils.cfg_get_number( ini, section, "bind", npc, false )
-  st.kamp         = get_my_kamp( npc, st.center_point )
-  st.kamp:addNpc( npc, bind )
+  st.kamp         = get_my_kamp( npc, st.center_point, scheme )
+  st.kamp:addNpc( npc )
   st.pos_vertex   = nil
 
   st.def_state_moving = utils.cfg_get_string(
