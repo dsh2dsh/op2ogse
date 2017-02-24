@@ -22,6 +22,15 @@ kamp_stalkers   = {}    -- могут ли сталкеры в лагере юзаться игроком.
 deadmansids     = {}          -- кто какой труп оттаскивает
 deadmansidsuses = {}          -- сколько попыток оттащить было сделано
 
+local body_grab_bones = {
+  [ clsid.snork_s    ] = "bip01_spine2",
+  [ clsid.tushkano_s ] = "bip01_head",
+  [ clsid.flesh_s    ] = "bip01_head",
+  [ clsid.boar_s     ] = "bip01_spine2",
+  [ clsid.gigant_s   ] = "bip01_l_calf",
+  [ clsid.chimera_s  ] = "bip01_l_calf",
+}
+
 
 function printf( ... )
   log2( ... )
@@ -93,9 +102,10 @@ function CKampManager:__init( path )
     { dir = vector():set(  0, 0, -1 ) },
     { dir = vector():set(  1, 0, -1 ) },
   }
-  self.npc        = {}
-  self.population = 0
-  self.kamp_state = "idle"
+  self.npc         = {}
+  self.population  = 0
+  self.population_comed = 0
+  self.kamp_state  = "idle"
   self.avail_state = xr_kamp_data.avail_state
   self.avail_sound = xr_kamp_data.avail_sound
   self.timeout     = table.clone( xr_kamp_data.timeout )
@@ -106,6 +116,8 @@ function CKampManager:__init( path )
   self.director    = nil
   self:parse_patrol()
   self:init_drop_points()
+  self:init_seats()
+  self.seats_assigned = false
 end
 
 
@@ -164,21 +176,12 @@ function CKampManager:selectPosition( npc_id, bind )
 end
 
 
-function CKampManager:getDestVertex( npc_id, radius )
-  if npc_id == nil then return nil end
-  if self.npc[ npc_id ] == nil then return nil end
-  ASSERT( self.npc[ npc_id ].position, "get dest Vertex: nil [%s]", npc_id )
-  local position = self.position[ self.npc[ npc_id ].position ]
-  if position.vertex ~= nil then
-    return position.vertex
+function CKampManager:getDestVertex( npc, radius )
+  if not self.seats_assigned then
+    self:reassign_seats()
   end
-  -- высчитываем вертех по направлению
-  local pp = level.vertex_in_direction( self.center, position.dir, radius )
-  pp = level.vertex_in_direction(
-    pp, vector():set( math.random( -1,1 ), 0, math.random( -1, 1 ) ),
-    math.random( 0, 0.5 )
-  )
-  return pp
+  local st = self.npc[ npc:id() ]
+  return self.active_seats[ st.seat ].vertex
 end
 
 
@@ -637,7 +640,7 @@ function CKampManager:checkNpcAbility( npc )
       self.kamp_states[ "post_balalaika" ] = false
     end
     -- анекдоты
-    if self.population > 1 then
+    if self.population_comed > 1 then
       self.kamp_states[ "pre_joke"  ] = true
       self.kamp_states[ "joke"      ] = true
       self.kamp_states[ "post_joke" ] = true
@@ -649,7 +652,7 @@ function CKampManager:checkNpcAbility( npc )
   end
 
   -- Если чувак знает истории, надо добавить их к лагерю
-  if self.population > 1 and db.story_by_id[ npc:id() ] ~= nil then
+  if self.population_comed > 1 and db.story_by_id[ npc:id() ] ~= nil then
     self.kamp_states[ "story"      ] = true
     self.kamp_states[ "post_story" ] = true
   else
@@ -732,6 +735,8 @@ function CKampManager:addNpc( npc, bind )
     local char_ini1 = ini_file( "scripts\\stories.ltx" )
     xr_info.loadInfo( npc, char_ini1 )
   end
+  self.population     = self.population + 1
+  self.seats_assigned = false
 end
 
 
@@ -755,17 +760,19 @@ function CKampManager:removeNpc( npc )
   if self.npc[ npc_id ].position ~= nil then
     self.position[ self.npc[ npc_id ].position ].used = nil
   end
+  self:free_seat( npc )
   self.npc[ npc_id ] = nil
+  self.population = self.population - 1
 end
 
 
 function CKampManager:increasePops( npc )
-  self.population = self.population + 1
+  self.population_comed = self.population_comed + 1
 end
 
 
 function CKampManager:decreasePops( npc )
-  self.population = self.population - 1
+  self.population_comed = self.population_comed - 1
 end
 
 
@@ -795,6 +802,96 @@ function CKampManager:get_nearest_drop_point( obj )
     end
   )
   return self.drop_points[ 1 ]
+end
+
+
+function CKampManager:init_seats()
+  self.seats = {}
+  local ai_step = 0.7 -- шаг AI сетки
+  local dist    = ai_step * 3
+  while dist < 10 do
+    local found = get_pos( self.center, dist )
+    local seats = {}
+    for _, vertex in ipairs( found ) do
+      table.insert( seats, {
+        [ "vertex" ] = vertex,
+      });
+    end
+    if table.getn( seats ) > 0 then
+      table.insert( self.seats, seats )
+    end
+    dist = dist + ai_step
+  end
+end
+
+
+function CKampManager:reassign_seats()
+  if self.active_seats then
+    for _, seat in ipairs( self.active_seats ) do
+      seat.npc = nil
+    end
+  end
+  self.active_seats = nil
+  for mul = 2, 1, -1 do
+    for _, seats in ipairs( self.seats ) do
+      if table.getn( self.seats ) >= self.population * mul then
+        self.active_seats = seats
+        break
+      end
+    end
+    if self.active_seats then break end
+  end
+  ASSERT(
+    self.active_seats,
+    "[%s]: can't find active_seats for %s",
+    script_name(), self.kamp_name
+  )
+  for npc_id, st in pairs( self.npc ) do
+    st.seat = nil
+  end
+  local cnt  = 0
+  local step = math.floor( table.getn( self.active_seats ) / self.population )
+  for i = 1, table.getn( self.active_seats ), step do
+    local seat     = self.active_seats[ i ]
+    local seat_pos = level.vertex_position( seat.vertex )
+    local min_dist, nearest_npc
+    for npc_id, st in pairs( self.npc ) do
+      local npc = level.object_by_id( npc_id )
+      ASSERT(
+        ( npc and npc:alive() ),
+        "[%s]: [%s]: npc_id = %s not found or dead",
+        script_name(), self.kamp_name, npc_id
+      )
+      if ( not st.seat ) and npc:accessible( seat.vertex ) then
+        local dist = npc:position():distance_to( seat_pos )
+        if ( not min_dist ) or dist < min_dist then
+          min_dist    = dist
+          nearest_npc = npc
+        end
+      end
+    end
+    ASSERT(
+      nearest_npc,
+      "[%s]: [%s]: can't find nearest npc",
+      script_name(), self.kamp_name
+    )
+    seat.npc = nearest_npc:id()
+    self.npc[ nearest_npc:id() ].seat = i
+    cnt = cnt + 1
+    if cnt == self.population then break end
+  end
+  self.seats_assigned = true
+end
+
+
+function CKampManager:free_seat( npc )
+  local npc_id = npc:id()
+  local st     = self.npc[ npc_id ]
+  if st.seat then
+    local seat = self.active_seats[ st.seat ]
+    seat.npc = nil
+    st.seat  = nil
+  end
 end
 
 
@@ -847,7 +944,7 @@ function evaluator_see_deadman:evaluate()
   if
     not (
       xr_logic.is_active( self.object, self.a )
-      and table.getn( self.a.kamp.drop_point ) > 0
+      and table.getn( self.a.kamp.drop_points ) > 0
     )
   then
     if self.a.choosed_deadman then
@@ -1010,45 +1107,15 @@ function action_go_position:execute()
   if not ( self.a.updates_passed and self.a.updates_passed >= 10 ) then
     return
   end
-  local tmp_pos_vertex = self.a.kamp:getDestVertex(
-    self.object:id(), self.a.radius
+  local target_vertex = self.a.kamp:getDestVertex(
+    self.object, self.a.radius
   )
-  if self.a.pos_vertex ~= tmp_pos_vertex then
-    self.a.pos_vertex = tmp_pos_vertex
-    local pos = self.object:position()
-    if
-      pos:distance_to( level.vertex_position( self.a.pp ) ) < 1.5
-      or not self.a.pos_vertex
-    then
-      -- вообще никуда идти не надо
-      self.a.pos_vertex = self.object:level_vertex_id()
-    end
-    if not already_catched[ self.a.pos_vertex ] then
-      already_catched[ self.a.pos_vertex ] = self.object:id()
-    end
-    if
-      ( not self.object:accessible( self.a.pos_vertex ) )
-      or (
-        already_catched[ self.a.pos_vertex ]
-        and already_catched[ self.a.pos_vertex ] ~= self.object:id()
-      )
-      or self:check_npc_block( self.object, self.a.pos_vertex )
-    then
-      local ttp = vector():set( math.random( -1, 1 ), 0, math.random( -1, 1 ) )
-      self.a.pos_vertex = self.object:accessible_nearest(
-        level.vertex_position( self.a.pos_vertex ), ttp
-      )
-    end
-    self.a.pp = self.a.kamp.center
-    self.a.pp = level.vertex_in_direction(
-      self.a.pp,
-      vector():set( math.random( -1, 1 ), 0, math.random( -1, 1 ) ),
-      math.random( 0, 0.5 )
-    )
+  if target_vertex and self.a.pos_vertex ~= target_vertex then
+    self.a.pos_vertex = target_vertex
     self.object:set_dest_level_vertex_id( self.a.pos_vertex )
     self.object:set_desired_direction(
       vector():sub(
-        level.vertex_position( self.a.pp ),
+        level.vertex_position( self.a.kamp.center ),
         level.vertex_position( self.a.pos_vertex )
       )
     )
@@ -1099,7 +1166,7 @@ function action_wait:execute()
   --' повернуть его лицом к центру
   state_mgr.set_state(
     self.object, state, nil, nil,
-    { look_position = level.vertex_position( self.a.pp ) },
+    { look_position = level.vertex_position( self.a.kamp.center ) },
     nil, nil, { subanim = substate }
   )
   xr_sound.set_sound( self.object, sound )
@@ -1108,6 +1175,16 @@ end
 
 function action_wait:finalize()
   clear_catch( self.object )
+  -- убираем сразу звук гитары
+  local stop_sound
+  for _, s in ipairs({ "guitar_a", "harmonica_a", "balalaika_a" }) do
+    local obj = self.object:object( s )
+    if obj and obj:attachable_item_enabled() then
+      stop_sound = true
+      break
+    end
+  end
+  xr_sound.set_sound( self.object, nil, stop_sound )
   self.a.kamp:decreasePops( self.object )
   action_base.finalize( self )
 end
@@ -1148,8 +1225,11 @@ function action_go_to_deadman:initialize()
   if gi then
     -- попремся в сторону головы - за шкирятник тащить бум
     self.a.dest_lvid = gi:level_vertex_id()
-    local diff       = gi:bone_position( "bip01_spine" ):sub( gi:position() )
-    local len        = diff:magnitude() * 2.5
+    local bone = body_grab_bones[ gi:clsid() ] == "bip01_l_calf" and "bip01_l_calf" or "bip01_head"
+    local diff = gi:bone_position( bone ):sub(
+      level.vertex_position( self.a.dest_lvid )
+    )
+    local len  = diff:magnitude() * 1.4
     self.a.dest_lvid = npc:vertex_in_direction( self.a.dest_lvid, diff, len )
     if not npc:accessible( self.a.dest_lvid ) then
       self.a.dest_lvid = npc:accessible_nearest(
@@ -1218,25 +1298,52 @@ end
 function action_moving_deadman:initialize()
   action_base.initialize( self )
   local npc = self.object
+
   -- если пушка в руках - прячем, а то тащить неудобно
   if npc:weapon_unstrapped() then
     npc:set_item( object.idle, nil )
   end
+
   -- потащим медленно, осторожно и на карачках
   npc:set_movement_type( move.walk )
   npc:set_mental_state( anim.danger )
   npc:set_body_state( move.crouch )
   npc:movement_enabled( true )
+
   -- на таскание трупа в грязи даем 30 секунд
   self.a.time_end  = time_global() + 30000
   self.force       = vector():set( 0, 0, 0 )
   -- на приседание рядом с трупом и разворот лицом дадим секунду
   self.a.time_drag = time_global() +  1000
+
+  local gi = level.object_by_id( self.a.choosed_deadman )
+  local ps = gi and gi:get_physics_shell()
+  if not ps then
+      deadmansids[ self.a.choosed_deadman ] = nil
+      self.a.choosed_deadman = nil
+      self.a.reached         = nil
+      return
+  end
+
+  -- смотри мне в глаза!
+  npc:set_sight( gi, false, false, true )
+  -- нужно выбрать косточку для тяги
+  self.bone = body_grab_bones[ gi:clsid() ] or "bip01_spine1"
+  if not ps:get_element_by_bone_name( self.bone ) then
+    self.bone = nil
+  end
+  if not self.bone then
+      deadmansids[ self.a.choosed_deadman ] = nil
+      self.a.choosed_deadman = nil
+      self.a.reached         = nil
+      return
+  end
 end
 
 
 function action_moving_deadman:execute()
   action_base.execute( self )
+  if not self.a.choosed_deadman then return end
   local npc = self.object
   local gi  = level.object_by_id( self.a.choosed_deadman )
   -- хватит таскать труп - время истекло, пусть другие этим занимаются
@@ -1264,15 +1371,17 @@ function action_moving_deadman:execute()
   if ps and self.a.time_drag < time_global() then
     npc:set_dest_level_vertex_id( self.a.drop_lvid )
     -- непись сильный - тащит левой рукой за туловище трупа
-    local bone = "bip01_spine1"
-    local dir  = npc:bone_position( "bip01_l_hand" )
-      :sub( gi:bone_position( bone ) )
-    dir:mul( 25000 )
-    dir.y = 9000
+    local dir = npc:bone_position( "bip01_l_hand" )
+      :sub( gi:bone_position( self.bone ) )
+    local d = vector():set( dir )
+    d.y = 0
+    d = d:magnitude() + 0.45
+    dir:mul( 40 * gi:mass() )
+    dir.y = ( dir.y > 0 and dir.y or 0 ) + 8 * gi:mass() * d + 50
     self.force:mul( 0.5 )
-    dir:mul (0.5 )
+    dir:mul( 0.5 )
     self.force:add( dir )
-    local elem = ps:get_element_by_bone_name( bone )
+    local elem = ps:get_element_by_bone_name( self.bone )
     if elem then
       elem:apply_force( self.force.x, self.force.y, self.force.z )
     end
