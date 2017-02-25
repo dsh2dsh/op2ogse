@@ -37,17 +37,20 @@ function get_my_kamp( npc, path, scheme )
   local vertex = patrol:level_vertex_id( 0 )
   local kamp   = kamps[ vertex ]
   if not kamp then
+    local pos     = level.vertex_position( vertex )
     local nearest = {}
     for lvid, k in pairs( kamps ) do
-      table.insert(
-        nearest,
-        {
-          [ "kamp" ] = k,
-          [ "pos"  ] = level.vertex_position( lvid ),
-        }
-      );
+      local pos2 = level.vertex_position( lvid )
+      if math.abs( pos.y - pos2.y ) < 1 then
+        table.insert(
+          nearest,
+          {
+            [ "kamp" ] = k,
+            [ "pos"  ] = pos2,
+          }
+        );
+      end
     end
-    local pos = level.vertex_position( vertex )
     table.sort(
       nearest,
       function( a, b )
@@ -92,10 +95,10 @@ function get_pos( center, dist )
   -- итератор вращения направления
   local rotate_angle = math.asin( ai_step / dist )
   local cur_angle    = 0
-  local found        = {}
+  local found, seen  = {}, {}
   while math.abs( cur_angle ) < pi2 do
     local vertex = level.vertex_in_direction( center, dir, dist )
-    if vertex ~= center then
+    if vertex ~= center and not seen[ vertex ] then
       local pos       = level.vertex_position( vertex )
       local near_anom = false
       for _, anom in ipairs( anomalies ) do
@@ -107,6 +110,7 @@ function get_pos( center, dist )
       end
       if not near_anom then
         table.insert( found, vertex )
+        seen[ vertex ] = true
       end
     end
     -- поворачиваем направление поиска
@@ -300,7 +304,7 @@ function CKampManager:proceedRole( npc, director )
       state = temp[ math.random( table.getn( temp ) ) ]
       self.npc[ npc_id ].begin          = time_global()
       self.npc[ npc_id ].state_selected = state
-      self.npc[ npc_id ].state_idle     = math.random( 20, 30 ) * 1000
+      self.npc[ npc_id ].state_idle     = math.random( 15000, 20000 )
     else
       state = self.npc[ npc_id ].state_selected
     end
@@ -474,90 +478,77 @@ function CKampManager:checkNpcAbility( npc )
   local npc_id = npc:id()
   if not self.npc[ npc_id ] then return end
   if
-    self.npc[ npc_id ].begin
-    and time_global() - self.npc[ npc_id ].begin < self.npc[ npc_id ].state_idle
-  then
-    return
-  end
-  if
     npc:character_community() ~= "monolith"
     and npc:character_community() ~= "zombied"
   then
-    local inv = {}
-    npc:iterate_inventory(
-      function( npc, item )
-        inv[ item:section() ] = true
-      end,
-      npc
-    )
     local states = self.npc[ npc_id ].states
     states[ "trans" ] = false
     if self.npc[ npc_id ].can_eat then
       -- есть колбасу
-      if inv[ "kolbasa" ] and math.random( 99 ) > 20 then
+      if npc:object( "kolbasa" ) and math.random( 99 ) > 20 then
         -- вероятность 80%
         states[ "eat_kolbasa" ] = true
       else
         states[ "eat_kolbasa" ] = false
       end
       -- пить водку
-      if inv[ "vodka" ] and math.random( 99 ) > 60 then
+      if npc:object( "vodka" ) and math.random( 99 ) > 60 then
         -- вероятность 40%
         states[ "eat_vodka" ] = true
       else
         states[ "eat_vodka" ] = false
       end
       -- пить енергитический напиток
-      if inv[ "energy_drink" ] and math.random( 99 ) > 40 then
+      if npc:object( "energy_drink" ) and math.random( 99 ) > 40 then
         -- вероятность 60%
         states[ "eat_energy" ] = true
       else
         states[ "eat_energy" ] = false
       end
       -- есть хлеб
-      if inv[ "bread" ] and math.random( 99 ) > 20 then
+      if npc:object( "bread" ) and math.random( 99 ) > 20 then
         -- вероятность 80%
         states[ "eat_bread" ] = true
       else
         states[ "eat_bread" ] = false
       end
       -- курит
-      if inv[ "sigaret" ] and math.random( 99 ) > 20 then
+      if npc:object( "sigaret" ) and math.random( 99 ) > 20 then
         -- вероятность 80%
         states[ "kurit" ] = true
       else
         states[ "kurit" ] = false
       end
       -- пить из фляжки
-      if inv[ "flaska" ] and math.random( 99 ) > 20 then
+      if npc:object( "flaska" ) and math.random( 99 ) > 20 then
         -- вероятность 80%
         states[ "flaska" ] = true
       else
         states[ "flaska" ] = false
       end
       -- пить пиво
-      if inv[ "beer_a" ] and math.random( 99 ) > 20 then
+      if npc:object( "beer_a" ) and math.random( 99 ) > 20 then
         -- вероятность 80%
         states[ "beer_a" ] = true
       else
         states[ "beer_a" ] = false
       end
       -- курит сигару
-      if inv[ "cigara" ] and math.random( 99 ) > 20 then
+      if npc:object( "cigara" ) and math.random( 99 ) > 20 then
         -- вероятность 80%
         states[ "kurit_cigara" ] = true
       else
         states[ "kurit_cigara" ] = false
       end
       -- есть бутерброд
-      if inv[ "sandwich" ] and math.random( 99 ) > 20 then
+      if npc:object( "sandwich" ) and math.random( 99 ) > 20 then
         -- вероятность 80%
         states[ "eat_sandwich" ] = true
       else
         states[ "eat_sandwich" ] = false
       end
       -- играть на гармошке
-      if inv[ "harmonica_a" ] then
+      if npc:object( "harmonica_a" ) then
         states[ "play_harmonica" ] = true
         states[ "wait_harmonica" ] = true
         self.kamp_states[ "pre_harmonica"  ] = true
@@ -588,14 +579,14 @@ function CKampManager:checkNpcAbility( npc )
     end
 
     -- втыкать в интернеты
-    if inv[ "device_pda" ] and math.random( 99 ) > 50 then
+    if npc:object( "device_pda" ) and math.random( 99 ) > 50 then
       -- вероятность 50%
       states[ "use_pda" ] = true
     else
       states[ "use_pda" ] = false
     end
     -- играть на гитаре
-    if inv[ "guitar_a" ] then
+    if npc:object( "guitar_a" ) then
       states[ "play_guitar" ] = true
       states[ "wait_guitar" ] = true
       self.kamp_states[ "pre_guitar"  ] = true
@@ -609,7 +600,7 @@ function CKampManager:checkNpcAbility( npc )
       self.kamp_states[ "post_guitar" ] = false
     end
     -- играть на балалайке
-    if inv[ "balalaika_a" ] then
+    if npc:object( "balalaika_a" ) then
       states[ "play_balalaika" ] = true
       states[ "wait_balalaika" ] = true
       self.kamp_states[ "pre_balalaika"  ] = true
@@ -908,7 +899,15 @@ function evaluator_on_position:evaluate()
   elseif self.a.updates_passed < 20 then
     self.a.updates_passed = self.a.updates_passed + 1
   end
-  if self.object:level_vertex_id() == self.a.pos_vertex then
+  if
+    self.object:level_vertex_id() == self.a.pos_vertex
+    or (
+      self.a.pos_vertex and self.object:path_completed()
+      and level.vertex_position( self.a.pos_vertex ):distance_to_sqr(
+        self.object:position()
+      ) < 8
+    )
+  then
     if self.a.updates_passed < 10 then
       return false
     end
@@ -947,10 +946,7 @@ function evaluator_see_deadman:evaluate()
   -- Труп себе уже выбрали, не спускаем с него глаз...
   if self.a.choosed_deadman then
     local obj = level.object_by_id( self.a.choosed_deadman )
-    if
-      obj and obj:position():distance_to( self.a.kamp.point0 ) < 10
-      and self.a.deadman_timeout > time_global()
-    then
+    if obj and obj:position():distance_to( self.a.kamp.point0 ) < 10 then
       ogse_debug.add_active_eval( self.object, script_name(), "see_deadman" )
       return true
     end
@@ -1003,9 +999,8 @@ function evaluator_see_deadman:check_item( obj )
     if
       not ( deadmansidsuses[ obj:id() ] and deadmansidsuses[ obj:id() ] == 3 )
     then
-      self.a.choosed_deadman      = obj:id()
-      self.a.deadman_timeout      = time_global() + 30000
-      self.a.drop_lvid            = self.a.kamp:get_nearest_drop_point( obj )
+      self.a.choosed_deadman = obj:id()
+      self.a.drop_lvid       = self.a.kamp:get_nearest_drop_point( obj )
       deadmansids[ obj:id() ]     = npc:id()
       deadmansidsuses[ obj:id() ] = ( deadmansidsuses[ obj:id() ] or 0 ) + 1
       ogse_debug.add_active_eval(
@@ -1025,13 +1020,10 @@ function evaluator_can_move_deadman:__init( name, storage ) super( nil, name )
 end
 
 function evaluator_can_move_deadman:evaluate()
-  local npc = self.object
+  if self.a.reached ~= 1 then return false end
   local obj = level.object_by_id( self.a.choosed_deadman )
-  if not ( self.a.reached == 1 and obj ) then return false end
-  -- если труп застрял (расстояние увеличилось), то возвращаемся к
-  -- нему
-  local pos = obj:bone_position( "bip01_spine1" )
-  return pos:distance_to( npc:position() ) < 2
+  -- если труп застрял (расстояние увеличилось), то возвращаемся к нему
+  return obj and obj:center():distance_to( self.object:position() ) < 2.1
 end
 
 
@@ -1173,6 +1165,9 @@ end
 function action_go_to_deadman:initialize()
   action_base.initialize( self )
   local npc = self.object
+  npc:set_desired_position()
+  npc:set_desired_direction()
+  npc:set_path_type( game_object.level_path )
   local gi  = level.object_by_id( self.a.choosed_deadman )
   if gi then
     -- попремся в сторону головы - за шкирятник тащить бум
@@ -1191,8 +1186,9 @@ function action_go_to_deadman:initialize()
   else
     self.a.dest_lvid = npc:level_vertex_id()
   end
+  self.target_id       = self.a.choosed_deadman
   self.a.reached       = 0
-  self.a.cur_dead_lvid = gi:level_vertex_id()
+  self.a.cur_dead_lvid = gi and gi:level_vertex_id()
   -- пойдем не спеша...
   state_mgr.set_state( self.object, self.a.def_state_moving )
   -- на все гулянки в сторону трупа дается 30 секунд, если не успел, то
@@ -1206,6 +1202,10 @@ end
 
 function action_go_to_deadman:execute()
   action_base.execute ( self )
+  if self.target_id ~= self.a.choosed_deadman then
+    self:initialize()
+    return
+  end
   local npc = self.object
   local gi  = level.object_by_id( self.a.choosed_deadman )
   -- если уже задолбало дергать труп, а он застрял (дергаем 3 раза),
@@ -1213,7 +1213,7 @@ function action_go_to_deadman:execute()
   -- места сдвинул - то туда ему и дорога (трупу), а нам он больше не
   -- интересен.
   if
-    self.a.captures == 4 or self.a.go_time_end < time_global()
+    self.a.captures == 5 or self.a.go_time_end < time_global()
     or gi == nil or gi:level_vertex_id() ~= self.a.cur_dead_lvid
   then
     if self.a.choosed_deadman then
@@ -1221,14 +1221,25 @@ function action_go_to_deadman:execute()
       self.a.choosed_deadman = nil
       self.a.reached         = nil
     end
-    self.a.captures      = nil
-    self.a.cur_dead_lvid = nil
-    self.a.go_time_end   = nil
+    self.a.captures = nil
   else
     npc:set_dest_level_vertex_id( self.a.dest_lvid )
     -- долгое путешествие до трупа успешно завершилось, ура, товарищи
-    if self.a.dest_lvid and self.a.dest_lvid == npc:level_vertex_id() then
+    local dist = npc:position():distance_to( gi:center() )
+    if
+      (
+        self.a.dest_lvid and self.a.dest_lvid == npc:level_vertex_id()
+        and dist < 1.7
+      )
+      or dist < 2 --1
+    then
       self.a.reached = 1
+      npc:set_dest_level_vertex_id( npc:level_vertex_id() )
+    elseif npc:path_completed() then
+      deadmansids[ self.a.choosed_deadman ] = nil
+      self.a.choosed_deadman = nil
+      self.a.reached         = nil
+      self.a.captures        = nil
     end
   end
 end
@@ -1263,10 +1274,10 @@ function action_moving_deadman:initialize()
   npc:movement_enabled( true )
 
   -- на таскание трупа в грязи даем 30 секунд
-  self.a.time_end  = time_global() + 30000
+  self.a.time_end  = time_global() + 40000
   self.force       = vector():set( 0, 0, 0 )
   -- на приседание рядом с трупом и разворот лицом дадим секунду
-  self.a.time_drag = time_global() +  1000
+  self.time_drag = time_global() +    1000
 
   local gi = level.object_by_id( self.a.choosed_deadman )
   local ps = gi and gi:get_physics_shell()
@@ -1305,38 +1316,23 @@ function action_moving_deadman:execute()
       self.a.choosed_deadman = nil
       self.a.reached         = nil
     end
-    self.a.time_end  = nil
-    self.a.time_drag = nil
     return
   end
-
-  -- смотри мне в глаза!
-  local dir = gi:position():sub( npc:position() )
+	
+  local dir=gi:position():sub( npc:position() )
   dir.y = 0
+  npc:set_sight( look.direction, dir, true )
   npc:set_movement_type( move.walk )
   npc:set_mental_state( anim.danger )
   npc:set_body_state( move.crouch )
   npc:movement_enabled( true )
-  npc:set_sight( look.direction, dir, true )
 
-  local ps = gi:get_physics_shell()
-  if ps and self.a.time_drag < time_global() then
-    npc:set_dest_level_vertex_id( self.a.drop_lvid )
-    -- непись сильный - тащит левой рукой за туловище трупа
-    local dir = npc:bone_position( "bip01_l_hand" )
-      :sub( gi:bone_position( self.bone ) )
-    local d = vector():set( dir )
-    d.y = 0
-    d = d:magnitude() + 0.45
-    dir:mul( 40 * gi:mass() )
-    dir.y = ( dir.y > 0 and dir.y or 0 ) + 8 * gi:mass() * d + 50
-    self.force:mul( 0.5 )
-    dir:mul( 0.5 )
-    self.force:add( dir )
-    local elem = ps:get_element_by_bone_name( self.bone )
-    if elem then
-      elem:apply_force( self.force.x, self.force.y, self.force.z )
-    end
+  if self.time_drag > time_global() then return end
+
+  npc:set_dest_level_vertex_id( self.a.drop_lvid )
+  if not self.call then
+    self.call = true
+    npc:set_fastcall( self.move_body, self )
   end
 
   -- уф! дотащили... всем спасибо, все свободны...
@@ -1350,9 +1346,47 @@ function action_moving_deadman:execute()
 end
 
 
+function action_moving_deadman:move_body()
+  if not ( self.call and self.a.choosed_deadman ) then
+    return true
+  end
+  local gi = level.object_by_id( self.a.choosed_deadman )
+  local ps = gi and gi:get_physics_shell()
+  if not ps then
+    deadmansids[ self.a.choosed_deadman ] = nil
+    self.a.choosed_deadman = nil
+    self.a.reached         = nil
+    return true
+  end
+  -- непись сильный - тащит левой рукой за туловище трупа
+  local el = ps:get_element_by_bone_name( self.bone )
+  if not el then
+    deadmansids[ self.a.choosed_deadman ] = nil
+    self.a.choosed_deadman = nil
+    self.a.reached         = nil
+    return true
+  end
+  local dir = self.object:bone_position( "bip01_l_hand" )
+    :sub( gi:bone_position( self.bone ) )
+  local d = vector():set( dir )
+  d.y = 0
+  d = d:magnitude() + 0.45
+  dir:mul( 40 * gi:mass() )
+  dir.y = ( dir.y > 0 and dir.y or 0 ) + 8 * gi:mass() * d + 50
+  self.force:mul( 0.5 )
+  dir:mul( 0.5 )
+  self.force:add( dir )
+  el:apply_force( self.force.x, self.force.y, self.force.z )
+  return false
+end
+
+
 function action_moving_deadman:finalize()
   action_base.finalize( self )
   state_mgr.set_state( self.object, self.a.def_state_moving )
+  self.anim     = nil
+  self.call     = nil
+  self.bone     = nil
 end
 
 
