@@ -32,7 +32,7 @@ local body_grab_bones = {
 }
 
 
-function get_my_kamp( npc, path, scheme )
+function get_my_kamp( npc, path, scheme, radius )
   local patrol = patrol( path )
   local vertex = patrol:level_vertex_id( 0 )
   local kamp   = kamps[ vertex ]
@@ -73,10 +73,10 @@ function get_my_kamp( npc, path, scheme )
     if kamp.smart_terrain_id <= sobj:smart_terrain_id() then
       kamps[ vertex ] = kamp
     else
-      kamps[ vertex ] = CKampManager( path, scheme, kamp )
+      kamps[ vertex ] = CKampManager( path, scheme, radius, kamp )
     end
   else
-    kamps[ vertex ] = CKampManager( path, scheme )
+    kamps[ vertex ] = CKampManager( path, scheme, radius )
   end
   return kamps[ vertex ]
 end
@@ -122,12 +122,13 @@ end
 
 
 class "CKampManager"
-function CKampManager:__init( path, scheme, src_kamp )
-  self.scheme       = scheme
-  self.kamp_name    = path
-  self.patrol       = patrol( path )
-  self.center       = self.patrol:level_vertex_id( 0 )
-  self.point0       = self.patrol:point( 0 )
+function CKampManager:__init( path, scheme, min_radius, src_kamp )
+  self.scheme      = scheme
+  self.kamp_name   = path
+  self.patrol      = patrol( path )
+  self.center      = self.patrol:level_vertex_id( 0 )
+  self.point0      = self.patrol:point( 0 )
+  self.min_radius  = min_radius or 2
   self.npc         = {}
   self.population  = 0
   self.population_comed = 0
@@ -163,7 +164,7 @@ function CKampManager:__init( path, scheme, src_kamp )
 end
 
 
-function CKampManager:getDestVertex( npc, radius )
+function CKampManager:getDestVertex( npc )
   if not self.seats_assigned then
     self:reassign_seats()
   end
@@ -788,7 +789,7 @@ end
 function CKampManager:init_seats()
   self.seats = {}
   local ai_step = 0.7 -- шаг AI сетки
-  local dist    = ai_step * 3
+  local dist    = self.min_radius
   while dist < 10 do
     local found = get_pos( self.center, dist )
     local seats = {}
@@ -805,62 +806,103 @@ function CKampManager:init_seats()
 end
 
 
+function CKampManager:get_accessible_seats()
+  local members = {}
+  for npc_id, st in pairs( self.npc ) do
+    local npc = level.object_by_id( npc_id )
+    if npc and npc:alive() then
+      table.insert( members, npc )
+    end
+  end
+  local accessible = {}
+  for _, seats in ipairs( self.seats ) do
+    local good_seats = {}
+    for _, seat in ipairs( seats ) do
+      local bad = false
+      for _, npc in ipairs( members ) do
+        if not npc:accessible( seat.vertex ) then
+          bad = true
+          break
+        end
+      end
+      if not bad then
+        table.insert( good_seats, seat )
+      end
+    end
+    if table.getn( good_seats ) > 0 then
+      table.insert( accessible, good_seats )
+    end
+  end
+  return accessible
+end
+
+
 function CKampManager:reassign_seats()
   if self.active_seats then
     for _, seat in ipairs( self.active_seats ) do
       seat.npc = nil
     end
   end
-  self.active_seats = nil
-  for mul = 2, 1, -1 do
-    for _, seats in ipairs( self.seats ) do
-      if table.getn( self.seats ) >= self.population * mul then
-        self.active_seats = seats
+  self.active_seats   = nil
+  self.seats          = self:get_accessible_seats()
+  self.seats_assigned = false
+  local found_seats
+  for k = 2, 1, -1 do
+    for i, seats in ipairs( self.seats ) do
+      if table.getn( seats ) >= self.population * k then
+        found_seats = i
         break
       end
     end
-    if self.active_seats then break end
+    if found_seats then break end
   end
   ASSERT(
-    self.active_seats,
-    "[%s]: can't find active_seats for %s",
-    script_name(), self.kamp_name
+    found_seats,
+    "[%s]: can't find active_seats for %s", script_name(), self.kamp_name
   )
   for npc_id, st in pairs( self.npc ) do
     st.seat = nil
   end
-  local cnt  = 0
-  local step = math.floor( table.getn( self.active_seats ) / self.population )
-  for i = 1, table.getn( self.active_seats ), step do
-    local seat     = self.active_seats[ i ]
-    local seat_pos = level.vertex_position( seat.vertex )
-    local min_dist, nearest_npc
-    for npc_id, st in pairs( self.npc ) do
-      local npc = level.object_by_id( npc_id )
-      ASSERT(
-        ( npc and npc:alive() ),
-        "[%s]: [%s]: npc_id = %s not found or dead",
-        script_name(), self.kamp_name, npc_id
-      )
-      if ( not st.seat ) and npc:accessible( seat.vertex ) then
-        local dist = npc:position():distance_to( seat_pos )
-        if ( not min_dist ) or dist < min_dist then
-          min_dist    = dist
-          nearest_npc = npc
+  for i = found_seats, table.getn( self.seats ) do
+    self.active_seats = self.seats[ i ]
+    local cnt  = 0
+    local step = math.floor(
+      table.getn( self.active_seats ) / self.population
+    )
+    for j = 1, table.getn( self.active_seats ), step do
+      local seat     = self.active_seats[ j ]
+      local seat_pos = level.vertex_position( seat.vertex )
+      local min_dist, nearest_npc
+      for npc_id, st in pairs( self.npc ) do
+        local npc = level.object_by_id( npc_id )
+        ASSERT(
+          ( npc and npc:alive() ),
+          "[%s]: [%s]: npc_id = %s not found or dead",
+          script_name(), self.kamp_name, npc_id
+        )
+        if not st.seat then
+          local dist = npc:position():distance_to( seat_pos )
+          if ( not min_dist ) or dist < min_dist then
+            min_dist    = dist
+            nearest_npc = npc
+          end
         end
       end
+      if not nearest_npc then break end
+      seat.npc = nearest_npc:id()
+      self.npc[ nearest_npc:id() ].seat = j
+      cnt = cnt + 1
+      if cnt == self.population then
+        self.seats_assigned = true
+        break
+      end
     end
-    ASSERT(
-      nearest_npc,
-      "[%s]: [%s]: can't find nearest npc",
-      script_name(), self.kamp_name
-    )
-    seat.npc = nearest_npc:id()
-    self.npc[ nearest_npc:id() ].seat = i
-    cnt = cnt + 1
-    if cnt == self.population then break end
+    if self.seats_assigned then break end
   end
-  self.seats_assigned = true
+  ASSERT(
+    self.seats_assigned,
+    "[%s]: [%s]: can't reassign seats", script_name(), self.kamp_name
+  )
 end
 
 
@@ -1055,9 +1097,7 @@ function action_go_position:execute()
   if not ( self.a.updates_passed and self.a.updates_passed >= 10 ) then
     return
   end
-  local target_vertex = self.a.kamp:getDestVertex(
-    self.object, self.a.radius
-  )
+  local target_vertex = self.a.kamp:getDestVertex( self.object )
   if target_vertex and self.a.pos_vertex ~= target_vertex then
     self.a.pos_vertex = target_vertex
     self.object:set_dest_level_vertex_id( self.a.pos_vertex )
@@ -1567,11 +1607,9 @@ function set_scheme( npc, ini, scheme, section, gulag_name )
   st.center_point = utils.cfg_get_string(
     ini, section, "center_point", npc, true, gulag_name
   )
-  st.radius       = utils.cfg_get_number(
-    ini, section, "radius", npc, false, 2
-  )
+  local radius    = get_float( section, "radius", nil, ini )
   local bind      = utils.cfg_get_number( ini, section, "bind", npc, false )
-  st.kamp         = get_my_kamp( npc, st.center_point, scheme )
+  st.kamp         = get_my_kamp( npc, st.center_point, scheme, radius )
   st.kamp:addNpc( npc )
   st.pos_vertex   = nil
 
