@@ -127,10 +127,8 @@ end
 
 -- подготовка гулага к работе
 function gulag:initialize()
-  -- по id. описание работы персонажа
-  self.ObjectJobObj = {}
   --' по id. назначенные гулагом рестрикторы для каждого персонажа
-  self.restrictors  = {}
+  self.restrictors = {}
 
   self:prepare_jobs()
   if not self:dsh_is_free_logic() then
@@ -197,7 +195,6 @@ function gulag:prepare_jobs()
     local job = self.Job[ jobN ]
     if job ~= nil then
       job.object = obj_id
-      self.ObjectJobObj[ obj_id ] = job
     end
   end
 end
@@ -513,7 +510,7 @@ function gulag:can_obj_begin_job( obj_id, obj )
       return true
     end
   end
-  local job = self:get_obj_job( obj_id )
+  local job = self:getJob( obj_id )
   if job and not self.Object_begin_job[ obj_id ] then
     if obj == true then
       local sobj = self.npc_info[ obj_id ].se_obj
@@ -552,7 +549,7 @@ function gulag:is_there_any_suitable_job( npc_info, exclusive )
   for i, job in ipairs( self.Job_avail_in_state ) do
     if
       ( not job.predicate or job.predicate( npc_info, self ) )
-      and ( is_walking_stalker or self:availJob( job ) )
+      and self:availJob( job )
     then
       if job.object then
         if exclusive and not self.npc_info[ job.object ].exclusive then
@@ -597,6 +594,7 @@ end
 -- работа доступна, когда время idle истекло (или не задано)
 -- и занята работа, от которой зависит данная работа.
 function gulag:availJob( job )
+  if is_walking_stalker then return true end
   if job.begin == nil or amk.game_milliseconds() - job.begin > job.idle then
     if
       job.idle_after_death_end == nil
@@ -655,17 +653,16 @@ function gulag:prepare_available_jobs()
   return Job_avail
 end
 
--- составить список персонажей, доступных для распределения по свободным работам
+-- составить список персонажей, доступных для распределения по свободным
+-- работам
 function gulag:get_available_objs()
-	local obj_avail = {}
-
-	for obj_id, obj in pairs( self.Object ) do
-		if self:getJob( obj_id ) == nil then
-			obj_avail[obj_id] = true
-		end
-	end
-
-	return obj_avail
+  local obj_avail = {}
+  for obj_id, obj in pairs( self.Object ) do
+    if not self:getJob( obj_id ) then
+      obj_avail[ obj_id ] = true
+    end
+  end
+  return obj_avail
 end
 
 -- посчитать условное расстояние от персонажа до места указанной работы.
@@ -718,47 +715,41 @@ function gulag:find_nearest_suitable_obj( objs, job )
 	return obj_nearest
 end
 
--- посчитать табличку расстояний от всех персонажей к всем работам заданного приоритета
+
+-- посчитать табличку расстояний от всех персонажей ко всем работам
+-- заданного приоритета
 function gulag:calc_distance_table( jobs, objs, prior_block_start )
-	local block_priority = jobs[prior_block_start].prior
-	local predicate
-	local dists          = {}
-	local t
-	local i              = prior_block_start
-
-	while i <= #jobs and jobs[i].prior == block_priority do
-		if jobs[i].object == nil then
-			predicate = jobs[i].predicate
-
-			for obj_id, v in pairs( objs ) do
-				if not predicate or predicate( self.npc_info[obj_id], self ) then
-					dist     = self:distance_to_job_location( obj_id, jobs[i] )
-
-					t        = {}
-					t.job    = jobs[i]
-					t.obj_id = obj_id
-					t.dist   = dist
-
-
-					table.insert( dists, t )
-				end
-			end
-		end
-
-		i = i + 1
-	end
-
-	return dists, i - 1
+  local block_priority = jobs[ prior_block_start ].prior
+  local dists          = {}
+  local i              = prior_block_start
+  while i <= table.getn( jobs ) and jobs[ i ].prior == block_priority do
+    if jobs[ i ].object == nil then
+      local predicate = jobs[ i ].predicate
+      for obj_id, v in pairs( objs ) do
+        if ( not predicate ) or predicate( self.npc_info[obj_id], self ) then
+          local dist = self:distance_to_job_location( obj_id, jobs[ i ] )
+          local t = {}
+          t.job    = jobs[ i ]
+          t.obj_id = obj_id
+          t.dist   = dist
+          table.insert( dists, t )
+        end
+      end
+    end
+    i = i + 1
+  end
+  return dists, i - 1
 end
+
 
 -- назначить персонажей на ближайшие работы используя табличку расстояний
 function gulag:assign_jobs_using_distance_table( jobs, objs, dists )
-	for i, t in ipairs( dists ) do
-		if objs[t.obj_id] and not t.job.object then
-			self:setJob( t.obj_id, t.job )
-			objs[t.obj_id] = nil
-		end
-	end
+  for i, t in ipairs( dists ) do
+    if objs[ t.obj_id ] and not t.job.object then
+      self:setJob( t.obj_id, t.job )
+      objs[ t.obj_id ] = nil
+    end
+  end
 end
 
 
@@ -826,7 +817,7 @@ function gulag:updateJob()
   local Job_avail = self:prepare_available_jobs()
   local obj_avail = self:get_available_objs()
   local prior_block_start = 1
-  while prior_block_start <= #Job_avail do
+  while prior_block_start <= table.getn( Job_avail ) do
     local dists, prior_block_end = self:calc_distance_table(
       Job_avail, obj_avail, prior_block_start
     )
@@ -975,8 +966,7 @@ function gulag:setJob( obj_id, job )
   then
     self.Object_begin_job[ obj_id ] = false
   end
-  self.ObjectJob   [ obj_id ] = job.num
-  self.ObjectJobObj[ obj_id ] = job
+  self.ObjectJob[ obj_id ] = job.num
   local sobj = self.npc_info[ obj_id ].se_obj
   sobj:smart_terrain_task_activate()
   self:setup_squad_and_group( obj_id, job )
@@ -989,7 +979,7 @@ end
 -- если в онлайне, то настройка логики и рестрикторов.
 -- вызвать спавнер.
 function gulag:beginJob( obj_id, obj )
-  local job = self:get_obj_job( obj_id )
+  local job = self:getJob( obj_id )
   -- log2(
   --   "[smart_terrain %s] gulag: beginJob: obj=%s job=%d %s",
   --   self.name, self.npc_info[ obj_id ].name, job.num, job.section
@@ -1187,15 +1177,9 @@ function gulag:clear_restrictors_info( obj_id )
 end
 
 -- получить работу, которую занимает объект
-function gulag:getJob(obj_id)
-	local jobN = self.ObjectJob[obj_id]
-	return jobN and self.Job[jobN]
-end
-
-
--- возвращает имя пути места работы персонажа
-function gulag:get_obj_job( obj_id, job )
-  return self.ObjectJobObj[ obj_id ]
+function gulag:getJob( obj_id )
+  local jobN = self.ObjectJob[ obj_id ]
+  return jobN and self.Job[ jobN ]
 end
 
 
@@ -1205,8 +1189,6 @@ function gulag:free_obj( obj_id )
   if jobN then
     self.ObjectJob[ obj_id ] = nil
     self.Job[ jobN ].object  = nil
-
-    self.ObjectJobObj[ obj_id ] = nil
 
     if self.npc_info[ obj_id ] then
       local sobj = self.npc_info[ obj_id ].se_obj
