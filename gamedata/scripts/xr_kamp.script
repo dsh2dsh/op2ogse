@@ -32,9 +32,33 @@ local body_grab_bones = {
 }
 
 
+function get_kamp_level_vertex_id( path )
+  local sect = "dsh." .. script_name() .. "." .. path
+  local vertex
+  if sys_ini:section_exist( sect ) then
+    local center_point = get_string( sect, "center_point" )
+    if center_point then
+      path = center_point
+    else
+      vertex = get_u32( sect, "level_vertex_id" )
+    end
+  end
+  if not vertex then
+    local patrol = patrol( path )
+    vertex = patrol:level_vertex_id( 0 )
+  end
+  local level_vertexes = amk_anoms.level_vertexes[ level.name() ]
+  ASSERT(
+    vertex <= level_vertexes,
+    "[%]: kamp %s has wrong level_vertex_id = %s on %s",
+    script_name(), path, vertex, level.name()
+  )
+  return vertex
+end
+
+
 function get_my_kamp( npc, path, scheme, radius )
-  local patrol = patrol( path )
-  local vertex = patrol:level_vertex_id( 0 )
+  local vertex = get_kamp_level_vertex_id( path )
   local kamp   = kamps[ vertex ]
   if not kamp then
     local pos     = level.vertex_position( vertex )
@@ -73,10 +97,10 @@ function get_my_kamp( npc, path, scheme, radius )
     if kamp.smart_terrain_id <= sobj:smart_terrain_id() then
       kamps[ vertex ] = kamp
     else
-      kamps[ vertex ] = CKampManager( path, scheme, radius, kamp )
+      kamps[ vertex ] = CKampManager( path, vertex, scheme, radius, kamp )
     end
   else
-    kamps[ vertex ] = CKampManager( path, scheme, radius )
+    kamps[ vertex ] = CKampManager( path, vertex, scheme, radius )
   end
   return kamps[ vertex ]
 end
@@ -122,12 +146,10 @@ end
 
 
 class "CKampManager"
-function CKampManager:__init( path, scheme, min_radius, src_kamp )
+function CKampManager:__init( name, level_vertex_id, scheme, min_radius, src_kamp )
   self.scheme      = scheme
-  self.kamp_name   = path
-  self.patrol      = patrol( path )
-  self.center      = self.patrol:level_vertex_id( 0 )
-  self.point0      = self.patrol:point( 0 )
+  self.kamp_name   = name
+  self.center      = level_vertex_id
   self.min_radius  = min_radius or 2
   self.npc         = {}
   self.population  = 0
@@ -758,11 +780,12 @@ end
 
 
 function CKampManager:init_drop_points()
-  local found = get_pos( self.center, 20 )
+  local found  = get_pos( self.center, 20 )
+  local point0 = level.vertex_position( self.center )
   self.drop_points = {}
   for _, vertex in ipairs( found ) do
     local pos = level.vertex_position( vertex )
-    if pos:distance_to( self.point0 ) > 10 then
+    if pos:distance_to( point0 ) > 10 then
       table.insert( self.drop_points, vertex )
     end
   end
@@ -787,6 +810,21 @@ end
 
 
 function CKampManager:init_seats()
+  local sect = "dsh." .. script_name() .. "." .. self.kamp_name
+  if sys_ini:section_exist( sect ) then
+    local seats = get_string( sect, "preferred_seats" )
+    if seats then
+      local preferred_seats = get_numbers( sect, "preferred_seats" )
+      if table.getn( preferred_seats ) > 0 then
+        self.preferred_seats  = {}
+        for _, vertex in ipairs( preferred_seats ) do
+          table.insert( self.preferred_seats, {
+            [ "vertex" ] = vertex,
+          });
+        end
+      end
+    end
+  end
   self.seats = {}
   local ai_step = 0.7 -- шаг AI сетки
   local dist    = self.min_radius
@@ -844,11 +882,11 @@ function CKampManager:reassign_seats()
     end
   end
   self.active_seats   = nil
-  self.seats          = self:get_accessible_seats()
   self.seats_assigned = false
+  local accessible_seats = self:get_accessible_seats()
   local found_seats
   for k = 2, 1, -1 do
-    for i, seats in ipairs( self.seats ) do
+    for i, seats in ipairs( accessible_seats ) do
       if table.getn( seats ) >= self.population * k then
         found_seats = i
         break
@@ -863,8 +901,15 @@ function CKampManager:reassign_seats()
   for npc_id, st in pairs( self.npc ) do
     st.seat = nil
   end
-  for i = found_seats, table.getn( self.seats ) do
-    self.active_seats = self.seats[ i ]
+  local avail_seats = {}
+  if self.preferred_seats then
+    table.insert( avail_seats, self.preferred_seats )
+  end
+  for i = found_seats, table.getn( accessible_seats ) do
+    table.insert( avail_seats, accessible_seats[ i ] )
+  end
+  for _, seats in ipairs( avail_seats ) do
+    self.active_seats = seats
     local cnt  = 0
     local step = math.floor(
       table.getn( self.active_seats ) / self.population
@@ -1604,15 +1649,14 @@ end
 -- включение лагеря
 function set_scheme( npc, ini, scheme, section, gulag_name )
   local st = xr_logic.assign_storage_and_bind( npc, ini, scheme, section )
-  st.logic        = xr_logic.cfg_get_switch_conditions( ini, section, npc )
-  st.center_point = utils.cfg_get_string(
+  st.logic = xr_logic.cfg_get_switch_conditions( ini, section, npc )
+  local center_point = utils.cfg_get_string(
     ini, section, "center_point", npc, true, gulag_name
   )
-  local radius    = get_float( section, "radius", nil, ini )
-  local bind      = utils.cfg_get_number( ini, section, "bind", npc, false )
-  st.kamp         = get_my_kamp( npc, st.center_point, scheme, radius )
+  local radius       = get_float( section, "radius", nil, ini )
+  st.kamp            = get_my_kamp( npc, center_point, scheme, radius )
   st.kamp:addNpc( npc )
-  st.pos_vertex   = nil
+  st.pos_vertex      = nil
 
   st.def_state_moving = utils.cfg_get_string(
     ini, section, "def_state_moving", npc, false, "", "walk"
