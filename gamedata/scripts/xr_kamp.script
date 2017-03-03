@@ -106,7 +106,7 @@ function get_my_kamp( npc, path, scheme, radius )
 end
 
 
-function get_pos( center, dist )
+function get_pos( center, dist, allow_sector )
   local ai_step      = 0.7 -- шаг AI сетки
   local math_pi_180  = 180 / math.pi
   local pi2          = math.pi * 2
@@ -120,9 +120,24 @@ function get_pos( center, dist )
   local rotate_angle = math.asin( ai_step / dist )
   local cur_angle    = 0
   local found, seen  = {}, {}
-  while math.abs( cur_angle ) < pi2 do
+  while cur_angle < pi2 do
+    local good_angle
+    if allow_sector then
+      good_angle = false
+      for i = 1, table.getn( allow_sector ), 2 do
+        if
+          cur_angle >= allow_sector[ i ]
+          and cur_angle <= allow_sector[ i + 1 ]
+        then
+          good_angle = true
+          break
+        end
+      end
+    else
+      good_angle = true
+    end
     local vertex = level.vertex_in_direction( center, dir, dist )
-    if vertex ~= center and not seen[ vertex ] then
+    if good_angle and vertex ~= center and not seen[ vertex ] then
       local pos       = level.vertex_position( vertex )
       local near_anom = false
       for _, anom in ipairs( anomalies ) do
@@ -163,6 +178,7 @@ function CKampManager:__init( name, level_vertex_id, scheme, min_radius, src_kam
   -- Хранилище для режиссера лагеря. Режиссерем является сталкер,
   -- затеявший необычное поведение.
   self.director    = nil
+  self:init_sectors()
   self:init_drop_points()
   self:init_seats()
   self.seats_assigned = false
@@ -180,6 +196,26 @@ function CKampManager:__init( name, level_vertex_id, scheme, min_radius, src_kam
         src_kamp:removeNpc( npc )
         st.kamp = self
         self:addNpc( npc )
+      end
+    end
+  end
+end
+
+
+function CKampManager:init_sectors()
+  local sect = "dsh." .. script_name() .. "." .. self.kamp_name
+  if sys_ini:section_exist( sect ) then
+    local s = get_string( sect, "allow_sector" )
+    if s then
+      local t = parse_nums( s )
+      ASSERT(
+        table.getn( t ) % 2 == 0,
+        "[%s]: section '%s' has wrong option 'allow_sector': %s",
+        script_name(), sect, s
+      )
+      self.allow_sector = {}
+      for _, n in ipairs( t ) do
+        table.insert( self.allow_sector, math.rad( n ) )
       end
     end
   end
@@ -829,7 +865,7 @@ function CKampManager:init_seats()
   local ai_step = 0.7 -- шаг AI сетки
   local dist    = self.min_radius
   while dist < 10 do
-    local found = get_pos( self.center, dist )
+    local found = get_pos( self.center, dist, self.allow_sector )
     local seats = {}
     for _, vertex in ipairs( found ) do
       table.insert( seats, {
