@@ -7,37 +7,43 @@
 
 local our_hits = {              -- какие типы хита будут обрабатываться
   [ hit.explosion ] = {
-    [ "max"  ] = 10,           -- порог поглощения
-    [ "sect" ] = "explosion_immunity",
+    [ "max"     ] = 10,           -- порог поглощения
+    [ "new_hit" ] = { "bleeding", "health" },
+    [ "sect"    ] = "explosion_immunity",
   },
   [ hit.fire_wound ] = {
-    [ "max"  ] = 10,
-    [ "sect" ] = "fire_wound_immunity",
+    [ "max"     ] = 10,
+    [ "new_hit" ] = { "bleeding", "health" },
+    [ "sect"    ] = "fire_wound_immunity",
     [ "ignored_outfit_protection" ] = false,
   },
   [ hit.strike ] = {
-    [ "max"  ] = 10,
-    [ "sect" ] = "strike_immunity",
+    [ "max"     ] = 10,
+    [ "new_hit" ] = { "bleeding", "health" },
+    [ "sect"    ] = "strike_immunity",
   },
   [ hit.wound ] = {
-    [ "max"  ] = 10,
-    [ "sect" ] = "wound_immunity",
+    [ "max"     ] = 10,
+    [ "new_hit" ] = { "bleeding", "health" },
+    [ "sect"    ] = "wound_immunity",
   },
   [ hit.burn ] = {
     [ "max"  ] = 10,
     [ "sect" ] = "burn_immunity",
   },
   [ hit.chemical_burn ] = {
-    [ "max"  ] = 10,
-    [ "sect" ] = "chemical_burn_immunity",
+    [ "max"     ] = 10,
+    [ "new_hit" ] = { "bleeding" },
+    [ "sect"    ] = "chemical_burn_immunity",
   },
   [ hit.shock ] = {
     [ "max"  ] = 10,
     [ "sect" ] = "shock_immunity",
   },
   [ hit.radiation ] = {
-    [ "max"  ] = 100,
-    [ "sect" ] = "radiation_immunity",
+    [ "max"     ] = 100,
+    [ "new_hit" ] = { "radiation" },
+    [ "sect"    ] = "radiation_immunity",
   },
   [ hit.telepatic ] = {
     [ "max"  ] = 10,
@@ -59,6 +65,14 @@ local our_hits = {              -- какие типы хита будут обрабатываться
     [ "max"  ] = 250,
     [ "sect" ] = "radiation_restore_speed",
   },
+  [ "satiety" ] = {
+    [ "max"  ] = 10,
+    [ "sect" ] = "satiety_restore_speed",
+  },
+  [ "weight2" ] = {
+    [ "max"  ] = 950400, -- 24 часа для Булыжника (11 кг.)
+    [ "sect" ] = "additional_inventory_weight2",
+  },
 }
 
 
@@ -71,7 +85,7 @@ end
 
 local pt
 function on_first_update()
-  pt = { game.get_game_time():get() }
+  pt = game.CTime( game.get_game_time() )
   local sm = ogse_signals.get_mgr()
   sm:subscribe({
     signal = "on_update", fun = this.process_hits,
@@ -86,7 +100,11 @@ end
 
 local got_hits = {}
 local has_hit  = false
-local new_hit  = {}
+local new_hit  = {
+  [ "bleeding"  ] = false,
+  [ "health"    ] = false,
+  [ "radiation" ] = false,
+}
 local psy_block_t
 
 function before_hit( hit_data, p_s_hit, p_ignore_flags )
@@ -96,20 +114,19 @@ function before_hit( hit_data, p_s_hit, p_ignore_flags )
   if our_hit and power > 0 then
     local real_power = calc_real_hit_power( our_hit, hit_data )
     if real_power > 0 then
-      if got_hits[ hit_type ] then
-        got_hits[ hit_type ] = got_hits[ hit_type ] + real_power
-      else
-        got_hits[ hit_type ] = real_power
-      end
+      got_hits[ hit_type ] = ( got_hits[ hit_type ] or 0 ) + real_power
       has_hit = true
-      new_hit[ hit_type ] = true
+      if our_hit.new_hit then
+        for _, k in ipairs( our_hit.new_hit ) do
+          new_hit[ k ] = true
+        end
+      end
     end
     if our_hit.ignored_outfit_protection then
       apply_outfit_protection( hit_data, p_s_hit )
     end
     if hit_data.hit_type == hit.telepatic
-      and
-      psy_block_t and time_global() < psy_block_t
+      and psy_block_t and time_global() < psy_block_t
     then
       power = 0
       write_memory_float( power, p_s_hit, hit_offset.power )
@@ -156,10 +173,12 @@ end
 
 local absorbations   = {}
 local need_addl_keys = {
-  [ "bleeding_restore_speed"  ] =  1,
-  [ "health_restore_speed"    ] =  1,
-  [ "power_restore_speed"     ] =  1,
-  [ "radiation_restore_speed" ] = -1,
+  [ "additional_inventory_weight2" ] =  1,
+  [ "bleeding_restore_speed"       ] =  1,
+  [ "health_restore_speed"         ] =  1,
+  [ "power_restore_speed"          ] =  1,
+  [ "radiation_restore_speed"      ] = -1,
+  [ "satiety_restore_speed"        ] =  1,
 }
 function get_absorbations( af )
   local af_sect = af:section()
@@ -190,81 +209,58 @@ end
 
 
 function process_hits()
-  local previous_check_time = game.CTime()
-  previous_check_time:set( unpack( pt ) )
-  local current_time = game.get_game_time()
-  local dt = current_time:diffSec( previous_check_time )
-  pt = { current_time:get() }
+  local dt = game.get_game_time():diffSec( pt )
+  pt = game.CTime( game.get_game_time() )
 
-  if
-    db.actor:get_bleeding() > 0
-    or new_hit[ hit.explosion     ]
-    or new_hit[ hit.fire_wound    ]
-    or new_hit[ hit.strike        ]
-    or new_hit[ hit.wound         ]
-    or new_hit[ hit.chemical_burn ]
-  then
-    local hit_type = "bleeding"
-    if got_hits[ hit_type ] then
-      got_hits[ hit_type ] = got_hits[ hit_type ] + dt
-    else
-      got_hits[ hit_type ] = dt
-    end
+  got_hits.satiety = ( got_hits.satiety or 0 ) + dt
+  got_hits.weight2 = ( got_hits.weight2 or 0 ) + dt
+
+  local act = db.actor
+  if act:get_bleeding() > 0 or new_hit.bleeding then
+    got_hits.bleeding = ( got_hits.bleeding or 0 ) + dt
+    new_hit.bleeding  = false
+    has_hit = true
+  end
+
+  if act.health < 1 or new_hit.health then
+    got_hits.health = ( got_hits.health or 0 ) + dt
+    new_hit.health  = false
     has_hit = true
   end
 
   if
-    db.actor.health < 1
-    or new_hit[ hit.explosion  ]
-    or new_hit[ hit.fire_wound ]
-    or new_hit[ hit.strike     ]
-    or new_hit[ hit.wound      ]
+    act.power < 0.99
+    or act:is_actor_running()
+    or act:is_actor_sprinting()
+    or act:is_actor_climbing()
   then
-    local hit_type = "health"
-    if got_hits[ hit_type ] then
-      got_hits[ hit_type ] = got_hits[ hit_type ] + dt
-    else
-      got_hits[ hit_type ] = dt
-    end
+    got_hits.power = ( got_hits.power or 0 ) + dt
     has_hit = true
   end
 
   if
-    db.actor.power < 0.99
-    or db.actor:is_actor_running()
-    or db.actor:is_actor_sprinting()
-    or db.actor:is_actor_climbing()
-  then
-    local hit_type = "power"
-    if got_hits[ hit_type ] then
-      got_hits[ hit_type ] = got_hits[ hit_type ] + dt
-    else
-      got_hits[ hit_type ] = dt
-    end
-    has_hit = true
-  end
-
-  if
-    db.actor.radiation > 0
-    or new_hit[ hit.radiation ]
+    act.radiation > 0
+    or new_hit.radiation
     or arc_radiation.get_inv_arts_radiation() > 0
   then
-    local hit_type = "radiation"
-    if got_hits[ hit_type ] then
-      got_hits[ hit_type ] = got_hits[ hit_type ] + dt
-    else
-      got_hits[ hit_type ] = dt
-    end
+    got_hits.radiation = ( got_hits.radiation or 0 ) + dt
+    new_hit.radiation  = false
     has_hit = true
   end
-
-  new_hit = {}
 end
 
 
 function process_arts()
   ogse_signals.get_mgr():reschedule( 1000 )
-  if not has_hit then return end
+  if
+    not (
+      has_hit
+      or inventory.on_belt_restore_speed_pos( "satiety_restore_speed" )
+      or inventory.on_belt_restore_speed_pos( "additional_inventory_weight2" )
+    )
+  then
+    return
+  end
   local empty       = {}
   local master_coef = 4 - level.get_game_difficulty()
   for i = 0, db.actor:belt_count() - 1 do
@@ -319,12 +315,13 @@ end
 function degrade_artefact( af )
   zero_all_af_effects( af )
   dsh.set_condition( af, 0 )
+  inventory.rescan_belt()
 end
 
 
 function set_condition_on_update( obj, cond )
   obj:set_condition( cond )
-  dsh.exec_on_update(
+  local tm = dsh.exec_on_update(
     function( id, name )
       local obj = level.object_by_id( id )
       if obj and obj:name() == name then
@@ -333,4 +330,5 @@ function set_condition_on_update( obj, cond )
     end,
     obj:id(), obj:name()
   )
+  tm.slot_desc.script_name = script_name() .. ".set_condition_on_update"
 end
