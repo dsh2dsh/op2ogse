@@ -255,12 +255,10 @@ end
 
 class "animation"
 function animation:__init( npc, mgr )
-  self.attached_items = {}
-  self.clb_settings   = {}
-  self.clb_cnt        = 0
-  self.mgr            = mgr
-  self.npc            = npc
-  self.states         = {
+  self.clb_settings = {}
+  self.mgr          = mgr
+  self.npc          = npc
+  self.states       = {
     last_id       = nil,
     current_state = nil,
     target_state  = nil,
@@ -317,14 +315,18 @@ function animation:set_state( id, reset )
         if anima then
           if type( anima ) == "table" then
             for k, v in pairs( anima ) do
-              if type( v ) == "table" and v.d ~= nil then
-                if self.attached_items[ v.d ] then
-                  local obj = self.npc:object( v.d )
-                  if obj then
-                    obj:enable_attachable_item( false )
-                  end
-                  self.attached_items[ v.d ] = nil
+              if type( v ) == "table" and v.d then
+                ASSERT(
+                  self.attached_item and self.attached_item == v.d,
+                  "[%]: %s is trying to detach %s, but %s is attached",
+                  script_name(), self.npc:name(), v.d,
+                  tostring( self.attached_item )
+                )
+                local obj = self.npc:object( v.d )
+                if obj then
+                  obj:enable_attachable_item( false )
                 end
+                self.attached_item = nil
               end
             end
           end
@@ -388,12 +390,12 @@ function animation:set_state( id, reset )
   -- назначилась в момент деаттача.
   if self.states.current_state == "_new" then
     write_log_3( self.npc, "~~STMGR: [%s]", self.npc:name() )
-    for k, _ in pairs( self.attached_items ) do
-      local obj = self.npc:object( k )
+    if self.attached_item then
+      local obj = self.npc:object( self.attached_item )
       if obj then
         obj:enable_attachable_item( false )
       end
-      self.attached_items[ k ] = nil
+      self.attached_item = nil
     end
   end
 
@@ -918,17 +920,10 @@ function animation:set_anim_callback( value )
   write_log_3(
     self.npc, "~~STMGR: for debug [%s] [%s]", table_size, anim_count
   )
-
-  for key = table_size + 1, anim_count do
-    table.insert( self.clb_settings, "nil" )
+  for key = 1, anim_count - table_size - 1 do
+    table.insert( self.clb_settings, false )
   end
-  self.clb_settings[ table.getn( self.clb_settings ) ] = {
-    a  = value.a,
-    d  = value.d,
-    s  = value.s,
-    sh = value.sh,
-    f  = value.f
-  }
+  table.insert( self.clb_settings, value )
 end
 
 
@@ -944,25 +939,34 @@ function animation:anim_callback()
   -- просто сдвигаем
   v = self.clb_settings[ 1 ]
   if v == nil then return true end
-  if v == "nil" then
+  if not v then
     table.remove( self.clb_settings, 1 )
     return true
   end
 
   -- Производим действия находящиеся на 1 позиции
   if v.a then
+    ASSERT(
+      ( not self.attached_item ),
+      "[%]: %s is trying to attach %s, but %s is already attached",
+      script_name(), self.npc:name(), v.a, tostring( self.attached_item )
+    )
     local obj = self.npc:object( v.a )
     if obj then
       obj:enable_attachable_item( true )
-      self.attached_items[ v.a ] = true
     end
-  end
-  if v.d then
+    self.attached_item = v.a
+  elseif v.d then
+    ASSERT(
+      self.attached_item and self.attached_item == v.d,
+      "[%]: %s is trying to detach %s, but %s is attached",
+      script_name(), self.npc:name(), v.d, tostring( self.attached_item )
+    )
     local obj = self.npc:object( v.d )
     if obj then
       obj:enable_attachable_item( false )
     end
-    self.attached_items[ v.d ] = nil
+    self.attached_item = nil
   end
   if v.s ~= nil then
     xr_sound.set_sound_play( self.npc, v.s )
