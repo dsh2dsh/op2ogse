@@ -704,4 +704,11 @@ $mod_dir$   		= false|	false|	$fs_root$|		mods\
 - Zagolski за интересные идеи
 
 - людям, чьи работы я использовал или кто мне помогал другим способом:
-  art0run, BlooderDen, Shitty, Assort, Alkseur, Sanchez69full.
+
+  art0run,
+  BlooderDen,
+  Shitty,
+  Assort,
+  Alkseur,
+  [Sanchez69full](https://www.youtube.com/user/Sanchez69full/),
+  [Shkrek & Klick](https://www.youtube.com/user/MrDisappearing)

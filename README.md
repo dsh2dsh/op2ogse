@@ -707,12 +707,19 @@ $mod_dir$   		= false|	false|	$fs_root$|		mods\
 
 - Команде OGSE за отличный код
 
-- NLC7 за идеи, вдохновение и ресурсы. Особую благодарность выражаю Сяку,
-  за гармоничный и проработанный мир NLC7. Чувствуется душа.
+- NLC7 за идеи, вдохновение и ресурсы. Особую благодарность выражаю
+  Сяку, за гармоничный и проработанный мир NLC7. Чувствуется душа.
 
 - моду Новый Арсенал 3 за отличную сборку оружия
 
 - Zagolski за интересные идеи
 
 - людям, чьи работы я использовал или кто мне помогал другим способом:
-  art0run, BlooderDen, Shitty, Assort, Alkseur, [Sanchez69full](https://www.youtube.com/user/Sanchez69full/).
+
+  art0run,
+  BlooderDen,
+  Shitty,
+  Assort,
+  Alkseur,
+  [Sanchez69full](https://www.youtube.com/user/Sanchez69full/),
+  [Shkrek & Klick](https://www.youtube.com/user/MrDisappearing)
