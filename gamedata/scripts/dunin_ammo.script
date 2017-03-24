@@ -1,14 +1,17 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 -- nv080209 - adjustments per Russian forum discussion
 
+function attach(sm)
+  sm:subscribe({ signal = "on_spawn", fun = this.init })
+end
+
+
 ammo = {}
 local inited = false
 local repack = false
 
-
 -- инициализация переменных, выполняется единожды
 function init()
-  local i, result, section, value
   -- список патронов возьмём из "death_generic.ltx"
   local n = sys_ini:line_count( "death_generic.ammo_sections" )
   for i = 0, n - 1 do
@@ -31,17 +34,16 @@ end
 -- если перепаковку делать прям здесь, то будет глюк при загрузки и
 -- при взятии из нычки кучи патрон (взять всё)
 function on_take( obj )
-  if not inited then init() end
-  local s_obj = alife():object( obj:id() )
-  if not s_obj or not obj.section then
+  local sobj = alife():object( obj:id() )
+  if not sobj then
     log1( "##WARNING! Actor pickup buggy ammopack, removing it." )
     db.actor:drop_item( obj )
     return repack
   end
-  local section = s_obj:section_name()
+  local section = obj:section()
   -- nv080209, 080426 prevent CTD if ammo section missing
-  if section and ammo[ section ] then
-    if ammo[ section ].repack == false then
+  if ammo[ section ] then
+    if not ammo[ section ].repack then
       if get_ammo_size( obj ) < ammo[ section ].box then
         ammo[ section ].repack = true
         repack = true
@@ -62,7 +64,7 @@ function on_update()
     updates_count = updates_count + 1
     return
   end
-  if level.get_inventory_wnd():IsShown() then return end
+  if level.main_input_receiver() then return end
   if repack then
     for section, data in pairs( ammo ) do
       if data.repack then
@@ -83,27 +85,22 @@ end
 function repack_ammo( section, box_size )
   local s, t = enum_ammo( section, box_size )
   if s > 0 and table.getn( t ) > 1 then
-    local sim  = alife()
+    for _, id in ipairs( t ) do
+      local s_obj = alife():object( id )
+      if s_obj then
+        alife():release( s_obj )
+      end
+    end
     local pos  = db.actor:position()
     local lvid = db.actor:level_vertex_id()
     local gvid = db.actor:game_vertex_id()
     local pid  = db.actor:id()
-    for i, id in pairs( t ) do
-      local s_obj = sim:object( id )
-      if s_obj then
-        local obj = level.object_by_id( id )
-        if obj then
-          death_manager.shedule_release( obj )
-          db.actor:drop_item( obj )
-        end
-      end
-    end
     while s >= box_size do
-      sim:create_ammo( section, pos, lvid, gvid, pid, box_size )
+      alife():create_ammo( section, pos, lvid, gvid, pid, box_size )
       s = s - box_size
     end
     if s > 0 then
-      sim:create_ammo( section, pos, lvid, gvid, pid, s )
+      alife():create_ammo( section, pos, lvid, gvid, pid, s )
     end
   end
 end
@@ -134,7 +131,7 @@ end
 
 -- возвращает колличество патрон в пачке
 -- http://www.amk-team.ru/forum/index.php?showtopic=10538&p=713968
-function get_ammo_size(obj)
+function get_ammo_size( obj )
   ASSERT( obj, "[dunin_ammo.get_ammo_size] object is a nil reference!" )
   ASSERT(
     obj:is_ammo(),
