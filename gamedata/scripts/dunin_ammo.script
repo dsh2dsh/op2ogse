@@ -1,178 +1,144 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 -- nv080209 - adjustments per Russian forum discussion
+
 ammo = {}
 local inited = false
 local repack = false
 
---------
+
 -- инициализация переменных, выполняется единожды
---------
 function init()
-        local i, result, section, value
-        -- список патронов возьмём из "death_generic.ltx"
-        local n = sys_ini:line_count( "death_generic.ammo_sections" )
-        for i=0,n-1 do
-                result, section, value = sys_ini:r_line( "death_generic.ammo_sections", i,"","")
-                ammo[section] = {}
-                ammo[section].repack = false
-                ammo[section].box = sys_ini:r_u32(section, "box_size")
-        end
-        repack = false
-        inited = true
+  local i, result, section, value
+  -- список патронов возьмём из "death_generic.ltx"
+  local n = sys_ini:line_count( "death_generic.ammo_sections" )
+  for i = 0, n - 1 do
+    local result, section, value = sys_ini:r_line(
+      "death_generic.ammo_sections", i, "", ""
+    )
+    ammo[ section ] = {}
+    ammo[ section ].repack = false
+    ammo[ section ].box    = sys_ini:r_u32( section, "box_size" )
+  end
+  repack = false
+  inited = true
 end
 
---------
+
 -- вызывается при добавлении в инвентарь ГГ любых патрон
 --  obj - game_object добавляемой пачки
 -- здесь будем только ставить флажки о необходимости проверки,
 -- саму проверку и перепаковку сделаем в апдейте актёра,
 -- если перепаковку делать прям здесь, то будет глюк при загрузки и
 -- при взятии из нычки кучи патрон (взять всё)
---------
-function on_take(obj)
-        if not inited then
-                init()
-        end
-
-        local s_obj = alife():object(obj:id())
-        
-        if not s_obj or not obj.section then
-                log1("##WARNING! Actor pickup buggy ammopack, removing it.")
-                db.actor:drop_item(obj)
-                return repack
-        end
-        
-        local section = s_obj:section_name()
-        --dbglog("on_take('%s')", section)
-
-        -- nv080209, 080426 prevent CTD if ammo section missing
-        if section ~= nil and ammo[section] ~= nil then
-                if ammo[section].repack == false then
-                        if get_ammo_size(obj) < ammo[section].box then
-                                ammo[section].repack = true
-                                repack = true
---                              remkit_main.skip_updates = 2
-                        end
-                end
-        else
-                --dbglog("Dunin_ammo_pack: No ammo section for %s",obj:name())
-        end
-        return repack
+function on_take( obj )
+  if not inited then init() end
+  local s_obj = alife():object( obj:id() )
+  if not s_obj or not obj.section then
+    log1( "##WARNING! Actor pickup buggy ammopack, removing it." )
+    db.actor:drop_item( obj )
+    return repack
+  end
+  local section = s_obj:section_name()
+  -- nv080209, 080426 prevent CTD if ammo section missing
+  if section and ammo[ section ] then
+    if ammo[ section ].repack == false then
+      if get_ammo_size( obj ) < ammo[ section ].box then
+        ammo[ section ].repack = true
+        repack = true
+      end
+    end
+  end
+  return repack
 end
 
---------
+
 -- вызывается из апдейта актёра
 -- проверяет наличие флажков и вызывает процедуру переупаковки
---------
-local updates_count = 0
-local engage_after = 20
+local updates_count =  0
+local engage_after  = 20
 
 function on_update()
-        if updates_count < engage_after then
-                updates_count = updates_count + 1
-                return
-        end
-        if level.get_inventory_wnd():IsShown() then return end
-        if repack then
-                local section, data
-                for section, data in pairs(ammo) do
-                        if data.repack then
-                                repack_ammo(section, data.box)
-                                data.repack = false
-                        end
-                end
-                repack = false
---              remkit_main.skip_updates = 2
-        end
+  if updates_count < engage_after then
+    updates_count = updates_count + 1
+    return
+  end
+  if level.get_inventory_wnd():IsShown() then return end
+  if repack then
+    for section, data in pairs( ammo ) do
+      if data.repack then
+        repack_ammo( section, data.box )
+        data.repack = false
+      end
+    end
+    repack = false
+  end
 end
 
---------
+
 -- переупаковка патронов заданного типа
 --  section - строка, имя секции (тип патрон)
 --  box_size - колличество патрон в полной пачке
 -- сначало составляем список неполных пачек, затем
 -- удаляем их и создаём нужное колличество полных
---------
-function repack_ammo(section, box_size)
---      log3("!!AMMO_DEBUG repack_ammo('%s')", section)
-        local s, t = enum_ammo(section, box_size)
-        if (s > 0) and (table.getn(t) > 1) then
---              log3("!!AMMO_DEBUG repacking(magazins=%d, bullets=%d)", table.getn(t), s)
-                local sim = alife()
-                local pos = db.actor:position()
-                local lvid = db.actor:level_vertex_id()
-                local gvid = db.actor:game_vertex_id()
-                local pid = db.actor:id()
-
-                for i, id in pairs(t) do
-                        local s_obj = sim:object(id)
-                        if s_obj then
-                                local obj = level.object_by_id(id)
-                                if obj then
-                                        death_manager.shedule_release(obj)
-                                        db.actor:drop_item(obj)
-                                end
-                        end
-                end
-
-                while s >= box_size do
-                        sim:create_ammo(section, pos, lvid, gvid, pid, box_size)
-                        s = s - box_size
-                end
-
-                if s > 0 then
-                        sim:create_ammo(section, pos, lvid, gvid, pid, s)
-                end
+function repack_ammo( section, box_size )
+  local s, t = enum_ammo( section, box_size )
+  if s > 0 and table.getn( t ) > 1 then
+    local sim  = alife()
+    local pos  = db.actor:position()
+    local lvid = db.actor:level_vertex_id()
+    local gvid = db.actor:game_vertex_id()
+    local pid  = db.actor:id()
+    for i, id in pairs( t ) do
+      local s_obj = sim:object( id )
+      if s_obj then
+        local obj = level.object_by_id( id )
+        if obj then
+          death_manager.shedule_release( obj )
+          db.actor:drop_item( obj )
         end
+      end
+    end
+    while s >= box_size do
+      sim:create_ammo( section, pos, lvid, gvid, pid, box_size )
+      s = s - box_size
+    end
+    if s > 0 then
+      sim:create_ammo( section, pos, lvid, gvid, pid, s )
+    end
+  end
 end
 
---------
+
 -- пробегаемся по инветарю ГГ и собираем инфу о неполных пачках
 --  section - строка, имя секции (тип патрон)
 --  box_size - колличество патрон в полной пачке
 -- возвращает сумарное колличество патрон в неполных пачках и массив id-шников этих пачек
---------
-function enum_ammo(section, box_size)
-        local i, obj, size
-        local s = 0
-        local t = {}
-        for i=0, db.actor:object_count()-1 do
-                obj = db.actor:object(i)
-                if obj and obj.id then
-                        local sobj = alife():object(obj:id())
-                        if sobj then
-                                if sobj:section_name() == section then
-                                        size = get_ammo_size(obj)
-                                        -- if size < box_size then
-                                        if size ~= box_size then
-                                                table.insert(t, obj:id())
-                                                s = s + size
-                                        end
-                                end
-                        else
-                                if obj.name and not string.find(obj:name(), "bolt") then
-                                        -- глюкавая пачка, удалить
-                                        log1("##WARNING! Praparing to delete virtual object ["..obj:id().."]")
-                                        death_manager.shedule_release(item)
-                                        log1("##WARNING! Trying to delete virtual object ["..obj:name().."]")
-                                end
-                        end
-                elseif obj then
-                        -- если вообще есть хоть что выкинуть
-                        -- ехай нахуй навсегда (с) Ленинград
-                        log1("##WARNING! Praparing to delete partially invalid virtual object")
-                        death_manager.shedule_release(item)
-                end
+function enum_ammo( section, box_size )
+  local s = 0
+  local t = {}
+  db.actor:iterate_inventory(
+    function( npc, obj )
+      if obj:section() == section then
+        local size = get_ammo_size( obj )
+        if size ~= box_size then
+          table.insert( t, obj:id() )
+          s = s + size
         end
-        return s, t
+      end
+    end,
+    db.actor
+  )
+  return s, t
 end
 
---------
+
 -- возвращает колличество патрон в пачке
---------
 -- http://www.amk-team.ru/forum/index.php?showtopic=10538&p=713968
 function get_ammo_size(obj)
-        ASSERT(obj, "[dunin_ammo.get_ammo_size] object is a nil reference!")
-        ASSERT(obj:is_ammo(), "[dunin_ammo.get_ammo_size] object '%s' is not an ammo!", obj:name())
-        return obj:get_go_int16( "", 476 )
+  ASSERT( obj, "[dunin_ammo.get_ammo_size] object is a nil reference!" )
+  ASSERT(
+    obj:is_ammo(),
+    "[dunin_ammo.get_ammo_size] object '%s' is not an ammo!", obj:name()
+  )
+  return obj:get_go_int16( "", 476 )
 end
