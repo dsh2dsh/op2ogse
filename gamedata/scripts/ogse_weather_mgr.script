@@ -34,8 +34,8 @@ on_update -- при переходе через границу погодного фрейма выполняет обновление пр
 
 function attach(sm) -- для менеджера сигналов
 	sm:subscribe({signal = "on_init", fun = this.on_actor_init})
---	sm:subscribe({signal = "on_update", fun = this.on_update})
---	sm:subscribe({signal = "on_key_down", fun = this.on_key_down})
+	-- sm:subscribe({signal = "on_update", fun = this.on_update})
+	-- sm:subscribe({signal = "on_key_down", fun = this.on_key_down})
 	sm:subscribe({signal = "on_first_update", fun = this.on_first_update})
 	sm:subscribe({signal = "on_save", fun = this.on_save})
 end
@@ -485,170 +485,220 @@ function get_day_start_time(t)
 	day_start_time:set(y,m,d,0,0,0,0)
 	return day_start_time
 end
+
+
 -- обновить цепочку фреймов на ближайшие forecast_time часов
 -- здесь также осуществляется вставка кадров выброса
 function StaticForecast:update()
-	ogse_surge_mgr.surge_log("StaticForecast:update")
+  ogse_surge_mgr.surge_log( "StaticForecast:update" )
 
-	local current_time = game.get_game_time() -- текущее время
-	-- сперва удаляем уже отработавшие точки
-	while self.forecast[1] do -- пока имеется хотя бы одна точка
-		if self.forecast[1].time > current_time then -- если первая точка вдруг оказалась в будущем, чего быть по идее не может
-			--self.forecast = {} -- на всякий случай чистим прогноз совсем
-			fail("First point of forecast is in the future. Check the logic!")
-			break
-		end
-		-- проверяем ситуацию, когда в прогнозе осталась одна точка. 
-		-- такое теоретически может случиться, когда спали дольше, чем имеем прогноз или конец сна
-		-- попал в последний кадр прогноза. Тогда последняя точка прогноза в процессе удаления 
-		-- останется единственной. Этой ситуации надо избегать и длина прогноза специально 
-		-- выбирается так, чтобы покрывать длительность сна с запасом.
-		if not self.forecast[2] then -- как вариант такой же проверки #self.forecast == 1
-			--self.forecast = {} -- тоже на всякий случай чистим прогноз
-			fail("Forecast has only one point. Check the logic!")
-			break
-		end
-		-- надо активировать сигналы из отработавших точек
-		--if self.active and not self.forecast[1].processed then -- если флаг не установлен, значит инфопорция из секции не выдавалась
-		--	ogse_surge_mgr.surge_log("Was not processed. Process info (if any).")
-		--	process_weather_section_inf(self.forecast[1].data.section) -- выдать
-		--end
-		self:process_first_point_info()
+  local current_time = game.get_game_time() -- текущее время
+  -- сперва удаляем уже отработавшие точки
+  while self.forecast[ 1 ] do -- пока имеется хотя бы одна точка
+    -- если первая точка вдруг оказалась в будущем, чего быть по идее не может
+    if self.forecast[ 1 ].time > current_time then
+      -- self.forecast = {} -- на всякий случай чистим прогноз совсем
+      fail( "First point of forecast is in the future. Check the logic!" )
+      break
+    end
+    -- проверяем ситуацию, когда в прогнозе осталась одна точка. 
+    -- такое теоретически может случиться, когда спали дольше, чем имеем
+    -- прогноз или конец сна попал в последний кадр прогноза. Тогда последняя
+    -- точка прогноза в процессе удаления останется единственной. Этой ситуации
+    -- надо избегать и длина прогноза специально выбирается так, чтобы
+    -- покрывать длительность сна с запасом.
+    if not self.forecast[ 2 ] then
+      -- как вариант такой же проверки #self.forecast == 1
+      -- self.forecast = {} -- тоже на всякий случай чистим прогноз
+      fail( "Forecast has only one point. Check the logic!" )
+      break
+    end
+    self:process_first_point_info()
 		
-		-- если есть следующая точка и она в будущем, то мы в текущем фрейме
-		if self.forecast[2].time >= current_time then
-			break -- переходим к добавлению новых точек
-		end
-		-- все остальные варианты включают:
-		-- 1. за этой точкой есть ещё одна в прошлом
-		-- 2. эта точка последняя
-		-- в любом случае удаляем её
-		--log1("remove point")
-		-- перед удалением не забыть выдать инфопорции из удаляемых точек
-		--
-		ogse_surge_mgr.surge_log("Remove past forecast point: %s", self.forecast[1].data.section)
+    -- если есть следующая точка и она в будущем, то мы в текущем фрейме
+    if self.forecast[ 2 ].time >= current_time then
+      break -- переходим к добавлению новых точек
+    end
+    -- все остальные варианты включают:
+    -- 1. за этой точкой есть ещё одна в прошлом
+    -- 2. эта точка последняя
+    -- в любом случае удаляем её
+    -- log1( "remove point" )
+    -- перед удалением не забыть выдать инфопорции из удаляемых точек
+    ogse_surge_mgr.surge_log(
+      "Remove past forecast point: %s, surge_start = %s",
+      self.forecast[ 1 ].data.section,
+      tostring( self.forecast[ 1 ].surge_start )
+    )
 		
-		if self.forecast[1].surge_start then
-			self.surge_frame_assigned = false
-		end
-		table.remove(self.forecast, 1)
-	end
-	-- здесь имеем две возможные ситуации: 
-	-- 1. self.forecast пустой, что может получиться если:
-	--     а) заполняем первый раз
-	--     б) как-то перескочили за forecast_time часов, что опять же может получиться по-разному:
-	--       б.1) после совсем уж длинного сна
-	--       или, что более вероятно,
-	--       б.2) после длительного пребывания на уровне со специальной погодой, когда менеджер не обновлялся
-	--       и соответственно на предыдущем шаге всё очистили
-	-- 2. self.forecast содержит первыми двумя точками текущий фрейм + 0 или больше точек после него
-	-- сперва обрабатываем первую ситуацию, затем, как общий случай, вторую
-	if #self.forecast == 0 then -- массив с предпросчитанными точками пустой
-		-- поскольку массив пустой, то погоду выбираем случайно
-		local cycle_name = self.idx2cycle[math.random(1,self.cycles_number)]
-		local points = self.cycles[cycle_name].points
-		local fd1, fd2 = get_frame_by_time(points, current_time)
-		-- время начала текущих суток
-		local day_start_time = get_day_start_time(current_time)
-		
-		local p1 = self:append_forecast_point(day_start_time, fd1, cycle_name)
-		local p2 = self:append_forecast_point(day_start_time, fd2, cycle_name)
-		--self.last_weather_time = p2.time:diffSec(p1.time) / 60.0 -- длительность цикла в минутах
-		-- обнуляем статистику пропущенных циклов, имеет смысл только для динамической погоды
-		--for cycle_name,cycle_data in pairs(self.cycles) do
-		--	cycle_data.skipped = 0
-		--end
-	end
-	-- дополнить цепочку фреймов до forecast_time часов
-	while true do
-		ogse_surge_mgr.surge_log("adding points. begin loop")
-		-- получаем последнюю точку в прогнозе. На данный момент должно быть как минимум две, так что всегда найдём
-		local last_point = self:get_last_point()
-		if last_point.time:diffSec(current_time) >= forecast_time*3600 then -- если набрали на forecast_time вперёд
-			ogse_surge_mgr.surge_log("reached the forecast_time")
-			break -- то закругляемся
-		end
+    if self.forecast[ 1 ].surge_start then
+      self.surge_frame_assigned = false
+    end
+    table.remove( self.forecast, 1 )
+  end
+  -- здесь имеем две возможные ситуации: 
+  -- 1. self.forecast пустой, что может получиться если:
+  --     а) заполняем первый раз
+  --     б) как-то перескочили за forecast_time часов, что опять же может
+  --        получиться по-разному:
+  --       б.1) после совсем уж длинного сна
+  --       или, что более вероятно,
+  --       б.2) после длительного пребывания на уровне со специальной погодой,
+  --            когда менеджер не обновлялся
+  --            и соответственно на предыдущем шаге всё очистили
+  -- 2. self.forecast содержит первыми двумя точками текущий фрейм + 0 или
+  --    больше точек после него
+  -- сперва обрабатываем первую ситуацию, затем, как общий случай, вторую
+  if #self.forecast == 0 then -- массив с предпросчитанными точками пустой
+    -- поскольку массив пустой, то погоду выбираем случайно
+    local cycle_name = self.idx2cycle[ math.random( self.cycles_number ) ]
+    local points     = self.cycles[ cycle_name ].points
+    local fd1, fd2   = get_frame_by_time( points, current_time )
+    -- время начала текущих суток
+    local day_start_time = get_day_start_time( current_time )
+    local p1 = self:append_forecast_point( day_start_time, fd1, cycle_name )
+    local p2 = self:append_forecast_point( day_start_time, fd2, cycle_name )
+  end
+  -- дополнить цепочку фреймов до forecast_time часов
+  while true do
+    ogse_surge_mgr.surge_log( "adding points. begin loop" )
+    -- получаем последнюю точку в прогнозе. На данный момент должно быть как
+    -- минимум две, так что всегда найдём
+    local last_point = self:get_last_point()
+    if last_point.time:diffSec( current_time ) >= forecast_time*3600 then
+      -- если набрали на forecast_time вперёд
+      ogse_surge_mgr.surge_log( "reached the forecast_time" )
+      break -- то закругляемся
+    end
 
-		-- следующую погоду ищем по смещению от последней точки на min_transition_time
-		local min_next_time = last_point.time + min_transition_time
-		-- вычисляем погодный цикл для этого момента
-		----------------------------------------------------------------------------
-		--local next_cycle = get_weather_by_time(min_next_time)
-		local next_cycle = self:aux_choose_next_weather()
-		-- здесь имеем в переменной next_cycle как результат работы алгоритма выбора строку - имя нового цикла
-		-- теперь надо фактически вставить новую точку в конец прогноза из выбранного цикла
-		-- для этого надо найти все точки от момента <время последней точки прогноза> + <минимальное время перехода>
-		-- до <>
-		--------------------------------------------------------------------------------------------
-		-- получаем время следующей точки как время первой точки в цикле после заданного времени
-		local points = self.cycles[next_cycle].points
-		repeat
-			ogse_surge_mgr.surge_log("adding points. Now have %d points", #self.forecast)
-			local search_time = last_point.time + search_step
-			local day_start_time = get_day_start_time(search_time)
-			local _, fd2 = get_frame_by_time(points, search_time)
-			-- формируем новую точку
-			local new_point = self:append_forecast_point(day_start_time, fd2, next_cycle)
-
-			last_point = new_point
-			--print_time("search_time", search_time)
-			--print_time("min_next_time", min_next_time)
-		until search_time > min_next_time
-	end
-	ogse_surge_mgr.surge_log("StaticForecast:update - END")
+    -- следующую погоду ищем по смещению от последней точки на
+    -- min_transition_time
+    local min_next_time = last_point.time + min_transition_time
+    -- вычисляем погодный цикл для этого момента
+    local next_cycle    = self:aux_choose_next_weather()
+    -- здесь имеем в переменной next_cycle как результат работы алгоритма
+    -- выбора строку - имя нового цикла
+    -- теперь надо фактически вставить новую точку в конец прогноза из
+    -- выбранного цикла
+    -- для этого надо найти все точки от момента
+    -- <время последней точки прогноза> + <минимальное время перехода>
+    -- до <>
+    -- получаем время следующей точки как время первой точки в цикле после
+    -- заданного времени
+    local points = self.cycles[ next_cycle ].points
+    repeat
+      ogse_surge_mgr.surge_log(
+        "adding points. Now have %d points", #self.forecast
+      )
+      local search_time    = last_point.time + search_step
+      local day_start_time = get_day_start_time( search_time )
+      local _, fd2         = get_frame_by_time( points, search_time )
+      -- формируем новую точку
+      local new_point = self:append_forecast_point(
+        day_start_time, fd2, next_cycle
+      )
+      last_point = new_point
+    until search_time > min_next_time
+  end
+  ogse_surge_mgr.surge_log( "StaticForecast:update - END" )
 end
+
+
 function StaticForecast:get_last_point()
-	return self.forecast[#self.forecast]
+  return self.forecast[ #self.forecast ]
 end
-function StaticForecast:get_frame(idx)
-	return self.forecast[idx], self.forecast[idx+1]
+
+
+function StaticForecast:get_frame( idx )
+  return self.forecast[ idx ], self.forecast[ idx + 1 ]
 end
+
+
 -- проверить, что уже вставлена переходная точка начала выброса.
 -- если нет, то при возможности вставить
-function StaticForecast:check_and_assign_surge_frame(next_surge_time)
-	ogse_surge_mgr.surge_log("StaticForecast:check_and_assign_surge_frame")
-	if self.surge_frame_assigned -- если уже размещали момент начала
-		or next_surge_time <= game.get_game_time() -- или идёт выброс и новое время ещё не назначено
-		or next_surge_time >= self:get_last_point().time -- или ещё рано вставлять, выброс не вошёл в пределы прогноза
-	then 
-		ogse_surge_mgr.surge_log("StaticForecast:check_and_assign_surge_frame - RETURN 1")
-		return -- то ничего не делаем
-	end 
-	for i=1,#self.forecast-1 do -- ищем кадр прогноза, в который попадает начало выброса
-		-- если время выброса попадает в кадр
-		local p1,p2 = self:get_frame(i) --.forecast[i],self.forecast[i+1]
-		if p1.time <= next_surge_time and next_surge_time <= p2.time then
-			-- время выброса попало в текущий кадр, надо вставить дополнительную точку в момент выброса
-			local new_point = {time = game.CTime(next_surge_time), surge_start = true}
-			-- точку вставляем с погодой от ближней к ней границы
-			local del_p2 = false -- удалять ли из прогноза вторую точку включающего фрейма
-			if (next_surge_time - p1.time) < (p2.time - next_surge_time) then
-				-- ближе к началу кадра
-				new_point.cycle = p1.cycle
-				new_point.data = table.clone_simple(p1.data)
-			else
-				-- ближе к концу
-				new_point.cycle = p2.cycle
-				new_point.data = table.clone_simple(p2.data)
-				-- если следующая точка ближе определённого, то удалить её чтобы фрейм с началом выброса был не очень маленький
-				del_p2 = (p2.time:diffSec(next_surge_time) < point_del_tol)
-			end
-			new_point.data.time = get_day_time_sec(next_surge_time)
-			if del_p2 then table.remove(self.forecast, i+1) end
-			table.insert(self.forecast, i+1, new_point)
-			self.surge_frame_assigned = true
-			ogse_surge_mgr.surge_log("StaticForecast:check_and_assign_surge_frame - RETURN 2")
-			return
-		end
-	end
-	ogse_surge_mgr.surge_log("StaticForecast:check_and_assign_surge_frame - FAIL")
-	print_time("fc start time", self:get_p1().time)
-	print_time("fc end time", self:get_last_point().time)
-	print_time("next_surge_time", next_surge_time)
-	fail("[StaticForecast:check_and_assign_surge_frame] failed to find frame for surge")
+function StaticForecast:check_and_assign_surge_frame( next_surge_time )
+  ogse_surge_mgr.surge_log( "StaticForecast:check_and_assign_surge_frame" )
+  if
+    self.surge_frame_assigned -- если уже размещали момент начала
+    -- или идёт выброс и новое время ещё не назначено
+    or (
+      next_surge_time <= game.get_game_time()
+      and db.actor:has_info( "pre_blowout" )
+    )
+    -- или ещё рано вставлять, выброс не вошёл в пределы прогноза
+    or next_surge_time >= self:get_last_point().time
+  then 
+    ogse_surge_mgr.surge_log(
+      "StaticForecast:check_and_assign_surge_frame - RETURN 1"
+    )
+    return -- то ничего не делаем
+  end 
+  -- ищем кадр прогноза, в который попадает начало выброса
+  local past_surge = false
+  if next_surge_time < self.forecast[ 1 ].time then
+    ogse_surge_mgr.surge_log(
+      "StaticForecast:check_and_assign_surge_frame: correct past next_surge_time: %s -> %s",
+       time2string( next_surge_time ), time2string( self.forecast[ 1 ].time )
+    )
+    next_surge_time = self.forecast[ 1 ].time
+    past_surge      = true
+  end
+  for i = 1, #self.forecast - 1 do
+    -- если время выброса попадает в кадр
+    local p1, p2 = self:get_frame( i )
+    if p1.time <= next_surge_time and next_surge_time <= p2.time then
+      -- время выброса попало в текущий кадр, надо вставить дополнительную
+      -- точку в момент выброса
+      local new_point = {
+        time = game.CTime( next_surge_time ), surge_start = true,
+      }
+      -- точку вставляем с погодой от ближней к ней границы
+      -- удалять ли из прогноза вторую точку включающего фрейма
+      local del_p2 = false
+      if ( next_surge_time - p1.time ) < ( p2.time - next_surge_time ) then
+        -- ближе к началу кадра
+        new_point.cycle = p1.cycle
+        new_point.data  = table.clone_simple( p1.data )
+      else
+        -- ближе к концу
+        new_point.cycle = p2.cycle
+        new_point.data  = table.clone_simple( p2.data )
+        -- если следующая точка ближе определённого, то удалить её чтобы фрейм
+        -- с началом выброса был не очень маленький
+        del_p2 = p2.time:diffSec( next_surge_time ) < point_del_tol
+      end
+      new_point.data.time = get_day_time_sec( next_surge_time )
+      if del_p2 then table.remove( self.forecast, i + 1 ) end
+      if past_surge then
+        table.insert( self.forecast, 1,     new_point)
+      else
+        table.insert( self.forecast, i + 1, new_point)
+      end
+      self.surge_frame_assigned = true
+      ogse_surge_mgr.surge_log(
+        "StaticForecast:check_and_assign_surge_frame - RETURN 2"
+      )
+      return
+    end
+  end
+  ogse_surge_mgr.surge_log(
+    "StaticForecast:check_and_assign_surge_frame - FAIL"
+  )
+  print_time( "fc start time",   self:get_p1().time )
+  print_time( "fc end time",     self:get_last_point().time )
+  print_time( "next_surge_time", next_surge_time )
+  fail(
+    "[StaticForecast:check_and_assign_surge_frame] failed to find frame for surge"
+  )
 end
+
+
 function StaticForecast:insert_surge_sequence()
-	ASSERT(self.forecast[1].surge_start, "[ogse_weather_mgr.StaticForecast:insert_surge_sequence] first point is not a surge start!")
+	ASSERT(
+	  self.forecast[ 1 ].surge_start,
+	  "[%s.StaticForecast:insert_surge_sequence]: %s: first point is not a surge start!",
+	  script_name(), self.static_weather_name
+	)
 	--local y,m,d,h,min,sec,ms = self.forecast[1].time:get()
 	local h = get_day_time_sec(self.forecast[1].time) / 3600.0
 	local is_day = (h >= 5 and h <= 20)
@@ -662,7 +712,7 @@ function StaticForecast:insert_surge_sequence()
 	for i,point_data in ipairs(surge_points) do
 		-- формируем точку фрейма как время начала суток + время фрейма
 		-- поскольку выброс рассчитывался под таймфактор 6, надо это учесть
-		local point_time = game.CTime(self.forecast[1].time) + seconds2ctime(3*60 + point_data.time * normal_time_factor / 6)
+		local point_time = game.CTime(self.forecast[1].time) + seconds2ctime(3*60 + point_data.time)
 		local point =  {cycle = surge_sect, time = point_time, data = point_data, surge_frame = true}
 		point.data.time = get_day_time_sec(point.time)
 		point.data.index = count
@@ -1062,9 +1112,14 @@ function WeatherManager:on_save()
 	--self:check_and_fail()
 	ogse_surge_mgr.surge_log("WeatherManager:on_save - END")
 end
-function WeatherManager:show_active_forecast()
-	self.forecast2show = self.active_forecast
+
+
+function WeatherManager:show_active_forecast( name )
+  self.forecast2show = ( name and self.forecasts[ name ] )
+    or self.active_forecast
 end
+
+
 function WeatherManager:show_next_forecast()
 	local name, fc = next(self.forecasts, self.forecast2show.name)
 	if not name then
@@ -1180,23 +1235,26 @@ function WeatherManager:prepare_new_surge()
 	ogse_surge_mgr.surge_log("WeatherManager:prepare_new_surge - END")
 end
 
+
 -- установить время следующего выброса
 function WeatherManager:is_surge_in_process()
-	return (game.get_game_time() > self.next_surge_time)
+  return game.get_game_time() >= self.next_surge_time
 end
+
 
 -- обновить цепочку фреймов на ближайшие forecast_time часов
 -- здесь также осуществляется вставка кадров выброса
 function WeatherManager:update_forecast()
-	ogse_surge_mgr.surge_log("WeatherManager:update_forecast")
-
-	for weather_name, forecast in pairs(self.forecasts) do
-		forecast:update()
-		forecast:check_and_assign_surge_frame(self.next_surge_time)
-	end
-	--self:dump_forecast()
-	ogse_surge_mgr.surge_log("WeatherManager:update_forecast - END")
+  ogse_surge_mgr.surge_log( "WeatherManager:update_forecast" )
+  for weather_name, forecast in pairs( self.forecasts ) do
+    forecast:update()
+    forecast:check_and_assign_surge_frame( self.next_surge_time )
+  end
+  -- self:dump_forecast()
+  ogse_surge_mgr.surge_log( "WeatherManager:update_forecast - END" )
 end
+
+
 local valid_weather_params = {
 	sun_shafts          = true,
 	sun_shafts_length   = true,
@@ -1276,6 +1334,7 @@ monitoring_weather_sect = nil
 
 function WeatherManager:update()
 	if not enabled then return end
+	if ogse_sleep_mgr.is_sleep_active() then return end
 	local current_time = game.get_game_time()
 	if self.next_update and current_time < self.next_update then return end -- ещё рано
 	
