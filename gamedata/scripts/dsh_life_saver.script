@@ -1,0 +1,109 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+local max_charge = 10
+
+
+function attach( sm )
+  sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
+  sm:subscribe({ signal = "on_save",         fun = this.on_save         })
+end
+
+
+local cur_charge
+function on_first_update()
+  local found, t = amk_utils.inventory_search_check({
+    [ "life_saver_af_known" ] = 1,
+  })
+  if found then
+    cur_charge = ogse.load_var_safe( "dsh_life_saver.cnt" ) or max_charge
+    t[ 1 ]:set_condition( cur_charge / max_charge )
+  end
+end
+
+
+function is_charged()
+  local found, t = amk_utils.inventory_search_check({
+    [ "life_saver_af_known" ] = 1,
+  })
+  if not found then
+    return amk_utils.inventory_search( "life_saver_af_unknown", 1 )
+  end
+  if t[ 1 ]:condition() > 0 then
+    cur_charge = cur_charge - 1
+    ASSERT(
+      cur_charge >= 0, "[%s]: cur_charge < 0: %s", script_name(), cur_charge
+    )
+    t[ 1 ]:set_condition( cur_charge / max_charge )
+    start_charging( t[ 1 ] )
+    return true
+  end
+  return false
+end
+
+
+local charge_t
+function start_charging( af )
+  if charge_t then return end
+  charge_t = dsh.wait_condition(
+    function() return cur_charge == max_charge end,
+    function() charge_t = nil end,
+    function()
+      ogse_signals.get_mgr():reschedule( math.random( 1000, 5000 ) )
+      charging( af )
+    end
+  )
+end
+
+
+local time_factor = get_float( "alife", "time_factor" )
+
+function charging( af )
+  local cur_pos     = db.actor:position()
+  local loaded_pos  = ogse.load_var_safe( "dsh.actor_pos" )
+  local loaded_time = ogse.load_var_safe( "dsh.save_time" )
+  local min_dist    = isIndoor( level.name() ) and 50 or 150
+  if
+    (
+      loaded_pos and (
+        cur_pos:distance_to( loaded_pos ) > min_dist
+        or math.abs( cur_pos.y - loaded_pos.y ) > 10
+      )
+    )
+    or (
+      loaded_time
+      and game.get_game_time():diffSec( loaded_time ) > 900 * time_factor
+    )
+  then
+    cur_charge = cur_charge + 1
+    af:set_condition( cnt / max_charge )
+  end
+end
+
+
+function on_save()
+  if utils.level_changing() then
+    ogse.delete_var( "dsh_life_saver.cnt" )
+  elseif cur_charge
+    ogse.save_var( "dsh_life_saver.cnt", cur_charge, "u8" )
+  end
+end
+
+
+function got_life_saver( ver )
+  local sobj
+  if db.actor:has_info( "arhara_shaxter_start" ) then
+    sobj = ogse.spawn_item_in_inv( "life_saver_af_known"   )
+  else
+    sobj = ogse.spawn_item_in_inv( "life_saver_af_unknown" )
+  end
+  level.client_spawn_manager():add( sobj.id, -1, this.on_first_update )
+end
+
+
+function learned_life_saver()
+  local obj = db.actor:object( "life_saver_af_unknown" )
+  ASSERT( obj, "[%s]: life_saver_af_unknown not found", script_name() )
+  ogse.remove_item_from_inventory( obj )
+  local sobj = ogse.spawn_item_in_inv( "life_saver_af_known" )
+  level.client_spawn_manager():add( sobj.id, -1, this.on_first_update )
+end
