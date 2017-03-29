@@ -4,40 +4,55 @@ local max_charge = 10
 
 
 function attach( sm )
-  sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
-  sm:subscribe({ signal = "on_save",         fun = this.on_save         })
+  sm:subscribe({ signal = "on_first_update",   fun = this.on_first_update   })
+  sm:subscribe({ signal = "on_mm_return_game", fun = this.on_mm_return_game })
+  sm:subscribe({ signal = "on_save",           fun = this.on_save           })
 end
 
 
 local cur_charge
 function on_first_update()
-  local found, t = amk_utils.inventory_search_check({
-    [ "life_saver_af_known" ] = 1,
-  })
-  if found then
+  local obj = db.actor:object( "life_saver_af_known" )
+  if obj then
     cur_charge = ogse.load_var_safe( "dsh_life_saver.cnt" ) or max_charge
-    t[ 1 ]:set_condition( cur_charge / max_charge )
+    obj:set_condition( cur_charge / max_charge )
+    if cur_charge < max_charge then
+      start_charging( obj )
+    end
   end
 end
 
 
+local discharge_on_save = false
+
 function is_charged()
-  local found, t = amk_utils.inventory_search_check({
-    [ "life_saver_af_known" ] = 1,
-  })
-  if not found then
-    return amk_utils.inventory_search( "life_saver_af_unknown", 1 )
+  local obj = db.actor:object( "life_saver_af_known" )
+  if not obj then
+    return db.actor:object( "life_saver_af_unknown" ) ~= nil
   end
-  if t[ 1 ]:condition() > 0 then
+  if obj:condition() > 0 then
+    discharge_on_save = true
+    return true
+  end
+  return false
+end
+
+
+function on_mm_return_game()
+  discharge_on_save = false
+end
+
+
+function discharge()
+  local obj = db.actor:object( "life_saver_af_known" )
+  if obj and obj:condition() > 0 then
     cur_charge = cur_charge - 1
     ASSERT(
       cur_charge >= 0, "[%s]: cur_charge < 0: %s", script_name(), cur_charge
     )
-    t[ 1 ]:set_condition( cur_charge / max_charge )
-    start_charging( t[ 1 ] )
-    return true
+    obj:set_condition( cur_charge / max_charge )
+    start_charging( obj )
   end
-  return false
 end
 
 
@@ -75,7 +90,7 @@ function charging( af )
     )
   then
     cur_charge = cur_charge + 1
-    af:set_condition( cnt / max_charge )
+    af:set_condition( cur_charge / max_charge )
   end
 end
 
@@ -83,9 +98,11 @@ end
 function on_save()
   if utils.level_changing() then
     ogse.delete_var( "dsh_life_saver.cnt" )
-  elseif cur_charge
+  elseif cur_charge then
+    discharge()
     ogse.save_var( "dsh_life_saver.cnt", cur_charge, "u8" )
   end
+  discharge_on_save = false
 end
 
 
@@ -96,7 +113,11 @@ function got_life_saver( ver )
   else
     sobj = ogse.spawn_item_in_inv( "life_saver_af_unknown" )
   end
-  level.client_spawn_manager():add( sobj.id, -1, this.on_first_update )
+  level.client_spawn_manager():add(
+    sobj.id, -1, function( id, obj )
+      cur_charge = max_charge
+    end
+  )
 end
 
 
@@ -105,5 +126,9 @@ function learned_life_saver()
   ASSERT( obj, "[%s]: life_saver_af_unknown not found", script_name() )
   ogse.remove_item_from_inventory( obj )
   local sobj = ogse.spawn_item_in_inv( "life_saver_af_known" )
-  level.client_spawn_manager():add( sobj.id, -1, this.on_first_update )
+  level.client_spawn_manager():add(
+    sobj.id, -1, function( id, obj )
+      cur_charge = max_charge
+    end
+  )
 end
