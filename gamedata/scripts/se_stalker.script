@@ -1,11 +1,22 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
-
+--
 -- Изменения script_version:
 --   3 - сохранение поля job_online
 --   5 - сохранение поля was_in_smart_terrain
 --   6 - сохранение поля death_droped
 
 stalkers = {}
+
+
+function attach( sm )
+  sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
+end
+
+
+local delayed_npc_spawn = false
+function on_first_update()
+  delayed_npc_spawn = true
+end
 
 
 class "se_stalker"  (cse_alife_human_stalker)
@@ -132,6 +143,7 @@ function se_stalker:can_switch_offline ()
 end
 
 
+local next_npc_spawn_t
 function se_stalker:can_switch_online()
   if
     xr_companion.is_companion( self.id )
@@ -163,13 +175,27 @@ function se_stalker:can_switch_online()
   elseif cse_can_switch then
     local test = dsh_switch_distances.se_can_switch_online( self )
     if test ~= nil then cse_can_switch = test end
+    if cse_can_switch and not self.online then
+      if next_npc_spawn_t and next_npc_spawn_t > time_global() then
+        cse_can_switch = false
+        log2(
+          "[%s]: %s: can_switch_online() delayed: %s ms",
+          script_name(), self:name(), next_npc_spawn_t - time_global()
+        )
+      end
+    end
   end
 
   if db.actor ~= nil and db.actor:alive() == false then
     return self.online
   end
 
-  return ( self:can_be_spawned() and cse_can_switch )
+  local allowed = self:can_be_spawned() and cse_can_switch
+  if allowed and delayed_npc_spawn and not self.online then
+    next_npc_spawn_t = time_global() + 500
+  end
+
+  return allowed
 end
 
 
