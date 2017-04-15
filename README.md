@@ -10,9 +10,9 @@ dsh mod для ОП-2
 Основная часть:
 - https://yadi.sk/d/dx4qvrDovYVVr
 
-Последнее обновление 20170409.1948:
-- https://yadi.sk/d/V3z-MrmV3GoLjD
-- Зеркало: https://drive.google.com/open?id=0B0h2HnCBW9H1ZHphOXhkRjRmbFU
+Последнее обновление 20170415.2239:
+- https://yadi.sk/d/JNIosbC-3H2Kwr
+- Зеркало: https://drive.google.com/open?id=0B0h2HnCBW9H1cjFReDVTT1gzZTQ
 
 
 Важное замечание. Либо играйте так, как я задумал, либо со всеми
@@ -713,6 +713,9 @@ $mod_dir$   		= false|	false|	$fs_root$|		mods\
 Если такой строки там нет, то добавляем.
 
 Для удаления дополнения нужно удалить его файл из папки "mods".
+
+Сборка текстур из разных источников: https://yadi.sk/d/RQse9VW23GzhVM
+Здесь собраны текстуры из паков от V92, adm-ral и что-то из Misery.
 
 
 Хочу выразить благодарность:
