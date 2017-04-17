@@ -8,114 +8,123 @@
 -----------------------------------------------------------------------
 --- Настройки:
 -----------------------------------------------------------------------
-local total_debug = get_console():get_bool("write_debug_log")
-local time_to_hide = 5000                       -- время, сколько примерно сидеть в укрытии, миллиссекунд
-local time_to_maneuver = 2500           -- время, сколько стоять на точке маневрирования, миллиссекунд
-local close_combat_distance = 15        -- дистанция ближнего боя
-local distant_combat_distance = 35      -- дистанция когда бой уже не считается ближним
+local total_debug               = get_console():get_bool( "write_debug_log" )
+-- время, сколько примерно сидеть в укрытии, миллиссекунд
+local time_to_hide              = 5000
+-- время, сколько стоять на точке маневрирования, миллиссекунд
+local time_to_maneuver          = 2500
+local close_combat_distance     = 15 -- дистанция ближнего боя
+-- дистанция когда бой уже не считается ближним
+local distant_combat_distance   = 35
 -- максимальная адекватная дистанция огневого боя
-local maximum_firefight_dist = ( level.get_game_difficulty() + 1 ) * 50
-local sound_prob = 0.1                          -- вероятность сказать фразу
-local cooldown_time = 20000                     -- время запрета лута после боя
-local reprioritize_timeout = 1500       -- интервал реприоретизации, мсек - нельзя делать слишком низким - будет судорожно метаться между целями
-local memory_timeout = 80000            -- время, сколько помнить о появлении врага, миллиссекунд
-local remember_enemy = 10000            -- сколько помнить о последнем основном враге (нужно для предотвращения выхода из боя слишком рано), для неписей умножается на 2
-local inertion_time_grenade = 3000      -- сколько бояться гранаты
-local engage_after_update       = 3     -- С какого апдейта схема начинает работать. Нельзя чтобы схема стартовала включенной сразу же, иначе будут глюки на переключении схем и выборе оружия
-local time_mantain_manuever = 20000     -- время, мсек, сколько придерживаться стратегии маневрирования
-local time_mantain_tactics = 30000      -- время, мсек, сколько придерживаться выбранной тактики
+local maximum_firefight_dist    = ( level.get_game_difficulty() + 1 ) * 50
+local sound_prob                = 0.1   -- вероятность сказать фразу
+local cooldown_time             = 20000 -- время запрета лута после боя
+-- интервал реприоретизации, мсек - нельзя делать слишком низким -
+-- будет судорожно метаться между целями
+local reprioritize_timeout      = 1500
+-- время, сколько помнить о появлении врага, миллиссекунд
+local memory_timeout            = 80000
+-- сколько помнить о последнем основном враге (нужно для
+-- предотвращения выхода из боя слишком рано), для неписей умножается
+-- на 2
+local remember_enemy            = 10000
+local inertion_time_grenade     = 3000 -- сколько бояться гранаты С какого
+-- апдейта схема начинает работать. Нельзя чтобы схема стартовала
+-- включенной сразу же, иначе будут глюки на переключении схем и
+-- выборе оружия
+local engage_after_update       = 3
+-- время, мсек, сколько придерживаться стратегии маневрирования
+local time_mantain_manuever     = 20000
+-- время, мсек, сколько придерживаться выбранной тактики
+local time_mantain_tactics      = 30000
 local visibility_treshold_value = 0.45 -- трешхолд видимости
+
 hit_timeout = {}
 
 
-local armor_allowed_locations = { -- локации где можно атаковать БТР и вертолеты
---[=[
-        ["l03_agroprom"] = true,
-        ["l06_rostok"] = true,
-        ["l04_darkvalley"] = true,
-        ["l11_pripyat"] = true,
-        ["l08_yantar"] = true,
-        ["l01_escape"] = true,
-        [ "generators" ] = true,
---]=]
-}
+-- локации где можно атаковать БТР и вертолеты
+local armor_allowed_locations = {}
 
 local game_difficulty_by_num = {
-        [0] = "gd_novice",
-        [1] = "gd_stalker",
-        [2] = "gd_veteran",
-        [3] = "gd_master"
-        }
-        
-local not_ready_states = {  -- состояния не готовности к огню, нужно заставить встать перед началом стрельбы
-        ["sit"] = true,
-        ["sit_knee"] = true,
-        ["sit_ass"] = true,
-        ["sleep"] = true,
-        ["wounded_heavy"] = true,
-        ["guard"] = true,
-        ["patrol"] = true,
+  [ 0 ] = "gd_novice",
+  [ 1 ] = "gd_stalker",
+  [ 2 ] = "gd_veteran",
+  [ 3 ] = "gd_master",
 }
-        
-local game_difficulty = level.get_game_difficulty()
-local diff_level = game_difficulty_by_num[game_difficulty]      
 
--- рестрикшены, которые нельзя восстанавливать если они были сняты, находятся в скриптe _g
+-- состояния не готовности к огню, нужно заставить встать перед
+-- началом стрельбы
+local not_ready_states = {
+  [ "sit"      ] = true,
+  [ "sit_knee" ] = true,
+  [ "sit_ass"  ] = true,
+  [ "sleep"    ] = true,
+  [ "wounded_heavy"] = true,
+  [ "guard"    ] = true,
+  [ "patrol"   ] = true,
+}
+
+local game_difficulty = level.get_game_difficulty()
+local diff_level      = game_difficulty_by_num[ game_difficulty ]
+
+-- рестрикшены, которые нельзя восстанавливать если они были сняты,
+-- находятся в скриптe _g
 local restrictions_off = true
 
 local low_range_npc_aggr = 30
-local far_range_mon_aggr = 50 --25
-local low_range_mon_aggr = 5
+local far_range_mon_aggr = 50
+local low_range_mon_aggr =  5
 
-local combat_mult_npc = 0.5                     -- множитель веса ближней цели неписей
-local combat_mult_monster = 0.3         -- множитель веса ближней цели неписей
+local combat_mult_npc     = 0.5 -- множитель веса ближней цели неписей
+local combat_mult_monster = 0.3 -- множитель веса ближней цели неписей
 
 local max_invisible_range_npc = 12
-local max_invisible_range_mon = 5
+local max_invisible_range_mon =  5
 
-local forbidden_comms = {                       -- запретные коммунити
-        ["zombied"] = true,
-        ["ecolog"] = true,
-        ["trader"] = true,
+local forbidden_comms = {       -- запретные коммунити
+  [ "zombied" ] = true,
+  -- [ "ecolog"  ] = true,
+  -- [ "trader"  ] = true,
 }
 
-local forbidden_schemes = {                     -- запретные схемы
-        ["wounded"] = true
+local forbidden_schemes = {     -- запретные схемы
+  [ "wounded" ] = true
 }
 
-local forbidden_profiles = {            -- запретные профили и имена
-        ["aes_Monolit_sniper_gauss"]    =       true,
-        ["Monolit_sniper_gauss"]                =       true,
-        ["pri_monolith_roof3"]                  =       true,
-        ["pri_stalker_n_2"]                             =       true,
-        ["pri_stalker_n_2_0000"]                =       true,
-        ["pri_monolith_roof3_0000"]             =       true,
-        ["pri_monolith_roof3_0001"]             =       true,
-        ["pri_stalker_n_2_0001"]                =       true,
-        ["pri_stadium_sniper1"]                 =       true,
-        ["pri_stadium_sniper2"]                 =       true,
-        ["pri_stadium_sniper3"]                 =       true,
-        ["pri_monolith_roof1"]                  =       true,
-        ["pri_monolith_roof2"]                  =       true,
-        ["val_sacrifice_victim"]                =       true,
-        ["val_prisoner_captive"]                =       true,
-        ["val_escort_captive"]                  =       true,
-        ["bandit_trader"]                               =       true,
-        ["bandit_trader_spawn"]                 =       true,   
-        ["dik_the_drifter"]                             =       true,
-        ["major_wounded"]                               =       true,
-        ["gen_monolit_sniper"]                  =       true,
-        ["aes_Monolit_rpg"]                             =       true,
-        ["hohol"]                                               =       true,
-        ["esc_lekar"]                                   =       true,
-        ["first_neutral"]                               =       true,
-        ["esc_buharik"]                                 =       true,
-        ["esc_guns_remontnik"]                  =       true,
-        -- пацаны в саркофаге должны быть под движковой боевкой
-        ["sar_monolith_exo"]                    =       true,
-        ["sar_monolith_exo_crystal"]    =       true,
-        ["sar_monolith_specnaz"]                =       true,
-        ["sar_monolith_commander"]              =       true,
+local forbidden_profiles = {    -- запретные профили и имена
+  [ "aes_Monolit_sniper_gauss" ] = true,
+  [ "Monolit_sniper_gauss"     ] = true,
+  [ "pri_monolith_roof3"       ] = true,
+  [ "pri_stalker_n_2"          ] = true,
+  [ "pri_stalker_n_2_0000"     ] = true,
+  [ "pri_monolith_roof3_0000"  ] = true,
+  [ "pri_monolith_roof3_0001"  ] = true,
+  [ "pri_stalker_n_2_0001"     ] = true,
+  [ "pri_stadium_sniper1"      ] = true,
+  [ "pri_stadium_sniper2"      ] = true,
+  [ "pri_stadium_sniper3"      ] = true,
+  [ "pri_monolith_roof1"       ] = true,
+  [ "pri_monolith_roof2"       ] = true,
+  [ "val_sacrifice_victim"     ] = true,
+  [ "val_prisoner_captive"     ] = true,
+  [ "val_escort_captive"       ] = true,
+  [ "bandit_trader"            ] = true,
+  [ "bandit_trader_spawn"      ] = true,
+  [ "dik_the_drifter"          ] = true,
+  [ "major_wounded"            ] = true,
+  [ "gen_monolit_sniper"       ] = true,
+  [ "aes_Monolit_rpg"          ] = true,
+  [ "hohol"                    ] = true,
+  [ "esc_lekar"                ] = true,
+  [ "first_neutral"            ] = true,
+  [ "esc_buharik"              ] = true,
+  [ "esc_guns_remontnik"       ] = true,
+  -- пацаны в саркофаге должны быть под движковой боевкой
+  [ "sar_monolith_exo"         ] = true,
+  [ "sar_monolith_exo_crystal" ] = true,
+  [ "sar_monolith_specnaz"     ] = true,
+  [ "sar_monolith_commander"   ] = true,
 }
 
 local headshot_prob = {
@@ -135,70 +144,98 @@ end
 
 
 --- время входа в бой
-
 local intros_by_diff = {
-        ["gd_novice"] = {
-                ["novice"]              = 700,
-                ["experienced"] = 600,
-                ["veteran"]             = 500,
-                ["master"]              = 400
-        },
-        ["gd_stalker"] = {
-                ["novice"]              = 600,
-                ["experienced"] = 500,
-                ["veteran"]             = 400,
-                ["master"]              = 300
-        },
-        ["gd_veteran"] = {
-                ["novice"]              = 500,
-                ["experienced"] = 400,
-                ["veteran"]             = 300,
-                ["master"]              = 200
-        },
-        ["gd_master"] = {
-                ["novice"]              = 400,
-                ["experienced"]         = 300,
-                ["veteran"]             = 200,
-                ["master"]              = 100
-        }
+  [ "gd_novice" ] = {
+    [ "novice"      ] = 700,
+    [ "experienced" ] = 600,
+    [ "veteran"     ] = 500,
+    [ "master"      ] = 400,
+  },
+  [ "gd_stalker" ] = {
+    [ "novice"      ] = 600,
+    [ "experienced" ] = 500,
+    [ "veteran"     ] = 400,
+    [ "master"      ] = 300,
+  },
+  [ "gd_veteran" ] = {
+    [ "novice"      ] = 500,
+    [ "experienced" ] = 400,
+    [ "veteran"     ] = 300,
+    [ "master"      ] = 200,
+  },
+  [ "gd_master" ] = {
+    [ "novice"      ] = 400,
+    [ "experienced" ] = 300,
+    [ "veteran"     ] = 200,
+    [ "master"      ] = 100,
+  },
 }
-
-local intros = intros_by_diff[diff_level]
+local intros = intros_by_diff[ diff_level ]
 
 --- время на прицеливание
 --- для эффективной стрельбы из дробовика необходимо,
 --- чтобы выдерживался интервал между выстрелами,
 --- иначе подброс ствола испортит всю картину
 --- для новичков логично этот параметр сделать низким и увеличивать с опытом
-
 local times_to_aim_by_diff = {
-        ["gd_novice"] = {
-                ["novice"]              = {shotgun = 550, sniper = 2000, other = 550, rpg = 5500},
-                ["experienced"] = {shotgun = 500, sniper = 1500, other = 500, rpg = 5000},
-                ["veteran"]             = {shotgun = 450, sniper = 1100, other = 450, rpg = 4500},
-                ["master"]              = {shotgun = 400, sniper = 800, other = 400, rpg = 4000}
-        },
-        ["gd_stalker"] = {
-                ["novice"]              = {shotgun = 500, sniper = 1800, other = 500, rpg = 4500},
-                ["experienced"] = {shotgun = 450, sniper = 1200, other = 450, rpg = 4000},
-                ["veteran"]             = {shotgun = 400, sniper = 1000, other = 400, rpg = 3500},
-                ["master"]              = {shotgun = 350, sniper = 700, other = 350, rpg = 3000}
-        },
-        ["gd_veteran"] = {
-                ["novice"]              = {shotgun = 450, sniper = 1700, other = 450, rpg = 4000},
-                ["experienced"] = {shotgun = 400, sniper = 1100, other = 400, rpg = 3500},
-                ["veteran"]             = {shotgun = 350, sniper = 900, other = 350, rpg = 3000},
-                ["master"]              = {shotgun = 300, sniper = 600, other = 300, rpg = 2500}
-        },
-        ["gd_master"] = {
-                ["novice"]              = {shotgun = 350, sniper = 1500, other = 350, rpg = 3500},
-                ["experienced"] = {shotgun = 300, sniper = 1000, other = 300, rpg = 3000},
-                ["veteran"]             = {shotgun = 250, sniper = 800, other = 250, rpg = 2500},
-                ["master"]              = {shotgun = 200, sniper = 500, other = 200, rpg = 2000}
-        }
+  [ "gd_novice" ] = {
+    ["novice"      ] = {
+      shotgun = 550, sniper = 2000, other = 550, rpg = 5500,
+    },
+    ["experienced" ] = {
+      shotgun = 500, sniper = 1500, other = 500, rpg = 5000,
+    },
+    ["veteran"     ] = {
+      shotgun = 450, sniper = 1100, other = 450, rpg = 4500,
+    },
+    ["master"      ] = {
+      shotgun = 400, sniper =  800, other = 400, rpg = 4000,
+    },
+  },
+  [ "gd_stalker" ] = {
+    [ "novice"      ] = {
+      shotgun = 500, sniper = 1800, other = 500, rpg = 4500,
+    },
+    [ "experienced" ] = {
+      shotgun = 450, sniper = 1200, other = 450, rpg = 4000,
+    },
+    [ "veteran"     ] = {
+      shotgun = 400, sniper = 1000, other = 400, rpg = 3500,
+    },
+    [ "master"      ] = {
+      shotgun = 350, sniper =  700, other = 350, rpg = 3000,
+    },
+  },
+  [ "gd_veteran" ] = {
+    [ "novice"      ] = {
+      shotgun = 450, sniper = 1700, other = 450, rpg = 4000,
+    },
+    [ "experienced" ] = {
+      shotgun = 400, sniper = 1100, other = 400, rpg = 3500,
+    },
+    [ "veteran"     ] = {
+      shotgun = 350, sniper =  900, other = 350, rpg = 3000,
+    },
+    [ "master"      ] = {
+      shotgun = 300, sniper =  600, other = 300, rpg = 2500,
+    },
+  },
+  [ "gd_master" ] = {
+    [ "novice"      ] = {
+      shotgun = 350, sniper = 1500, other = 350, rpg = 3500,
+    },
+    [ "experienced" ] = {
+      shotgun = 300, sniper = 1000, other = 300, rpg = 3000,
+    },
+    [ "veteran"     ] = {
+      shotgun = 250, sniper =  800, other = 250, rpg = 2500,
+    },
+    [ "master"      ] = {
+      shotgun = 200, sniper =  500, other = 200, rpg = 2000,
+    },
+  },
 }
-
-local time_to_aim = times_to_aim_by_diff[diff_level]
+local time_to_aim = times_to_aim_by_diff[ diff_level ]
 
 --- отклонение прицела
 local deviation_by_diff = {
@@ -230,7 +267,6 @@ local deviation_by_diff = {
 local deviation_table = deviation_by_diff[ diff_level ]
 
 --- коэффициент отклонения по коммунити
-
 local community_deviation_coeff = {
   [ "lastday"       ] =  1,
   [ "monolith"      ] =  1,
@@ -250,207 +286,102 @@ local community_deviation_coeff = {
   [ "zombied"       ] = 15,
 }
 
---- группировки с улучшенной координацией (имеют радиосвязь, соотв. об одной цели сразу знают все члены группировки)
-
+--- группировки с улучшенной координацией (имеют радиосвязь, соотв. об
+--- одной цели сразу знают все члены группировки)
 local radio_comms = {
-        ["military"] = true,
-        ["killer"] = true,
-        ["monolith"] = true,
-        ["dolg"] = true,
+  [ "military" ] = true,
+  [ "killer"   ] = true,
+  [ "monolith" ] = true,
+  [ "dolg"     ] = true,
 }
 
 --- состояния стрельбы из укрытия, задел на будущее
-
 local hide_shoot_states = {
-        [1] = "hide_fire",
-        [2] = "hide_fire",
-        [3] = "hide_fire"
+  [ 1 ] = "hide_fire",
+  [ 2 ] = "hide_fire",
+  [ 3 ] = "hide_fire"
 }
 
 --- состояния прятания
-
 local hide_states = {
-        [1] = "sneak_fire",
-        [2] = "sneak_fire",
-        [3] = "sneak_fire"
+  [ 1 ] = "sneak_fire",
+  [ 2 ] = "sneak_fire",
+  [ 3 ] = "sneak_fire"
 }
 
 local postcombat_states = {
-        [1] = "hide_na",
-        [2] = "threat",
+  [ 1 ] = "hide_na",
+  [ 2 ] = "threat",
 }
 
 local postcombat_states_full_weapon = {
-        [1] = "hide_na",
-        [2] = "threat",
+  [ 1 ] = "hide_na",
+  [ 2 ] = "threat",
 }
-
-local shotguns = {
-
-["wpn_bm16"]                    = true,
-["wpn_toz34_short"]             = true,
-["wpn_bm16_full"]               = true,
-["wpn_toz34"]                   = true,
-["wpn_wincheaster1300"] = true,
-["wpn_spas12"]                  = true,
-["wpn_saiga12c"]                = true,
-["wpn_saiga12c_m1"]             = true,
-["wpn_flame"]                   = true,
-["wpn_sayga12_sk1"]     = true,
-["wpn_k98_obrez"]               = true,
-["wpn_benelli_m3"]              = true,
-["wpn_benelli_m3_short"]        = true,
-["wpn_benelli_m3_tactik"]       = true,
-["wpn_browningauto5"]           = true,
-["wpn_ba5short"]                = true,
-["wpn_hawk"]                    = true,
-["wpn_ks23"]                    = true,
-["wpn_mossberg590"]             = true,
-["wpn_m500_custom"]             = true,
-["wpn_mp153"]                   = true,
-["wpn_mp153pract"]              = true,
-["wpn_rem870short"]             = true,
-["wpn_rem870_magnum"]           = true,
-["wpn_rossi92"]                 = true,
-["wpn_sayga_un"]                = true,
-["wpn_sayga12k"]                = true,
-["wpn_vepr"]                    = true,
-["wpn_vepr12_m1"]               = true,
-["wpn_winch1887"]               = true,
-["wpn_obrez_m1891"]             = true,
-["wpn_m4super90"]               = true,
-["wpn_protecta"]                = true,
-["wpn_protecta_col"]            = true,
-["hunters_toz"]                 = true,
-
-}
-
-local sniper_rifles = {
-
-["wpn_svu"]                             = true,
-["wpn_zastava_m76"]                     = true,
-["wpn_zastava_m77"]                     = true,
-["wpn_svd"]                             = true,
-["wpn_awm"]                             = true,
-["wpn_gauss"]                   = true,
-["wpn_v94"]                             = true,
-["wpn_hk417_sk1"]                       = true,
-["wpn_sr25_mk11_mod0_sk1"]              = true,
-["wpn_ak74u_svd"]                       = true,
-["wpn_awp"]                             = true,
-["wpn_awp_m1"]                          = true,
-["wpn_cz550"]                           = true,
-["wpn_k98"]                             = true,
-["wpn_ksvk"]                            = true,
-["wpn_sv98"]                            = true,
-["wpn_svt40"]                           = true,
-["wpn_vihlop"]                          = true,
-["wpn_vihlop_m1"]                       = true,
-["wpn_b94"]                             = true,
-["wpn_b94_sil"]                         = true,
-["wpn_crossbow"]                        = true,
-["wpn_fn2000_sniper"]                   = true,
-["wpn_m1891_30_scope"]                  = true,
-["wpn_abakan_m1"]                       = true,
-["wpn_m4_m1"]                           = true,
-["wpn_svd_m1"]                          = true,
-["wpn_svd_m2"]                          = true,
-["wpn_svd_m3"]                          = true,
-
-}
-
-local grenade_launchers = {
-
-[ "wpn_m79" ]   = true,
-["wpn_rg-6"]    = true,
-["wpn_rpg7"]    = true,
-["wpn_shmel"]   = true,
-
-}
-
-local short_weapons = {
-                [clsid.wpn_binocular]                   = true,
-                [clsid.wpn_binocular_s]                 = true,
-                [clsid.wpn_fort]                                = true,
-                [clsid.wpn_grenade_f1]                  = true,
-                [clsid.wpn_grenade_fake]                = true,
-                [clsid.wpn_grenade_launcher]    = true,
-                [clsid.wpn_grenade_rgd5]                = true,
-                [clsid.wpn_hpsa]                                = true,
-                [clsid.wpn_hpsa_s]                              = true,
-                [clsid.wpn_knife]                               = true,
-                [clsid.wpn_knife_s]                     = true,
-                [clsid.wpn_pm]                                  = true,
-                [clsid.wpn_pm_s]                                = true,
-                [clsid.wpn_walther]                     = true,
-                [clsid.wpn_walther_s]                   = true
-        }
 
 local needed_dangers = {
-        [danger_object.attack_sound] = true,
-        [danger_object.bullet_ricochet] = true,
-        [danger_object.attacked] = true,
-        [danger_object.grenade] = true,
-        [danger_object.enemy_sound] = true
+  [ danger_object.attack_sound    ] = true,
+  [ danger_object.bullet_ricochet ] = true,
+  [ danger_object.attacked        ] = true,
+  [ danger_object.grenade         ] = true,
+  [ danger_object.enemy_sound     ] = true
 }
 
 local targeting_dangers = {
-        [danger_object.attacked] = true
+  [ danger_object.attacked ] = true
 }
+
 
 -----------------------------------------------------------------------
 --- Данные:
 -----------------------------------------------------------------------
 local last_time_send            = {}
 local last_sent_vertex          = {}
-local last_hideout                      = {}
+local last_hideout              = {}
 local sounds_timeout            = {}
-local intro_time                        = {}
-local already_hear                      = {}
+local intro_time                = {}
+local already_hear              = {}
 local choosen_hide_combat_state = {}
 local choosen_hide_state        = {}
-cooldown                                        = {}
-local disabled_objects          = {}            -- таблица забытых объектов 
-local targets_list                      = {}            -- список целей
-local last_reprioritize         = {}            -- время приоретизации
-primary_target          = {}            -- таблица целей
-local last_target                       = {}            -- последняя цель
-local last_enemy                        = {}            -- имя последнего врага, чисто для отладочных сообщений
-local last_enemy_id             = {}            -- ид последнего врага
-local inited                            = {}            -- инициализированы ли
-local monolith                          = {}            -- неписи со скриптовой боевкой монолита
-local campers                           = {}            -- неписи со скриптовой боевкой кемпера
-local bad_hide                          = {}            -- ненадежное укрытие
-local locked_vertexes           = {}            -- занятые вертексы
-local death_places                      = {}            -- места смерти союзников, избегать их
-local time_hide                         = {}            -- время ожидания
-local hit_memory                        = {}            -- хитоая память
-local active_grenades           = {}            -- активные гранатные угрозы
-local deadman_vtx                       = {}            -- точка откуда будем ждать успокоения
-local count_update                      = {}            -- Счетчик апдейтов
-local backup_restrictions_in    = {}            -- табличка для сохранения рестрикторов
-local backup_restrictions_out   = {}            -- табличка для сохранения рестрикторов
+cooldown                        = {}
+local disabled_objects          = {} -- таблица забытых объектов
+local targets_list              = {} -- список целей
+local last_reprioritize         = {} -- время приоретизации
+primary_target                  = {} -- таблица целей
+local last_target               = {} -- последняя цель
+-- имя последнего врага, чисто для отладочных сообщений
+local last_enemy                = {}
+local last_enemy_id             = {}         -- ид последнего врага
+local inited                    = {}         -- инициализированы ли
+local monolith                  = {} -- неписи со скриптовой боевкой монолита
+local campers                   = {} -- неписи со скриптовой боевкой кемпера
+local bad_hide                  = {} -- ненадежное укрытие
+local locked_vertexes           = {} -- занятые вертексы
+local death_places              = {} -- места смерти союзников, избегать их
+local time_hide                 = {} -- время ожидания
+local hit_memory                = {} -- хитоая память
+local active_grenades           = {} -- активные гранатные угрозы
+local deadman_vtx               = {} -- точка откуда будем ждать успокоения
+local count_update              = {} -- Счетчик апдейтов
+local backup_restrictions_in    = {} -- табличка для сохранения рестрикторов
+local backup_restrictions_out   = {} -- табличка для сохранения рестрикторов
 local grenka_already_shout      = {}
 local grenka_already_blow       = {}
-local escape_point                      = {}
+local escape_point              = {}
 local talking_about_grenka      = {}
 local last_choosed_path         = {}
-local sound_events                      = {}
+local sound_events              = {}
 local sound_are_playing         = {}
 local already_know_about        = {}
-local postcombat                        = {}
-local maneuver_strategy         = {}            -- при выборе обхода справа или слева, NPC запоминает это и какое-то время придерживается этой стратегии
-knife_scheme                            = {}            -- безоружные неписи
-local can_fire                          = {}
-local need_knife                        = {}
+local postcombat                = {}
+-- при выборе обхода справа или слева, NPC запоминает это и какое-то
+-- время придерживается этой стратегии
+local maneuver_strategy         = {}
+knife_scheme                    = {} -- безоружные неписи
+local can_fire                  = {}
+local need_knife                = {}
 
 in_combat = {}
-
-function write_log(str)
-        if total_debug then
-                log1(str)
-        end
-end
 
 
 local ignore_enemies = {}
@@ -680,9 +611,6 @@ function action_altcombat:execute()
                 enemy = level.object_by_id(primary_target[npc:id()])    -- получим объект цели
         end
         if not enemy and deadman == false then
-                if total_debug then
-                        write_log("!!XRS_BATTLE_AI: ALT_COMBAT_NO_TARGET FOR "..npc:name().." : "..tostring(primary_target[npc:id()]))
-                end
                 last_time_send[npc:id()] = nil
                 last_enemy[npc:id()] = nil
                 last_enemy_id[npc:id()] = nil
@@ -814,13 +742,11 @@ function action_altcombat:execute()
                 set_combat_sight(npc, be, bw)
                 set_transfer_state(npc, be)
                 if not_ready_states[anim] then
-                        write_log("!!XRS_BATTLE_AI: NPC_NOT_READY_TO_FIGHT - ASSUMING COVER!!! "..npc:name())
                         assist_point = find_cover(npc, enemy, 2)
                         if not assist_point or assist_point == 0 then
                                 assist_point = select_position(npc, nil, true)
                         end
                 else
-                        write_log("!!XRS_BATTLE_AI: NPC_READY_TO_COMBAT!!! "..npc:name())
                         assist_point = select_position(npc, nil, true)
                 end             
                 if npc:level_vertex_id() == assist_point or npc:position():distance_to(level.vertex_position(assist_point)) < 1.0 then
@@ -857,7 +783,6 @@ function action_altcombat:execute()
         if npc:see(be) and not is_armor(be) and knife_scheme[npc:id()] then
                 npc:set_mental_state(anim.danger)
                 assist_point = select_enemy_pos_fanatic(npc, be)
-                write_log("!!XRS_BATTLE_AI: NPC_WITH_KNIFE!!! "..npc:name().." SENT ["..tostring(assist_point).."]")            
                 last_algorythm = "enemy_vertex"
                 if assist_point then
                         xr_sound.set_sound(npc, nil)
@@ -881,7 +806,6 @@ function action_altcombat:execute()
         
         if (npc:see(be) and (be:see(npc) or raytrace_see)) or (is_armor(be) and get_armor_vis(be, npc)) then                    -- если видим врага и он видит нас                      -- стреляем, ищем укрытие
         
-                write_log("--XRS_BATTLE_AI: VARIANT_1 "..npc:name().." : "..tostring(primary_target[npc:id()]))
                 
                 time_hide[npc:id()] = nil
                 
@@ -890,7 +814,6 @@ function action_altcombat:execute()
                         last_algorythm = "select_pos_be"
                 else
                         if actor_at_height then
-                                write_log("--XRS_BATTLE_AI: VARIANT_1_ENEMY_AT_HEIGHT "..npc:name())
                                 if npc_rank == "novice" then
                                         assist_point = select_position(npc)
                                         last_algorythm = "select_pos"
@@ -925,13 +848,10 @@ function action_altcombat:execute()
                 if can_fire[npc:id()] then
                         set_combat_state(npc, be, bw)
                         if is_close_range then
-                                write_log("--XRS_BATTLE_AI: VARIANT_1_CC "..npc:name().." : "..tostring(primary_target[npc:id()]))
                                 local enemy_cover = enemy_covered_value(npc, be)
                                 if enemy_cover < 0.5 then
-                                        write_log("--XRS_BATTLE_AI: VARIANT_1_CC_FIRE "..npc:name().." : "..tostring(primary_target[npc:id()]))
                                         set_weapons_fire( npc, be, bw, false, npc_rank )
                                 else    
-                                        write_log("--XRS_BATTLE_AI: VARIANT_1_CC _NOFIRE"..npc:name().." : "..tostring(primary_target[npc:id()]))
                                 end                     
                         else
                                 set_weapons_fire( npc, be, bw, false, npc_rank )
@@ -943,7 +863,6 @@ function action_altcombat:execute()
 
         elseif (npc:see(be) and not (be:see(npc) or raytrace_see)) or (is_armor(be) and not get_armor_vis(be, npc)) then                -- если видим врага и он НЕ видит нас           -- стреляем, маневрируя
         
-                write_log("--XRS_BATTLE_AI: VARIANT_2 "..npc:name().." : "..tostring(primary_target[npc:id()]))
         
                 time_hide[npc:id()] = nil
 
@@ -952,7 +871,6 @@ function action_altcombat:execute()
                         last_algorythm = "select_pos_be"
                 else
                         if actor_at_height then
-                                write_log("--XRS_BATTLE_AI: VARIANT_2_ENEMY_AT_HEIGHT "..npc:name())
                                 if npc_rank == "novice" then
                                         assist_point = select_position(npc)
                                         last_algorythm = "select_pos"
@@ -989,13 +907,9 @@ function action_altcombat:execute()
                 if can_fire[npc:id()] then
                         set_combat_state(npc, be, bw)
                         if is_close_range then
-                                write_log("--XRS_BATTLE_AI: VARIANT_2_CC "..npc:name().." : "..tostring(primary_target[npc:id()]))
                                 local enemy_cover = enemy_covered_value(npc, be)
                                 if enemy_cover < 0.5 then
-                                        write_log("--XRS_BATTLE_AI: VARIANT_2_CC_FIRE "..npc:name().." : "..tostring(primary_target[npc:id()]))
                                         set_weapons_fire( npc, be, bw, false, npc_rank )
-                                else    
-                                        write_log("--XRS_BATTLE_AI: VARIANT_2_CC_NOFIRE "..npc:name().." : "..tostring(primary_target[npc:id()]))
                                 end                     
                         else
                                 set_weapons_fire( npc, be, bw, false, npc_rank )
@@ -1007,7 +921,6 @@ function action_altcombat:execute()
 
         elseif not npc:see(be) and (be:see(npc) or raytrace_see) then           -- если НЕ видим врага и он видит нас           -- убегаем, ищем укрытие
         
-                write_log("--XRS_BATTLE_AI: VARIANT_3 "..npc:name().." : "..tostring(primary_target[npc:id()]).." TIME "..tostring(time_hide[npc:id()]))
         
                 if not time_hide[npc:id()] then
                         time_hide[npc:id()] = time_global() + math.random(7000,15000) + (1000 * ogse.armor_type(npc))
@@ -1024,7 +937,6 @@ function action_altcombat:execute()
                         end                     
                 else
                         if actor_at_height then
-                                write_log("--XRS_BATTLE_AI: VARIANT_3_ENEMY_AT_HEIGHT "..npc:name())
                                 assist_point = find_cover(npc, be, 2)
                                 if can_fire[npc:id()] then
                                         set_weapons_fire( npc, be, bw, true, npc_rank )
@@ -1069,25 +981,21 @@ function action_altcombat:execute()
 
         else                                                                                    -- если НЕ видим врага и он НЕ видит нас        -- ищем врага
         
-                write_log("--XRS_BATTLE_AI: VARIANT_4 "..npc:name().." : "..tostring(primary_target[npc:id()]).." TIME "..tostring(time_hide[npc:id()]))
         
                 if not time_hide[npc:id()] then
                         time_hide[npc:id()] = time_global() + math.random(7000,15000) + (1000 * ogse.armor_type(npc))
                 end
         
                 if is_fanatic(npc) then
-                        write_log("--XRS_BATTLE_AI: VARIANT_4_FANATIC "..npc:name())
                         assist_point =  select_enemy_pos(npc, be)
                         last_algorythm = "enemy_vertex"
                         -- необходимо оформить как отдельный алгоритм
                 else
                         if time_hide[npc:id()] < time_global() then
                                 if actor_at_height then
-                                        write_log("--XRS_BATTLE_AI: VARIANT_4_ENEMY_AT_HEIGHT "..npc:name())
                                         assist_point = select_position(npc, be)
                                         last_algorythm = "select_pos_be_actor_height"
                                 else
-                                        write_log("--XRS_BATTLE_AI: VARIANT_4_ENEMY_NORMAL "..npc:name())
                                         if not last_choosed_path[npc:id()] or (last_choosed_path[npc:id()] and last_choosed_path[npc:id()].timeout < time_global()) then
                                                 local rand = math.random()
                                                 if rand < 0.2 then
@@ -1136,7 +1044,6 @@ function action_altcombat:execute()
                                         end
                                 end
                         else
-                                write_log("--XRS_BATTLE_AI: VARIANT_4_WAIT "..npc:name())
                                 assist_point = find_cover(npc, be, 2)
                                 last_algorythm = "find_cover_2"
                         end
@@ -1155,7 +1062,6 @@ function action_altcombat:execute()
 
         if not assist_point then 
                 assist_point = last_sent_vertex[npc:id()]
-                write_log("!!XRS_BATTLE_AI: ALGORYTHM "..last_algorythm.." CANNOT FIND POINT "..npc:name().." USE LASTVTX "..tostring(assist_point))
                 if last_algorythm == "last_enemy_vertex" then
                         assist_point =  select_enemy_pos(npc, be)
                 elseif last_algorythm == "find_cover_1" then
@@ -1164,17 +1070,13 @@ function action_altcombat:execute()
                         assist_point = find_cover(npc, be, 0)                   
                 end
                 if not assist_point then
-                        write_log("!!XRS_BATTLE_AI: SOLUTION_NOT_FOUND, RANDOMIZE "..npc:name())
                         assist_point = randomize_position(npc)
                 end
         elseif assist_point == 0 then
                 -- Простой таймаут
-                write_log("!!XRS_BATTLE_AI: MOVEMENT TIMEOUT "..npc:name())
                 assist_point = last_sent_vertex[npc:id()]
         end
         if assist_point then 
-                write_log("!!XRS_BATTLE_AI: ASSIST POINT FOR ["..npc:name().."] ["..tostring(assist_point).."]")
-                -- npc:set_dest_level_vertex_id( assist_point )
                 
                 if npc:level_vertex_id() == assist_point or npc:position():distance_to(level.vertex_position(assist_point)) <= 1.0 then
                         if is_safe_to_block_movement(npc, be) then
@@ -1192,7 +1094,6 @@ function action_altcombat:execute()
                 end                     
         end
         
-        write_log("!!XRS_BATTLE_AI: ENDING CURRENT CYCLE FOR "..npc:name())
 
 end
 
@@ -1574,7 +1475,6 @@ function hit_callback(  obj, amount, local_direction, who, bone_index )
                                         if who:id() == db.actor:id() then
                                                 enable_object(obj, who)
                                                 if check_is_enemy(obj, who) then
-                                                        write_log("!!XRS_BATTLE_AI REG_TARG_1 NPC ["..obj:name().."] ENEMY ["..who:name().."]")
                                                         register_as_target(obj, who)
                                                 else
                                                         if not damage_from_actor[obj:id()] then
@@ -1583,7 +1483,6 @@ function hit_callback(  obj, amount, local_direction, who, bone_index )
                                                                 damage_from_actor[obj:id()] = damage_from_actor[obj:id()] + amount
                                                         end                                                     
                                                         if damage_from_actor[obj:id()] > 0.2 then
-                                                                write_log("!!XRS_BATTLE_AI REG_TARG_2 NPC ["..obj:name().."] ENEMY ["..who:name().."]")
                                                                 register_as_target(obj, who)
                                                         end
                                                 end
@@ -1605,7 +1504,6 @@ function hit_callback(  obj, amount, local_direction, who, bone_index )
                                         local mem = hit_memory[obj:id()]
                                         mem[who:id()] = true
                                         if amount > 0.1 then
-                                                write_log("--XRS_BATTLE_AI: Выставляем врага по сильному хиту для "..obj:name().." TARG "..who:name())
                                                 primary_target[obj:id()] = who:id()
                                         end
                                 elseif obj:relation(who) ~= game_object.enemy or obj:character_community() == who:character_community() then    
@@ -1759,10 +1657,8 @@ function process_enemy(npc, may_be_enemy)
                         -- человек ты иль монструшка
                         -- check_is_enemy(npc, enemy)
                         if IsStalker(enemy) and check_is_enemy(npc, enemy) then
-                                write_log("!!XRS_BATTLE_AI REG_TARG_3 NPC ["..npc:name().."] ENEMY ["..enemy:name().."]")
                                 register_as_target(npc, enemy)
                         elseif IsMonster(enemy) and check_is_enemy(npc, enemy) then
-                                write_log("!!XRS_BATTLE_AI REG_TARG_MON NPC ["..npc:name().."] ENEMY ["..enemy:name().."]")
                                 register_as_target(npc, enemy)
                         end
                 end
@@ -1926,46 +1822,32 @@ function reprioritize_targets(npc)
         for k, v in pairs(targets_list[npc:id()]) do
                 if v.vis == true then -- если цель видит нас
                         local close_combat, far_combat = combat_ranges(npc, v.npc)
-                        write_log("--XRS_BATTLE_AI: "..npc:name().." RANG CLOSE ["..close_combat.."] FAR ["..far_combat.."]")
                         local mult = combat_multiplier(v.npc)
                         if v.npc == false then -- если она монстр
                         
                                 if v.armor then -- если она пиздец едучий/летячий
                                         if v.range >= 100 and v.range < 150 then -- и цель далеко
-                                                write_log("--XRS_BATTLE_AI: "..npc:name().." TARG "..k.." MIDDLE DIST ")
                                                 v.weight = v.range * combat_multiplier(v.npc)
                                         elseif v.range < 100 then -- а если близко
-                                                write_log("--XRS_BATTLE_AI: "..npc:name().." TARG "..k.." CLOSE ")
                                                 v.weight = v.range * combat_multiplier(v.npc) * 3
-                                        else    
-                                                write_log("--XRS_BATTLE_AI: "..npc:name().." TARG "..k.." IGNORE ")
                                         end                             
                                 else
                                         if v.range >= close_combat and v.range < far_combat then -- и цель на средней дистанции
-                                                write_log("--XRS_BATTLE_AI: "..npc:name().." TARG "..k.." MIDDLE DIST ")
                                                 v.weight = v.range * combat_multiplier(v.npc)
                                         elseif v.range < close_combat then -- а если вплотную
-                                                write_log("--XRS_BATTLE_AI: "..npc:name().." TARG "..k.." CLOSE ")
                                                 v.weight = 0
                                         elseif check_friends_enemy(npc, k) then
-                                                write_log("--XRS_BATTLE_AI: "..npc:name().." TARG "..k.." FRIENDS ENEMY ")
                                                 v.weight = v.range * combat_multiplier(v.npc) * 3
-                                        else    
-                                                write_log("--XRS_BATTLE_AI: "..npc:name().." TARG "..k.." IGNORE ")
                                         end
                                 end
                         else -- а если непись
                                 if v.range >= close_combat and v.range < far_combat then -- если не ближний бой
-                                        write_log("--XRS_BATTLE_AI: "..npc:name().." TARG "..k.." FAR COMBAT ")
                                         v.weight = v.range
                                 elseif v.range < close_combat then -- а если ближний
-                                        write_log("--XRS_BATTLE_AI: "..npc:name().." TARG "..k.." CLOSE COMBAT ")
                                         v.weight = v.range * combat_multiplier(v.npc)
                                 elseif v.range > far_combat and v.range < (npc:range() * 1.5) then -- сверхдальний бой  
-                                        write_log("--XRS_BATTLE_AI: "..npc:name().." TARG "..k.." VERY FAR COMBAT ")
                                         v.weight = v.range * combat_multiplier(v.npc) * 2
                                 elseif check_friends_enemy(npc, k) then
-                                        write_log("--XRS_BATTLE_AI: "..npc:name().." TARG "..k.." FRIENDS ENEMY ")
                                         v.weight = v.range * combat_multiplier(v.npc) * 3
                                 end
                         end
@@ -2019,7 +1901,6 @@ function reprioritize_targets(npc)
                         primary_target[npc:id()] = k
                         last_target[npc:id()] = {}
                         flag_range = 0
-                        write_log("~~XRS_BATTLE_AI: Выбрана цель для "..npc:name().." по приоритетности ")
                 end     
         end
         
@@ -2031,7 +1912,6 @@ function reprioritize_targets(npc)
                                         flag_range = 1
                                         primary_target[npc:id()] = k
                                         last_target[npc:id()] = {}
-                                        write_log("~~XRS_BATTLE_AI: Выбрана цель для "..npc:name().." мы ее ранее уже забыли, но она слишком близко ")
                                 end                             
                         end     
                 end
@@ -2039,9 +1919,6 @@ function reprioritize_targets(npc)
         
         if primary_target[npc:id()] ~= nil then
                 last_reprioritize[npc:id()] = time_global()
-                if total_debug then
-                        write_log("--XRS_BATTLE_AI: Выбрана цель для "..npc:name().." : "..tostring(primary_target[npc:id()]))
-                end
                 return
         else
                 local deadman = have_fresh_deadman(npc)
@@ -2093,7 +1970,6 @@ function refresh_targets(npc)
         local enemy_by_engine = npc:best_enemy()
         if enemy_by_engine and enemy_by_engine:alive() and not (IsStalker(enemy_by_engine) and xr_wounded.is_wounded(enemy_by_engine)) and (enemy_by_engine:see(npc) or (enemy_by_engine:id() == db.actor:id() and actor_see(npc))) then
                 if not targets_list[npc:id()][enemy_by_engine:id()] and not (disabled_objects[npc:id()] and disabled_objects[npc:id()][enemy_by_engine:id()]) then
-                        write_log("!!XRS_BATTLE_AI: ALT_COMBAT_ENGINE_BE FOR "..npc:name().." : "..tostring(enemy_by_engine:name()))
                         if check_is_enemy(npc, enemy_by_engine) or (xr_companion.is_companion(enemy_by_engine:id()) and check_is_enemy(npc, db.actor)) then
                                 register_as_target(npc, enemy_by_engine)
                         else    
@@ -2118,7 +1994,6 @@ function refresh_targets(npc)
                                 if is_still_alive and not xr_wounded.is_wounded(best_danger_object) then
                                         if needed_dangers[bd_type] then
                                                 if not targets_list[npc:id()][best_danger_object:id()] and not (disabled_objects[npc:id()] and disabled_objects[npc:id()][best_danger_object:id()]) then
-                                                        write_log("!!XRS_BATTLE_AI: ALT_COMBAT_ENGINE_BD FOR "..npc:name().." : "..tostring(best_danger_object:name()))
                                                         if check_is_enemy(npc, best_danger_object) or (xr_companion.is_companion(best_danger_object:id()) and check_is_enemy(npc, db.actor)) then
                                                                 register_as_target(npc, best_danger_object)
                                                         else    
@@ -2309,7 +2184,6 @@ function check_helicopter(npc)
         if health > 0.005
                 and v:position():distance_to(npc_position) <= 150 
                 and is_hostile_armor(npc:character_community(),v) then
-                        write_log("!!XRS_BATTLE_AI REG_TARG_ARMOR NPC ["..npc:name().."] ENEMY ["..v:name().."]")
             register_as_target_armor(npc, v)
         end
     end
@@ -2329,7 +2203,6 @@ function check_btr(npc)
                         if health > 0.005
                         and v:position():distance_to(npc_position) <= 150 
                         and is_hostile_armor(npc:character_community(),v) then
-                                write_log("!!XRS_BATTLE_AI REG_TARG_ARMOR NPC ["..npc:name().."] ENEMY ["..v:name().."]")
                                 register_as_target_armor(npc, v)
                         end
                 end
@@ -2389,10 +2262,8 @@ function get_max_weapon_range(npc)
                         if ini:section_exist(sect) and ini:line_exist(sect, "max_radius") then
                                 return ini:r_float(sect, "max_radius")
                         elseif not ini:section_exist(sect) then 
-                                write_log("!!XRS_COMBAT_AI: WEAPON SECTION NOT EXIST ["..tostring(sect).."]")
                                 return 36.0
                         elseif not ini:line_exist(sect, "max_radius") then      
-                                write_log("!!XRS_COMBAT_AI: WEAPON RADIUS NOT EXIST ["..tostring(sect).."]")
                                 return 36.0
                         end
                 else
@@ -2413,7 +2284,6 @@ function combat_ranges(npc, enemy_is_npc)
                                 return low_range_mon_aggr, far_range_mon_aggr
                         end
         else
-                write_log("!!XRS_BATTLE_AI: Функция рассчета расстояний не получила параметр npc!")
                 return 30, alife():switch_distance()
         end
 end
@@ -2438,23 +2308,19 @@ function have_fresh_deadman(npc)
                         timeout = timeout*2
                 end
                 if obj and not IsStalker(obj) and not IsMonster(obj) then
-                        write_log("XRS_BATTLE_AI: DELETING FRESH ARMOR DEADMAN FOR "..npc:name())
                         last_target[npc:id()][k] = nil
                         postcombat[npc:id()] = nil
                         return false                    
                 end     
                 if not obj then
-                        write_log("XRS_BATTLE_AI: DELETING DEADMAN NOT_EXIST FOR "..npc:name())
                         last_target[npc:id()][k] = nil
                         postcombat[npc:id()] = nil
                         return false                    
                 end
                 local time_check = time_global() - timeout
                 if v and v > time_check then
-                        write_log("XRS_BATTLE_AI: FRESH DEADMAN FOR "..npc:name().." "..k)
                         target = k
                 else
-                        write_log("XRS_BATTLE_AI: DELETING FRESH DEADMAN FOR "..npc:name())
                         last_target[npc:id()][k] = nil
                         postcombat[npc:id()] = nil
                         return false
@@ -2664,7 +2530,6 @@ function process_combat_sound(npc)
                         local target = primary_target[npc:id()]
                         local target_info = targets_list[npc:id()][target]
                         if not target_info then
-                                write_log("!!NO_TARGET_INFO")
                                 return
                         end
                         if target_info and not target_info.last_time_seen then
@@ -2742,7 +2607,6 @@ function actor_see(npc)
 end
 
 function actor_see_raytrace(npc)
-        write_log("--XRS_BATTLE_AI: ACTOR_SEE_RAYTRACE "..npc:name())
         
         local dangerang = 1 -- арктангенс 45 град /npc:position():distance_to(db.actor:position())
         local ang = horz_angle(device().cam_dir,npc:position():sub(device().cam_pos))   
@@ -2762,22 +2626,17 @@ function actor_see_raytrace(npc)
                 if obj and obj:id() == npc:id() then
                         local tgt = ang > -dangerang and ang < dangerang
                         if tgt then
-                                write_log("--XRS_BATTLE_AI: ACTOR_SEE_RAYTRACE SUCCESS "..npc:name())
                                 return true
                         else
-                                write_log("--XRS_BATTLE_AI: ACTOR_SEE_RAYTRACE OUT_OF_VIEWFIELD "..npc:name())
                                 return false
                         end
                 else
                         if obj then
-                                write_log("--XRS_BATTLE_AI: ACTOR_SEE_RAYTRACE WRONG "..npc:name().." : "..tostring(obj:id()).." "..obj:name())
                                 return false
                         else
                                 if db.actor:see(npc) then
-                                        write_log("--XRS_BATTLE_AI: ACTOR_SEE_RAYTRACE FAIL BUT ACTOR SEE "..npc:name())
                                         return true
                                 end
-                                write_log("--XRS_BATTLE_AI: ACTOR_SEE_RAYTRACE FAIL "..npc:name())
                                 return false
                         end
                 end
@@ -2943,10 +2802,6 @@ function set_weapons_fire( npc, enemy, weapon, override_vis, npc_rank )
       ( not weapon_unstrapped ) or not_ready_states[ anim ]
       or ( IsRPG( weapon ) and ( distance < 25 or enemy_cover > 0.4 ) )
     then
-      write_log(
-        "--XRS_BATTLE_AI: NPC NOT READY TO FIRE " .. npc:name() .. " : "
-          .. tostring( enemy:id() )
-      )
       type_of_fire = object.aim1
     end
 
@@ -2989,10 +2844,7 @@ end
 
 function set_combat_state(npc, enemy, weapon)
 
-        write_log("!!XRS_BATTLE_AI: set_combat_state start for "..npc:name())
-
         if hit_timeout[npc:id()] and hit_timeout[npc:id()] > time_global() then
-                write_log("!!XRS_BATTLE_AI: set_combat_state timeout for "..npc:name())
                 return
         elseif hit_timeout[npc:id()] then       
                 hit_timeout[npc:id()] = nil
@@ -3054,16 +2906,11 @@ function set_combat_state(npc, enemy, weapon)
                         end
                 end
         end
-        
-        write_log("!!XRS_BATTLE_AI: set_combat_state end for "..npc:name())
 end
 
 function set_transfer_state(npc, enemy)
 
-        write_log("!!XRS_BATTLE_AI: set_transfer_state start for "..npc:name())
-
         if hit_timeout[npc:id()] and hit_timeout[npc:id()] > time_global() then
-                write_log("!!XRS_BATTLE_AI: set_transfer_state timeout return for "..npc:name())
                 return
         elseif hit_timeout[npc:id()] then       
                 hit_timeout[npc:id()] = nil
@@ -3095,8 +2942,6 @@ function set_transfer_state(npc, enemy)
         else
                 state_mgr.set_state(npc, "threat", nil, nil, {look_object = enemy}, emerg )
         end
-        
-        write_log("!!XRS_BATTLE_AI: set_transfer_state end for "..npc:name())
 end
 
 
@@ -3320,11 +3165,7 @@ function find_cover(npc, enemy, mode)
                         local move_speed = 1.8
                         local move_time = dist_to_cover / move_speed
                         if check_vertex_locked(npc, cover_vertex) or its_a_trap(npc, cover_vertex) then
-                                write_log("!!!!XRS_BATTLE_AI: УКРЫТИЕ ЗАНЯТО ИЛИ ЛОВУШКА ")
                                 return nil
-                        end
-                        if total_debug then
-                                write_log("--!!XRS_BATTLE_AI: УКРЫТИЕ "..tostring(cover_vertex).." ПРИКРЫТОСТЬ: "..tostring(cover_value).." ДИСТ: "..tostring(dist_to_cover).." ВРЕМЯ НА ПУТЬ: "..tostring(move_time))
                         end
                         last_time_send[npc:id()] = time_global() + move_time + time_to_hide
                         last_sent_vertex[npc:id()] = cover_vertex
@@ -3402,16 +3243,12 @@ function select_position(npc, target, flag)
         
         local around_object = npc
         
-        write_log("--XRS_BATTLE_AI: SELECT_POS "..npc:name())
-        
         if target then
-                write_log("--XRS_BATTLE_AI: SELECT_POS_VAR_ENEMY "..npc:name())
                 around_object = target
                 set_sound_event(npc, "hero") 
         end     
         
         if is_sniper(npc) and not (check_vertex_locked(npc, npc:level_vertex_id()) or its_a_trap(npc, npc:level_vertex_id())) then
-                write_log("--XRS_BATTLE_AI: IS_SNIPER "..npc:name())
                 last_sent_vertex[npc:id()] = npc:level_vertex_id()
                 locked_vertexes[npc:id()] = npc:level_vertex_id()               
                 return npc:level_vertex_id()
@@ -3458,18 +3295,14 @@ function select_position(npc, target, flag)
                                 if IsShotgun(bw) then
                                         random_offset_1 = math.random(5,7)
                                         random_offset_2 = math.random(5,7)
-                                        write_log("--XRS_BATTLE_AI: HAVE_SHOTGUN "..npc:name())
                                 elseif IsSniperRifle(bw) then
                                         random_offset_1 = math.random(distant_combat_distance,get_max_weapon_range(npc))
                                         random_offset_2 = math.random(distant_combat_distance,get_max_weapon_range(npc))
-                                        write_log("--XRS_BATTLE_AI: HAVE_SNIPER "..npc:name())
                                 else
                                         random_offset_1 = math.random(7,close_combat_distance)
-                                        random_offset_2 = math.random(7,close_combat_distance)                          
-                                        write_log("--XRS_BATTLE_AI: HAVE_OTHER_GUN "..npc:name())
+                                        random_offset_2 = math.random(7,close_combat_distance)
                                 end
                         else    
-                                write_log("--XRS_BATTLE_AI: ENEMY_ON_HILL "..npc:name())
                                 if target:id() == db.actor:id() and height >= 3 then
                                         random_rotate_1 = math.random(90,150)
                                         random_rotate_2 = -math.random(90,150)  
@@ -3503,8 +3336,6 @@ function select_position(npc, target, flag)
                 end
         end
         
-        write_log("~~XRS_BATTLE_AI: node_1_vertex_id for "..npc:name().." found after "..tostring(counter).." iterations, dist "..npc:position():distance_to(level.vertex_position(node_1_vertex_id)))
-        
         counter = 0
         
         while node_2_vertex_id == nil do
@@ -3522,8 +3353,6 @@ function select_position(npc, target, flag)
                 end             
         end
         
-        write_log("~~XRS_BATTLE_AI: node_2_vertex_id for "..npc:name().." found after "..tostring(counter).." iterations, dist "..npc:position():distance_to(level.vertex_position(node_2_vertex_id)))
-        
         -- Проверяем растояния до точек
         if node_1_vertex_id ~= nil then
                 node_1_distance = npc:position():distance_to_sqr(level.vertex_position(node_1_vertex_id))
@@ -3540,7 +3369,6 @@ function select_position(npc, target, flag)
         if node_1_distance == -1 and node_2_distance == -1 then
                 --' Не смогли найти точку, ругаться
                 -- return around_object:level_vertex_id()
-                write_log("!!XRS_BATTLE_AI: NO_GOOD_POINTS "..npc:name().." FLAG ["..tostring(flag).."]")
                 if flag then
                         return npc:level_vertex_id()
                 else
@@ -3620,7 +3448,6 @@ function select_last_known_enemy_pos(npc)
         end
         
         if is_sniper(npc) and not (check_vertex_locked(npc, npc:level_vertex_id()) or its_a_trap(npc, npc:level_vertex_id())) then
-                write_log("--XRS_BATTLE_AI: IS_SNIPER_LE_POS "..npc:name())
                 last_sent_vertex[npc:id()] = npc:level_vertex_id()
                 locked_vertexes[npc:id()] = npc:level_vertex_id()               
                 return npc:level_vertex_id()
@@ -3671,7 +3498,6 @@ function select_enemy_pos(npc, enemy)
         end
         
         if is_sniper(npc) and not (check_vertex_locked(npc, npc:level_vertex_id()) or its_a_trap(npc, npc:level_vertex_id())) then
-                write_log("--XRS_BATTLE_AI: IS_SNIPER_EN_POS "..npc:name())
                 last_sent_vertex[npc:id()] = npc:level_vertex_id()
                 locked_vertexes[npc:id()] = npc:level_vertex_id()               
                 return npc:level_vertex_id()
@@ -3748,7 +3574,6 @@ function randomize_position(npc)
         end
         
         if is_sniper(npc) and not (check_vertex_locked(npc, npc:level_vertex_id()) or its_a_trap(npc, npc:level_vertex_id())) then
-                write_log("--XRS_BATTLE_AI: IS_SNIPER_RND_POS "..npc:name())
                 last_sent_vertex[npc:id()] = npc:level_vertex_id()
                 locked_vertexes[npc:id()] = npc:level_vertex_id()               
                 return npc:level_vertex_id()
@@ -3806,8 +3631,6 @@ function evade_grenades(npc)
         
         local danger_obj = level.object_by_id(id)
         
-        write_log("!!XRS_BATTLE_AI: GRENADE AVOIDANCE STARTED "..npc:name())
-        
         if danger_obj and not grenka_already_blow[danger.grenade] then
         
                 if (danger.timeout - time_global()) > (inertion_time_grenade*0.9) then
@@ -3820,8 +3643,6 @@ function evade_grenades(npc)
                         xr_sound.set_sound(npc, "beware_grenade")
                 end
         
-                write_log("!!XRS_BATTLE_AI: TRYING TO EVADE GRENADE "..npc:name())
-                
                 if not escape_point[npc:id()] then
                 
                         last_hideout[npc:id()] = nil
@@ -3865,7 +3686,6 @@ function evade_grenades(npc)
         else
                 
                 npc:set_mental_state(anim.danger)
-                write_log("!!XRS_BATTLE_AI: GRENADE OBJ NOT EXIST ANYMORE! "..npc:name())
                 grenka_already_blow[active_grenades[npc:id()].grenade] = true
                 active_grenades[npc:id()] = nil
                 escape_point[npc:id()] = nil
@@ -3910,13 +3730,10 @@ function process_restrictions(npc)
         
         if not backup_restrictions_out[npc:id()] then
                 backup_restrictions_out[npc:id()] = restr_out
-                -- write_log("--XRS_BATTLE_AI: RESTRICTIONS_OUT BACKUP FOR "..npc:name().." : "..restr_out)
         end
         if not backup_restrictions_in[npc:id()] then
                 backup_restrictions_in[npc:id()] = restr_in
-                -- write_log("--XRS_BATTLE_AI: RESTRICTIONS_IN BACKUP FOR "..npc:name().." : "..restr_in)
         end     
-        --log1("[XRS BATTLE AI] REMOVING ALL RESTRICTIONS FOR "..npc:name())
         npc:remove_all_restrictions()
 end
 
@@ -3965,7 +3782,6 @@ function restore_restrictions(npc)
                 --log1("[XRS BATTLE AI] ADDING IN RESTRICTIONS "..restr_out.." FOR "..npc:name())
                 --log1("[XRS BATTLE AI] ADDING OUT RESTRICTIONS "..restr_out.." FOR "..npc:name())
                 npc:add_restrictions(restr_out, restr_in)
-                -- write_log("--XRS_BATTLE_AI: RESTRICTIONS RESTORED FOR "..npc:name().." OUT: ["..restr_out.."] IN: ["..restr_in.."]")
                 backup_restrictions_out[npc:id()] = nil
                 backup_restrictions_in[npc:id()] = nil
                 
