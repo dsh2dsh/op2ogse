@@ -1,0 +1,87 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+function attach( sm )
+  sm:subscribe({ signal = "on_before_spawn", fun = this.on_before_spawn })
+end
+
+
+local items = {}
+
+function on_before_spawn()
+  local pt = profile_timer()
+  pt:start()
+  local items_cnt, parents_cnt = 0, 0;
+  for id = 1, 65534 do
+    local sobj = alife():object( id )
+    if sobj then
+      if not items[ sobj.parent_id ] then
+        parents_cnt = parents_cnt + 1
+      end
+      add_item( sobj )
+      items_cnt = items_cnt + 1
+    end
+  end
+  pt:stop()
+  log2(
+    "[%s]: %s/%s items collected: %s",
+    script_name(), items_cnt, parents_cnt, pt:time()
+  )
+  if items[ 0 ] then
+    log2( "[%s]:       0: %s items", script_name(), items[ 0 ].count )
+  end
+  log2( "[%s]:   65535: %s items", script_name(), items[ 65535 ].count )
+end
+
+
+function add_item( sobj )
+  local t = items[ sobj.parent_id ]
+  if not t then
+    t = {
+      count = 0,
+      items = {},
+    }
+    items[ sobj.parent_id ] = t
+  end
+  t.count = t.count + 1
+  t.items[ sobj.id ] = sobj
+end
+
+
+function iterate_items( f, parent )
+  if parent then
+    if items[ parent ] then
+      for id, sobj in pairs( items[ parent ].items ) do
+        f( sobj )
+      end
+    end
+  else
+    for pid, _ in pairs( items ) do
+      iterate_items( f, pid )
+    end
+  end
+end
+
+
+function release( sobj )
+  ASSERT( sobj, "[%s]: trying to release nil", script_name() )
+  ASSERT(
+    items[ sobj.parent_id ],
+    "[%s]: parent %s of %s not found",
+    script_name(), sobj.parent_id, sobj:name()
+  )
+  local t = items[ sobj.parent_id ]
+  ASSERT(
+    t.items[ sobj.id ],
+    "[%s]: item %s not found in parent %s",
+    script_name(), sobj:name(), sobj.parent_id
+  )
+  t.count = t.count - 1
+  ASSERT(
+    t.count >= 0,
+    "[%s]: object %s has %s items",
+    script_name(), sobj.parent_id, t.count
+  )
+  t.items[ sobj.id ] = nil
+  items[ sobj.id   ] = nil
+  alife():release( sobj )
+end
