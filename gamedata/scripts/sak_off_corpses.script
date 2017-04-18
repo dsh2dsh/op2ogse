@@ -128,8 +128,6 @@ function off_corpses()
   -- главный цикл
   local actor_level           = level.name()
   local dead_monster_on_level = {}
-  local has_item              = {}
-  local parent_keep_items     = {}
   dsh_alife.iterate_items(
     function( obj )
       local obj_level = object_level_name( obj )
@@ -182,70 +180,54 @@ function off_corpses()
           end
         end
 
-      else
-        -- вал€етс€ на земле
-        if obj.parent_id == 65535 then
-          -- оружие
-          if
-            (
-              string.find( obj_sect, "wpn_", 1, true )
-              or string.find( obj_sect, "grenade_", 1, true )
-            )
-            and obj_level ~= actor_level
-            and not protected_items.obj_is_protected(
-              obj, "tabl_wpn_keep", "like"
-            )
-          then
-            table.insert( tabl_weapons, obj )
-          elseif obj_sect == "mutant_crow" then
-            -- трупы ворон
-            table.insert( tabl_monsters_dead, obj )
-          elseif string.find( obj_sect, "af_", 1, true ) then
-            local level_vertexes = amk_anoms.level_vertexes[ obj_level ]
-            if obj.m_level_vertex_id > level_vertexes then
-              log2(
-                "[%s]: found %s on %s: wrong level_vertex: %s > %s",
-                script_name(), obj_name, obj_level,
-                obj.m_level_vertex_id, level_vertexes
-              )
-              table.insert( tabl_monsters_dead, obj )
-            end
-          elseif
-            get_bool( obj_sect, "monster_part", false )
-            and not item_keep( obj )
-          then
-              table.insert( tabl_monsters_dead, obj )
-          end
-        else
-          -- в инвентаре
-          has_item[ obj.parent_id ] = true
-          if not parent_keep_items[ obj.parent_id ] and item_keep( obj ) then
-            parent_keep_items[ obj.parent_id ] = true
-          end
-        end
-      end
+        -- оружие
+      elseif
+        (
+          string.find( obj_sect, "wpn_", 1, true )
+          or string.find( obj_sect, "grenade_", 1, true )
+        )
+        and obj_level ~= actor_level
+        and not protected_items.obj_is_protected(
+          obj, "tabl_wpn_keep", "like"
+        )
+      then
+        table.insert( tabl_weapons, obj )
 
-      -- фикс кривых smart_terrain
-      if ( IsStalker( obj ) or IsMonster( obj ) ) and obj:alive() then
-        local strn_id = obj:smart_terrain_id()
-        if strn_id ~= 65535 then
-          local strn = alife():object( strn_id )
-          if strn and strn:clsid() ~= clsid.smart_terrain then
-            log2(
-              "[%s]: ќбнаружена прив€зка к несуществующему smart_terrain: %s, smart_terrain_id: %s. ѕрив€зка удалена.",
-              script_name(), obj_name, tostring( strn_id )
-            )
-            obj:clear_smart_terrain()
-          end
+        -- трупы ворон
+      elseif obj_sect == "mutant_crow" then
+        table.insert( tabl_monsters_dead, obj )
+
+      elseif string.find( obj_sect, "af_", 1, true ) then
+        local level_vertexes = amk_anoms.level_vertexes[ obj_level ]
+        if obj.m_level_vertex_id > level_vertexes then
+          log2(
+            "[%s]: found %s on %s: wrong level_vertex: %s > %s",
+            script_name(), obj_name, obj_level,
+            obj.m_level_vertex_id, level_vertexes
+          )
+          table.insert( tabl_monsters_dead, obj )
         end
+
+      elseif
+        get_bool( obj_sect, "monster_part", false )
+        and not item_keep( obj )
+      then
+        table.insert( tabl_monsters_dead, obj )
       end
-    end
+    end,
+    65535                       -- находитс€ на земле
   )
 
   -- зачистка мЄртвых монстров
   local cnt = 0
   for _, corps in ipairs( tabl_monsters_dead ) do
-    if not parent_keep_items[ corps.id ] then
+    local keep = dsh_alife.iterate_items(
+      function( sobj )
+        if keep_item( sobj ) then return true end
+      end,
+      corps.id
+    )
+    if not keep then
       cnt = cnt + 1
       dsh_alife.release( corps )
     end
@@ -253,7 +235,11 @@ function off_corpses()
 
   -- удаление мертвых мутантов с пустым инвентарем на текущей локации
   for id, sobj in pairs( dead_monster_on_level ) do
-    if not has_item[ id ] then
+    local has_something = dsh_alife.iterate_items(
+      function( sobj ) return true end,
+      sobj.id
+    )
+    if not has_something then
       cnt = cnt + 1
       dsh_alife.release( sobj )
     end
@@ -261,7 +247,13 @@ function off_corpses()
 
   -- зачистка мЄртвых человеков
   for _, corps in ipairs( tabl_corpses ) do
-    if not parent_keep_items[ corps.id ] then
+    local keep = dsh_alife.iterate_items(
+      function( sobj )
+        if keep_item( sobj ) then return true end
+      end,
+      corps.id
+    )
+    if not keep then
       cnt = cnt + 1
       dsh_alife.release( corps )
     end
