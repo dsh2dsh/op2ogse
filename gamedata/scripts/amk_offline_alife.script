@@ -7,10 +7,8 @@ off_npcs = {}
 items    = {}
 always_keep_item = {}
 
--- Как часто делать апдейты, реальные минуты
-local iFreq       = 0 --12
 -- Как часто генерить события в оффлайн (реальные секунды)
-local alife_freq  = 48
+local alife_freq = 60
 
 local maps = {
   "atp_for_test22",
@@ -161,38 +159,6 @@ function is_npc_can_trade( sobj )
 end
 
 
-function schedule_update()
-  if iFreq == 0 then return end
-  dsh.timeout( iFreq * 60 * 1000, function()
-    off_npcs = {}
-    items    = {}
-    offline_update_timer():start( true )
-  end )
-end
-
-
-class "offline_update_timer" ( ogse_qt.quick_timer )
-function offline_update_timer:__init() super()
-  self.cur_id = 1
-end
-
-function offline_update_timer:condition()
-  return self.cur_id == 65535
-end
-
-function offline_update_timer:action()
-  schedule_update()
-end
-
-function offline_update_timer:update()
-  local sobj = alife():object( self.cur_id )
-  if sobj then
-    add_fresh_meat( sobj )
-  end
-  self.cur_id = self.cur_id + 1
-end
-
-
 function add_fresh_meat( obj )
   if
     obj and obj.m_game_vertex_id
@@ -205,7 +171,6 @@ function add_fresh_meat( obj )
     and ( not protected_items.actor_items_keep( obj:section_name() ) )
     and ( not protected_items.is_grab_body_item_keep( obj:section_name() ) )
     and ( not protected_items.is_no_offline_alife_npc( obj:section_name() ) )
-    and ( not get_bool( obj:section_name(), "quest_item", false ) )
     and ( not get_bool( obj:section_name(), "watcher_act.bad_item", false ) )
   then
     local map = object_level_name( obj )
@@ -264,13 +229,7 @@ end
 function update_npc_tables()
   items    = {}
   off_npcs = {}
-  for a = 1, 65534 do
-    local sobj = alife():object( a )
-    if sobj then
-      add_fresh_meat( sobj )
-    end
-  end
-  schedule_update()
+  dsh_alife.iterate_items( function( sobj ) add_fresh_meat( sobj ) end )
   dsh.timeout( math.random( alife_freq ) * 1000, function()
     offline_alife_timer():start()
   end )
@@ -300,53 +259,6 @@ function update_trade()
       "amk_offline_alife.process_weapon_repair_allowed"
     )
     weapon_repair_allowed = false
-  end
-end
-
-
-function update_tables( level )
-  cleanup_this_level_items( level )
-  local ggraph = game_graph()
-  local sim    = alife()
-  for a = 1, 65534 do
-    local obj = sim:object( a )
-    if obj then
-      if
-        ggraph:valid_vertex_id( obj.m_game_vertex_id )
-        and object_level_name( obj ) == level
-      then
-        add_fresh_meat( obj )
-      elseif obj.parent_id then
-        local p_obj = sim:object( obj.parent_id )
-        if
-          p_obj
-          and ggraph:valid_vertex_id( p_obj.m_game_vertex_id )
-          and object_level_name( p_obj ) == level
-        then
-          add_fresh_meat( obj )
-        end
-      end
-    end
-  end
-end
-
-
-function cleanup_this_level_items( lname )
-  off_npcs[ lname ] = {
-    monsters = {}, stalkers = {}, weapons = {}, artefacts = {}, inv_boxes = {}
-  }
-  local remove = {}
-  for k, v in pairs( items ) do
-    if table.getn( v ) > 0 then
-      if v[ 1 ].lname == lname then
-        remove[ k ] = true
-      end
-    else
-      remove[ k ] = true
-    end
-  end
-  for k, v in pairs( remove ) do
-    items[ k ] = nil
   end
 end
 
@@ -532,19 +444,20 @@ function pick_item( npc, obj )
     npc.position, npc.m_level_vertex_id, npc.m_game_vertex_id,
     npc.id
   )
+  new = alife():object( new.id )
   ASSERT( new, "can't create new %s", section )
   local pk = get_netpk( obj, 1 )
-  if pk:isOk() then
-    local data = pk:get()
-    local cd   = data.custom_data:getString()
-    if cd and cd ~= "" then
-      local new_pk = get_netpk( new, 1 )
-      if new_pk:isOk() then
-        local new_data = pk:get()
-        new_data.custom_data:setString( cd )
-        new_pk:set( new_data )
-      end
-    end
+  ASSERT( ( pk and pk:isOk() ), "can't read netpacket of %s", sobj:name() )
+  local data = pk:get()
+  local cd   = data.custom_data:getString()
+  if cd and cd ~= "" then
+    local new_pk = get_netpk( new, 1 )
+    ASSERT(
+      ( new_pk and new_pk:isOk() ), "can't read netpacket of %s", sobj:name()
+    )
+    local new_data = pk:get()
+    new_data.custom_data:setString( cd )
+    new_pk:set( new_data )
   end
   if not items[ npc.id ] then items[ npc.id ] = {} end
   table.insert(
@@ -580,6 +493,20 @@ function get_item_cost( item )
 end
 
 
+local cached_item = {}
+function item_keep( sobj )
+  -- проверка на предметы, тела с которыми нужно оставить
+  local sect = sobj:section_name()
+  if cached_item[ sect ] == nil then
+    cached_item[ sect ] = always_keep_item[ sect ]
+      or protected_items.actor_items_keep( sect )
+      or protected_items.is_grab_body_item_keep( sect )
+      or get_bool( sect, "watcher_act.bad_item", false )
+  end
+  return cached_item[ sect ]
+end
+
+
 -- Уникальные предметы НЕ ПРОДАЕМ. Максимум - в новости.
 -- Отсортировали оружие по firepower (можем еще ef_weapon_type добавить.)
 -- Оставили себе то, для которого есть патроны. (а) - wpn..ammo_class
@@ -595,8 +522,6 @@ end
 -- Броники наверное продаем...
 -- Части монстров? Тоже продаем наверное, максимум 1-2 оставим.
 function process_trade( npc )
-  local item_list = {}
-  local sell_list = {}
   -- Имеет смысл проверять на наличие trade в секции [logic]...
   if
     is_npc_can_trade( npc )
@@ -612,21 +537,18 @@ function process_trade( npc )
       return
     end
 
-    --Фильтруем квестовые items - always_keep_item
-    for _, ov in ipairs( items[ npc.id ] ) do
-      local obj = alife():object( ov.id )
-      if obj and obj.parent_id == npc.id and obj:name() == ov.name then
-        if
-          not (
-            always_keep_item[ obj:section_name() ]
-            or protected_items.actor_items_keep( obj:section_name() )
-          )
-        then
-          table.insert( item_list, obj )
+    -- Фильтруем квестовые items - always_keep_item
+    local item_list = {}
+    dsh_alife.iterate_items(
+      function( sobj )
+        if not item_keep( sobj ) then
+          table.insert( item_list, sobj )
         end
-      end
-    end
+      end,
+      npc.id
+    )
 
+    local sell_list = {}
     if item_list and table.getn( item_list ) > 0 then
       table.sort(
         item_list,
@@ -938,24 +860,16 @@ function process_trade( npc )
           table.remove( sell_list, 1 )
         end
       end
-      for _, vv in ipairs( sell_list ) do
-        local cost = get_item_cost( vv )
+      for _, sobj in ipairs( sell_list ) do
+        local cost = get_item_cost( sobj )
         if cost > 0 then
           local coeff = math.random( 30, 50 ) / 100
           local price = math.floor( cost * coeff )
           money = money + price
           -- Почистим items
-          if items[ npc.id ] and table.getn( items[ npc.id ] ) > 0 then
-            for z, item in ipairs( items[ npc.id ] ) do
-              if item.id == vv.id then
-                table.remove( items[ npc.id ], z )
-                -- Idler++-- корректируем хабар в помеченных тайниках
-                gps_habar.remove_item( npc.id, item )
-                break
-              end
-            end
-          end
-          alife():release( alife():object( vv.id ), true )
+          -- Idler++-- корректируем хабар в помеченных тайниках
+          gps_habar.remove_item( npc.id, sobj )
+          dsh_alife.release( sobj )
         end
       end
       if money > 0 then
@@ -1032,14 +946,8 @@ function process_ammo_trade( sell_list, ammo, npc, our_weapons )
           npc.position, npc.m_level_vertex_id, npc.m_game_vertex_id,
           npc.id
         )
-        table.insert(
-          items[ npc.id ],
-          {
-            id    = sobj.id,
-            lname = object_level_name( npc ),
-            name  = sobj:name(),
-          }
-        )
+        sobj = alife():object( sobj.id )
+        dsh_alife.add_item( sobj )
         ammo[ sect ] = {
           [ "inuse" ] = true,
           [ "objs"  ] = { sobj },
