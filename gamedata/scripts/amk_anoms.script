@@ -1030,27 +1030,16 @@ function after_blow_on()
       end
     end
   )
-  se_respawn.iterate_respawners(
+  dsh_alife.reinit()
+  dsh_alife.iterate_items(
     function( sobj )
       if object_level_name( sobj ) == lname then
         forbidden_lvids[ sobj.m_level_vertex_id ] = true
         table.insert( forbidden_pos, sobj.position )
       end
-    end
+    end,
+    65535 -- на земле
   )
-  for id = 1, 65534 do
-    local sobj = alife():object( id )
-    if sobj then
-      if object_level_name( sobj ) == lname then
-        forbidden_lvids[ sobj.m_level_vertex_id ] = true
-        table.insert( forbidden_pos, sobj.position )
-      end
-    end
-  end
-  -- for _, sobj in ipairs( get_all_mobs( lname ) ) do
-  --   forbidden_lvids[ sobj.m_level_vertex_id ] = true
-  --   table.insert( forbidden_pos, sobj.position )
-  -- end
   if level_vertexes[ lname ] and level_anoms[ lname ] then
     generate_anoms()
     move_mgr.invalidate_pp_accessibility()
@@ -1100,29 +1089,17 @@ function pre_blow_off()
       end
     end
   )
-  se_respawn.iterate_respawners(
+  dsh_alife.iterate_items(
     function( sobj )
-      if object_level_name( sobj ) == lname then
-        forbidden_lvids[ sobj.m_level_vertex_id ] = true
-        table.insert( forbidden_pos, sobj.position )
-      end
-    end
-  )
-  for id = 1, 65534 do
-    local sobj = alife():object( id )
-    if sobj then
       if is_generated_anomaly( sobj ) then
-        alife():release( sobj, true )
+        dsh_alife.release( sobj )
       elseif object_level_name( sobj ) == level.name() then
         forbidden_lvids[ sobj.m_level_vertex_id ] = true
         table.insert( forbidden_pos, sobj.position )
       end
-    end
-  end
-  -- for _, sobj in ipairs( get_all_mobs( level.name() ) ) do
-  --   forbidden_lvids[ sobj.m_level_vertex_id ] = true
-  --   table.insert( forbidden_pos, sobj.position )
-  -- end
+    end,
+    65535 -- на земле
+  )
 end
 
 
@@ -1145,9 +1122,8 @@ function cleanup_arts()
       end
     end
   end
-  for id = 1, 65534 do
-    local sobj = alife():object( id )
-    if sobj and sobj.parent_id == 65535 then
+  dsh_alife.iterate_items(
+    function( sobj )
       local sect = sobj:section_name()
       local prop = amk_utils.get_item_props( sect )
       if prop.af_base then sect = prop.af_base end
@@ -1161,11 +1137,12 @@ function cleanup_arts()
             and not dsh.is_handmade_artefact( sobj )
           )
         then
-          alife():release( sobj, true )
+          dsh_alife.release( sobj )
         end
       end
-    end
-  end
+    end,
+    65535 -- на земле
+  )
   for k, v in pairs( amk_offline_alife.off_npcs ) do
     v.artefacts = {}
   end
@@ -1329,10 +1306,8 @@ function randomize_arts()
       end
     end
   end
-  local is_relocating = true
-  for id = 1, 65534 do
-    local sobj = alife():object( id )
-    if sobj and sobj.parent_id == 65535 then
+  dsh_alife.iterate_items(
+    function( sobj )
       local sect  = sobj:section_name()
       local lname = object_level_name( sobj )
       if lname and lname == level.name() then
@@ -1342,47 +1317,38 @@ function randomize_arts()
           known_arts[ lname ] and known_arts[ lname ][ sect ]
           and not dsh.is_handmade_artefact( sobj )
         then
-          local cur_lv  = sobj.m_level_vertex_id
-          local cur_pos = sobj.position
-          if is_relocating then
-            for i = 1, 100 do
-              local pos, new_gv, new_lv = calc_new_free_pos(
-                lname,
-                function( np )
-                  return
-                    np:distance_to( db.actor:position() ) > 50
-                    and np:distance_to( sobj.position ) > 50
-                end
-              )
-              if pos then
-                alife():teleport_object( "", pos, new_lv, new_gv, sobj.id )
-                cur_lv  = new_lv
-                cur_pos = pos
-                cnt     = cnt + 1
-                break
-              elseif pos == false then
-                log2(
-                  "[%s]: stop relocation process here: %s, current art is %s",
-                  script_name(), lname, sobj:name()
-                )
-                is_relocating = false
-                break
+          for i = 1, 100 do
+            local pos, new_gv, new_lv = calc_new_free_pos(
+              lname,
+              function( np )
+                return
+                  np:distance_to( db.actor:position() ) > 50
+                  and np:distance_to( sobj.position ) > 50
               end
+            )
+            if pos then
+              alife():teleport_object( "", pos, new_lv, new_gv, sobj.id )
+              forbidden_lvids[ new_lv ] = true
+              table.insert( forbidden_pos, pos )
+              cnt = cnt + 1
+              break
+            elseif pos == false then
+              log2(
+                "[%s]: stop relocation process here: %s, current art is %s",
+                script_name(), lname, sobj:name()
+              )
+              return false
             end
           end
-          forbidden_lvids[ cur_lv ] = true
-          table.insert( forbidden_pos, cur_pos )
-        elseif dsh.is_artefact( sobj:section_name() ) then
-          forbidden_lvids[ sobj.m_level_vertex_id ] = true
-          table.insert( forbidden_pos, sobj.position )
         end
       end
-    end
-  end
+    end,
+    65535 -- на земле
+  )
   pt:stop()
   log2(
-    "[%s]: artefacts randomized, time spent = %s",
-    script_name(), pt:time()
+    "[%s]: %s artefacts randomized, time spent = %s",
+    script_name(), cnt, pt:time()
   )
 end
 
