@@ -1227,107 +1227,110 @@ function blowout_modif_arts()
   local arts = get_art_levels()
   local step = ( 1 + level.get_game_difficulty() ) / 10
   local create_later = {}
-  for i = 1, 65534 do
-    local sobj = alife():object( i )
-    if sobj and is_artefact( sobj:section_name() ) then
-      local sect      = sobj:section_name()
-      local is_af_dyn = string.find( sect, "_dyn[2-5]d" ) and true or false
-      if
-        is_af_dyn
-        or ( arts[ sect ] and table.getn( arts[ sect ].next ) < 2 )
-      then                      -- подходящий артефакт
-        local modifit = false
-        local lname   = object_level_name( sobj )
-        if has_alife_info( "testsak_" .. lname ) then
-          -- если на этой локации артефакты генерировались, то можно вырождать.
-          -- Иначе пусть лежат в тайниках или где их там заспаунили и ждут.
-          modifit = true
-        end
-        if modifit and sobj.parent_id ~= 0 and sobj.parent_id ~= 65535 then
-          local p_sobj = alife():object( sobj.parent_id )
-          if
-            p_sobj and IsStalker( p_sobj )
-            and ( not p_sobj:can_be_spawned() )
-          then
-            -- если неписю еще не разрешено выходить в онлайн, то и нечего
-            -- модифицировать его артефакты. Вот так и достается нам с
-            -- трупика Шныры булыжник.
-            modifit = false
+  dsh_alife.iterate_items(
+    function( sobj )
+      if is_artefact( sobj:section_name() ) then
+        local sect      = sobj:section_name()
+        local is_af_dyn = string.find( sect, "_dyn[2-5]d" ) and true or false
+        if
+          is_af_dyn
+          or ( arts[ sect ] and table.getn( arts[ sect ].next ) < 2 )
+        then                      -- подходящий артефакт
+          local modifit = false
+          local lname   = object_level_name( sobj )
+          if has_alife_info( "testsak_" .. lname ) then
+            -- если на этой локации артефакты генерировались, то можно вырождать.
+            -- Иначе пусть лежат в тайниках или где их там заспаунили и ждут.
+            modifit = true
           end
-        end
-        if modifit then
-          local cond, pk, data
-          local obj = level.object_by_id( sobj.id )
-          if obj then
-            cond = obj:condition()
-          else
-            pk = get_netpk( sobj, 1 )
-            if pk:isOk() then
+          if modifit and sobj.parent_id ~= 0 and sobj.parent_id ~= 65535 then
+            local p_sobj = alife():object( sobj.parent_id )
+            if
+              p_sobj and IsStalker( p_sobj )
+              and ( not p_sobj:can_be_spawned() )
+            then
+              -- если неписю еще не разрешено выходить в онлайн, то и
+              -- нечего модифицировать его артефакты. Вот так и
+              -- достается нам с трупика Шныры булыжник.
+              modifit = false
+            end
+          end
+          if modifit then
+            local cond, pk, data
+            local obj = level.object_by_id( sobj.id )
+            if obj then
+              cond = obj:condition()
+            else
+              pk = get_netpk( sobj, 1 )
+              ASSERT(
+                ( pk and pk:isOk() ), "can't read netpacket of %s", sobj:name()
+              )
               data = pk:get()
               cond = data.condition
             end
-          end
-          local make_buliz = "af_buliz"
-          if is_af_dyn then
-            make_buliz = string.gsub(
-              sect, "_dyn(%d)d",
-              function ( d )
-                return "_dyn" .. ( tonumber( d ) - 1 ) .. "d"
+            local make_buliz = "af_buliz"
+            if is_af_dyn then
+              make_buliz = string.gsub(
+                sect, "_dyn(%d)d",
+                function ( d )
+                  return "_dyn" .. ( tonumber( d ) - 1 ) .. "d"
+                end
+              )
+            elseif cond then
+              if cond >= 0.01 then
+                make_buliz = false
+                cond = cond - ( math.random() * step )
+                if cond <= 0 then cond = 0 end
+                if obj then
+                  dsh.set_condition( obj, cond )
+                else
+                  data.condition = cond
+                  pk:set( data )
+                end
               end
-            )
-          elseif cond then
-            if cond >= 0.01 then
-              make_buliz = false
-              cond = cond - ( math.random() * step )
-              if cond <= 0 then cond = 0 end
-              if obj then
-                dsh.set_condition( obj, cond )
+            end
+            if make_buliz then
+              local t = {}
+              if sobj.parent_id == 65535 then
+                t.args = {
+                  make_buliz, sobj.position,
+                  sobj.m_level_vertex_id, sobj.m_game_vertex_id
+                }
               else
-                data.condition = cond
-                pk:set( data )
+                t.args = {
+                  make_buliz, sobj.position,
+                  sobj.m_level_vertex_id, sobj.m_game_vertex_id,
+                  sobj.parent_id
+                }
               end
+              if make_buliz ~= "af_buliz" then
+                t.cond   = cond
+                t.online = obj and true or false
+              end
+              table.insert( create_later, t )
+              dsh_alife.release( sobj )
             end
-          end
-          if make_buliz then
-            local t = {}
-            if sobj.parent_id == 65535 then
-              t.args = {
-                make_buliz, sobj.position,
-                sobj.m_level_vertex_id, sobj.m_game_vertex_id
-              }
-            else
-              t.args = {
-                make_buliz, sobj.position,
-                sobj.m_level_vertex_id, sobj.m_game_vertex_id,
-                sobj.parent_id
-              }
-            end
-            if make_buliz ~= "af_buliz" then
-              t.cond   = cond
-              t.online = obj and true or false
-            end
-            table.insert( create_later, t )
-            alife():release( sobj )
           end
         end
-      end
+      end                -- if is_artefact( sobj:section_name() ) then
     end
-  end
+  )
   for _, t in ipairs( create_later ) do
     local sobj = alife():create( unpack( t.args ) )
+    sobj = alife():object( sobj.id )
+    dsh_alife.add_item( sobj )
     if t.cond then
       local pk = get_netpk( sobj, 1 )
-      if pk:isOk() then
-        local data = pk:get()
-        data.condition = t.cond
-        pk:set( data )
-        if t.online then
-          level.client_spawn_manager():add(
-            sobj.id, -1, function( id, obj )
-              obj:set_condition( t.cond )
-            end
-          )
-        end
+      ASSERT( ( pk and pk:isOk() ), "can't read netpacket of %s", sobj:name() )
+      local data = pk:get()
+      data.condition = t.cond
+      pk:set( data )
+      if t.online then
+        level.client_spawn_manager():add(
+          sobj.id, -1, function( id, obj )
+            obj:set_condition( t.cond )
+          end
+        )
       end
     end
   end
