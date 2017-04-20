@@ -6,19 +6,19 @@ end
 
 
 local parent_by_story = {
-  [  003 ] = "trader",
+  [    3 ] = "trader",
+  [    4 ] = "shustriy",
+  [    6 ] = "wolf",
   [  500 ] = "barman",
-  [  902 ] = "ecolog",
-  [  507 ] = "dolg",
-  [  707 ] = "freedom",
-  [  006 ] = "wolf",
-  [  004 ] = "shustriy",
-  [  510 ] = "drunk_dolg",
   [  504 ] = "hunter",
-  [  518 ] = "zastava_commander",
   [  506 ] = "petrenko",
-  [  607 ] = "lisiy",
+  [  507 ] = "dolg",
+  [  510 ] = "drunk_dolg",
   [  515 ] = "mercenary",
+  [  518 ] = "zastava_commander",
+  [  607 ] = "lisiy",
+  [  707 ] = "freedom",
+  [  902 ] = "ecolog",
   [ 9613 ] = "green",
 }
 
@@ -33,9 +33,9 @@ local story_by_parent = {
   lisiy             = 607,
   mercenary         = 515,
   petrenko          = 506,
-  shustriy          = 004,
-  trader            = 003,
-  wolf              = 006,
+  shustriy          =   4,
+  trader            =   3,
+  wolf              =   6,
   zastava_commander = 518,
 }
 
@@ -57,6 +57,15 @@ local cycle_task = {
   [ "kill_stalker"    ] = true,
   [ "monster_part"    ] = true,
 }
+
+local map_locations = {
+  [ "defend_lager"    ] = "defend_lager_location",
+  [ "eliminate_lager" ] = "eliminate_lager_location",
+  [ "find_item"       ] = "find_item_location",
+  [ "kill_stalker"    ] = "kill_stalker_location",
+}
+
+local pda_task = xr_sound.get_safe_sound_object( "device\\pda\\pda_objective" )
 
 
 local hash_to_id = {}
@@ -546,11 +555,11 @@ function CRandomTask:action_give_task( actor, npc, p1, p2 )
   end
   if task_desc.type == "eliminate_lager" then
     objective:set_map_hint( task_desc.text )
-    objective:set_map_location( "eliminate_lager_location" )
+    objective:set_map_location( map_locations[ task_desc.type ] )
     objective:set_object_id( task_desc.selected_target )
   elseif task_desc.type == "defend_lager" then
     objective:set_map_hint( task_desc.text )
-    objective:set_map_location( "defend_lager_location" )
+    objective:set_map_location( map_locations[ task_desc.type ] )
     objective:set_object_id( task_desc.selected_target )
     local defend_object = alife():object( task_desc.selected_target )
     local sm_ini = defend_object:spawn_ini()
@@ -559,7 +568,7 @@ function CRandomTask:action_give_task( actor, npc, p1, p2 )
     )
   elseif task_desc.type == "kill_stalker" then
     objective:set_map_hint( task_desc.text )
-    objective:set_map_location( "kill_stalker_location" )
+    objective:set_map_location( map_locations[ task_desc.type ] )
     objective:set_object_id( task_desc.selected_target )
     -- Добавим id сталкера в список целей
     if task_desc.target_dialog then
@@ -569,7 +578,7 @@ function CRandomTask:action_give_task( actor, npc, p1, p2 )
     end
   elseif task_desc.type == "find_item" then
     objective:set_map_hint( task_desc.text )
-    objective:set_map_location( "find_item_location" )
+    objective:set_map_location( map_locations[ task_desc.type ] )
     objective:set_object_id( task_desc.selected_target )
   end
   objective:add_complete_func( "task_manager.task_complete" )
@@ -1776,4 +1785,70 @@ end
 
 function is_task_active( id )
   return get_random_task():is_task_active( id )
+end
+
+
+class "task_state_timer" ( ogse_qt.quick_timer )
+function task_state_timer:__init( t )
+  self.hiprio      = true
+  self.random_task = get_random_task()
+  self.sm          = ogse_signals.get_mgr()
+  self.script_name = "task_manager.task_state_timer." .. t.name
+  self.task_info   = t
+  if t.selected_target then
+    local sobj = alife():object( t.selected_target )
+    ASSERT(
+      sobj,
+      "[%s]: %s: selected_target %s not found",
+      script_name(), t.name, t.selected_target
+    )
+    self.hiprio = object_level_name( sobj ) == level.name()
+  end
+  t.timer = self
+end
+
+function task_state_timer:condition()
+  local ct = self.task_info.complex_type
+  return self.random_task:task_fail( ct, 0 )
+    or self.random_task:task_complete( ct, 1 )
+end
+
+function task_state_timer:action()
+  pda_task:play( db.actor, 0, sound_object.s2d )
+  local text_color
+  if self.task_info.status == "failed" then
+    text_color = "%c[255,255,0,0]"
+      .. game.translate_string( "general_fail_task" ) .. "\\n"
+  else
+    text_color = "%c[255,160,160,160]"
+      .. game.translate_string( "general_complete_task" ) .. "\\n"
+  end
+  local task_texture, task_rect = get_texture_info(
+    "ui_iconsTotal_" .. self.task_info.type, "ui_iconsTotal_stalker10"
+  )
+  local news_text = text_color
+    .. "%c[255,0,255,255]" .. game.translate_string( self.task_info.type )
+  db.actor:give_game_news(
+    news_text .. ": %c[255,127,255,255]"
+      .. game.translate_string( self.task_info.name ),
+    task_texture, task_rect, 0, 5000
+  )
+  local hud = get_hud()
+  hud:AddCustomStatic( "main_task", true )
+  hud:GetCustomStatic( "main_task" ):wnd():SetTextST( news_text )
+  hud:GetCustomStatic( "main_task" ).m_endTime = time_global() / 1000 + 7
+  if map_locations[ self.task_info.type ] then
+    level.map_remove_object_spot(
+      self.task_info.selected_target, map_locations[ self.task_info.type ]
+    )
+  end
+  self.task_info.timer = nil
+end
+
+function task_state_timer:update()
+  if self.hiprio then
+    self.sm:reschedule( math.random( 1000,  2000 ) )
+  else
+    self.sm:reschedule( math.random( 5000, 10000 ) )
+  end
 end
