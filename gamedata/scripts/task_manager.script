@@ -1,7 +1,8 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
-  sm:subscribe({ signal = "on_save", fun = this.save })
+  sm:subscribe({ signal = "on_save",  fun = this.save     })
+  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
 end
 
 
@@ -507,12 +508,10 @@ end
 function CRandomTask:active_parent_task( actor, npc )
   local parent = self:get_parent( npc )
   for k, v in pairs( self.active_task_by_type ) do
+    local t = self.task_info[ v ]
     if
-      self.task_info[ v ].parent == parent
-      and (
-        self.task_info[ v ].status == "selected"
-        or self.task_info[ v ].status == "completed"
-      )
+      t.parent == parent
+      and ( t.status == "selected" or t.status == "completed" )
     then
       return true
     end
@@ -525,10 +524,8 @@ end
 function CRandomTask:have_completed_job( actor, npc )
   local parent = self:get_parent( npc )
   for k, v in pairs( self.active_task_by_type ) do
-    if
-      self.task_info[ v ].parent == parent
-      and self.task_info[ v ].status == "completed"
-    then
+    local t = self.task_info[ v ]
+    if t.parent == parent and t.status == "completed" then
       return true
     end
   end
@@ -536,8 +533,49 @@ function CRandomTask:have_completed_job( actor, npc )
 end
 
 
---' Выдача квеста игроку
+-- Выдача квеста игроку
 function CRandomTask:action_give_task( actor, npc, p1, p2 )
+  local task_id = self.task_id_by_yes_phrase_id[ p2 ]
+  local t = self.task_info[ task_id ]
+  -- Выбираем текущую цель квеста
+  if t.target_objects then
+    local n = table.getn( t.target_objects )
+    t.selected_target = t.target_objects[ math.random( n ) ]
+  end
+  if t.type == "defend_lager" then
+    local defend_object = alife():object( t.selected_target )
+    local sm_ini        = defend_object:spawn_ini()
+    t.defend_target = utils.cfg_get_number(
+      sm_ini, "random_task", "defend_target", nil, true
+    )
+  elseif t.type == "kill_stalker" then
+    -- Добавим id сталкера в список целей
+    if t.target_dialog then
+      amk_add_target_id_to_kill_targets(
+        t.selected_target, t.target_dialog, task_id
+      )
+    end
+  end
+  if map_locations[ t.type ] and t.selected_target then
+    level.map_add_object_spot_ser(
+      t.selected_target, map_locations[ task_desc.type ], t.text
+    )
+  end
+  -- дизаблим все остальные задания данного типа, так как игрок не
+  -- может одновременно обладать двумя заданиями одного типа.
+  t.status = "selected"
+  self.active_task_by_type[ t.complex_type ] = task_id
+  local by_complex_type = self.task_id_by_complex_type[ t.complex_type ]
+  for _, k in ipairs( by_complex_type ) do
+    self.task_info[ k ].enabled = false
+  end
+  t.timer = task_state_timer( t )
+  t.timer:start()
+end
+
+
+-- Выдача движкового задания
+function CRandomTask:action_give_task_engine( actor, npc, p1, p2 )
   local task      = CGameTask()
   local task_id   = self.task_id_by_yes_phrase_id[ p2 ]
   local task_desc = self.task_info[ task_id ]
@@ -643,9 +681,8 @@ end
 
 -- Проверяем, не выполнен ли таск
 function CRandomTask:task_complete( p1, p2 )
-  if not db.actor then return false end
-  local sel_task = self.task_info[ self.active_task_by_type[ p1 ] ]
-  if sel_task == nil then
+  local t = self.task_info[ self.active_task_by_type[ p1 ] ]
+  if not t then
     log1( "!!!" )
     print_table_inlog( self.active_task_by_type )
     log1( "!!!" )
@@ -654,36 +691,36 @@ function CRandomTask:task_complete( p1, p2 )
   end
 
   if p2 == 0 then
-    if not sel_task.need_return and sel_task.status == "completed" then
-      sel_task.last_task_time = game.get_game_time()
+    if ( not t.need_return ) and t.status == "completed" then
+      t.last_task_time = game.get_game_time()
       return true
     end
-    if sel_task.status == "rewarded" then
-      sel_task.last_task_time = game.get_game_time()
+    if t.status == "rewarded" then
+      t.last_task_time = game.get_game_time()
       return true
     end
   end
 
   if p2 == 1 then
-    if string.find( p1, "eliminate_lager" ) ~= nil then
-      local oo = alife():object( sel_task.selected_target )
+    if t.type == "eliminate_lager" then
+      local oo = alife():object( t.selected_target )
       if oo and oo.gulag:get_population_comed() == 0 then
-        sel_task.status = "completed"
-        if sel_task.info then
-          db.actor:give_info_portion( sel_task.info )
+        t.status = "completed"
+        if t.info then
+          db.actor:give_info_portion( t.info )
         end
         return true
       end
-    elseif string.find( p1, "defend_lager" ) ~= nil then
-      if xr_gulag.getGulagPopulationComed( sel_task.defend_target ) == 0 then
-        sel_task.status = "completed"
+    elseif t.type == "defend_lager" then
+      if xr_gulag.getGulagPopulationComed( t.defend_target ) == 0 then
+        t.status = "completed"
         return true
       end
-    elseif string.find( p1, "kill_stalker" ) ~= nil then
-      local oo = alife():object( sel_task.selected_target )
+    elseif t.type == "kill_stalker" then
+      local oo = alife():object( t.selected_target )
       -- Проверка бага
       if oo == nil then
-        log2( "selected_target = %s", tostring( sel_task.selected_target ) )
+        log2( "selected_target = %s", tostring( t.selected_target ) )
         abort(
           "OBJ = nil for task %s", tostring( self.active_task_by_type[ p1 ] )
         )
@@ -696,23 +733,15 @@ function CRandomTask:task_complete( p1, p2 )
       end
       if oo and oo:alive() == false then
         -- Сталкер убит. Удаляем его ид из списка  целей
-        amk_remove_target_id_from_kill_targets( sel_task.selected_target )
-        sel_task.status = "completed"
+        amk_remove_target_id_from_kill_targets( t.selected_target )
+        t.status = "completed"
         return true
       end
-    elseif string.find( p1, "artefact" ) ~= nil then
-      if amk_utils.inventory_search( sel_task.target, 1 ) then
-        sel_task.status = "completed"
-        return true
-      end
-    elseif string.find( p1, "monster_part" ) ~= nil then
-      if amk_utils.inventory_search( sel_task.target, 1 ) then
-        sel_task.status = "completed"
-        return true
-      end
-    elseif string.find( p1, "find_item" ) ~= nil then
-      if amk_utils.inventory_search( sel_task.target, 1 ) then
-        sel_task.status = "completed"
+    elseif
+      t.type == "artefact" or t.type == "find_item" or t.type == "monster_part"
+    then
+      if amk_utils.inventory_search( t.target, 1 ) then
+        t.status = "completed"
         return true
       end
     end
@@ -725,8 +754,8 @@ end
 -- Проверяем, не профейлен ли таск
 function CRandomTask:task_fail( p1, p2 )
   if p2 == 0 then
-    local sel_task = self.task_info[ self.active_task_by_type[ p1 ] ]
-    if sel_task == nil then
+    local t = self.task_info[ self.active_task_by_type[ p1 ] ]
+    if not t then
       printf( "!!!" )
       print_table( self.active_task_by_type )
       printf( "!!!" )
@@ -735,21 +764,21 @@ function CRandomTask:task_fail( p1, p2 )
     end
 
     -- Проверяем что жив, выдавший квест.
-    local parent = alife():story_object( story_by_parent[ sel_task.parent ] )
+    local parent = alife():story_object( story_by_parent[ t.parent ] )
     if parent == nil or ( parent.alive ~= nil and not parent:alive() ) then
-      sel_task.status = "failed"
-      sel_task.last_task_time = game.get_game_time()
+      t.status = "failed"
+      t.last_task_time = game.get_game_time()
       return true
     end
 
-    if sel_task.status == "refused" or sel_task.status == "failed" then
-      sel_task.last_task_time = game.get_game_time()
+    if t.status == "refused" or t.status == "failed" then
+      t.last_task_time = game.get_game_time()
       return true
     end
-    if string.find( p1, "defend_lager" ) ~= nil then
-      if alife():object( sel_task.selected_target ).gulag:get_population_comed() == 0 then
-        sel_task.status = "failed"
-        sel_task.last_task_time = game.get_game_time()
+    if t.type == "defend_lager" then
+      if alife():object( t.selected_target ).gulag:get_population_comed() == 0 then
+        t.status = "failed"
+        t.last_task_time = game.get_game_time()
         return true
       end
     end
@@ -1074,43 +1103,42 @@ end
 function CRandomTask:task_reward( npc, actor, p1, p2 )
   local parent = self:get_parent( npc )
   local v = self.task_id_by_completed_phrase_id[ p2 ]
-
-  local task_desc = self.task_info[ v ]
-  if task_desc.status == "completed" and task_desc.parent == parent then
-    --' Забираем у игрока квестовый предмет.
+  local t = self.task_info[ v ]
+  if t.status == "completed" and t.parent == parent then
+    -- Забираем у игрока квестовый предмет.
     local can_finish = true
-    if task_desc.type == "artefact" then
-      if not amk_utils.inventory_search( task_desc.target, 1 ) then
+    if t.type == "artefact" then
+      if not amk_utils.inventory_search( t.target, 1 ) then
         can_finish = false
       else
         amk_utils.out_items_number({
-          [ task_desc.target ] = 1,
+          [ t.target ] = 1,
         })
       end
-    elseif task_desc.type == "monster_part" then
-      if not amk_utils.inventory_search( task_desc.target, 1 ) then
+    elseif t.type == "monster_part" then
+      if not amk_utils.inventory_search( t.target, 1 ) then
         can_finish = false
       else
         amk_utils.out_items_number({
-          [ task_desc.target ] = 1,
+          [ t.target ] = 1,
         })
       end
-    elseif task_desc.type == "find_item" then
-      if not amk_utils.inventory_search( task_desc.target, 1 ) then
+    elseif t.type == "find_item" then
+      if not amk_utils.inventory_search( t.target, 1 ) then
         can_finish = false
       else
         amk_utils.out_items_number({
-          [ task_desc.target ] = 1,
+          [ t.target ] = 1,
         })
       end
     end
     if can_finish == true then
-      self.task_info[ v ].status = "rewarded"
-      if task_desc.reward_money ~= nil then
-        dialogs.relocate_money( npc, task_desc.reward_money, "in" )
+      t.status = "rewarded"
+      if t.reward_money ~= nil then
+        dialogs.relocate_money( npc, t.reward_money, "in" )
       end
-      if task_desc.reward_item ~= nil then
-        for kk, vv in pairs( task_desc.reward_item ) do
+      if t.reward_item ~= nil then
+        for kk, vv in pairs( t.reward_item ) do
           if dsh.is_artefact( vv ) then
             local prop = amk_utils.get_item_props( vv )
             if prop.has_af_dyn then
@@ -1120,34 +1148,35 @@ function CRandomTask:task_reward( npc, actor, p1, p2 )
           local items = dialogs.relocate_item_section( npc, vv, "in" )
         end
       end
-      if task_desc.reward_reputation ~= nil then
-        db.actor:change_character_reputation( task_desc.reward_reputation )
+      if t.reward_reputation ~= nil then
+        db.actor:change_character_reputation( t.reward_reputation )
       end
-      if task_desc.reward_relation ~= nil then
-        for kk, vv in pairs( task_desc.reward_relation ) do
+      if t.reward_relation ~= nil then
+        for kk, vv in pairs( t.reward_relation ) do
           relation_registry.change_community_goodwill(
             kk, db.actor:id(), tonumber( vv )
           )
         end
       end
-      if task_desc.reward_rank ~= nil then
-        xr_statistic.add_actor_rank( task_desc.reward_rank * 2 )
+      if t.reward_rank ~= nil then
+        xr_statistic.add_actor_rank( t.reward_rank * 2 )
       end
-      if task_desc.reward_script ~= nil then
-        _G.task_manager[ task_desc.reward_script ]()
+      if t.reward_script ~= nil then
+        _G.task_manager[ t.reward_script ]()
       end
-      if cycle_task[ task_desc.type ] then
+      if cycle_task[ t.type ] then
         local koef = 0
-        if not has_alife_info( "stat_" .. task_desc.name ) then
+        if not has_alife_info( "stat_" .. t.name ) then
           koef = 1
-          db.actor:give_info_portion( "stat_" .. task_desc.name )
+          db.actor:give_info_portion( "stat_" .. t.name )
         end
-        actor_stats.add_points( "quests", task_desc.name, 1, koef )
+        actor_stats.add_points( "quests", t.name, 1, koef )
         archievements.acv_count_3event(
           "acv_ct",   500, "Наёмник",
           "acv_ct2", 1000, "Стаханов",
           "acv_ct3", 2000, "Папа Карло"
         )
+        self:task_callback( t.complex_type, 0, task.completed )
       end
     end
   end
@@ -1791,6 +1820,8 @@ end
 class "task_state_timer" ( ogse_qt.quick_timer )
 function task_state_timer:__init( t )
   self.hiprio      = true
+  self.notify      = t.type == "defend_lager"
+    or t.type == "eliminate_lager" or t.type == "kill_stalker"
   self.random_task = get_random_task()
   self.sm          = ogse_signals.get_mgr()
   self.script_name = "task_manager.task_state_timer." .. t.name
@@ -1804,7 +1835,6 @@ function task_state_timer:__init( t )
     )
     self.hiprio = object_level_name( sobj ) == level.name()
   end
-  t.timer = self
 end
 
 function task_state_timer:condition()
@@ -1814,6 +1844,21 @@ function task_state_timer:condition()
 end
 
 function task_state_timer:action()
+  if
+    self.task_info.status == "completed"
+    and not self.task_info.need_return
+  then
+    self.random_task:task_complete( ct, 0 )
+    self.random_task:task_callback( ct, 0, task.completed )
+  elseif self.task_info.status == "failed" then
+    self.random_task:task_callback( ct, 0, task.fail      )
+  end
+  if map_locations[ self.task_info.type ] then
+    level.map_remove_object_spot(
+      self.task_info.selected_target, map_locations[ self.task_info.type ]
+    )
+  end
+  if not self.notify then return end
   pda_task:play( db.actor, 0, sound_object.s2d )
   local text_color
   if self.task_info.status == "failed" then
@@ -1828,21 +1873,18 @@ function task_state_timer:action()
   )
   local news_text = text_color
     .. "%c[255,0,255,255]" .. game.translate_string( self.task_info.type )
-  db.actor:give_game_news(
-    news_text .. ": %c[255,127,255,255]"
-      .. game.translate_string( self.task_info.name ),
-    task_texture, task_rect, 0, 5000
-  )
+  local pda_text  = news_text .. ": %c[255,127,255,255]"
+    .. game.translate_string( self.task_info.name )
+  if db.actor:is_talking() then
+    db.actor:give_talk_message(
+      pda_text, task_texture, task_rect, "iconed_answer_item"
+    )
+  end
+  db.actor:give_game_news( pda_text, task_texture, task_rect, 0, 5000 )
   local hud = get_hud()
   hud:AddCustomStatic( "main_task", true )
   hud:GetCustomStatic( "main_task" ):wnd():SetTextST( news_text )
   hud:GetCustomStatic( "main_task" ).m_endTime = time_global() / 1000 + 7
-  if map_locations[ self.task_info.type ] then
-    level.map_remove_object_spot(
-      self.task_info.selected_target, map_locations[ self.task_info.type ]
-    )
-  end
-  self.task_info.timer = nil
 end
 
 function task_state_timer:update()
@@ -1851,4 +1893,18 @@ function task_state_timer:update()
   else
     self.sm:reschedule( math.random( 5000, 10000 ) )
   end
+end
+
+
+function on_spawn()
+  local cnt = 0
+  for k, v in pairs( self.active_task_by_type ) do
+    local t = self.task_info[ v ]
+    if not ( t.status == "completed" or t.status == "failed" ) then
+      t.timer = task_state_timer( t )
+      t.timer:start()
+      cnt = cnt + 1
+    end
+  end
+  log2( "[%s]: %s active tasks launched", script_name(), cnt )
 end
