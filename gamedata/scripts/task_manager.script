@@ -569,6 +569,13 @@ function CRandomTask:action_give_task( actor, npc, p1, p2 )
   for _, k in ipairs( by_complex_type ) do
     self.task_info[ k ].enabled = false
   end
+  if t.time then
+    local time = t.time > 365 and t.time or t.time * 86400
+    ogse_st_mgr.start_gtimer(
+      "task_manager.expire." .. t.name, time,
+      "task_manager.expire_task", t.name
+    )
+  end
   t.timer = task_state_timer( t )
   t.timer:start()
 end
@@ -662,20 +669,24 @@ end
 
 -- Отказ игроком от квеста
 function CRandomTask:action_refuse_task( actor, npc, p1, p2 )
-  local task_id   = self.task_id_by_yes_phrase_id[ p2 ]
-  local task_desc = self.task_info[ task_id ]
+  local task_id = self.task_id_by_yes_phrase_id[ p2 ]
+  local t = self.task_info[ task_id ]
   -- Делаем доступными все задания данного типа
-  task_desc.status = "refused"
+  t.status = "refused"
   -- Удаляем цель из списка
-  local by_type = self.active_task_by_type[ task_desc.complex_type ]
+  local by_type = self.active_task_by_type[ t.complex_type ]
   amk_remove_target_id_from_kill_targets(
     self.task_info[ by_type ].selected_target
   )
   self.task_info[ by_type ].selected_target = nil
-  local by_complex_type = self.task_id_by_complex_type[ task_desc.complex_type ]
+  local by_complex_type = self.task_id_by_complex_type[ t.complex_type ]
   for _, k in ipairs( by_complex_type ) do
     self.task_info[ k ].enabled = true
   end
+  t.timer.notify = false
+  t.timer:condition()
+  t.timer:action()
+  t.timer:stop()
 end
 
 
@@ -1858,6 +1869,11 @@ function task_state_timer:action()
       self.task_info.selected_target, map_locations[ self.task_info.type ]
     )
   end
+  if self.task_info.time then
+    ogse_st_mgr.get_timer(
+      "task_manager.expire." .. self.task_info.name
+    ):stop()
+  end
   if not self.notify then return end
   pda_task:play( db.actor, 0, sound_object.s2d )
   local text_color
@@ -1907,4 +1923,9 @@ function on_spawn()
     end
   end
   log2( "[%s]: %s active tasks launched", script_name(), cnt )
+end
+
+
+function expire_task( task_id )
+  get_random_task():make_task_failed( task_id )
 end
