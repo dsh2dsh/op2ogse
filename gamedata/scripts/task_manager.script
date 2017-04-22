@@ -1,8 +1,8 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
-  sm:subscribe({ signal = "on_save",  fun = this.save     })
-  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
+  sm:subscribe({ signal = "on_save", fun = this.save })
+  sm:subscribe({ signal = "on_first_update", fun = this.on_spawn })
 end
 
 
@@ -558,7 +558,7 @@ function CRandomTask:action_give_task( actor, npc, p1, p2 )
   end
   if map_locations[ t.type ] and t.selected_target then
     level.map_add_object_spot_ser(
-      t.selected_target, map_locations[ task_desc.type ], t.text
+      t.selected_target, map_locations[ t.type ], t.text
     )
   end
   -- дизаблим все остальные задания данного типа, так как игрок не
@@ -673,6 +673,10 @@ function CRandomTask:action_refuse_task( actor, npc, p1, p2 )
   local t = self.task_info[ task_id ]
   -- Делаем доступными все задания данного типа
   t.status = "refused"
+  t.timer.notify = false
+  t.timer:condition()
+  t.timer:action()
+  t.timer:stop()
   -- Удаляем цель из списка
   local by_type = self.active_task_by_type[ t.complex_type ]
   amk_remove_target_id_from_kill_targets(
@@ -683,10 +687,6 @@ function CRandomTask:action_refuse_task( actor, npc, p1, p2 )
   for _, k in ipairs( by_complex_type ) do
     self.task_info[ k ].enabled = true
   end
-  t.timer.notify = false
-  t.timer:condition()
-  t.timer:action()
-  t.timer:stop()
   if t.reward_reputation ~= nil then
     db.actor:change_character_reputation( -t.reward_reputation )
   end
@@ -1882,6 +1882,7 @@ function task_state_timer:condition()
 end
 
 function task_state_timer:action()
+  local ct = self.task_info.complex_type
   if
     self.task_info.status == "completed"
     and not self.task_info.need_return
@@ -1897,9 +1898,10 @@ function task_state_timer:action()
     )
   end
   if self.task_info.time then
-    ogse_st_mgr.get_timer(
-      "task_manager.expire." .. self.task_info.name
-    ):stop()
+    local tn = "task_manager.expire." .. self.task_info.name
+    if ogse_st_mgr.timer_exists( tn ) then
+      ogse_st_mgr.get_timer( tn ):stop()
+    end
   end
   if not self.notify then return end
   pda_task:play( db.actor, 0, sound_object.s2d )
@@ -1915,15 +1917,14 @@ function task_state_timer:action()
     "ui_iconsTotal_" .. self.task_info.type, "ui_iconsTotal_stalker10"
   )
   local news_text = text_color
-    .. "%c[255,0,255,255]" .. game.translate_string( self.task_info.type )
-  local pda_text  = news_text .. ": %c[255,127,255,255]"
+    .. "%c[255,127,255,255]"
     .. game.translate_string( self.task_info.name )
   if db.actor:is_talking() then
     db.actor:give_talk_message(
-      pda_text, task_texture, task_rect, "iconed_answer_item"
+      news_text, task_texture, task_rect, "iconed_answer_item"
     )
   end
-  db.actor:give_game_news( pda_text, task_texture, task_rect, 0, 5000 )
+  db.actor:give_game_news( news_text, task_texture, task_rect, 0, 5000 )
   local hud = get_hud()
   hud:AddCustomStatic( "main_task", true )
   hud:GetCustomStatic( "main_task" ):wnd():SetTextST( news_text )
@@ -1940,16 +1941,25 @@ end
 
 
 function on_spawn()
-  local cnt = 0
-  for k, v in pairs( self.active_task_by_type ) do
-    local t = self.task_info[ v ]
-    if not ( t.status == "completed" or t.status == "failed" ) then
+  local cnt, launched_cnt = 0, 0
+  local tasks = get_random_task()
+  for k, v in pairs( tasks.active_task_by_type ) do
+    local t = tasks.task_info[ v ]
+    cnt = cnt + 1
+    if
+      not (
+        t.status == "completed" or t.status == "failed"
+        or db.actor:get_task_state( t.complex_type, 0 ) ~= task.task_dummy
+      )
+    then
       t.timer = task_state_timer( t )
       t.timer:start()
-      cnt = cnt + 1
+      launched_cnt = launched_cnt + 1
     end
   end
-  log2( "[%s]: %s active tasks launched", script_name(), cnt )
+  log2(
+    "[%s]: %s/%s active tasks launched", script_name(), launched_cnt, cnt
+  )
 end
 
 
