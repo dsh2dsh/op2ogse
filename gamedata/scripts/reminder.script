@@ -2,117 +2,144 @@
 -- Напоминания о невыполненных заданиях на территории
 
 local trader_names = {
-	["Escape_Trader"] = "Сидорович", 
-	["marsh_remont"] = "Василий"
+  [ "Escape_Trader" ] = "Сидорович", 
+  [ "marsh_remont"  ] = "Василий",
 }
 
-function remind()
-	local storyline = remind_storyline()
-	local random_task = task_manager.get_random_task():remind()
-	if not storyline and not random_task then
-		no_reminds()
-	end
-	xr_sound.get_safe_sound_object([[device\pda\pda_tip]]):play(db.actor, 0, sound_object.s2d)
+
+function attach( sm )
+  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
 end
+
+
+function on_spawn()
+  load_storylines()
+end
+
+
+local storylines = {}
+function load_storylines()
+  for i = 0, sys_ini:line_count( "reminder.tasks" ) - 1 do
+    -- получаем id задачи в task_id, номер подзадачи в o и стори ид персонажа
+    -- в sid
+    local result, id, sid = sys_ini:r_line( "reminder.tasks", i, "", "" )
+    local task_id, o = string.match( id, "(.+)[_](%d+)$" )
+    ASSERT(
+      ( task_id and o and sid ),
+      "[%s]: wrong format of reminder.tasks: %s", script_name(), id
+    )
+    table.insert( storylines, { task_id, tonumber( o ), sid } )
+  end
+end
+
+
+function remind()
+  local storyline   = remind_storyline()
+  local random_task = task_manager.get_random_task():remind()
+  if not ( storyline or random_task ) then
+    no_reminds()
+  end
+  xr_sound.get_safe_sound_object( "device\\pda\\pda_tip" )
+    :play( db.actor, 0, sound_object.s2d )
+end
+
 
 -- сюжетные задания
 function remind_storyline()
-	local result, id, task_id, o, od, sid, obj, t, txt, npc_name
-	local sms = {}
-	local sms_size = 0
-	local ini = ini_file("misc\\reminder.ltx")
-	local n = ini:line_count("tasks")
-	
-	for i=0,n-1 do
-		-- получаем id задачи в task_id, номер подзадачи в o и стори ид персонажа в sid
-		result, id, sid = ini:r_line("tasks",i,"","")
-		task_id, o = string.match(id, "(.+)[_](.+)")
-		o = tonumber(o)
-		od = o
-		--get_console():execute("load ~~~ read ini task_id: "..task_id..", sid: "..sid)
-		
-		if db.actor:get_task_state(task_id, o) == task.in_progress and story_ids[sid] then
---			get_console():execute("load ~~~ task_state task_id: "..task_id..", sid: "..sid)
-			obj = alife():story_object(story_ids[sid])
-			
---			if not obj.alive then
---				get_console():execute("load ~~~ not obj.alive section: "..obj:section_name()..", sid: "..sid)
---			end
-			
-			if obj and
-				(obj:clsid() == clsid.script_trader or obj:alive()) and
-				game_graph():vertex(obj.m_game_vertex_id):level_id() == alife():level_id()
-			then
-				--get_console():execute("load ~~~ obj on level task_id: "..task_id..", sid: "..sid)
-				-- формируем сообщение
-				t = CGameTask()
-				t:load(task_id)
-				
-				if o > 0 or all_subtasks_done(task_id, t) then
-					npc_name = get_npc_name(obj, sid)
-					if o == 0 then 
-						od = t:get_objectives_cnt()-1
-					end
+  local sms, sms_size = {}, 0
+  for _, v in ipairs( storylines ) do
+    local task_id, o, sid = unpack( v )
+    if
+      db.actor:get_task_state( task_id, o ) == task.in_progress
+      and story_ids[ sid ]
+    then
+      local obj = alife():story_object( story_ids[ sid ] )
+      if
+        obj
+        and ( obj:clsid() == clsid.script_trader or obj:alive() )
+        and game_graph():vertex( obj.m_game_vertex_id ):level_id() == alife():level_id()
+      then
+        -- формируем сообщение
+        local t = CGameTask()
+        t:load( task_id )
+        if o > 0 or all_subtasks_done( task_id, t ) then
+          local npc_name = get_npc_name( obj, sid )
+          if o == 0 then o = t:get_objectives_cnt() - 1 end
+          if not sms[ sid ] then 
+            sms[ sid ] = { name = get_npc_name( obj, sid ), txt = {} }
+          end
+          table. insert(
+            sms[ sid ].txt,
+            string.format(
+              "%%c[255,127,255,255]%s: %%c[default]%s",
+              game.translate_string( t:get_title() ),
+              game.translate_string( t:get_objective( o ):get_description() )
+            )
+          )
+          sms_size = sms_size + 1
+        end
+      end
+    end
+  end
 
-					if not sms[sid] then 
-						sms[sid] = {name = npc_name, txt = ""}
-						sms_size = sms_size+1
-					end
-					
-					--get_console():execute("load ~~~ task_id: "..task_id..", sid: "..sid..", o: "..o..", od: "..od..", sms[sid].name: "..sms[sid].name)
-					sms[sid].txt = sms[sid].txt.."%c[255,127,255,255]"..game.translate_string(t:get_title()).. ": %c[default]"..game.translate_string(t:get_objective(od):get_description()).."\\n"
-				end
-			end
-		end
-	end
-
-	-- Выдаем напоминания
-	if sms_size > 0 then
-		for k,v in pairs(sms) do
-			send_info("%c[255,0,255,255]"..v.name.."\\n%c[default]"..v.txt)
-		end
-	end
-	
-	return sms_size > 0
+  -- Выдаем напоминания
+  if sms_size > 0 then
+    for k, v in pairs( sms ) do
+      send_info(
+        string.format(
+          "%%c[255,0,255,255]%s\\n%%c[default]%s",
+          v.name, table.concat( v.txt, "\\n" )
+        )
+      )
+    end
+  end
+  return sms_size > 0
 end
+
 
 -- все ли подзадания выполнены?
-function all_subtasks_done(task_id, t)
-	for i=1,t:get_objectives_cnt()-2 do
-		if db.actor:get_task_state(task_id, i) ~= task.completed then
-			return false
-		end
-	end
-	
-	return true
+function all_subtasks_done( task_id, t )
+  for i = 1, t:get_objectives_cnt() - 2 do
+    if db.actor:get_task_state( task_id, i ) ~= task.completed then
+      return false
+    end
+  end
+  return true
 end
 
+
 -- имя квестовика
-function get_npc_name(obj, sid)
-	if obj:clsid() == clsid.script_trader then
-		return trader_names[sid]
-	else
-		local tbl = amk.read_stalker_params(obj)
-		return tbl.charname
-	end
+function get_npc_name( obj, sid )
+  if obj:clsid() == clsid.script_trader then
+    return trader_names[ sid ]
+  else
+    local pk = get_netpk( obj, 1 )
+    ASSERT( ( pk and pk:isOk() ), "can't read netpacket of %s", obj:name() )
+    local data = pk:get()
+    return data.character_name
+  end
 end
+
 
 -- нечего напоминать
 function no_reminds()
-	send_info("%c[255,0,255,255]Напоминания:\\n%c[255,127,255,255]Нет активных заданий, по которым возможны напоминания%c[default]")
+  send_info(
+    "%c[255,0,255,255]Напоминания:\\n%c[255,127,255,255]Нет активных заданий, по которым возможны напоминания%c[default]"
+  )
 end
+
 
 -- выдача информации
-function send_info(info_text)
-	-- подбираем иконку
-	local x,y, pos
-	pos = string.find(info_text,"[default]",1,true)
-	if pos then
-		x,y = news_manager.get_sender_icon(string.sub(info_text,1,pos-5)..":")
-	else
-		x,y = 498,47
-	end
-
-	db.actor:give_game_news(info_text, "ui\\ui_iconsTotal", Frect():set(x,y,83,47), 0, 5000)
+function send_info( info_text )
+  -- подбираем иконку
+  local x, y = 498, 47
+  local pos  = string.find( info_text, "[default]", 1, true )
+  if pos then
+    x, y = news_manager.get_sender_icon(
+      string.sub( info_text, 1, pos - 5 ) ..":"
+    )
+  end
+  db.actor:give_game_news(
+    info_text, "ui\\ui_iconsTotal", Frect():set( x, y, 83, 47 ), 0, 5000
+  )
 end
-
