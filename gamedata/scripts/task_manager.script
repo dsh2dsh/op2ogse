@@ -706,13 +706,7 @@ end
 -- Проверяем, не выполнен ли таск
 function CRandomTask:task_complete( p1, p2 )
   local t = self.task_info[ self.active_task_by_type[ p1 ] ]
-  if not t then
-    log1( "!!!" )
-    print_table_inlog( self.active_task_by_type )
-    log1( "!!!" )
-    print_table_inlog(self.task_info)
-    return false
-  end
+  ASSERT( t, "[%s]: task not found: %s", script_name(), p1 )
 
   if p2 == 0 then
     if ( not t.need_return ) and t.status == "completed" then
@@ -779,13 +773,7 @@ end
 function CRandomTask:task_fail( p1, p2 )
   if p2 == 0 then
     local t = self.task_info[ self.active_task_by_type[ p1 ] ]
-    if not t then
-      printf( "!!!" )
-      print_table( self.active_task_by_type )
-      printf( "!!!" )
-      print_table( self.task_info )
-      return false
-    end
+    ASSERT( t, "[%s]: task not found: %s", script_name(), p1 )
 
     -- Проверяем что жив, выдавший квест.
     local parent = alife():story_object( story_by_parent[ t.parent ] )
@@ -918,8 +906,7 @@ function CRandomTask:check_task_props( task_id )
   -- Проверка по таймауту
   if
     t.last_task_time ~= nil
-    and
-    game.get_game_time():diffSec( t.last_task_time ) < t.idle_time
+    and game.get_game_time():diffSec( t.last_task_time ) < t.idle_time
   then
     t.enabled_props = false
     return
@@ -1214,7 +1201,12 @@ function CRandomTask:task_reward( npc, actor, p1, p2 )
           "acv_ct2", 1000, "Стаханов",
           "acv_ct3", 2000, "Папа Карло"
         )
-        self:task_callback( t.complex_type, 0, task.completed )
+        if
+          db.actor:get_task_state( t.complex_type, 0 ) ~= task.in_progress
+        then
+          self:task_complete( t.complex_type, 0 )
+          self:task_callback( t.complex_type, 0, task.completed )
+        end
       end
     end
   end
@@ -1428,7 +1420,7 @@ end
 
 --' Напоминания
 function CRandomTask:remind()
-  local sms = {}
+  local cnt, sms = 0, {}
   for k, v in pairs( self.active_task_by_type ) do
     local task_desc = self.task_info[ v ]
     if task_desc.status == "completed" then
@@ -1441,7 +1433,7 @@ function CRandomTask:remind()
       then
         -- формируем сообщение
         if not sms[ sid ] then
-          sms[ sid ] = { name = get_parent_name( parent, sid ), txt = "" }
+          sms[ sid ] = { name = get_parent_name( parent, sid ), txt = {} }
         end
         local txt_desc
         if
@@ -1453,9 +1445,15 @@ function CRandomTask:remind()
         else
           txt_desc = return_task_by_type[ task_desc.type ]
         end
-        sms[ sid ].txt = sms[ sid ].txt
-          .. "%c[255,127,255,255]" .. game.translate_string( task_desc.type )
-          .. ": %c[default]" .. game.translate_string( txt_desc ) .. "\\n"
+        table.insert(
+          sms[ sid ].txt,
+          string.format(
+            "%%c[255,127,255,255]%s: %%c[default]%s",
+            game.translate_string( task_desc.type ),
+            game.translate_string( txt_desc )
+          )
+        )
+        cnt = cnt + 1
       end
     elseif
       task_desc.status == "selected"
@@ -1468,14 +1466,17 @@ function CRandomTask:remind()
         local sid    = story_by_parent[ task_desc.parent ]
         local parent = alife():story_object( sid )
         if not sms[ sid ] then
-          sms[ sid ] = {
-            name = get_parent_name( parent, sid ),
-            txt  = ""
-          }
+          sms[ sid ] = { name = get_parent_name( parent, sid ), txt  = {} }
         end
-        sms[ sid ].txt = sms[ sid ].txt
-          .. "%c[255,127,255,255]" .. game.translate_string( task_desc.type )
-          .. ": %c[default]" .. game.translate_string( task_desc.name ) .. "\\n"
+        table.insert(
+          sms[ sid ].txt,
+          string.format(
+            "%%c[255,127,255,255]%s: %%c[default]%s",
+            game.translate_string( task_desc.type ),
+            game.translate_string( task_desc.name )
+          )
+        )
+        cnt = cnt + 1
       end
     end
   end
@@ -1483,9 +1484,13 @@ function CRandomTask:remind()
   -- Выдаем напоминания
   for k, v in pairs( sms ) do
     reminder.send_info(
-      "%c[255,0,255,255]" .. v.name .. "\\n%c[default]" .. v.txt
+      string.format(
+        "%%c[255,0,255,255]%s\\n%%c[default]%s",
+        v.name, table.concat( v.txt, "\\n" )
+      )
     )
   end
+  return cnt > 0
 end
 
 
@@ -1946,15 +1951,16 @@ function on_spawn()
   for k, v in pairs( tasks.active_task_by_type ) do
     local t = tasks.task_info[ v ]
     cnt = cnt + 1
-    if
-      not (
-        t.status == "completed" or t.status == "failed"
-        or db.actor:get_task_state( t.complex_type, 0 ) ~= task.task_dummy
-      )
-    then
-      t.timer = task_state_timer( t )
-      t.timer:start()
-      launched_cnt = launched_cnt + 1
+    if db.actor:get_task_state( t.complex_type, 0 ) ~= task.in_progress then
+      if t.status == "selected" then
+        t.timer = task_state_timer( t )
+        t.timer:start()
+        launched_cnt = launched_cnt + 1
+      elseif t.status == "rewarded" then
+        log2( "[%s]: fix lost task %s", script_name(), t.name )
+        tasks:task_complete( t.complex_type, 0 )
+        tasks:task_callback( t.complex_type, 0, task.completed )
+      end
     end
   end
   log2(
