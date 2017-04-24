@@ -1,5 +1,17 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
+function attach( sm )
+  sm:subscribe({
+    signal = "on_spawn_another_level", fun = this.on_spawn_another_level
+  })
+end
+
+
+function on_spawn_another_level( lname, pname )
+  ogse.delete_var( "news_main.do_seen_monster." .. lname )
+end
+
+
 local prob           = 0.35
 local prob_offline_trade = 0.1
 local prob_spawn_monster = 0.2
@@ -28,7 +40,7 @@ local timer_eternal_stalker      = 0 -- Последняя показанная новость о Семецком
 local timer_eternal_stalker_freq = 24 * 60
 local timer_def_spawn            = 0 -- Последняя новость с "красивым" спавном
 -- Как часто генерить новости с "красивым" спавном (игровые минуты)
-local timer_def_spawn_freq       = 15 * 60
+local timer_def_spawn_freq       = 24 * 60
 local timer_heli_showed          = 0 -- Последняя новость про вертолетик
 -- Как часто показывать новости про вертолетик (игровые минуты)
 local timer_heli_freq            = 10
@@ -1734,176 +1746,140 @@ end
 
 -- Видели монстров. Будем спавнить.
 function do_seen_monster()
-  local avail       = {}
   local name, sname = amk_names_lists.get_strings()
   local s_author    = name .. " " .. sname
   local o_author    = ""
   local icon        = "gen_info"
   local author_id
   local where       = ""
+
+  local avail = {}
   for k, v in pairs( news_data.do_seen_monster_templates ) do
     local enabled = v.enabled
     if enabled and v.has_info then
       enabled = false
       for _, info in ipairs( parse_names( v.has_info ) ) do
-        if has_alife_info( info ) then
+        if db.actor:has_info( info ) then
           enabled = true
           break
         end
       end
     end
-    if enabled then
-      -- Проверим, как там с режимом день\ночь
-      local bDayOk = true
-      for idx, cls in pairs( v.spawn ) do
-        local class = cls.class
-        if
-          news_data.class_templates[ class ]
-          and
-          #news_data.class_templates[ class ] > 0
-        then
-          class = news_data.class_templates[ class ][
-            math.random( table.getn( news_data.class_templates[ class ] ) )
-          ]
-        end
-        if is_creature_day(class) == false then
-          bDayOk = false
-          break
-        end
-      end
-      if v.alive then
-        local alive = tonumber( v.alive )
-        if alive and isAlive( alive ) == false then
-          bDayOk = false
-        end
-      end
-      if bDayOk == true then
-        table.insert( avail, k )
-      end
+    if
+      enabled
+      and not ogse.load_var_safe( "news_main.do_seen_monster." .. v.lname )
+    then
+      table.insert( avail, v )
     end
   end
+  if table.getn( avail ) == 0 then return end
 
-  if table.getn( avail ) > 0 then
-    local t = avail[ math.random( table.getn( avail ) ) ]
-    local z = news_data.do_seen_monster_templates[ t ]
-    if z then
-      -- Вытягиваем что надо.
-      local spawn = z.spawn
-      local text  = z.text
-      if z.author then
-        o_author = z.author
-        s_author = z.author
-      end
-      if z.icon then icon = z.icon end
-      if text and spawn and table.getn( spawn ) > 0 then
-        local b_ok = false
-        for l, m in pairs( spawn ) do
-          local class = m.class
-          local count = m.count
-          local point = m.point
-          local lv    = m.lv
-          local gv    = m.gv
-          if class and count and point and lv and gv then
-            for index = 1, count do
-              local x_offset = math.random( 5 )
-              local z_offset = math.random( 5 )
-              local new_pos = vector():set( point[ 1 ], point[ 2 ], point[ 3 ] )
-              new_pos.x = new_pos.x + x_offset
-              new_pos.z = new_pos.z + z_offset
-              if point_is_far( new_pos, lv, gv, dist_far ) == false then
-                -- Слишком близко.
-                return
-              end
-              local obj = dsh.create_free_monster( class, new_pos, lv, gv )
-              if obj then
-                if o_author == "" then
-                  local author = get_nearest_stalker(
-                    get_object_levelname( obj ), get_object_position( obj ),
-                    dist_seen, 0
-                  )
-                  if author and get_npc_name( author ) ~= "" then
-                    s_author  = get_npc_name( author )
-                    o_author  = s_author
-                    author_id = author.id
-                  end
-                end
-                if where == "" and string.find( text, "%$where" ) then
-                  local m_where = get_point_description(
-                    get_object_levelname( obj ), get_object_position( obj )
-                  )
-                  if m_where then
-                    text  = string.gsub( text, "%$where", m_where )
-                    where = m_where
-                  end
-                end
-                if IAmAMonster[ obj:clsid() ] then
-                  local tbl = amk.read_monster_params( obj )
-                  local cd  = amk.parse_custom_data( tbl.custom )
-                  if not cd.smart_terrains then cd.smart_terrains = {} end
-                  cd.smart_terrains.none = "true"
-                  -- Микроквест
-                  if
-                    z.reward
-                    and
-                    z.reward.c_min and z.reward.c_max
-                    and
-                    index == 1 and l == 1
-                  then
-                    if not cd.microquest then cd.microquest = {} end
-                    cd.microquest.reward_money = math.random(
-                      z.reward.c_min, z.reward.c_max
-                    ) * 100
-                    cd.microquest.reward_items = ""
-                    local rank = get_npc_rank( db.actor )
-                    if
-                      rank
-                      and
-                      news_data.miniquest_rewards
-                      and
-                      news_data.miniquest_rewards[ rank ]
-                    then
-                      for i = 1, 3 do
-                        local section = news_data.miniquest_rewards[ rank ][
-                          math.random(
-                            table.getn( news_data.miniquest_rewards[ rank ] )
-                          )
-                        ]
-                        if section then
-                          if cd.microquest.reward_items == "" then
-                            cd.microquest.reward_items = section
-                          else
-                            cd.microquest.reward_items = cd.microquest.reward_items .. "," .. section
-                          end
-                        end
-                      end
-                    end
-                    s_from = string.gsub( s_author, " ", "_" )
-                    cd.microquest.reward_from = s_from
-                    if _debug == true then
-                      amk.add_spot_on_map( obj.id, "red_location", text )
-                    end
-                  end
-                  tbl.custom = amk.gen_custom_data( cd )
-                  amk.write_monster_params( tbl, obj )
-                end
-                b_ok = true
+  local z = avail[ math.random( table.getn( avail ) ) ]
+  -- Вытягиваем что надо.
+  local spawn = z.spawn
+  local text  = z.text
+  if z.author then
+    o_author = z.author
+    s_author = z.author
+  end
+  if z.icon then icon = z.icon end
+  if text and spawn and table.getn( spawn ) > 0 then
+    local b_ok = false
+    for l, m in pairs( spawn ) do
+      local class = m.class
+      local count = m.count
+      local point = m.point
+      local lv    = m.lv
+      local gv    = m.gv
+      if class and count and point and lv and gv then
+        for index = 1, count do
+          local x_offset = math.random( 5 )
+          local z_offset = math.random( 5 )
+          local new_pos  = vector():set( point[ 1 ], point[ 2 ], point[ 3 ] )
+          new_pos.x = new_pos.x + x_offset
+          new_pos.z = new_pos.z + z_offset
+          if point_is_far( new_pos, lv, gv, dist_far ) == false then
+            -- Слишком близко.
+            return
+          end
+          local obj = dsh.create_free_monster( class, new_pos, lv, gv )
+          if obj then
+            if o_author == "" then
+              local author = get_nearest_stalker(
+                get_object_levelname( obj ), get_object_position( obj ),
+                dist_seen, 0
+              )
+              if author and get_npc_name( author ) ~= "" then
+                s_author  = get_npc_name( author )
+                o_author  = s_author
+                author_id = author.id
               end
             end
+            if where == "" and string.find( text, "%$where" ) then
+              local m_where = get_point_description(
+                get_object_levelname( obj ), get_object_position( obj )
+              )
+              if m_where then
+                text  = string.gsub( text, "%$where", m_where )
+                where = m_where
+              end
+            end
+            if IAmAMonster[ obj:clsid() ] then
+              local pk = get_netpk( obj, 1 )
+              ASSERT( pk and pk:isOk(), "failed get_netpk(): %s", obj:name() )
+              local data = pk:get()
+              local cd   = data.custom_data:getTable()
+              if not cd.smart_terrains then cd.smart_terrains = {} end
+              cd.smart_terrains.none = "true"
+              -- Микроквест
+              if
+                z.reward
+                and z.reward.c_min and z.reward.c_max
+                and index == 1 and l == 1
+              then
+                if not cd.microquest then cd.microquest = {} end
+                cd.microquest.reward_money = math.random(
+                  z.reward.c_min, z.reward.c_max
+                ) * 100
+                cd.microquest.reward_items = ""
+                local rank = get_npc_rank( db.actor )
+                if
+                  rank
+                  and news_data.miniquest_rewards
+                  and news_data.miniquest_rewards[ rank ]
+                then
+                  for i = 1, 3 do
+                    local section = news_data.miniquest_rewards[ rank ][
+                      math.random(
+                        table.getn( news_data.miniquest_rewards[ rank ] )
+                      )
+                    ]
+                    if section then
+                      if cd.microquest.reward_items == "" then
+                        cd.microquest.reward_items = section
+                      else
+                        cd.microquest.reward_items = cd.microquest.reward_items .. "," .. section
+                      end
+                    end
+                  end
+                end
+                s_from = string.gsub( s_author, " ", "_" )
+                cd.microquest.reward_from = s_from
+              end
+              data.custom_data:setTable( cd )
+              pk:set( data )
+            end
+            b_ok = true
           end
-        end
-        if b_ok == true then
-          if s_author ~= "" then
-            show_news( text, s_author, 0, 5, icon )
-          end
-          news_data.do_seen_monster_templates[ t ].enabled = false
-          timer_def_spawn = amk.game_minutes()
         end
       end
     end
-  else
-    if _debug == true then mylog( "do_seen_monster - no free news left." ) end
-    for k,v in pairs( news_data.do_seen_monster_templates ) do
-      v.enabled = true
+    if b_ok == true then
+      if s_author ~= "" then
+        show_news( text, s_author, 0, 5, icon )
+      end
+      timer_def_spawn = amk.game_minutes()
+      ogse.save_var( "news_main.do_seen_monster." .. z.lname, true, "bool" )
     end
   end
 end
@@ -2371,24 +2347,4 @@ function on_disconnect()
 	if (text) then
 		amk.send_tip(text, "Статус соединения:", 0, 15, "uniq")
 	end
-end
-
-function is_creature_day(obj_section)
-	--проверка на дневной/ночной режим
-	--local day_begin = utils.cfg_get_number(system_ini(), obj_section, "DayTime_Begin", nil, false, -1)
-	local day_begin = getIniValueFloat(obj_section, "DayTime_Begin", -1, nil)
-	--local day_end = utils.cfg_get_number(system_ini(), obj_section, "DayTime_End", nil, false, -1)
-	local day_end = getIniValueFloat(obj_section, "DayTime_End", -1, nil)
-	if day_begin~=-1 and day_end~=-1 then
-		local hrs = level.get_time_hours()
-		local de = day_end
-		if day_begin>day_end then
-			hrs = hrs+24
-			de=de+24
-		end
-		if not (hrs >= day_begin and hrs < de) then
-			return false
-		end
-	end
-	return true
 end
