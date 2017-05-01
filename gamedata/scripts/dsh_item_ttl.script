@@ -1,0 +1,117 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+local def_pause    = 3600       -- каждый игровой час
+local def_dec      = 1 / 168    -- уменьшать состояние на столько
+local def_fast_dec = 1 /  24    -- или на столько на земле или в трупике
+
+
+function attach( sm )
+  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
+end
+
+
+function on_spawn()
+  if ogse_st_mgr.timer_exists( "dsh_item_ttl.locked" ) then
+    local timer    = ogse_st_mgr.get_timer( "dsh_item_ttl.locked" )
+    local end_time = timer:get_end_time()
+    log2(
+      "[%s]: is waiting for the next step: %s",
+      script_name(), end_time:diffSec( game.get_game_time() )
+    )
+    return
+  end
+  local pt = profile_timer()
+  pt:start()
+  local keep_cnt, release_cnt = 0, 0
+  dsh_alife.iterate_items(
+    function( sobj )
+      local parent = get_parent_info( sobj.parent_id )
+      if parent.is_trader then return true end
+      local ttl = get_ttl_info( sobj )
+      if ttl.ttl then
+        local pk = get_netpk( sobj, 1 )
+        ASSERT(
+          ( pk and pk:isOk() ), "can't read netpacket of %s", sobj:name()
+        )
+        local data = pk:get()
+        if data.condition > 0 then
+          local dec = parent.is_fast and ttl.fast_dec or ttl.dec
+          if data.condition > dec then
+            data.condition = data.condition - dec
+          else
+            data.condition = 0
+          end
+          if data.condition > 0 or parent.keep_zero then
+            pk:set( data )
+            keep_cnt = keep_cnt + 1
+          else
+            dsh_alife.release( sobj )
+            release_cnt = release_cnt + 1
+          end
+        elseif not parent.keep_zero then
+          dsh_alife.release( sobj )
+          release_cnt = release_cnt + 1
+        end
+      end
+    end
+  )
+  ogse_st_mgr.start_gtimer(
+    "dsh_item_ttl.locked", def_pause, "dsh_item_ttl.unlock"
+  )
+  pt:stop()
+  log2(
+    "[%s]: %s/%s items processes: %s",
+    script_name(), release_cnt, keep_cnt, pt:time()
+  )
+end
+
+function unlock() end
+
+
+local cached_parent_info = {}
+function get_parent_info( id )
+  if not cached_parent_info[ id ] then
+    local t = {}
+    cached_parent_info[ id ] = t
+    if id == db.actor:id() then
+      t.fast      = false
+      t.is_trader = false
+      t.keep_zero = true
+    elseif id == 65535 then
+      t.fast      = true
+      t.is_trader = false
+      t.keep_zero = false
+    else
+      local sobj = alife():object( id )
+      ASSERT( sobj, "[%s]: sobj %s not found", script_name, id )
+      if sobj:clsid() == clsid.inventory_box then
+        t.fast      = false
+        t.is_trader = false
+        t.keep_zero = true
+      elseif IsStalker( sobj ) then
+        t.fast      = not sobj:alive()
+        t.is_trader = amk_offline_alife.is_trader( sobj )
+        t.keep_zero = false
+      elseif IsMonster( sobj ) then
+        t.fast      = not sobj:alive()
+        t.is_trader = sobj:alive()
+        t.keep_zero = false
+      end
+    end
+  end
+  return cached_parent_info[ id ]
+end
+
+
+local cached_ttl_info = {}
+function get_ttl_info( sobj )
+  local sect = sobj:section_name()
+  if not cached_ttl_info[ sect ] then
+    local t = {}
+    cached_ttl_info[ sect ] = t
+    t.fast_dec = def_fast_dec
+    t.dec      = def_dec
+    t.ttl      = get_bool( sect, "dsh_item_ttl.ttl", false )
+  end
+  return cached_ttl_info[ sect ]
+end
