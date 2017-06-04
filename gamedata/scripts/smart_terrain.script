@@ -146,6 +146,7 @@ end
 class "se_smart_terrain"( cse_alife_smart_zone )
 function se_smart_terrain:__init( section ) super( section )
   self.initialized = false
+  self.s_storage   = "" -- хранилище данных
   self.registred   = false
 end
 
@@ -190,6 +191,7 @@ function se_smart_terrain:STATE_Write( packet )
   else
     packet:w_bool( false )
   end
+  packet:w_stringZ( self.s_storage ) -- допишем его к пакету
 end
 
 
@@ -198,9 +200,7 @@ function se_smart_terrain:STATE_Read( packet, size )
   cse_alife_smart_zone.STATE_Read( self, packet, size )
   self:read_params()
   -- под LevelEditor не пытаться читать из пакета ничего
-  if editor() then
-    return
-  end
+  if editor() then return end
   self.duration_end  = utils.r_CTime( packet )
   self.idle_end      = utils.r_CTime( packet )
   if
@@ -233,6 +233,11 @@ function se_smart_terrain:STATE_Read( packet, size )
     end
     self.population_locked = packet:r_bool()
   end
+  if not packet:r_eof() then
+    -- если есть, загрузим из сохранённой строки
+    self.s_storage = packet:r_stringZ()
+  end
+  self:read_params_late()
 end
 
 
@@ -346,10 +351,6 @@ function se_smart_terrain:read_params()
   local sect = "smart_terrain"
   if ini:section_exist( "dsh" ) then
     self.dsh_active_profile = get_string( "dsh", "active_profile", nil, ini )
-    local xyzlg = get_string( "dsh", "xyzlg", nil, ini )
-    if xyzlg then
-      self.xyzlg = parse_nums( xyzlg )
-    end
   end
   if not ini:section_exist( sect ) then
     sect = "gulag1"
@@ -414,6 +415,17 @@ function se_smart_terrain:read_params()
     self.npc_info, self.gparams.capacity
   )
   self.gulag_working = false
+end
+
+
+function se_smart_terrain:read_params_late()
+  local s_storage = create_ini_file( self.s_storage )
+  if s_storage:section_exist( "dsh" ) then
+    local xyzlg = get_string( "dsh", "xyzlg", nil, s_storage )
+    if xyzlg then
+      self.xyzlg = parse_nums( xyzlg )
+    end
+  end
 end
 
 
@@ -1350,18 +1362,16 @@ function se_smart_terrain:update_xyzlg( from_lvid )
         or "nil"
     )
   )
-  local pk = get_netpk( self )
-  ASSERT( ( pk and pk:isOk() ), "can't read netpk of %s", self:name() )
-  local data = pk:get()
-  local cd   = data.custom_data:getTable()
+  local s_storage = m_netpk.custom_data( self.s_storage )
+  local cd        = s_storage:getTable()
   if self.xyzlg then
     if not cd.dsh then cd.dsh = {} end
     cd.dsh.xyzlg = table.concat( self.xyzlg, "," )
   else
     if cd.dsh and cd.dsh.xyzlg then cd.dsh.xyzlg = nil end
   end
-  data.custom_data:set( cd )
-  pk:set( data )
+  s_storage:setTable( cd )
+  self.s_storage = s_storage:getString()
 end
 
 
