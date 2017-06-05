@@ -452,7 +452,7 @@ function enable_generic_schemes( ini, npc, stype, section )
 end
 
 
-function activate_by_section(npc, ini, section, loading)
+function activate_by_section( npc, ini, section, loading )
   -- log2(
   --   "DEBUG: object '%s': activate_by_section: looking for section '%s'",
   --   npc:name(), section
@@ -1556,47 +1556,58 @@ function pstor_load_all( obj, reader )
 end
 
 
-function save_obj( obj, packet )
-  -- log2( "save_obj: obj:name()='%s'", obj:name() )
+local st_loaded_keys = {
+  [ "active_section" ] = "loaded_active_section",
+  [ "gulag_name"     ] = "loaded_gulag_name",
+  [ "ini_filename"   ] = "loaded_ini_filename",
+  [ "section_logic"  ] = "loaded_section_logic",
+}
+
+function get_st_loaded_value( st, k )
+  ASSERT(
+    st_loaded_keys[ k ],
+    "[%s]: '%s' not found in st_loaded_keys", script_name(), tostring( k )
+  )
+  return st[ st_loaded_keys[ k ] ]
+end
+
+function get_st_value( st, k )
+  return st[ k ]
+end
+
+
+local save_obj_keys = {
+  "ini_filename", "section_logic", "active_section", "gulag_name",
+}
+
+function save_obj( obj, packet, loaded )
+  -- log2(
+  --   "save_obj: obj:name() = '%s', loaded = %s",
+  --   obj:name(), tostring( loaded )
+  -- )
   local npc_id = obj:id()
   local st     = db.storage[ npc_id ]
   -- сообщение по побившейся логике физобъектов и вертолетов
-  local s_ini = obj:spawn_ini()
-  if not st.ini_filename and s_ini and logic_not_empty( obj, s_ini ) then
-    if obj:clsid() == clsid.script_phys or obj:clsid() == clsid.script_heli
+  local get_st = loaded and this.get_st_loaded_value or this.get_st_value
+  local s_ini  = obj:spawn_ini()
+  if
+    ( not get_st( st, "ini_filename" ) )
+    and s_ini and logic_not_empty( obj, s_ini )
+  then
+    if
+      obj:clsid() == clsid.script_phys or obj:clsid() == clsid.script_heli
     then
       abort(
-        "У объекта " .. obj:name()
-          .. " повисла логика. Удалите созданное только что сохранение и переиграйте с предыдущего."
+        "У объекта %s повисла логика. Удалите созданное только что сохранение и переиграйте с предыдущего.",
+        obj:name()
       )
-      if not db.debug then
-        amk.start_timer_no_save()
-      end
+      if not db.debug then amk.start_timer_no_save() end
     end
   end
-  -- log2( "save_obj: ini_filename='%s'",   utils.to_str( st.ini_filename   ) )
-  -- log2( "save_obj: section_logic='%s'",  utils.to_str( st.section_logic  ) )
-  -- log2( "save_obj: active_section='%s'", utils.to_str( st.active_section ) )
-  -- log2( "save_obj: gulag_name='%s'",     utils.to_str( st.gulag_name     ) )
-  if st.ini_filename then
-    packet:w_stringZ( st.ini_filename )
-  else
-    packet:w_stringZ( "" )
-  end
-  if st.section_logic then
-    packet:w_stringZ( st.section_logic )
-  else
-    packet:w_stringZ( "" )
-  end
-  if st.active_section then
-    packet:w_stringZ( st.active_section )
-  else
-    packet:w_stringZ( "" )
-  end
-  if st.gulag_name then
-    packet:w_stringZ( st.gulag_name )
-  else
-    packet:w_stringZ( "" )
+  for _, k in ipairs( save_obj_keys ) do
+    local v = get_st( st, k )
+    -- log2( "save_obj: %s = %s", k, utils.to_str( v ) )
+    packet:w_stringZ( v or "" )
   end
   save_logic( obj, packet )
   if st.active_scheme then
@@ -1632,10 +1643,9 @@ function load_obj(obj, reader)
   if ini_filename == "" then
     config = get_object_logic_file_name( npc_id )
     if config ~= "" and config ~= "nil" then
-      log1(
-        "!!WARNING! object [" .. obj:name()
-          .. "] can't load logic properly, using alternate way. File=["
-          .. tostring( config ) .. "]"
+      log2(
+        "!!WARNING! object [%s] can't load logic properly, using alternate way. File=[%s]",
+        obj:name(), tostring( config )
       )
       emergency_reload[ obj:name() ] = true
     end
