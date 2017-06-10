@@ -1,38 +1,44 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
---[=[
-Developed by AMK-Team
-File:  amkII_equip.script
-Copyright:  ©  AMK-Team 2009
-Author: Refresh
+--
+-- Developed by AMK-Team
+-- File:  amkII_equip.script
+-- Copyright:  ©  AMK-Team 2009
+-- Author: Refresh
 
-Opimized for OGSE 0.6.9.3 by KamikaZze
+-- Opimized for OGSE 0.6.9.3 by KamikaZze
 
-Since: 07.02.2009 20:15
-        -- Заготовка.
-Since: 08.02.2009 1:08
-        -- Написан класс.
-        -- Неписи переодеваются.
-Since: 08.02.2009 16:42
-        -- Модуль переодевания добавлен в схему gatherer и убран из апдейта. (оптимизация)      
-Since: 09.02.2009 1:28
-        -- Теперь нпс, надеваю экзу или научный костюм, выбирают подходящий под клан цвет.
-        -- Убрана итерация по инвентарю, айтим теперь передает тоже gatherer. (оптимизация)
---]=]
+-- Since: 07.02.2009 20:15
+--         -- Заготовка.
+-- Since: 08.02.2009 1:08
+--         -- Написан класс.
+--         -- Неписи переодеваются.
+-- Since: 08.02.2009 16:42
+--         -- Модуль переодевания добавлен в схему gatherer и убран из
+--         -- апдейта. (оптимизация)
+-- Since: 09.02.2009 1:28
+--         -- Теперь нпс, надеваю экзу или научный костюм, выбирают
+--         -- подходящий под клан цвет.  Убрана итерация по инвентарю,
+--         -- айтим теперь передает тоже gatherer. (оптимизация)
 
 function attach( sm )
-  sm:subscribe({ signal = "on_npc_death", fun = this.on_death     })
-  sm:subscribe({ signal = "on_npc_spawn", fun = this.on_npc_spawn })
+  sm:subscribe({ signal = "on_npc_death",       fun = this.on_death     })
+  sm:subscribe({ signal = "on_npc_net_destroy", fun = this.on_death     })
+  sm:subscribe({ signal = "on_npc_spawn",       fun = this.on_npc_spawn })
 end
 
 
 function on_npc_spawn( obj, binder )
-  if not obj:alive() then return end
-  local s = {
-    [ "signal" ] = "on_npc_update." .. obj:id(),
-    [ "fun"    ] = this.on_update,
+  if not can_refit( obj ) then return end
+  local subscribed = {
+    {
+      [ "signal" ] = "on_npc_update." .. obj:id(),
+      [ "fun"    ] = this.on_update,
+    },
   }
-  binder[ "amkii_equip.subscribed" ] = s
-  ogse_signals.get_mgr():subscribe( s )
+  binder[ "amkii_equip.subscribed" ] = subscribed
+  for _, s in ipairs( subscribed ) do
+    ogse_signals.get_mgr():subscribe( s )
+  end
 end
 
 
@@ -40,13 +46,16 @@ function on_death( obj )
   local binder     = obj:binded_object()
   local subscribed = binder[ "amkii_equip.subscribed" ]
   if subscribed then
-    ogse_signals.get_mgr():unsubscribe( subscribed )
+    for _, s in ipairs( subscribed ) do
+      ogse_signals.get_mgr():unsubscribe( s )
+    end
+    binder[ "amkii_equip.subscribed" ] = nil
   end
 end
 
 
 function on_update( obj )
-  ogse_signals.get_mgr():reschedule( math.random( 10000, 30000 ) )
+  ogse_signals.get_mgr():reschedule( math.random( 1000, 5000 ) )
   CAmkDisguise():PeriodicalUpdate( obj )
 end
 
@@ -59,11 +68,10 @@ local vis_to_sect      = amkii_equip_data.vis_to_sect
 local vis_find_to_sect = amkii_equip_data.vis_find_to_sect
 
 
---[=[
---      amkDel(oItem)
---      Удаляем обьект из симуляции.
---      @param  object  oItem           Обьект.
---]=]
+-- amkDel(oItem)
+-- Удаляем обьект из симуляции.
+-- @param  object  oItem           Обьект.
+
 function amkDel( oItem )
   local item = alife():object( oItem:id() )
   if item then
@@ -130,12 +138,11 @@ function CAmkDisguise:__init()
 end
 
 
---[=[
---      Update(oBinder)
---      Апдейтим сталкера на предмет крутого костюмо в инвентаре.
---      И если костюм есть и его визуал круче чем текущий, то переодеваем нпс.
---      @param  object  oBinder         Биндер сталкера.
---]=]
+-- Update(oBinder)
+-- Апдейтим сталкера на предмет крутого костюмо в инвентаре.
+-- И если костюм есть и его визуал круче чем текущий, то переодеваем нпс.
+-- @param  object  oBinder         Биндер сталкера.
+
 function CAmkDisguise:Update( oNpc, oItem )
   if not can_refit( oNpc ) then return end
   local com = oNpc:character_community()
@@ -164,9 +171,8 @@ function CAmkDisguise:Update( oNpc, oItem )
 end
 
 
-------------------------------
+
 -- переодевание
-------------------------------
 function refit_npc( npc, npc_id )
   local s_npc = alife():object( npc_id )
   s_npc.force_offline = true
@@ -193,9 +199,7 @@ function go_offline_watch_timer:action()
 end
 
 
-------------------------------
 -- периодическая перепроверка
-------------------------------
 function CAmkDisguise:PeriodicalUpdate( oNpc )
   if not can_refit( oNpc ) then return end
   if needs_refit[ oNpc:id() ] then
@@ -207,6 +211,27 @@ function CAmkDisguise:PeriodicalUpdate( oNpc )
     end
   end
   oNpc:iterate_inventory( check_armor, oNpc )
+  if not needs_refit[ oNpc:id() ] then
+    local binder     = oNpc:binded_object()
+    local subscribed = binder[ "amkii_equip.subscribed" ]
+    local sm         = ogse_signals.get_mgr()
+    if subscribed then
+      for _, s in ipairs( subscribed ) do
+        sm:unsubscribe( s )
+      end
+    end
+    subscribed = {
+      {
+        signal = "on_npc_item_take." .. oNpc:id(),
+        fun    = this.on_npc_item_take,
+      },
+    }
+    for _, s in ipairs( subscribed ) do
+      sm:subscribe( s )
+    end
+    binder[ "amkii_equip.subscribed" ] = s
+    log2( "[%s]: %s hasn't outfits, stopped", script_name(), oNpc:name() )
+  end
 end
 
 
@@ -214,4 +239,31 @@ function check_armor( npc, item )
   if npc and item and item:is_outfit() then
     CAmkDisguise():Update( npc, item )
   end
+end
+
+
+function on_npc_item_take( npc, obj, sobj )
+  if not obj:is_outfit() then return end
+  local binder     = npc:binded_object()
+  local subscribed = binder[ "amkii_equip.subscribed" ]
+  local sm         = ogse_signals.get_mgr()
+  if subscribed then
+    for _, s in ipairs( subscribed ) do
+      sm:unsubscribe( s )
+    end
+  end
+  subscribed = {
+    {
+      [ "signal" ] = "on_npc_update." .. obj:id(),
+      [ "fun"    ] = this.on_update,
+    },
+  }
+  binder[ "amkii_equip.subscribed" ] = subscribed
+  for _, s in ipairs( subscribed ) do
+    ogse_signals.get_mgr():subscribe( s )
+  end
+  log2(
+    "[%s]: %s got new outfit '%s', started",
+    script_name(), oNpc:name(), obj:name()
+  )
 end
