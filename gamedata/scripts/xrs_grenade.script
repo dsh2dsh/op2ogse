@@ -19,6 +19,7 @@ function attach( sm )
   sm:subscribe({ signal = "on_npc_death", fun = this.on_death     })
   sm:subscribe({ signal = "on_npc_spawn", fun = this.on_npc_spawn })
   sm:subscribe({ signal = "on_take",      fun = this.fake_pickup  })
+  sm:subscribe({ signal = "on_spawn",     fun = this.init_grenade_radius })
 end
 
 
@@ -57,10 +58,6 @@ end
 gr_types = {
   "grenade_f1",
   "grenade_rgd5",
-}
-
-grenade_radius_override = {
-  [ "grenade_flash" ] = 9,
 }
 
 grenades        = {}
@@ -466,22 +463,10 @@ function action_kill_it_with_fire:execute()
       self.a.from_vert == npc:level_vertex_id()
       and self.a.from_pos:distance_to( npc:position() ) < 0.3
     then
-      local en_inj, fr_inj = false, false
-      local r = self.a.grenades[ get_grenade( self.a.grenade ):section()].radius
-      for k, is_npc in pairs( db.creature ) do
-        local obj = level.object_by_id( k )
-        if obj and obj:alive() then
-          local od = self.a.target_point:distance_to( obj:position() )
-          if od <= r then
-            if npc:relation( obj ) == game_object.enemy then
-              en_inj = true
-            else
-              fr_inj = true
-              break
-            end
-          end
-        end
-      end
+      local fr_inj, en_inj = check_victims(
+        npc, self.a.target_point,
+        self.a.grenades[ get_grenade( self.a.grenade ):section() ].radius
+      )
       if fr_inj or not en_inj then
         self.a.grenade      = nil
         self.a.throwing     = false
@@ -496,11 +481,13 @@ function action_kill_it_with_fire:execute()
       npc:movement_enabled( true )
       local snd_sect = snd_grenade_replics[ npc:character_community() ]
         or snd_grenade_replics.stalker
-      local snd = "grenadier\\"
-        .. snd_sect[ math.random( table.getn( snd_sect ) ) ]
-      local snd = xr_sound.get_safe_sound_object( snd )
-      if snd then
-        snd:play_no_feedback( npc, sound_object.s3d, 0, npc:position(), 1.0 )
+      local snd_rnd  = math.random( table.getn( snd_sect ) + 1 )
+      if snd_rnd <= table.getn( snd_sect ) then
+        local snd = "grenadier\\" .. snd_sect[ snd_rnd ]
+        snd = xr_sound.get_safe_sound_object( snd )
+        if snd then
+          snd:play_no_feedback( npc, sound_object.s3d, 0, npc:position(), 1.0 )
+        end
       end
       self.start_time = time_global()
       self.throw_time = self.start_time + 1000
@@ -599,7 +586,7 @@ end
 
 function action_run_run_run:execute()
   action_base.execute( self )
-  local npc=self.object
+  local npc = self.object
   if
     self.a.danger_id
     and grenade_owners[ self.a.danger_id ]
@@ -751,52 +738,60 @@ function get_grenade_srv( id )
 end
 
 
-local cached_grenades = {}
-function get_grenade_radius( section )
-  local r, t = 1000, 0
-  if cached_grenades[ section ] then
-    r, t = unpack( cached_grenades[ section ] )
-  else
-    local ini  = system_ini()
-    local br   = utils.cfg_get_number(
-      ini, section, "blast_r", false, false, false, 1000
-    )
-    local fr   = utils.cfg_get_number(
-      ini, section, "frags_r", false, false, false, 1000
-    )
-    t = utils.cfg_get_number(
-      ini, section, "destroy_time", false, false, false, 0
-    )
-    r = math.max( br, fr )
-    cached_grenades[ section ] = { r, t }
+local grenade_data = {}
+function init_grenade_radius()
+  for _, sect in ipairs( gr_types ) do
+    local br = get_float( section, "blast_r", 1000 )
+    local fr = get_float( section, "frags_r", 1000 )
+    grendate_data[ sect ] = {
+      [ "destroy_time" ] = get_float( section, "destroy_time", 0 ),
+      [ "radius"       ] = math.max( br, fr ),
+    }
   end
-  if grenade_radius_override[ section ] then
-    r = grenade_radius_override[ section ]
-  end
-  return r, t
 end
 
 
-function update( delta )
+function get_grenade_radius( sect )
+  local t = grenade_data[ sect ]
+  return t.radius, t.destroy_time
+end
+
+
+local exploding = {}
+
+function update()
   for k, v in pairs( grenades ) do
     local sobj = alife():object( k )
     if sobj then
       if time_global() >= v then
         local obj = level.object_by_id( k )
         if obj then
-          local a = alife():create(
-            obj:section() .. "_fake",
-            obj:position():add( vector():set( 0, 1, 0 ) ),
-            obj:level_vertex_id(), obj:game_vertex_id()
-          )
-          grenade_owners[ a.id ] = grenade_owners[ k ]
-          level.client_spawn_manager():add(
-            a.id, -1, function( id, obj )
-              mark_grenade_non_pickable( id, obj )
-              obj:explode( 0 )
-              grenade_owners[ id ] = nil
+          local explode = true
+          local pos     = obj:position():add( vector():set( 0, 1, 0 ) )
+          local npc_id  = grenade_owners[ k ]
+          if npc_id then
+            local npc = level.object_by_id( npc_id )
+            if npc then
+              local fr_inj, en_inj = check_victims(
+                npc, pos, get_grenade_radius( obj:section() )
+              )
+              explode = not fr_inj
             end
-          )
+          end
+          if explode then
+            local a = alife():create(
+              obj:section() .. "_fake", pos,
+              obj:level_vertex_id(), obj:game_vertex_id()
+            )
+            exploding[ a.id ] = npc_id
+            level.client_spawn_manager():add(
+              a.id, -1,
+              function( id, obj )
+                mark_grenade_non_pickable( id, obj )
+                obj:explode( 0 )
+              end
+            )
+          end
         end
         alife():release( sobj, true )
         grenade_owners[ k ] = nil
@@ -818,6 +813,11 @@ function update( delta )
       end
     else
       test_grenades[ k ] = nil
+    end
+  end
+  for id, _ in pairs( exploding ) do
+    if not ( level.object_by_id( id ) or alife():object( id ) ) then
+      exploding[ id ] = nil
     end
   end
 end
@@ -911,7 +911,7 @@ end
 
 
 function fake_pickup( obj )
-  level.map_remove_object_spot( obj:id(), "grenade_location" )
+  -- level.map_remove_object_spot( obj:id(), "grenade_location" )
   for k, v in ipairs( gr_types ) do
     if
       obj:section() == v .. "_test"
@@ -939,6 +939,9 @@ function check_grenade_timer:__init() super()
 end
 
 function check_grenade_timer:condition()
+  for k, v in pairs( exploding ) do
+    return false
+  end
   for k, v in pairs( grenades ) do
     return false
   end
@@ -957,14 +960,28 @@ function check_grenade_timer:update()
 end
 
 
-function is_frendly_grenade( npc, id )
-  local owner_id = grenade_owners[ id ]
-  if not owner_id         then return false end
-  if npc:id() == owner_id then return true  end
-  local obj = level.object_by_id( owner_id )
-  if not obj then return false end
-  return
-    IsStalker( obj )
-    and npc:relation( obj ) ~= game_object.enemy
-    and obj:relation( npc ) ~= game_object.enemy
+function get_grenade_owner_id( id )
+  return exploding[ id ]
+end
+
+
+function check_victims( npc, pos, radius )
+  local fr_inj, en_inj = false, false
+  for id, is_npc in pairs( db.creature ) do
+    if is_npc then
+      local obj = level.object_by_id( id )
+      if obj and obj:alive() then
+        local dist = pos:distance_to( obj:position() )
+        if dist <= radius then
+          if npc:relation( obj ) == game_object.enemy then
+            en_inj = true
+          else
+            fr_inj = true
+            break
+          end
+        end
+      end
+    end
+  end
+  return fr_inj, en_inj
 end
