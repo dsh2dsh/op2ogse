@@ -34,6 +34,8 @@ function actor_binder:__finalize()
 end
 
 
+local hidden_weapon_lock
+
 function actor_binder:net_spawn( data )
   db.add_actor( self.object )
   self.am:call( "on_before_spawn" )
@@ -74,14 +76,20 @@ function actor_binder:net_spawn( data )
     script_name = "bind_stalker.check_climbing",
   })
 
-  self.am:subscribe({ signal = "on_inventory_open", fun = this.hide_weapon_on })
-  self.am:subscribe({ signal = "on_inventory_hide", fun = this.restore_weapon })
-  self.am:subscribe({ signal = "on_pda_open",   fun = this.hide_weapon_on })
-  self.am:subscribe({ signal = "on_pda_hide",   fun = this.restore_weapon })
-  self.am:subscribe({ signal = "on_talk_open",  fun = this.hide_weapon_on })
-  self.am:subscribe({ signal = "on_talk_hide",  fun = this.restore_weapon })
-  self.am:subscribe({ signal = "on_trade_open", fun = this.hide_weapon_on })
-  self.am:subscribe({ signal = "on_trade_hide", fun = this.restore_weapon })
+  self.am:subscribe({ signal = "on_inventory_open", fun = this.hide_weapon_on    })
+  self.am:subscribe({ signal = "on_inventory_hide", fun = this.restore_weapon_on })
+  self.am:subscribe({ signal = "on_pda_open",   fun = this.hide_weapon_on        })
+  self.am:subscribe({ signal = "on_pda_hide",   fun = this.restore_weapon_on     })
+  self.am:subscribe({ signal = "on_talk_open",  fun = this.hide_weapon_on        })
+  self.am:subscribe({ signal = "on_talk_hide",  fun = this.restore_weapon_on     })
+  self.am:subscribe({ signal = "on_trade_open", fun = this.hide_weapon_on        })
+  self.am:subscribe({ signal = "on_trade_hide", fun = this.restore_weapon_on     })
+
+  local hide_weapon_on_load = ogse.load_var_safe( "bind_stalker.weapon_hide" )
+  if hide_weapon_on_load then
+    hidden_weapon_lock = hide_weapon_on_load
+    dsh.exec_on_update( this.hide_weapon, hide_weapon_on_load )
+  end
 
   self.am:call( "on_spawn", data )
   event( "actor_spawn" ):trigger({ data = data })
@@ -838,8 +846,12 @@ function hide_weapon_on()
 end
 
 local restore_wpn_t, weapon_hide
-function hide_weapon( freq )
+function hide_weapon( freq, lock )
   weapon_hide = true
+  if lock and not hidden_weapon_lock then
+    hidden_weapon_lock = freq
+    ogse.save_var( "bind_stalker.weapon_hide", freq, "u16" )
+  end
   if restore_wpn_t then return end
   db.actor:hide_weapon()
   if not freq then freq = 200 end
@@ -865,16 +877,28 @@ function hide_weapon( freq )
   )
 end
 
-function restore_weapon()
+function restore_weapon_on()
+  restore_weapon()
+end
+
+function restore_weapon( unlock )
+   if hidden_weapon_lock then
+     if unlock then
+       hidden_weapon_lock = nil
+       ogse.delete_var( "bind_stalker.weapon_hide" )
+     else
+       return
+     end
+   end
    weapon_hide = false
 end
 
 
 function has_traded()
-	if db.traded then
-		if db.actor:is_talking() then
-			db.actor:stop_talk()
-		end
-		db.traded = nil
-	end
+  if db.traded then
+    if db.actor:is_talking() then
+      db.actor:stop_talk()
+    end
+    db.traded = nil
+  end
 end
