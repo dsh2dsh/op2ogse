@@ -677,16 +677,6 @@ function CRandomTask:action_refuse_task( actor, npc, p1, p2 )
   t.timer:condition()
   t.timer:action()
   t.timer:stop()
-  -- Удаляем цель из списка
-  local by_type = self.active_task_by_type[ t.complex_type ]
-  amk_remove_target_id_from_kill_targets(
-    self.task_info[ by_type ].selected_target
-  )
-  self.task_info[ by_type ].selected_target = nil
-  local by_complex_type = self.task_id_by_complex_type[ t.complex_type ]
-  for _, k in ipairs( by_complex_type ) do
-    self.task_info[ k ].enabled = true
-  end
   if t.reward_reputation ~= nil then
     db.actor:change_character_reputation( -t.reward_reputation )
   end
@@ -813,8 +803,6 @@ function CRandomTask:task_callback( p1, p2, state )
   if task_info and task_info.selected_target then
     amk_remove_target_id_from_kill_targets( task_info.selected_target )
   end
-  ----------------------------------
-
   if state == task.completed or state == task.fail then
     task_info.status = "normal"
     -- восстановление других заданий данного типа
@@ -1889,22 +1877,18 @@ end
 
 function task_state_timer:action()
   local ct = self.task_info.complex_type
-  if
-    self.task_info.status == "completed"
-    and not self.task_info.need_return
-  then
+  local t  = self.task_info
+  if t.status == "completed" and not t.need_return then
     self.random_task:task_complete( ct, 0 )
     self.random_task:task_callback( ct, 0, task.completed )
-  elseif self.task_info.status == "failed" then
+  elseif t.status == "failed" or t.status == "refused" then
     self.random_task:task_callback( ct, 0, task.fail      )
   end
-  if map_locations[ self.task_info.type ] then
-    level.map_remove_object_spot(
-      self.task_info.selected_target, map_locations[ self.task_info.type ]
-    )
+  if map_locations[ t.type ] then
+    level.map_remove_object_spot( t.selected_target, map_locations[ t.type ] )
   end
-  if self.task_info.time then
-    local tn = "task_manager.expire." .. self.task_info.name
+  if t.time then
+    local tn = "task_manager.expire." .. t.name
     if ogse_st_mgr.timer_exists( tn ) then
       ogse_st_mgr.get_timer( tn ):stop()
     end
@@ -1912,7 +1896,7 @@ function task_state_timer:action()
   if not self.notify then return end
   pda_task:play( db.actor, 0, sound_object.s2d )
   local text_color
-  if self.task_info.status == "failed" then
+  if t.status == "failed" then
     text_color = "%c[255,255,0,0]"
       .. game.translate_string( "general_fail_task" ) .. "\\n"
   else
@@ -1920,11 +1904,10 @@ function task_state_timer:action()
       .. game.translate_string( "general_complete_task" ) .. "\\n"
   end
   local task_texture, task_rect = get_texture_info(
-    "ui_iconsTotal_" .. self.task_info.type, "ui_iconsTotal_stalker10"
+    "ui_iconsTotal_" .. t.type, "ui_iconsTotal_stalker10"
   )
   local news_text = text_color
-    .. "%c[255,127,255,255]"
-    .. game.translate_string( self.task_info.name )
+    .. "%c[255,127,255,255]" .. game.translate_string( t.name )
   if db.actor:is_talking() then
     db.actor:give_talk_message(
       news_text, task_texture, task_rect, "iconed_answer_item"
@@ -1957,6 +1940,9 @@ function on_spawn()
         t.timer = task_state_timer( t )
         t.timer:start()
         launched_cnt = launched_cnt + 1
+      elseif t.status == "refused" then
+        log2( "[%s]: fix lost task %s", script_name(), t.name )
+        tasks:task_callback( t.complex_type, 0, task.fail )
       elseif t.status == "rewarded" then
         log2( "[%s]: fix lost task %s", script_name(), t.name )
         tasks:task_complete( t.complex_type, 0 )
