@@ -702,6 +702,8 @@ dsh_advancers_hud_std.xdb: худ мода по умолчанию, но СМС показываются снизу
 
 nlc7_bolt.xdb: болт из NLC7
 
+op2_actor_step: звук шагов ГГ из ОП-2
+
 op2_bolt.xdb: болт из ОП-2
 
 op2_hud.xdb: стандартный худ ОП-2
