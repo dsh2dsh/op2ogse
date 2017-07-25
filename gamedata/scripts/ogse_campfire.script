@@ -1,8 +1,12 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
-local DIST_TO_FLAME =  1
-local DIST_TO_NPC   = 16 -- 4^2
 local DIST_TO_ACTOR =  4 -- 2^2
+local DIST_TO_NPC   = 16 -- 4^2
+local SCAN_TIME     = 5000
+
+local exclude_flames = {
+  -- [ "zone_flame_small_kamin" ] = true, -- камин рядом со Свибловым
+}
 
 
 function attach(sm)
@@ -15,10 +19,12 @@ end
 auto_attach = true
 
 
-local flames             = {}
+local flames = {}
+local lights = {}
 local looking_into_flame = false
 local prev_actor_pos
 local start_stand_time   = time_global()
+
 
 function on_actor_update()
   ogse_signals.get_mgr():reschedule( 1000 )
@@ -46,16 +52,11 @@ end
 
 
 function get_nearest_flame_pos( npos, dist )
-  for id, t in pairs( flames ) do
-    local pos = t.pos
+  for _, campfire in pairs( flames ) do
+    local pos = campfire.object:position()
     local d   = pos:distance_to( npos )
     if d <= dist then
-      local obj = level.object_by_id( id )
-      if obj then
-        local binder = obj:binded_object()
-        ASSERT( binder, "binded_object() not found: %s", obj:name() )
-        if binder.enabled then return pos end
-      end
+      if campfire.flame_enabled then return pos end
     end
   end
 end
@@ -73,94 +74,34 @@ function stand_time()
 end
 
 
+function bind_unknown_light( obj )
+  obj:bind_object( unknown_light_binder( obj ) )
+end
+
+
+class "unknown_light_binder" ( object_binder )
+function unknown_light_binder:__init( obj ) super( obj )
+end
+
+
+function unknown_light_binder:net_spawn( data )
+  if not object_binder.net_spawn( self, data ) then
+    return false
+  end
+  lights[ self.object:level_vertex_id() ] = self.object:id()
+  return true
+end
+
+
+function unknown_light_binder:net_destroy()
+  lights[ self.object:level_vertex_id() ] = nil
+  object_binder.net_destroy( self )
+end
+
+
 function bind_flame( obj )
-  obj:bind_object( flame_binder( obj ) )
-end
-
-
-function bind_light( obj )
+  if exclude_flames[ obj:name() ] then return end
   obj:bind_object( campfire_binder( obj ) )
-end
-
-
-function switch_light( light, ena )
-  local lamp = light:get_hanging_lamp()
-  if lamp == nil then return end
-  if ena then
-    lamp:turn_on()
-  else
-    lamp:turn_off()
-  end
-end
-
-
-function switch_flame( flame, ena )
-  local binder = flame:binded_object()
-  ASSERT( binder, "binded_object() not found: %s", flame:name() )
-  if ena then
-    flame:enable_anomaly()
-    binder.enabled = true
-  else
-    flame:disable_anomaly()
-    binder.enabled = false
-  end
-end
-
-
-local sheduled_flames  = {}
-
-function check_shedule( flame )
-  for k, t in pairs( sheduled_flames ) do
-    if
-      t.level_vertex_id == flame:level_vertex_id()
-      or t.pos:distance_to_sqr( flame:position() ) < DIST_TO_FLAME
-    then
-      switch_flame( flame, t.ena )
-      sheduled_flames[ k ] = nil
-      return
-    end
-  end
-end
-
-
-function switch_flame_near_light( light, ena )
-  for id, f in pairs( flames ) do
-    local pos = f.pos
-    if
-      f.level_vertex_id == light:level_vertex_id()
-      or pos:distance_to_sqr( light:position() ) < DIST_TO_FLAME
-    then
-      local flame = level.object_by_id( id )
-      switch_flame( flame, ena )
-      return
-    end
-  end
-  local t = sheduled_flames[ light:name() ]
-  if t == nil then
-    sheduled_flames[ light:name() ] = {}
-    t = sheduled_flames[ light:name() ]
-  end
-  t.ena = ena
-  t.level_vertex_id = light:level_vertex_id()
-  t.pos = light:position()
-end
-
-
-function play_particle_near_light( light, particle )
-  for id, t in pairs( flames ) do
-    local pos = t.pos
-    if
-      t.level_vertex_id == light:level_vertex_id()
-      or pos:distance_to_sqr( light:position() ) < DIST_TO_FLAME
-    then
-      local flame = level.object_by_id( id )
-      particle:play_at_pos( flame:position() )
-      return
-    end
-  end
-  local pos = light:position()
-  pos.y = pos.y - 0.5
-  particle:play_at_pos( pos )
 end
 
 
@@ -179,9 +120,9 @@ states = {
       end
     end,
     action = function( self )
-      switch_flame_near_light( self.object, false )
+      self:switch_flame( false )
       if self.particle then self.particle:stop() end
-      switch_light( self.object, false )
+      self:switch_light( false )
     end,
   },
 
@@ -195,8 +136,8 @@ states = {
       end
     end,
     action = function( self )
-      switch_flame_near_light( self.object, true )
-      switch_light( self.object, true )
+      self:switch_flame( true )
+      self:switch_light( true )
       if self.particle then self.particle:stop() end
     end,
   },
@@ -207,19 +148,19 @@ states = {
     next = function( has_users, now, prev )
       if has_users then
         return states.firing
-      elseif prev + 5000 < now then
+      elseif prev + SCAN_TIME < now then
         return states.flame_off
       else
         return states.down
       end
     end,
     action = function( self )
-      switch_flame_near_light( self.object, true )
-      switch_light( self.object, true )
+      self:switch_flame( true )
+      self:switch_light( true )
       if not self.particle then
         self.particle = particles_object( "dyn_kfire\\dyingfire" )
       end
-      play_particle_near_light( self.object, self.particle )
+      self:play_particle_near_light()
     end,
   },
 
@@ -236,54 +177,29 @@ states = {
       end
     end,
     action = function( self )
-      switch_flame_near_light( self.object, false )
-      switch_light( self.object, true )
+      self:switch_flame( false )
+      self:switch_light( true  )
       if not self.particle then
         self.particle = particles_object( "dyn_kfire\\dyingfire" )
-        play_particle_near_light( self.object, self.particle )
+        self:play_particle_near_light()
       end
     end,
   },
 }
 
 
-class "flame_binder" ( object_binder )
-function flame_binder:__init( obj ) super( obj )
-  self.enabled = true
-end
-
-
-function flame_binder:net_spawn( sobject )
-  flames[ self.object:id() ] = {
-    level_vertex_id = self.object:level_vertex_id(),
-    pos = self.object:position(),
-  }
-  check_shedule( self.object )
-  return true
-end
-
-
-function flame_binder:net_destroy()
-  flames[ self.object:id() ] = nil
-end
-
-
 class "campfire_binder" ( object_binder )
 function campfire_binder:__init( obj ) super( obj )
-  self.initialized = false
-  self.loaded      = false
-  self.state       = states.turn_off
+  self.initialized   = false
+  self.loaded        = false
+  self.flame_enabled = true
+  self.state         = states.turn_off
 end
 
 
 function campfire_binder:reinit()
   db.storage[ self.object:id() ] = {}
   self.st = db.storage[ self.object:id() ]
-end
-
-
-function campfire_binder:net_spawn( sobject )
-  return true
 end
 
 
@@ -311,8 +227,16 @@ function campfire_binder:check_npc( npc )
 end
 
 
+function campfire_binder:find_light()
+  local id = lights[ self.object:level_vertex_id() ]
+  if id then
+    return level.object_by_id( id )
+  end
+end
+
+
 function campfire_binder:update( delta )
-  if not self.initialized and db.actor then
+  if ( not self.initialized ) and db.actor then
     self.initialized = true
     xr_logic.initialize_obj(
       self.object, self.st, self.loaded, db.actor, modules.stype_item
@@ -320,10 +244,12 @@ function campfire_binder:update( delta )
   end
   local time = time_global()
   if not self.scan_time then
+    if not self:find_light() then return end
     self.scan_time = time
     self.state.action( self )
     self.time = time
   elseif self.scan_time < time then
+    if not self:find_light() then return end
     local users = false
     for npc_id, is_npc in pairs( db.creature ) do
       if is_npc then
@@ -341,7 +267,7 @@ function campfire_binder:update( delta )
       self.state = new_state
       self.time  = time
     end
-    self.scan_time = time + 5000
+    self.scan_time = time + SCAN_TIME
   end
 end
 
@@ -350,6 +276,7 @@ function campfire_binder:net_spawn( data )
   if not object_binder.net_spawn( self, data ) then
     return false
   end
+  flames[ self.object:id() ] = self
   return true
 end
 
@@ -359,6 +286,8 @@ function campfire_binder:net_destroy()
   if st.active_scheme then
     xr_logic.issue_event( self.object, st[ st.active_scheme ], "net_destroy" )
   end
+  self:stop_idle()
+  flames[ self.object:id() ] = nil
   object_binder.net_destroy( self )
 end
 
@@ -390,4 +319,56 @@ function campfire_binder:load( reader )
     self.state = states.turn_off
   end
   ASSERT( self.state ~= nil, "self.state ~= nil" )
+end
+
+
+function campfire_binder:switch_light( ena )
+  local light = self:find_light()
+  if not light then return end
+  local lamp = light:get_hanging_lamp()
+  if not lamp then return end
+  if ena then
+    lamp:turn_on()
+  else
+    lamp:turn_off()
+  end
+end
+
+
+function campfire_binder:switch_flame( ena )
+  local flame = self.object
+  if ena then
+    self:stop_idle()
+    flame:enable_anomaly()
+    self.flame_enabled = true
+  else
+    flame:disable_anomaly()
+    self.flame_enabled = false
+    self:start_idle()
+  end
+end
+
+
+function campfire_binder:start_idle()
+  self.idle_t = dsh.wait_condition(
+    function() return false end,
+    function() end,
+    function()
+      ogse_signals.get_mgr():reschedule( SCAN_TIME )
+      self:update()
+    end
+  )
+end
+
+
+function campfire_binder:stop_idle()
+  if self.idle_t then
+    self.idle_t:stop()
+    self.idle_t = nil
+  end
+end
+
+
+function campfire_binder:play_particle_near_light( particle )
+  self.particle:play_at_pos( self.object:position() )
 end
