@@ -19,8 +19,8 @@ end
 auto_attach = true
 
 
-local flames = {}
-local lights = {}
+local flames, flames_no_light = {}, {}
+local lights, lights_no_flame = {}, {}
 local looking_into_flame = false
 local prev_actor_pos
 local start_stand_time   = time_global()
@@ -89,12 +89,32 @@ function unknown_light_binder:net_spawn( data )
     return false
   end
   lights[ self.object:level_vertex_id() ] = self.object:id()
+  lights_no_flame[ self.object:id()     ] = true
+  for id, campfire in pairs( flames_no_light ) do
+    if
+      self.object:level_vertex_id() == campfire.object:level_vertex_id()
+    then
+      flames_no_light[ id ] = nil
+      lights_no_flame[ self.object:id() ] = nil
+      break
+    else
+      local dist = self.object:position()
+        :distance_to( campfire.object:position() )
+      if dist < 1 then
+        flames_no_light[ id ] = nil
+        lights[ campfire.object:level_vertex_id() ] = self.object:id()
+        lights_no_flame[ self.object:id()         ] = nil
+        break
+      end
+    end
+  end
   return true
 end
 
 
 function unknown_light_binder:net_destroy()
   lights[ self.object:level_vertex_id() ] = nil
+  lights_no_flame[ self.object:id()     ] = nil
   object_binder.net_destroy( self )
 end
 
@@ -112,7 +132,7 @@ states = {
   -- костер полностью погашен: аномалия отключена, лампа погашена,
   -- партиклы не играют
   turn_off = {
-    next = function( has_users, now, prev )
+    next = function( self, has_users, now, prev )
       if has_users then
         return states.firing
       else
@@ -128,11 +148,11 @@ states = {
 
   -- костер горит на полную: аномалия включена, лампочка горит, партиклов нет
   firing = {
-    next = function( has_users, now, prev )
+    next = function( self, has_users, now, prev )
       if has_users or prev + 300000 > now then
         return states.firing
       else
-        return states.down
+        return states[ self.state_down ]
       end
     end,
     action = function( self )
@@ -145,7 +165,7 @@ states = {
   -- костер начинает гаснуть: аномалия еще включена, лампочка горит,
   -- включается партикл затухающего огня
   down = {
-    next = function( has_users, now, prev )
+    next = function( self, has_users, now, prev )
       if has_users then
         return states.firing
       elseif prev + SCAN_TIME < now then
@@ -167,7 +187,7 @@ states = {
   -- следующий этап угасания: отключается аномалия, но лампочка еще горит,
   -- партикл играется
   flame_off = {
-    next = function( has_users, now, prev )
+    next = function( self, has_users, now, prev )
       if has_users then
         return states.firing
       elseif prev + 32000 < now then
@@ -190,10 +210,16 @@ states = {
 
 class "campfire_binder" ( object_binder )
 function campfire_binder:__init( obj ) super( obj )
+  self.flame_enabled = true
+  self.has_light     = get_bool(
+    obj:section(), "ogse_campfire.has_light", true
+  )
   self.initialized   = false
   self.loaded        = false
-  self.flame_enabled = true
   self.state         = states.turn_off
+  self.state_down    = get_string(
+    obj:section(), "ogse_campfire.state_down", "down"
+  )
 end
 
 
@@ -244,12 +270,12 @@ function campfire_binder:update( delta )
   end
   local time = time_global()
   if not self.scan_time then
-    if not self:find_light() then return end
+    if self.has_light and not self:find_light() then return end
     self.scan_time = time
     self.state.action( self )
     self.time = time
   elseif self.scan_time < time then
-    if not self:find_light() then return end
+    if self.has_light and not self:find_light() then return end
     local users = false
     for npc_id, is_npc in pairs( db.creature ) do
       if is_npc then
@@ -260,7 +286,7 @@ function campfire_binder:update( delta )
         end
       end
     end
-    local new_state = self.state.next( users, time, self.time )
+    local new_state = self.state.next( self, users, time, self.time )
     ASSERT( new_state ~= nil, "new_state ~= nil" )
     if new_state ~= self.state then
       new_state.action( self )
@@ -277,6 +303,25 @@ function campfire_binder:net_spawn( data )
     return false
   end
   flames[ self.object:id() ] = self
+  if self.has_light then
+    local light = self:find_light()
+    if light then
+      lights_no_flame[ light:id() ] = nil
+    else
+      for id, _ in pairs( lights_no_flame ) do
+        local obj = level.object_by_id( id )
+        if obj then
+          local dist = self.object:position():distance_to( obj:position() )
+          if dist < 1 then
+            lights[ self.object:level_vertex_id() ] = id
+            lights_no_flame[ id ] = nil
+            return obj
+          end
+        end
+      end
+      flames_no_light[ self.object:id() ] = self
+    end
+  end
   return true
 end
 
@@ -287,7 +332,8 @@ function campfire_binder:net_destroy()
     xr_logic.issue_event( self.object, st[ st.active_scheme ], "net_destroy" )
   end
   self:stop_idle()
-  flames[ self.object:id() ] = nil
+  flames[ self.object:id()          ] = nil
+  flames_no_light[ self.object:id() ] = nil
   object_binder.net_destroy( self )
 end
 
@@ -323,6 +369,7 @@ end
 
 
 function campfire_binder:switch_light( ena )
+  if not self.has_light then return end
   local light = self:find_light()
   if not light then return end
   local lamp = light:get_hanging_lamp()
