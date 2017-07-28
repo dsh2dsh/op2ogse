@@ -8,16 +8,27 @@ function attach( sm )
 end
 
 
+function is_battle_spawned( obj )
+  local sobj = alife():object( obj:id() )
+  if sobj and sobj.s_storage ~= "_" then
+    local s_storage = create_ini_file( sobj.s_storage )
+    return s_storage:section_exist( "battle" )
+  end
+  return false
+end
+
+
 function on_monster_spawn( obj, binder )
-  if not has_alife_info( "battle" ) then return end
   if obj:alive() then return end
-  local s = {
-    [ "signal" ] = "on_update",
-    [ "self"   ] = obj,
-    [ "fun"    ] = this.cleanup,
-  }
-  binder[ "battle.subscribed" ] = s
-  ogse_signals.get_mgr():subscribe( s )
+  if is_battle_spawned( obj ) then
+    local s = {
+      [ "signal" ] = "on_update",
+      [ "self"   ] = obj,
+      [ "fun"    ] = this.cleanup,
+    }
+    binder[ "battle.subscribed" ] = s
+    ogse_signals.get_mgr():subscribe( s )
+  end
 end
 
 
@@ -166,7 +177,18 @@ function show_must_go_on_real( lvl, btl, wave )
     )
     for s, p in pairs( cur_wave.enemy ) do
       for i = 1, p do
-        dsh.create_free_mob( s, pos, lv, db.actor:game_vertex_id() )
+        local sobj = dsh.create_free_mob(
+          s, pos, lv, db.actor:game_vertex_id()
+        )
+        local s_storage = m_netpk.custom_data(
+          sobj.s_storage == "_" and "" or sobj.s_storage
+        )
+        local cd = s_storage:getTable()
+        cd.battle = {
+          [ "spawned" ] = "true",
+        }
+        s_storage:setTable( cd )
+        sobj.s_storage = s_storage:getString()
         monster_cnt = monster_cnt + 1
       end
     end
@@ -371,10 +393,13 @@ end
 -- ускоренное удаление трупов при очень больших битвах. вызывается из апдейта
 -- монстров
 function cleanup( obj )
-  ogse_signals.get_mgr():reschedule( 1000 )
+  ogse_signals.get_mgr():reschedule( math.random( 1000, 5000 ) )
   local dist = db.actor:position():distance_to( obj:position() )
-  if dist > cleanup_distance then
-    alife():release( alife():object( obj:id() ), true )
+  if dist > cleanup_distance and not db.actor:see( obj ) then
+    local sobj = alife():object( obj:id() )
+    if sobj then
+      alife():release( sobj )
+    end
   end
 end
 
