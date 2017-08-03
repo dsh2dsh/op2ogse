@@ -115,22 +115,9 @@ function load_schemes()
         if rx_bandage then
                 load_scheme("rx_bandage","bandage",stype_stalker)
         end
-        if rx_ff then
-        -- load_scheme("rx_ff","rx_ff",stype_stalker)
-        end
 end
 
 function disable_schemes(npc)
---[[
-        if rx_gl then
-                rx_gl.disable_scheme(npc,"launch_grenade")
-        end
-        if rx_facer then
-                rx_facer.disable_scheme(npc,"facer")
-        end
-        if rx_knife then
-                rx_knife.disable_scheme(npc,"knife")
-        end]]
 end
 
 function enable_schemes(ini,npc)
@@ -142,9 +129,6 @@ function enable_schemes(ini,npc)
         end
         if rx_bandage then
                 rx_bandage.set_scheme(npc,ini,"bandage","bandage")
-        end
-        if rx_ff then
-        --      rx_ff.set_scheme(npc,ini,"rx_ff","rx_ff")
         end
 end
 
@@ -158,122 +142,4 @@ function addCommonPrecondition(action)
         if rx_bandage then
                 action:add_precondition(world_property(rx_bandage.evid_bandage,false))
         end
-end
-
-
-------------------------------------eating----------------------------------------
-
-local eating = {
-  enabled = sys_ini:section_exist( "rx_ai.npc_eating" )
-    and sys_ini:r_bool( "rx_ai.npc_eating", "enabled" )
-}
-
-
-function eat_init()
-  local sect = "rx_ai.npc_eating"
-  eating.exc_comms = rx_utils.parse_list(
-    sys_ini, sect, "excluded_communities", true
-  )
-  eating.exc_npcs  = rx_utils.parse_list( sys_ini,sect, "excluded_npcs", true )
-  eating.ic        = rx_utils.read_from_ini(
-    sys_ini, sect, "in_combat", false, 0
-  )
-  eating.oc        = rx_utils.read_from_ini(
-    sys_ini, sect, "out_combat", true, 0
-  )
-  eating.max_h     = rx_utils.read_from_ini(
-    sys_ini, sect, "medkit_health", 50
-  ) / 100
-  eating.min_b     = rx_utils.read_from_ini(
-    sys_ini, sect, "bandage_bleeding", 0.2
-  )
-  eating.medkits   = rx_utils.parse_list( sys_ini, sect, "medkits"  )
-  eating.bandages  = rx_utils.parse_list( sys_ini, sect, "bandages" )
-  eating.delay     = rx_utils.parse_list( sys_ini, sect, "delay"    )
-  eating.initialized = true
-end
-
-
-function eat_medkit( npc )
-  ogse_signals.get_mgr():reschedule( math.random( 1000, 5000 ) )
-  local st = get_storage( npc:id(), "eating" )
-  if st.disabled then return end
-  local enemy = npc:best_enemy()
-  if
-    xr_wounded.is_wounded( npc )
-    or ( not eating.ic and enemy )
-    or ( not eating.oc and not enemy )
-  then
-    st.item = nil
-    st.time = nil
-    return
-  end
-  if st.item then
-    local med = npc:object( st.item )
-    if med then
-      rx_utils.eat_medkit( npc, med )
-    end
-    st.item = nil
-    return
-  end
-  if npc.health < eating.max_h and not xr_wounded.is_wounded( npc ) then
-    for k, v in ipairs( eating.medkits ) do
-      local medkit = npc:object( v )
-      if medkit then
-        st.item = v
-        ogse_signals.get_mgr():reschedule(
-          math.random( eating.delay[ 1 ], eating.delay[ 2 ] )
-        )
-        return
-      end
-    end
-  end
-  if npc:get_bleeding() > eating.min_b then
-    for k, v in ipairs( eating.bandages ) do
-      local bandage = npc:object( v )
-      if bandage then
-        st.item = v
-        ogse_signals.get_mgr():reschedule(
-          math.random( eating.delay[ 1 ], eating.delay[ 2 ] )
-        )
-        return
-      end
-    end
-  end
-end
-
-
-function attach( sm )
-  sm:subscribe({ signal = "on_npc_death", fun = this.on_death     })
-  sm:subscribe({ signal = "on_npc_spawn", fun = this.on_npc_spawn })
-end
-
-
-function on_npc_spawn( obj, binder )
-  if not obj:alive() then return end
-  if eating.enabled then
-    if not eating.initialized then eat_init() end
-    if
-      not (
-        eating.exc_comms[ obj:character_community() ]
-        or eating.exc_npcs[ obj:name() ]
-      )
-    then
-      local s = {
-        [ "signal" ] = "on_npc_update." .. obj:id(),
-        [ "fun"    ] = this.eat_medkit,
-      }
-      binder[ "rx_ai.subscribed" ] = s
-      ogse_signals.get_mgr():subscribe( s )
-    end
-  end
-end
-
-
-function on_death( obj )
-  local binder     = obj:binded_object()
-  local subscribed = binder[ "rx_ai.subscribed" ]
-  if subscribed then
-    ogse_signals.get_mgr():unsubscribe( subscribed )
-  end
 end
