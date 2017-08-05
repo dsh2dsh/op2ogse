@@ -159,7 +159,8 @@ function evaluator_medic:evaluate()
       if not has_medic[ k ] then
         local obj = get_npc( k )
         if
-          obj and obj:alive() and npc:see( obj )
+          obj and obj:alive()
+          and ( npc:see( obj ) or self:check_seen( obj:id() ) )
           and npc:accessible( obj:level_vertex_id() )
           and (
             (
@@ -177,6 +178,7 @@ function evaluator_medic:evaluate()
         end
       end
     end
+    self:clean_seen()
     if not wounded_guy then return false end
     if not xr_companion.is_companion( npc:id() ) then
       local has_medkit = false
@@ -230,6 +232,22 @@ function evaluator_medic:evaluate()
 end
 
 
+function evaluator_medic:check_seen( id )
+  if not self.seen then
+    self.seen = {}
+    for o in self.object:memory_visible_objects() do
+      self.seen[ o:object():id() ] = true
+    end
+  end
+  return self.seen[ id ]
+end
+
+
+function evaluator_medic:clean_seen()
+  self.seen = nil
+end
+
+
 class "evaluator_self_medic" ( property_evaluator )
 function evaluator_self_medic:__init( name, storage ) super( nil, name )
   self.a = storage
@@ -242,7 +260,7 @@ function evaluator_self_medic:evaluate()
   if ( self.next_check_time or 0 ) > time_global() then return false end
   self.next_check_time = time_global() + 5000
   local npc = self.object
-  if ( not wounded[ npc:id() ] ) or has_medic[ npc:id() ] then
+  if npc.health > 0.5 or has_medic[ npc:id() ] then
     return false
   end
   local has_medkit = false
@@ -262,7 +280,6 @@ function evaluator_self_medic:evaluate()
   end
   if not ( has_medkit and npc:object( "yad" ) ) then return false end
   self.a.self_healing = true
-  wounded[ npc:id() ] = nil
   return true
 end
 
@@ -491,7 +508,13 @@ function action_self_medic:execute()
   if self.end_time and self.end_time < time_global() then
     local yad = npc:object( "yad" )
     if yad then yad:enable_attachable_item( false ) end
-    if has_medkit then npc:eat( has_medkit ) end
+    if has_medkit then
+      if xr_wounded.is_wounded( npc ) then
+        xr_wounded.unlock_medkit( npc )
+      else
+        npc:eat( has_medkit )
+      end
+    end
     self.allow_empty = true
   end
   if self.end_time_total and self.end_time_total < time_global() then
@@ -619,16 +642,26 @@ function death_callback( npc, cleanup )
 end
 
 
+function add_wounded( npc )
+  if not wounded[ npc:id() ] then
+    wounded[ npc:id()   ] = true
+    has_medic[ npc:id() ] = nil
+  end
+end
+
+
+function remove_wounded( npc )
+  wounded[ npc:id() ] = nil
+end
+
+
 function npc_update_wounded( npc )
   ogse_signals.get_mgr():reschedule( 5000 )
   if xr_wounded.can_use_medkit then return end
   if npc:critically_wounded() or npc:wounded() then
-    if not wounded[ npc:id() ] then
-      wounded[ npc:id()   ] = true
-      has_medic[ npc:id() ] = nil
-    end
+    add_wounded( npc )
   else
-    wounded[ npc:id() ] = nil
+    remove_wounded( npc )
   end
   if not npc:object( "yad" ) then
     ogse.spawn_item_in_inv( "yad", npc )
