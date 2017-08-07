@@ -9,10 +9,8 @@ function attach( sm )
 end
 
 
--- осмотрели мутанта и он больше не нужен, можно удалять "быстрым" уборщиком.
-function on_use( obj )
-  if obj:alive() or not obj:is_monster() then return end
-  local binder = obj:binded_object()
+function subscribe( obj, binder )
+  if not binder then binder = obj:binded_object() end
   if not binder[ "battle.subscribed" ] then
     local s = {
       [ "signal" ] = "on_update",
@@ -25,26 +23,45 @@ function on_use( obj )
 end
 
 
+function unsubscribe( obj, binder )
+  if not binder then binder = obj:binded_object() end
+  local subscribed = binder[ "battle.subscribed" ]
+  if subscribed then
+    ogse_signals.get_mgr():unsubscribe( subscribed )
+    binder[ "battle.subscribed" ] = nil
+  end
+end
+
+
+-- осмотрели мутанта и он больше не нужен, можно удалять "быстрым" уборщиком.
+function on_use( obj )
+  if obj:alive() or not obj:is_monster() then return end
+  subscribe( obj )
+end
+
+
 function is_battle_spawned( obj )
   local sobj = alife():object( obj:id() )
   if sobj and sobj.s_storage ~= "_" then
     local s_storage = create_ini_file( sobj.s_storage )
-    return s_storage:section_exist( "battle" )
+    return s_storage:section_exist( "battle" ) and s_storage or false
   end
   return false
 end
 
 
 function on_monster_spawn( obj, binder )
-  if obj:alive() then return end
-  if is_battle_spawned( obj ) then
-    local s = {
-      [ "signal" ] = "on_update",
-      [ "self"   ] = obj,
-      [ "fun"    ] = this.cleanup,
-    }
-    binder[ "battle.subscribed" ] = s
-    ogse_signals.get_mgr():subscribe( s )
+  local ini = is_battle_spawned( obj )
+  if ini then
+    if obj:alive() then
+      if get_bool( "battle", "volna_goodwill", false, ini ) then
+        obj:set_custom_panic_threshold( 0 )
+        obj:set_fov( 360 )
+        obj:set_range( alife():switch_distance() )
+      end
+    else
+      subscribe( obj, binder )
+    end
   end
 end
 
@@ -56,12 +73,7 @@ end
 
 
 function on_net_destroy( obj )
-  local binder     = obj:binded_object()
-  local subscribed = binder[ "battle.subscribed" ]
-  if subscribed then
-    ogse_signals.get_mgr():unsubscribe( subscribed )
-    binder[ "battle.subscribed" ] = nil
-  end
+  unsubscribe( obj )
 end
 
 
@@ -204,6 +216,9 @@ function show_must_go_on_real( lvl, btl, wave )
         cd.battle = {
           [ "spawned" ] = "true",
         }
+        if db.actor:has_info( "volna_goodwill" ) then
+          cd.battle.volna_goodwill = "true"
+        end
         s_storage:setTable( cd )
         sobj.s_storage = s_storage:getString()
         monster_cnt = monster_cnt + 1
