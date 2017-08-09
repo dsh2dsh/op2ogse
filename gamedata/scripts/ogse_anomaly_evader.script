@@ -83,19 +83,31 @@ function on_monster_spawn( obj, binder )
       excluded_npc[ obj:story_id() ]
       or excluded_locations[ level.name() ]
       or monster_excluded_locations[ level.name() ]
-      or battle.is_battle_spawned( obj )
     then
       return
     end
   end
   local s = {
-    [ "signal" ] = "on_update",
-    [ "self"   ] = obj,
-    [ "fun"    ] = this.update_norm,
-    [ "script_name" ] = script_name(),
+    {
+      [ "signal" ] = "on_update",
+      [ "self"   ] = obj,
+      [ "fun"    ] = this.check_deadlock,
+      [ "script_name" ] = "ogse_anomaly_evader.check_deadlock",
+    },
   }
+  if not battle.is_battle_spawned( obj ) then
+    table.insert( s, {
+      [ "signal" ] = "on_update",
+      [ "self"   ] = obj,
+      [ "fun"    ] = this.update_norm,
+      [ "script_name" ] = "ogse_anomaly_evader.update_norm",
+    })
+  end
   binder[ "ogse_anomaly_evader.subscribed" ] = s
-  ogse_signals.get_mgr():subscribe( s )
+  local sm = ogse_signals.get_mgr()
+  for _, sig in ipairs( s ) do
+    sm:subscribe( sig )
+  end
 end
 
 
@@ -127,13 +139,18 @@ function on_npc_spawn( obj, binder )
     binder[ "ogse_anomaly_evader.anomaly_invisibility" ] = true
   end
   local s = {
-    [ "signal" ] = "on_update",
-    [ "self"   ] = obj,
-    [ "fun"    ] = this.update_norm,
-    [ "script_name" ] = script_name(),
+    {
+      [ "signal" ] = "on_update",
+      [ "self"   ] = obj,
+      [ "fun"    ] = this.update_norm,
+      [ "script_name" ] = "ogse_anomaly_evader.update_norm",
+    },
   }
   binder[ "ogse_anomaly_evader.subscribed" ] = s
-  ogse_signals.get_mgr():subscribe( s )
+  local sm = ogse_signals.get_mgr()
+  for _, sig in ipairs( s ) do
+    sm:subscribe( sig )
+  end
 end
 
 
@@ -141,7 +158,10 @@ function on_death( obj )
   local binder     = obj:binded_object()
   local subscribed = binder[ "ogse_anomaly_evader.subscribed" ]
   if subscribed then
-    ogse_signals.get_mgr():unsubscribe( subscribed )
+    local sm = ogse_signals.get_mgr()
+    for _, sig in ipairs( subscribed ) do
+      sm:unsubscribe( sig )
+    end
     binder[ "ogse_anomaly_evader.subscribed" ] = nil
   end
   -- cleanup( obj )
@@ -195,6 +215,23 @@ function on_monster_update( obj )
 end
 
 
+function check_deadlock( obj )  
+  ogse_signals.get_mgr():reschedule( 1000 )
+  local binder = obj:binded_object()
+  local last_monster_update =
+    binder[ "ogse_anomaly_evader.last_monster_update" ]
+  if last_monster_update then
+    local d = last_monster_update - time_global()
+    if d <= 0 then
+      log2( "[%s]: found deadlocked mob: %s", script_name(), obj:name() )
+      amkii_equip.refit_npc( obj, obj:id() )
+    else
+      ogse_signals.get_mgr():reschedule( d )
+    end
+  end
+end
+
+
 -- как часто выполнять обход аномалий (в мс) и в каком радиусе
 -- запоминать аномалии.
 local freq, detect_radius = 1000, 50
@@ -203,11 +240,6 @@ local is_blowout = false
 function update_norm( obj )  
   ogse_signals.get_mgr():reschedule( freq + math.random( freq ) )
   local binder = obj:binded_object()
-  local last_monster_update = binder[ "ogse_anomaly_evader.last_monster_update" ]
-  if last_monster_update and last_monster_update < time_global() then
-    log2( "[%s]: found deadlocked mob: %s", script_name(), obj:name() )
-    amkii_equip.refit_npc( obj, obj:id() )
-  end
   if is_blowout then return end
   local curr_pos = obj:position()
   local prev_pos = last_position[ obj:id() ]
