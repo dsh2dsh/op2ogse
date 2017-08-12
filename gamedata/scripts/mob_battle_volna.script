@@ -1,0 +1,108 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+local STATE_ALIFE     = 1
+local STATE_MOVE_HOME = 2
+
+
+class "mob_battle_volna"
+function mob_battle_volna:__init( obj, storage )
+  self.object = obj
+  self.st     = storage
+end
+
+
+function mob_battle_volna:reset_scheme()
+  self.state_current = STATE_ALIFE
+  self.state_prev    = self.state_current
+end
+
+
+function mob_battle_volna:update( delta )
+  if
+    xr_logic.try_switch_to_another_section( self.object, self.st, db.actor )
+  then
+    return
+  end
+  if self.object:alive() then
+    self:select_state()
+    self:execute_state()
+  else
+    xr_logic.mob_release( self.object )
+  end
+end
+
+
+function mob_battle_volna:select_state()
+  self.state_prev = self.state_current
+
+  local home_node = db.actor:level_vertex_id()
+  if not self.object:accessible( home_node ) then
+    local vtemp = vector()
+    home_node, vtemp = self.object:accessible_nearest(
+      level.vertex_position( home_node ), vtemp
+    )
+  end
+  self.home_node     = home_node
+  self.home_position = level.vertex_position( self.home_node )
+
+  local home_dist = self.object:position():distance_to( self.home_position )
+  local enemy     = self.object:best_enemy()
+  if
+    ( enemy and IsStalker( enemy ) and enemy:alive() )
+    or home_dist < self.st.home_radius
+  then
+    self.state_current = STATE_ALIFE
+  else
+    self.state_current = STATE_MOVE_HOME
+  end
+end
+
+
+function mob_battle_volna:execute_state()
+  if self.state_current == STATE_ALIFE and self.state_prev == STATE_ALIFE then
+    return
+  end
+
+  if self.state_current == STATE_ALIFE and self.state_prev ~= STATE_ALIFE then
+    xr_logic.mob_release( self.object )
+    return
+  end
+
+  if self.state_current ~= STATE_ALIFE and self.state_prev == STATE_ALIFE then
+    xr_logic.mob_capture( self.object, true )
+  end
+
+  if self.state_current == STATE_MOVE_HOME then
+    if not self.object:action() then
+      action(
+        self.object,
+        move( move.run_fwd, self.home_node, self.home_position ),
+        cond( cond.move_end )
+      )
+    end
+  end
+end
+
+
+function mob_battle_volna:deactivate()
+end
+
+
+function mob_battle_volna:net_destroy()
+end
+
+
+function add_to_binder( npc, ini, scheme, section, storage )
+  local new_action = mob_battle_volna( npc, storage )
+  xr_logic.subscribe_action_for_events( npc, storage, new_action )
+end
+
+
+
+function set_scheme( npc, ini, scheme, section, gulag_name )
+  local t = xr_logic.assign_storage_and_bind( npc, ini, scheme, section )
+  t.logic       = xr_logic.cfg_get_switch_conditions( ini, section, npc )
+  t.home_radius = utils.cfg_get_number(
+    ini, section, "home_radius", npc, false, 30
+  )
+end
