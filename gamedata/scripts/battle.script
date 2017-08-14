@@ -158,6 +158,33 @@ function create_enemy( ... )
 end
 
 
+function create_enemies( t, each_f )
+  for _, args in ipairs( t ) do
+    local sobj = create_enemy( unpack( args ) )
+    if each_f then each_f( sobj ) end
+  end
+end
+
+
+function create_enemies_like_teleport( t )
+  local positions, vertexes = {}, {}
+  create_enemies(
+    t,
+    function( sobj )
+      if vertexes[ sobj.m_level_vertex_id ] then return end
+      local lpos = level.vertex_position( sobj.m_level_vertex_id )
+      for _, pos in ipairs( positions ) do
+        if pos:distance_to( lpos ) < 5 then return end
+      end
+      vertexes[ sobj.m_level_vertex_id ] = true
+      table.insert( positions, lpos )
+      particles_object( "anomaly2\\teleport" ):play_at_pos( lpos )
+      sound_object( "anomaly\\teleport_work_2" ):play_at_pos( db.actor, lpos, 0 )
+    end
+  )
+end
+
+
 -- Универсальный скрипт больших битв с монстрами/неписями
 -- Поддерживаются:
 -- Спавн по таймеру каждой волны монстров
@@ -238,6 +265,10 @@ function show_must_go_on_real( lvl, btl, wave )
   end
 
   db.actor:give_info_portion( "battle" )
+  if cur_wave.info then
+    -- выдаем поршень
+    db.actor:give_info_portion( cur_wave.info )
+  end
 
   -- спавн монстров/неписей
   if cur_wave.enemy then
@@ -257,12 +288,20 @@ function show_must_go_on_real( lvl, btl, wave )
       "[%s]: [%s, %s, %s]: enemy without dist found",
       script_name(), lvl, btl, wave
     )
+    local t = {}
     for s, p in pairs( cur_wave.enemy ) do
       for i = 1, p do
-        local sobj = create_enemy( s, pos, lv, db.actor:game_vertex_id() )
-        monster_cnt = monster_cnt + 1
+        table.insert( t, { s, pos, lv, db.actor:game_vertex_id() } )
       end
     end
+    monster_cnt = monster_cnt + table.getn( t )
+    local create_f
+    if cur_wave.create then
+      create_f = this[ cur_wave.create ]
+    else
+      create_f = this.create_enemies
+    end
+    create_f( t )
   end
 
   if cur_wave.rest then
@@ -279,10 +318,6 @@ function show_must_go_on_real( lvl, btl, wave )
     monster_cnt = 0
   end
 
-  if cur_wave.info then
-    -- выдаем поршень
-    db.actor:give_info_portion( cur_wave.info )
-  end
   if cur_wave.func then
     -- выполняем функцию
     loadstring( cur_wave.func )()
