@@ -215,7 +215,7 @@ end
 local cleanup_distance          = 50
 -- время передышки в секундах (добавляется ко времени следущей волны
 -- +-20%)
-local rest_timeout              = 120
+local rest_timeout              = 180
 -- минимальная дистанция, на которой можно спавнить волну. если
 -- подходящий вертекс на указанном расстоянии или дальше не находится
 -- (гг заныкался в закутке - не находится в открытом месте) то спавн
@@ -351,6 +351,11 @@ end
 
 function reinforcement( lvl, btl, wave, last_monster_cnt )
   local cur_wave = battles[ lvl ][ btl ][ wave ]
+  ASSERT(
+    cur_wave,
+    "[%s]: %s, %s, %s: %s: wave not found",
+    script_name(), lvl, btl, wave
+  )
 
   -- сменили локу - битва закончена
   if not cur_wave.any_level then
@@ -363,23 +368,35 @@ function reinforcement( lvl, btl, wave, last_monster_cnt )
   -- рюкзак спавним с меткой и не далее 10 м от гг, чтобы нашел
   local pos, lv = get_pos( math.random( 3, 10 ) )
   local ruk = alife():create(
-    "m_inventory_box", pos, lv, db.actor:game_vertex_id()
+    "dsh_treasure_item", pos, lv, db.actor:game_vertex_id()
   )
-  level.map_add_object_spot_ser( ruk.id, "treasure", "Рюкзак с припасами" )
+  ruk = alife():object( ruk.id )
+  ruk:use_ai_locations( false )
+  level.map_add_object_spot_ser( ruk.id, "treasure",  "Рюкзак с припасами" )
+  local dsh_rukzak_id = "dsh_rukzak." .. ruk.id
+  ogse.save_var( dsh_rukzak_id .. ".metka",    "Рюкзак с припасами" )
+  ogse.save_var( dsh_rukzak_id .. ".zamok",    false )
+  ogse.save_var( dsh_rukzak_id .. ".inv_drop", true  )
+  local items = {}
 
   -- аптечки
   if cur_wave.medkit then
     for i = 1, math.random(0, cur_wave.medkit ) do
-      alife():create(
-        medkits[ math.random( table.getn( medkits ) ) ],
-        vector():set( 0, 0, 0 ), 0, 0, ruk.id
-      )
+      local sect = medkits[ math.random( table.getn( medkits ) ) ]
+      if items[ sect ] then
+        items[ sect ].count = items[ sect ].count + 1
+      else
+        items[ sect ] = {
+          [ "count"     ] = 1,
+          [ "game_type" ] = "medkit",
+        }
+      end
     end
   end
 
   -- патроны/подствол
   if cur_wave.ammo or cur_wave.podstvol then
-    for i =1, 2 do
+    for i = 1, 2 do
       if db.actor:item_in_slot( i ) then
         local wpn = db.actor:item_in_slot( i )
 
@@ -388,11 +405,15 @@ function reinforcement( lvl, btl, wave, last_monster_cnt )
             local list = rx_utils.parse_list_new(
               nil, wpn:section(), "ammo_class"
             )
-            local section = list[ math.random( table.getn( list ) ) ]
-            alife():create_ammo(
-              section, vector():set( 0, 0, 0), 0, 0, ruk.id,
-              rx_utils.read_from_ini( nil, section, "box_size", 1, 3 )
-            )
+            local sect = list[ math.random( table.getn( list ) ) ]
+            if items[ sect ] then
+              items[ sect ].count = items[ sect ].count + 1
+            else
+              items[ sect ] = {
+                [ "count"     ] = 1,
+                [ "game_type" ] = "ammo",
+              }
+            end
           end
         end
 
@@ -401,8 +422,15 @@ function reinforcement( lvl, btl, wave, last_monster_cnt )
             local list = rx_utils.parse_list_new(
               nil, wpn:section(), "grenade_class"
             )
-            local section = list[ math.random( table.getn( list ) ) ]
-            alife():create( section, vector():set( 0, 0, 0 ), 0, 0, ruk.id )
+            local sect = list[ math.random( table.getn( list ) ) ]
+            if items[ sect ] then
+              items[ sect ].count = items[ sect ].count + 1
+            else
+              items[ sect ] = {
+                [ "count"     ] = 1,
+                [ "game_type" ] = "ammo",
+              }
+            end
           end
         end
       end
@@ -411,12 +439,28 @@ function reinforcement( lvl, btl, wave, last_monster_cnt )
 
   -- разный допхабар
   if cur_wave.items then
-    for s, p in pairs( cur_wave.items ) do
-      for i = 1, p do
-        alife():create( s, vector():set(0,0,0), 0, 0, ruk.id )
+    for sect, t in pairs( cur_wave.items ) do
+      if items[ sect ] then
+        items[ sect ].count = t[ sect ].count + 1
+      else
+        items[ sect ] = t
       end
     end
   end
+
+  local rukzak_items = {}
+  for sect, t in pairs( items ) do
+    ASSERT(
+      ( t.count and t.game_type ),
+      "[%s]: %s, %s, %s: %s: wrong item: count = %s, game_type = %s",
+      script_name(), lvl, btl, wave, sect, tostring( t.count ),
+      tostring( t.game_type )
+    )
+    table.insert(
+      rukzak_items, dsh_rukzak.make_rukzak_item( sect, t.game_type, t.count )
+    )
+  end
+  dsh_rukzak.save_rukzak( ruk.id, rukzak_items )
 
   -- выдаем смс
   if cur_wave.sms then
