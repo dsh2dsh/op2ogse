@@ -6,9 +6,9 @@ function attach( sm )
 end
 
 
-function create_radius( obj, home_radius )
+function create_radius( obj, home_radius, home_vertex, onetime )
   local binder = obj:binded_object()
-  local mgr    = battle_radius( obj, home_radius )
+  local mgr    = battle_radius( obj, home_radius, home_vertex, onetime )
   binder[ "dsh_battle_radius.mgr" ] = mgr
   local subscribed = {
     [ "signal" ] = "on_monster_update." .. obj:id(),
@@ -34,10 +34,12 @@ local STATE_MOVE_HOME = 2
 
 
 class "battle_radius"
-function battle_radius:__init( obj, home_radius )
-  self.initialized = false
+function battle_radius:__init( obj, home_radius, home_vertex, onetime )
   self.home_radius = home_radius
+  self.home_vertex = home_vertex
+  self.initialized = false
   self.object      = obj
+  self.onetime     = onetime
 end
 
 
@@ -62,7 +64,7 @@ end
 function battle_radius:select_state()
   self.state_prev = self.state_current
 
-  local home_node = db.actor:level_vertex_id()
+  local home_node = self.home_vertex or db.actor:level_vertex_id()
   if not self.object:accessible( home_node ) then
     local vtemp = vector()
     home_node, vtemp = self.object:accessible_nearest(
@@ -75,7 +77,11 @@ function battle_radius:select_state()
   local home_dist = self.object:position():distance_to( self.home_position )
   local enemy     = self.object:best_enemy()
   if
-    ( enemy and IsStalker( enemy ) and enemy:alive() )
+    (
+      enemy
+      and ( IsStalker( enemy ) or ( self.onetime and IsMonster( enemy ) ) )
+      and enemy:alive()
+    )
     or home_dist < self.home_radius
   then
     self.state_current = STATE_ALIFE
@@ -92,6 +98,9 @@ function battle_radius:execute_state()
 
   if self.state_current == STATE_ALIFE and self.state_prev ~= STATE_ALIFE then
     xr_logic.mob_release( self.object )
+    if self.onetime then
+      on_monster_death( self.object )
+    end
     return
   end
 
