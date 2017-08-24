@@ -417,680 +417,746 @@ local forbidden_by_lname = {
 }
 
 local community_forbidden_locations = {
---[[
-        ["monolith"] = {
-                ["l12_stancia_2"] = true,
-        },
-]]
+  -- [ "monolith" ] = {
+  --   [ "l12_stancia_2" ] = true,
+  -- },
 }
------------------------------------------------------------------------
---- Эвалуаторы:
------------------------------------------------------------------------
 
-class "evaluator_check_altcombat" ( property_evaluator ) -- продолжаем вооруженное общение до умиротворения объекта
 
-function evaluator_check_altcombat:__init( name, storage ) super ( nil, name )
-        self.st = storage
+-- продолжаем вооруженное общение до умиротворения объекта
+class "evaluator_check_altcombat" ( property_evaluator )
+function evaluator_check_altcombat:__init( name, storage ) super( nil, name )
+  self.st = storage
 end
+
 
 function evaluator_check_altcombat:evaluate()
-        if count_update[self.object:id()] and count_update[self.object:id()] <= engage_after_update then
-                count_update[self.object:id()] = count_update[self.object:id()] + 1
-                in_combat[self.object:id()] = nil
-                return false
-        elseif not count_update[self.object:id()] then
-                count_update[self.object:id()] = 0
-                in_combat[self.object:id()] = nil
-                return false                    
-        end
-        local lname = level.name()
-        local comm = self.object:character_community()
-        local forbidden_by_comm = community_forbidden_locations[comm]
-        if not self.object:alive()
-        or xr_wounded.is_wounded(self.object) 
-        or xr_companion.is_companion(self.object:id()) 
-        or forbidden_comms[self.object:character_community()]
-        or (forbidden_by_comm and forbidden_by_comm[lname])
-        or forbidden_by_lname[lname]
-        or (db.storage[self.object:id()].active_scheme and forbidden_schemes[db.storage[self.object:id()].active_scheme])
-        or forbidden_profiles[self.object:name()]
-        or forbidden_profiles[self.object:profile_name()]
-        or (
-                comm == "monolith" and
-                string.find(self.object:name(), "pri_") and
-                (string.find(self.object:name(), "sniper") or string.find(self.object:name(), "roof"))
+  if
+    count_update[ self.object:id() ]
+    and count_update[ self.object:id() ] <= engage_after_update
+  then
+    count_update[ self.object:id() ] = count_update[ self.object:id() ] + 1
+    in_combat[ self.object:id() ] = nil
+    return false
+  elseif not count_update[ self.object:id() ] then
+    count_update[ self.object:id() ] = 0
+    in_combat[ self.object:id()    ] = nil
+    return false
+  end
+
+  local lname = level.name()
+  local comm  = self.object:character_community()
+  local forbidden_by_comm = community_forbidden_locations[ comm ]
+  if
+    ( not self.object:alive() )
+    or xr_wounded.is_wounded( self.object )
+    or xr_companion.is_companion( self.object:id() )
+    or forbidden_comms[ self.object:character_community() ]
+    or ( forbidden_by_comm and forbidden_by_comm[ lname ] )
+    or forbidden_by_lname[ lname ]
+    or (
+      db.storage[ self.object:id() ].active_scheme
+      and forbidden_schemes[ db.storage[ self.object:id() ].active_scheme ]
+    )
+    or forbidden_profiles[ self.object:name() ]
+    or forbidden_profiles[ self.object:profile_name() ]
+    or (
+      comm == "monolith"
+      and string.find( self.object:name(), "pri_" )
+      and (
+        string.find( self.object:name(), "sniper" )
+        or string.find( self.object:name(), "roof" )
+      )
+    )
+  then
+    restore_restrictions( self.object )
+    in_combat[ self.object:id() ] = nil
+    return false
+  else
+    if not inited[ self.object:id() ] then
+      -- произведем инициализацию таблиц данных селектора
+      targets_list[ self.object:id() ] = {}        -- список целей
+      last_target[ self.object:id()  ] = {}        -- последняя цель
+      setup_sound_table( self.object )
+      inited[ self.object:id()       ] = true
+    end
+    reprioritize_targets( self.object )
+    check_for_grenades( self.object )
+  end
+  if is_combat_ignore( self.object ) then
+    primary_target[ self.object:id() ] = nil
+    in_combat[ self.object:id()      ] = nil
+    return false
+  end
+
+  local bw
+  local wm = rx_wmgr and rx_wmgr.get_wm( self.object )
+  local sl = self.object:active_slot()
+  if sl ~= 4294967295 and self.object:item_in_slot( sl ) then
+    bw = self.object:item_in_slot( sl )
+  else
+    bw = ( wm and wm:get_weapon() ) or self.object:best_weapon()
+  end
+
+  if self.st.script_combat_type == "zombied"  then
+    campers[ self.object:id() ] = nil
+  elseif db.storage[ self.object:id() ].active_scheme == "camper" then
+    campers[ self.object:id() ] = true
+  else
+    monolith[ self.object:id() ] = nil
+    campers[ self.object:id()  ] = nil
+  end
+
+  local npc_rank = ranks.get_obj_rank_name( self.object )
+  local targ     = have_fresh_deadman( self.object )
+  if primary_target[ self.object:id() ] ~= nil then
+    local best_enemy = level.object_by_id( primary_target[ self.object:id() ] )
+    local ammo_check = true
+    if bw and bw:is_weapon_magazined() then
+      if wm then
+        ammo_check = wm:have_ammo( bw )
+      end
+    end
+    if
+      best_enemy
+      and (
+        best_enemy:alive()
+        or ( is_armor( best_enemy ) and armor_alive( best_enemy ) )
+      )
+      and (
+        not ( IsStalker( best_enemy ) and xr_wounded.is_wounded( best_enemy ) )
+      )
+      and ( not is_exclusion( self.object ) )
+      and ( not ( wm and ammo_check == false ) )
+      and (
+        (
+          best_enemy:position():distance_to( self.object:position() ) >= 2.0
+          and ( bw and not isKnife( bw ) )
         )
-        then
-                restore_restrictions(self.object)
-                in_combat[self.object:id()] = nil
-                return false
-        else
-                if not inited[self.object:id()] then -- произведем инициализацию таблиц данных селектора
-                        targets_list[self.object:id()]          = {}            -- список целей
-                        last_target[self.object:id()]           = {}            -- последняя цель
-                        setup_sound_table(self.object)
-                        inited[self.object:id()] = true         
-                end     
-                reprioritize_targets(self.object)
-                check_for_grenades(self.object)
+        or (
+          best_enemy:position():distance_to( self.object:position() ) < close_combat_distance
+          and knife_scheme[ self.object:id() ]
+        )
+      )
+    then
+      ogse_debug.add_active_eval( self.object, script_name(), "altcombat" )
+      if not already_hear[ self.object:id() ] then
+        already_hear[ self.object:id() ] = true
+        if not intro_time[ self.object:id() ] then
+          intro_time[ self.object:id() ] = time_global() + intros[ npc_rank ]
         end
-        if is_combat_ignore(self.object) then
-                primary_target[self.object:id()] = nil
-                in_combat[self.object:id()] = nil
-                return false
-        end     
-
-        local bw = nil
-        local wm = rx_wmgr and rx_wmgr.get_wm(self.object)
-        
-        local sl = self.object:active_slot()
-        if sl ~= 4294967295 and self.object:item_in_slot(sl) then
-                bw = self.object:item_in_slot(sl)
-        else
-                bw = (wm and wm:get_weapon()) or self.object:best_weapon()
-        end
-
-        local npc_rank = ranks.get_obj_rank_name(self.object)
-
-        if self.st.script_combat_type == "zombied"  then
-                -- monolith[self.object:id()] = true
-                campers[self.object:id()] = nil
-        elseif db.storage[self.object:id()].active_scheme == "camper" then
-                campers[self.object:id()] = true
-                -- monolith[self.object:id()] = nil
-        else
-                monolith[self.object:id()] = nil
-                campers[self.object:id()] = nil
-        end     
-        local targ = have_fresh_deadman(self.object)
-        if primary_target[self.object:id()] ~= nil then
-                local best_enemy = level.object_by_id(primary_target[self.object:id()])
-                local ammo_check = true
-                if bw and bw:is_weapon_magazined() then
-                        if wm then
-                                ammo_check = wm:have_ammo(bw)
-                        end
-                end
-                if best_enemy 
-                and (best_enemy:alive() or (is_armor(best_enemy) and armor_alive(best_enemy)))
-                and not (IsStalker(best_enemy) and xr_wounded.is_wounded(best_enemy))
-                and not is_exclusion(self.object)
-                and not (wm and ammo_check == false)
-                and ((best_enemy:position():distance_to(self.object:position()) >= 2.0 and (bw and not isKnife(bw))) or (best_enemy:position():distance_to(self.object:position()) < close_combat_distance and knife_scheme[self.object:id()]))
-                then
-                        ogse_debug.add_active_eval( self.object, script_name(), "altcombat" )
-                        if not already_hear[self.object:id()] then
-                                already_hear[self.object:id()] = true
-                                if not intro_time[self.object:id()] then
-                                        intro_time[self.object:id()] = time_global() + intros[npc_rank]
-                                end
-                                cooldown[self.object:id()] = time_global() + cooldown_time
-                        end
-                        in_combat[self.object:id()] = true
-                        return true
-                else
-                        if targ ~= false and not is_exclusion(self.object) then
-                                ogse_debug.add_active_eval( self.object, script_name(), "altcombat_2" )
-                                in_combat[self.object:id()] = true
-                                return true
-                        end
-                        restore_restrictions(self.object)
-                        in_combat[self.object:id()] = nil
-                        return false
-                end
-        else
-                if targ ~= false and not is_exclusion(self.object) then
-                        local obj = level.object_by_id(targ)
-                        if not (IsStalker(obj) and obj:alive() and xr_wounded.is_wounded(obj)) then
-                                ogse_debug.add_active_eval( self.object, script_name(), "altcombat_3" )
-                                in_combat[self.object:id()] = true
-                                return true
-                        end
-                end
-                if already_hear[self.object:id()] then
-                        already_hear[self.object:id()] = nil
-                end
-                if intro_time[self.object:id()] and not self.object:best_danger() then
-                        intro_time[self.object:id()] = nil
-                end
-                restore_restrictions(self.object)
-                in_combat[self.object:id()] = nil
-                return false
-        end
+        cooldown[ self.object:id() ] = time_global() + cooldown_time
+      end
+      in_combat[ self.object:id() ] = true
+      return true
+    else
+      if targ ~= false and not is_exclusion( self.object ) then
+        ogse_debug.add_active_eval( self.object, script_name(), "altcombat_2" )
+        in_combat[ self.object:id() ] = true
+        return true
+      end
+      restore_restrictions( self.object )
+      in_combat[ self.object:id() ] = nil
+      return false
+    end
+  else
+    if targ ~= false and not is_exclusion( self.object ) then
+      local obj = level.object_by_id( targ )
+      if
+        not (
+          IsStalker( obj ) and obj:alive() and xr_wounded.is_wounded( obj )
+        )
+      then
+        ogse_debug.add_active_eval( self.object, script_name(), "altcombat_3" )
+        in_combat[ self.object:id() ] = true
+        return true
+      end
+    end
+    if already_hear[ self.object:id() ] then
+      already_hear[ self.object:id() ] = nil
+    end
+    if intro_time[ self.object:id() ] and not self.object:best_danger() then
+      intro_time[ self.object:id() ] = nil
+    end
+    restore_restrictions( self.object )
+    in_combat[ self.object:id() ] = nil
+    return false
+  end
 end
 
----------------------------------------------------------------
---- Экшены:
----------------------------------------------------------------
-class "action_altcombat" (action_base)
-function action_altcombat:__init (npc,action_name,storage) super (nil,action_name)
-        self.st = storage
+
+class "action_altcombat" ( action_base )
+function action_altcombat:__init( npc, action_name, storage ) super( nil, action_name )
+  self.st = storage
 end
+
+
 function action_altcombat:initialize()
-        action_base.initialize(self)
-        local npc = self.object
-        xr_sound.set_sound( npc, nil )
-        npc:movement_enabled( true )
-        stop_play_sound( npc )
-        self.st.check_lvid = nil
-        npc:set_item(object.idle,nil)
-        self:check_objects()
+  action_base.initialize(self)
+  local npc = self.object
+  xr_sound.set_sound( npc, nil )
+  npc:movement_enabled( true )
+  stop_play_sound( npc )
+  self.st.check_lvid = nil
+  npc:set_item( object.idle, nil )
+  self:check_objects()
 end
+
+
 function action_altcombat:execute()
-        action_base.execute(self)
-        
-        local npc = self.object
-        local assist_point = nil
-        
-        if xr_wounded.is_wounded(self.object) or not self.object:alive() then
-                reset_everything(self.object)   
-                return
-        end
-        
-        if active_grenades[npc:id()] then
-                evade_grenades(npc)
-                return
-        end
-        
-        if talking_about_grenka[npc:id()] and not active_grenades[npc:id()] then
-                talking_about_grenka[npc:id()] = nil
-                stop_play_sound(npc)
-                xr_sound.set_sound(npc, nil)
-        end
-        
-        local enemy = nil                               -- текущий враг
-        local change_flag = false               -- флаг смены цели
-        
-        local deadman = have_fresh_deadman(npc)
-        
-        if primary_target[npc:id()] ~= nil then -- если есть целеуказание от селектора
-                enemy = level.object_by_id(primary_target[npc:id()])    -- получим объект цели
-        end
-        if not enemy and deadman == false then
-                last_time_send[npc:id()] = nil
-                last_enemy[npc:id()] = nil
-                last_enemy_id[npc:id()] = nil
-                primary_target[npc:id()] = nil
-                last_reprioritize[npc:id()] = nil
-                return
-        end
-        
-        -- получим текущее оружие
-        local bw = nil
-        local wm = rx_wmgr and rx_wmgr.get_wm(npc)
-        local sl = npc:active_slot()
-        if sl ~= 4294967295 and npc:item_in_slot(sl) then
-                bw = npc:item_in_slot(sl)
+  action_base.execute( self )
+  local npc = self.object
+
+  if xr_wounded.is_wounded( npc ) or not self.object:alive() then
+    reset_everything( npc )
+    return
+  end
+
+  if active_grenades[ npc:id() ] then
+    evade_grenades( npc )
+    return
+  end
+
+  if talking_about_grenka[ npc:id() ] and not active_grenades[ npc:id() ] then
+    talking_about_grenka[ npc:id() ] = nil
+    stop_play_sound( npc )
+    xr_sound.set_sound( npc, nil )
+  end
+
+  local enemy                   -- текущий враг
+  if primary_target[ npc:id() ] ~= nil then
+    -- если есть целеуказание от селектора
+    -- получим объект цели
+    enemy = level.object_by_id( primary_target[ npc:id() ] )
+  end
+
+  local deadman = have_fresh_deadman( npc )
+  if ( not enemy ) and deadman == false then
+    last_time_send[ npc:id()    ] = nil
+    last_enemy[ npc:id()        ] = nil
+    last_enemy_id[ npc:id()     ] = nil
+    primary_target[ npc:id()    ] = nil
+    last_reprioritize[ npc:id() ] = nil
+    return
+  end
+
+  -- получим текущее оружие
+  local bw
+  local wm = rx_wmgr and rx_wmgr.get_wm( npc )
+  local sl = npc:active_slot()
+  if sl ~= 4294967295 and npc:item_in_slot( sl ) then
+    bw = npc:item_in_slot( sl )
+  else
+    bw = ( wm and wm:get_weapon() ) or npc:best_weapon()
+  end
+
+  process_restrictions(npc)
+  -- строим список врагов/друзей, проверяем линию огня - в своих и
+  -- нейтралов чтоб не стрелять
+  self:check_objects( bw, enemy )
+
+  self.object:movement_enabled( true )
+  self.object:set_desired_direction()
+  self.object:set_desired_position()
+  self.object:set_detail_path_type( move.curve )
+  self.object:set_path_type( game_object.level_path )
+
+  local assist_point, last_algorythm
+  -- если ещё свежий труп
+  if primary_target[ npc:id() ] == nil and deadman ~= false then
+    stop_play_sound( npc )
+    local deadman_target = level.object_by_id( deadman )
+    if deadman_target then
+      set_combat_sight( self.object, deadman_target, bw )
+      self.object:set_item( object.aim1, bw )
+      if not deadman_vtx[ npc:id() ] then
+        local rand = math.random()
+        if rand < 0.33 then
+          assist_point   = randomize_position( npc )
+          last_algorythm = "random_pos"
+        elseif rand >= 0.33 and rand < 0.66 then
+          assist_point   = select_last_known_enemy_pos( npc )
+          last_algorythm = "last_enemy_vertex"
         else
-                bw = (wm and wm:get_weapon()) or npc:best_weapon()
+          assist_point   = select_position( npc, nil, true )
+          last_algorythm = "select_pos"
         end
-        
-        process_restrictions(npc)
-        -- строим список врагов/друзей, проверяем линию огня - в своих и
-        -- нейтралов чтоб не стрелять   
-        self:check_objects( bw, enemy )
-        
-        self.object:movement_enabled(true)
-        self.object:set_desired_direction()
-        self.object:set_desired_position ()     
-        self.object:set_detail_path_type ( move.curve )
-        self.object:set_path_type        ( game_object.level_path )     
-
-        -- если ещё свежий труп
-        if primary_target[npc:id()] == nil and deadman ~= false then
-                stop_play_sound(npc)
-                local deadman_target = level.object_by_id(deadman)
-                if deadman_target then
-                        
-                        set_combat_sight(self.object, deadman_target, bw)
-                        self.object:set_item(object.aim1, bw)
-                        
-                        if not deadman_vtx[npc:id()] then
-                        
-                                local rand = math.random()
-                                if rand < 0.33 then
-                                        assist_point = randomize_position(npc)
-                                        last_algorythm = "random_pos"
-                                elseif rand >= 0.33 and rand < 0.66 then
-                                        assist_point = select_last_known_enemy_pos(npc)
-                                        last_algorythm = "last_enemy_vertex"
-                                else
-                                        assist_point = select_position(npc, nil, true)
-                                        last_algorythm = "select_pos"
-                                end     
-                                
-                                deadman_vtx[npc:id()] = assist_point
-
-                        end
-                        
-                        if deadman_vtx[npc:id()] and npc:accessible(deadman_vtx[npc:id()]) and not npc:level_vertex_id() == deadman_vtx[npc:id()] then
-                                if hit_timeout[npc:id()] and hit_timeout[npc:id()] > time_global() then
-                                        self.object:movement_enabled(false)
-                                elseif hit_timeout[npc:id()] then       
-                                        hit_timeout[npc:id()] = nil
-                                end                             
-                                set_transfer_state(self.object, deadman_target)
-                                utils.send_to_nearest_accessible_vertex(npc, deadman_vtx[npc:id()])
-                        else
-                                if not postcombat[npc:id()] then
-                                        if has_full_weapon(npc, bw) then
-                                                postcombat[npc:id()] = postcombat_states_full_weapon[math.random(1,#postcombat_states_full_weapon)]
-                                        else
-                                                postcombat[npc:id()] = postcombat_states[math.random(1,#postcombat_states)]
-                                        end
-                                end
-                                local state_chk = state_mgr.get_state(npc)
-                                if npc:animation_count() > 0 and state_chk ~= postcombat[npc:id()] then
-                                        npc:clear_animations()
-                                end
-                                if state_chk ~= postcombat[npc:id()] then
-                                        state_mgr.set_state(npc, postcombat[npc:id()], nil, nil, {look_object = deadman_target} )
-                                        set_combat_sight(npc, deadman_target, bw)
-                                end
-                        end
-                        
-                        last_enemy[npc:id()] = nil
-                        last_enemy_id[npc:id()] = nil
-                        return                  
-                else
-                        reset_everything(npc)
-                        return
-                end
+        deadman_vtx[ npc:id() ] = assist_point
+      end
+      if
+        deadman_vtx[ npc:id() ]
+        and npc:accessible( deadman_vtx[ npc:id() ] )
+        and not npc:level_vertex_id() == deadman_vtx[ npc:id() ]
+      then
+        if
+          hit_timeout[ npc:id() ]
+          and hit_timeout[ npc:id() ] > time_global()
+        then
+          self.object:movement_enabled( false )
+        elseif hit_timeout[ npc:id() ] then
+          hit_timeout[ npc:id() ] = nil
         end
-        
-
-        -- инициализация боя
-        
-        if enemy and (not last_enemy_id[npc:id()] or enemy:id() ~= last_enemy_id[npc:id()]) then
-        
-                last_enemy_id[npc:id()] = enemy:id()
-                enable_object(self.object, enemy)
---              self.object:set_relation(game_object.enemy, enemy)              
-                self.object:set_item(object.aim2, bw)
-                notify_friends(self.object, enemy)
-                
-                local anim = db.storage[npc:id()].state_mgr.animstate:state()
-                if not_ready_states[anim] and not (anim == "guard" or anim == "patrol") then
-                        state_mgr.set_state(npc, "hide_fire", nil, nil, {look_object = enemy}, {animation = true, animation_nout = true} )
-                else
-                        state_mgr.set_state(npc, "threat", nil, nil, {look_object = enemy}, {animation = true, animation_nout = true} )
-                end     
-                        
-                set_combat_sight(npc, enemy, bw)
-        
-        end     
-        
-        local npc_pos = npc:position()
-        local be = enemy
-        local npc_rank = ranks.get_obj_rank_name(npc)
-        local be_pos = be:position()
-        local distance = be_pos:distance_to(npc_pos)
-
-        -------------
-        local cover
-        -------------
-
-        ---------------
-        --принимаем решение
-        local anim = db.storage[npc:id()].state_mgr.animstate:state()
-        
-        if intro_time[self.object:id()] and intro_time[self.object:id()] >  time_global() then
-                set_combat_sight(npc, be, bw)
-                set_transfer_state(npc, be)
-                if not_ready_states[anim] then
-                        assist_point = find_cover(npc, enemy, 2)
-                        if not assist_point or assist_point == 0 then
-                                assist_point = select_position(npc, nil, true)
-                        end
-                else
-                        assist_point = select_position(npc, nil, true)
-                end             
-                if npc:level_vertex_id() == assist_point or npc:position():distance_to(level.vertex_position(assist_point)) < 1.0 then
-                        if is_safe_to_block_movement(npc, be) then
-                                self.object:movement_enabled(false)
-                        end
-                else
-                        if hit_timeout[npc:id()] and hit_timeout[npc:id()] > time_global() then
-                                self.object:movement_enabled(false)
-                        elseif hit_timeout[npc:id()] then       
-                                hit_timeout[npc:id()] = nil
-                                utils.send_to_nearest_accessible_vertex(npc, assist_point)
-                        else    
-                                utils.send_to_nearest_accessible_vertex(npc, assist_point)
-                        end     
-                end
-                set_sound_event(npc, "start") 
-                return
+        set_transfer_state( self.object, deadman_target )
+        utils.send_to_nearest_accessible_vertex( npc, deadman_vtx[ npc:id() ] )
+      else
+        if not postcombat[ npc:id() ] then
+          if has_full_weapon( npc, bw ) then
+            postcombat[ npc:id() ] =
+              postcombat_states_full_weapon[ math.random( #postcombat_states_full_weapon ) ]
+          else
+            postcombat[ npc:id() ] =
+              postcombat_states[ math.random( #postcombat_states ) ]
+          end
         end
-
-        local height = be_pos.y - npc_pos.y
-        local actor_at_height = (be_pos.y > npc_pos.y and height > 3 and be:id() == db.actor:id())
-
-        process_combat_sound(npc)
-        
-        local last_algorythm = "no"
-        
-        local raytrace_see = false
-        
-        if be:id() == db.actor:id() then
-                raytrace_see = actor_see_raytrace(npc)
+        local state_chk = state_mgr.get_state( npc )
+        if
+          npc:animation_count() > 0 and state_chk ~= postcombat[ npc:id() ]
+        then
+          npc:clear_animations()
         end
-        
-        if npc:see(be) and not is_armor(be) and knife_scheme[npc:id()] then
-                npc:set_mental_state(anim.danger)
-                assist_point = select_enemy_pos_fanatic(npc, be)
-                last_algorythm = "enemy_vertex"
-                if assist_point then
-                        xr_sound.set_sound(npc, nil)
-                        set_combat_sight(npc, be, bw)
-                        set_escape_state(npc, be)
-                        if npc:level_vertex_id() ~= assist_point then
-                                if hit_timeout[npc:id()] and hit_timeout[npc:id()] > time_global() then
-                                        self.object:movement_enabled(false)
-                                elseif hit_timeout[npc:id()] then       
-                                        hit_timeout[npc:id()] = nil
-                                        utils.send_to_nearest_accessible_vertex(npc, assist_point)
-                                else    
-                                        utils.send_to_nearest_accessible_vertex(npc, assist_point)
-                                end     
-                        end     
-                end
-                return
-        end     
-        
-        local is_close_range = distance < close_combat_distance
-        
-        if (npc:see(be) and (be:see(npc) or raytrace_see)) or (is_armor(be) and get_armor_vis(be, npc)) then                    -- если видим врага и он видит нас                      -- стреляем, ищем укрытие
-        
-                
-                time_hide[npc:id()] = nil
-                
-                if is_fanatic(npc) then
-                        assist_point = select_position(npc, be)
-                        last_algorythm = "select_pos_be"
-                else
-                        if actor_at_height then
-                                if npc_rank == "novice" then
-                                        assist_point = select_position(npc)
-                                        last_algorythm = "select_pos"
-                                elseif npc_rank == "experienced" then
-                                        assist_point = select_position(npc, be)
-                                                last_algorythm = "select_pos_be"
-                                elseif npc_rank == "veteran" then
-                                        assist_point = find_cover(npc, be, 2)
-                                        last_algorythm = "find_cover_2"
-                                else
-                                        assist_point = find_cover(npc, be, 2)
-                                        last_algorythm = "find_cover_2"
-                                end                             
-                        else
-                                if npc_rank == "novice" then
-                                        assist_point = select_position(npc, be)
-                                        last_algorythm = "select_pos_be"
-                                elseif npc_rank == "experienced" then
-                                        assist_point = find_cover(npc, be, 0)
-                                        last_algorythm = "find_cover_0"
-                                elseif npc_rank == "veteran" then
-                                        assist_point = find_cover(npc, be, 2)
-                                        last_algorythm = "find_cover_2"
-                                else
-                                        assist_point = find_cover(npc, be, 1)
-                                        last_algorythm = "find_cover_1"
-                                end
-                        end
-                end
-                
-                set_combat_sight(npc, be, bw)
-                if can_fire[npc:id()] then
-                        set_combat_state(npc, be, bw)
-                        if is_close_range then
-                                local enemy_cover = enemy_covered_value(npc, be)
-                                if enemy_cover < 0.5 then
-                                        set_weapons_fire( npc, be, bw, false, npc_rank )
-                                else    
-                                end                     
-                        else
-                                set_weapons_fire( npc, be, bw, false, npc_rank )
-                        end                     
-                else    
-                        set_transfer_state(npc, be)
-                end
-                choose_idle_scheme(npc, "attack")
-
-        elseif (npc:see(be) and not (be:see(npc) or raytrace_see)) or (is_armor(be) and not get_armor_vis(be, npc)) then                -- если видим врага и он НЕ видит нас           -- стреляем, маневрируя
-        
-        
-                time_hide[npc:id()] = nil
-
-                if is_fanatic(npc) then
-                        assist_point = select_position(npc, be)
-                        last_algorythm = "select_pos_be"
-                else
-                        if actor_at_height then
-                                if npc_rank == "novice" then
-                                        assist_point = select_position(npc)
-                                        last_algorythm = "select_pos"
-                                elseif npc_rank == "experienced" then
-                                        assist_point = select_position(npc, be)
-                                                last_algorythm = "select_pos_be"
-                                elseif npc_rank == "veteran" then
-                                        assist_point = find_cover(npc, be, 2)
-                                        last_algorythm = "find_cover_2"
-                                else
-                                        assist_point = find_cover(npc, be, 2)
-                                        last_algorythm = "find_cover_2"
-                                end                             
-                        else
-                                if npc_rank == "novice" then
-                                        assist_point = select_position(npc, be)
-                                        last_algorythm = "select_pos_be"
-                                elseif npc_rank == "experienced" then
-                                        assist_point = select_position(npc, be)
-                                        last_algorythm = "select_pos_be"
-                                else
-                                        if actor_at_height then
-                                                assist_point = select_position(npc, be)
-                                                last_algorythm = "select_pos_be_actor_height"
-                                        else
-                                                assist_point = select_position(npc)
-                                                last_algorythm = "select_pos_be"
-                                        end
-                                end     
-                        end
-                end
-
-                set_combat_sight(npc, be, bw)
-                if can_fire[npc:id()] then
-                        set_combat_state(npc, be, bw)
-                        if is_close_range then
-                                local enemy_cover = enemy_covered_value(npc, be)
-                                if enemy_cover < 0.5 then
-                                        set_weapons_fire( npc, be, bw, false, npc_rank )
-                                end                     
-                        else
-                                set_weapons_fire( npc, be, bw, false, npc_rank )
-                        end                             
-                else    
-                        set_transfer_state(npc, be)
-                end
-                choose_idle_scheme(npc, "attack_notsee")
-
-        elseif not npc:see(be) and (be:see(npc) or raytrace_see) then           -- если НЕ видим врага и он видит нас           -- убегаем, ищем укрытие
-        
-        
-                if not time_hide[npc:id()] then
-                        time_hide[npc:id()] = time_global() + math.random(7000,15000) + (1000 * ogse.armor_type(npc))
-                end
-        
-                if is_fanatic(npc) then
-                        assist_point = select_position(npc, be)
-                        last_algorythm = "select_pos_be"
-                        if can_fire[npc:id()] then
-                                set_combat_state(npc, be, bw)
-                                set_weapons_fire( npc, be, bw, true, npc_rank )
-                        else    
-                                set_transfer_state(npc, be)
-                        end                     
-                else
-                        if actor_at_height then
-                                assist_point = find_cover(npc, be, 2)
-                                if can_fire[npc:id()] then
-                                        set_weapons_fire( npc, be, bw, true, npc_rank )
-                                        set_combat_state(npc, be, bw)
-                                else    
-                                        set_transfer_state(npc, be)
-                                end
-                                last_algorythm = "find_cover_2"
-                        else    
-                                if npc_rank == "novice" then
-                                        assist_point = select_position(npc)
-                                        last_algorythm = "select_pos"
-                                        set_transfer_state(npc, be)
-                                elseif npc_rank == "experienced" then
-                                        assist_point = find_cover(npc, be, 1)
-                                        last_algorythm = "find_cover_1"
-                                        set_transfer_state(npc, be)
-                                elseif npc_rank == "veteran" then
-                                        assist_point = find_cover(npc, be, 0)
-                                        last_algorythm = "find_cover_0"
-                                        if can_fire[npc:id()] then
-                                                set_combat_state(npc, be, bw)
-                                                set_weapons_fire( npc, be, bw, true, npc_rank )
-                                        else    
-                                                set_transfer_state(npc, be)
-                                        end
-                                else
-                                        assist_point = find_cover(npc, be, 2)
-                                        last_algorythm = "find_cover_2"
-                                        if can_fire[npc:id()] then
-                                                set_combat_state(npc, be, bw)
-                                                set_weapons_fire( npc, be, bw, true, npc_rank )
-                                        else    
-                                                set_transfer_state(npc, be)
-                                        end
-                                end     
-                        end
-                end             
-
-                set_combat_sight(npc, be, bw)
-                choose_idle_scheme(npc, "defence")
-
-        else                                                                                    -- если НЕ видим врага и он НЕ видит нас        -- ищем врага
-        
-        
-                if not time_hide[npc:id()] then
-                        time_hide[npc:id()] = time_global() + math.random(7000,15000) + (1000 * ogse.armor_type(npc))
-                end
-        
-                if is_fanatic(npc) then
-                        assist_point =  select_enemy_pos(npc, be)
-                        last_algorythm = "enemy_vertex"
-                        -- необходимо оформить как отдельный алгоритм
-                else
-                        if time_hide[npc:id()] < time_global() then
-                                if actor_at_height then
-                                        assist_point = select_position(npc, be)
-                                        last_algorythm = "select_pos_be_actor_height"
-                                else
-                                        if not last_choosed_path[npc:id()] or (last_choosed_path[npc:id()] and last_choosed_path[npc:id()].timeout < time_global()) then
-                                                local rand = math.random()
-                                                if rand < 0.2 then
-                                                        assist_point = find_cover(npc, be, 1)
-                                                        last_algorythm = "find_cover_1"
-                                                        last_choosed_path[npc:id()] = { timeout = time_global() + time_mantain_tactics, alg = last_algorythm }
-                                                elseif (rand >= 0.2 and rand < 0.4) and not actor_at_height then
-                                                        assist_point = select_last_known_enemy_pos(npc)
-                                                        last_algorythm = "last_enemy_vertex"
-                                                        last_choosed_path[npc:id()] = { timeout = time_global() + time_mantain_tactics, alg = last_algorythm }
-                                                elseif rand >= 0.4 and rand < 0.6 then
-                                                        assist_point = find_cover(npc, be, 2)
-                                                        last_algorythm = "find_cover_2"
-                                                        last_choosed_path[npc:id()] = { timeout = time_global() + time_mantain_tactics, alg = last_algorythm }
-                                                elseif (rand >= 0.6 and rand < 0.8) then
-                                                        assist_point = select_position(npc, be)
-                                                        last_algorythm = "select_pos_be"
-                                                        last_choosed_path[npc:id()] = { timeout = time_global() + time_mantain_tactics, alg = last_algorythm }
-                                                elseif not actor_at_height then
-                                                        assist_point =  select_enemy_pos(npc, be)
-                                                        last_algorythm = "enemy_vertex"
-                                                        last_choosed_path[npc:id()] = { timeout = time_global() + time_mantain_tactics, alg = last_algorythm }
-                                                end
-                                        else
-                                                local algorythm = last_choosed_path[npc:id()]
-                                                if algorythm.alg == "find_cover_1" then
-                                                        assist_point = find_cover(npc, be, 1)
-                                                        last_algorythm = "find_cover_1" 
-                                                elseif algorythm.alg == "find_cover_2" then
-                                                        assist_point = find_cover(npc, be, 2)
-                                                        last_algorythm = "find_cover_2"                                                         
-                                                elseif algorythm.alg == "last_enemy_vertex" then
-                                                        assist_point = select_last_known_enemy_pos(npc)
-                                                        last_algorythm = "last_enemy_vertex"                                            
-                                                elseif algorythm.alg == "select_pos" then
-                                                        assist_point = select_position(npc)
-                                                        last_algorythm = "select_pos"                                   
-                                                elseif algorythm.alg == "select_pos_be" then
-                                                        assist_point = select_position(npc, be)
-                                                        last_algorythm = "select_pos_be"                                        
-                                                elseif algorythm.alg == "enemy_vertex" then
-                                                        assist_point =  select_enemy_pos(npc, be)
-                                                        last_algorythm = "enemy_vertex"                                         
-                                                end
-                                        
-                                        end
-                                end
-                        else
-                                assist_point = find_cover(npc, be, 2)
-                                last_algorythm = "find_cover_2"
-                        end
-                end     
-                
-                set_combat_sight(npc, be, bw)
-                set_transfer_state(npc, be)
-                choose_idle_scheme(npc, "lost")
-                
+        if state_chk ~= postcombat[ npc:id() ] then
+          state_mgr.set_state(
+            npc, postcombat[ npc:id() ], nil, nil,
+            { look_object = deadman_target }
+          )
+          set_combat_sight( npc, deadman_target, bw )
         end
-        
-        if IsMonster(be) then
-                assist_point = select_position(npc)     
-                last_algorythm = "select_pos_monster"
-        end     
+      end
+      last_enemy[ npc:id()    ] = nil
+      last_enemy_id[ npc:id() ] = nil
+      return
+    else
+      reset_everything( npc )
+      return
+    end
+  end
 
-        if not assist_point then 
-                assist_point = last_sent_vertex[npc:id()]
-                if last_algorythm == "last_enemy_vertex" then
-                        assist_point =  select_enemy_pos(npc, be)
-                elseif last_algorythm == "find_cover_1" then
-                        assist_point = find_cover(npc, be, 0)
-                elseif last_algorythm == "find_cover_2" then
-                        assist_point = find_cover(npc, be, 0)                   
-                end
-                if not assist_point then
-                        assist_point = randomize_position(npc)
-                end
-        elseif assist_point == 0 then
-                -- Простой таймаут
-                assist_point = last_sent_vertex[npc:id()]
-        end
-        if assist_point then 
-                
-                if npc:level_vertex_id() == assist_point or npc:position():distance_to(level.vertex_position(assist_point)) <= 1.0 then
-                        if is_safe_to_block_movement(npc, be) then
-                                self.object:movement_enabled(false)
-                        end
-                else
-                        if hit_timeout[npc:id()] and hit_timeout[npc:id()] > time_global() then
-                                self.object:movement_enabled(false)
-                        elseif hit_timeout[npc:id()] then       
-                                hit_timeout[npc:id()] = nil
-                                utils.send_to_nearest_accessible_vertex(npc, assist_point)
-                        else    
-                                utils.send_to_nearest_accessible_vertex(npc, assist_point)
-                        end     
-                end                     
-        end
-        
+  -- инициализация боя
+  if
+    enemy
+    and (
+      ( not last_enemy_id[ npc:id() ] )
+      or enemy:id() ~= last_enemy_id[ npc:id() ]
+    )
+  then
+    last_enemy_id[ npc:id() ] = enemy:id()
+    enable_object( self.object, enemy )
+    self.object:set_item( object.aim2, bw )
+    notify_friends( self.object, enemy )
+    local anim = db.storage[ npc:id() ].state_mgr.animstate:state()
+    if
+      not_ready_states[ anim ]
+      and not ( anim == "guard" or anim == "patrol" )
+    then
+      state_mgr.set_state(
+        npc, "hide_fire", nil, nil, { look_object = enemy },
+        { animation = true, animation_nout = true }
+      )
+    else
+      state_mgr.set_state(
+        npc, "threat", nil, nil, { look_object = enemy },
+        { animation = true, animation_nout = true }
+      )
+    end
+    set_combat_sight( npc, enemy, bw )
+  end
 
+  local npc_pos  = npc:position()
+  local be       = enemy
+  local npc_rank = ranks.get_obj_rank_name(npc)
+  local be_pos   = be:position()
+  local distance = be_pos:distance_to( npc_pos )
+  local cover
+
+  -- принимаем решение
+  local anim = db.storage[ npc:id() ].state_mgr.animstate:state()
+  if
+    intro_time[ self.object:id() ]
+    and intro_time[ self.object:id() ] >  time_global()
+  then
+    set_combat_sight( npc, be, bw )
+    set_transfer_state( npc, be )
+    if not_ready_states[ anim ] then
+      assist_point = find_cover( npc, enemy, 2 )
+      if not assist_point or assist_point == 0 then
+        assist_point = select_position( npc, nil, true )
+      end
+    else
+      assist_point = select_position( npc, nil, true )
+    end
+    if
+      npc:level_vertex_id() == assist_point
+      or npc:position():distance_to( level.vertex_position( assist_point ) ) < 1.0
+    then
+      if is_safe_to_block_movement( npc, be ) then
+        self.object:movement_enabled( false )
+      end
+    else
+      if
+        hit_timeout[ npc:id() ] and hit_timeout[ npc:id() ] > time_global()
+      then
+        self.object:movement_enabled( false )
+      elseif hit_timeout[ npc:id() ] then
+        hit_timeout[ npc:id() ] = nil
+        utils.send_to_nearest_accessible_vertex( npc, assist_point )
+      else
+        utils.send_to_nearest_accessible_vertex( npc, assist_point )
+      end
+    end
+    set_sound_event( npc, "start" )
+    return
+  end
+
+  process_combat_sound( npc )
+
+  local last_algorythm = "no"
+  local raytrace_see   = false
+  if be:id() == db.actor:id() then
+    raytrace_see = actor_see_raytrace( npc )
+  end
+
+  if npc:see( be ) and ( not is_armor( be ) ) and knife_scheme[ npc:id() ] then
+    npc:set_mental_state( anim.danger )
+    assist_point = select_enemy_pos_fanatic( npc, be )
+    last_algorythm = "enemy_vertex"
+    if assist_point then
+      xr_sound.set_sound( npc, nil )
+      set_combat_sight( npc, be, bw )
+      set_escape_state( npc, be )
+      if npc:level_vertex_id() ~= assist_point then
+        if
+          hit_timeout[ npc:id() ] and hit_timeout[ npc:id() ] > time_global()
+        then
+          self.object:movement_enabled( false )
+        elseif hit_timeout[ npc:id() ] then
+          hit_timeout[ npc:id() ] = nil
+          utils.send_to_nearest_accessible_vertex( npc, assist_point )
+        else
+          utils.send_to_nearest_accessible_vertex( npc, assist_point )
+        end
+      end
+    end
+    return
+  end
+
+
+  local height          = be_pos.y - npc_pos.y
+  local actor_at_height = (
+    be_pos.y > npc_pos.y and height > 3 and be:id() == db.actor:id()
+  )
+  local is_close_range  = distance < close_combat_distance
+
+  if
+    ( npc:see( be ) and ( be:see( npc ) or raytrace_see ) )
+    or ( is_armor( be ) and get_armor_vis( be, npc ) )
+  then
+    -- если видим врага и он видит нас - стреляем, ищем укрытие
+    time_hide[ npc:id() ] = nil
+    if is_fanatic( npc ) then
+      assist_point   = select_position( npc, be )
+      last_algorythm = "select_pos_be"
+    else
+      if actor_at_height then
+        if npc_rank == "novice" then
+          assist_point   = select_position( npc )
+          last_algorythm = "select_pos"
+        elseif npc_rank == "experienced" then
+          assist_point   = select_position( npc, be )
+          last_algorythm = "select_pos_be"
+        elseif npc_rank == "veteran" then
+          assist_point   = find_cover( npc, be, 2 )
+          last_algorythm = "find_cover_2"
+        else
+          assist_point   = find_cover( npc, be, 2 )
+          last_algorythm = "find_cover_2"
+        end
+      else
+        if npc_rank == "novice" then
+          assist_point   = select_position( npc, be )
+          last_algorythm = "select_pos_be"
+        elseif npc_rank == "experienced" then
+          assist_point   = find_cover( npc, be, 0 )
+          last_algorythm = "find_cover_0"
+        elseif npc_rank == "veteran" then
+          assist_point   = find_cover( npc, be, 2 )
+          last_algorythm = "find_cover_2"
+        else
+          assist_point   = find_cover( npc, be, 1 )
+          last_algorythm = "find_cover_1"
+        end
+      end
+    end
+
+    set_combat_sight( npc, be, bw )
+    if can_fire[ npc:id() ] then
+      set_combat_state( npc, be, bw )
+      if is_close_range then
+        local enemy_cover = enemy_covered_value( npc, be )
+        if enemy_cover < 0.5 then
+          set_weapons_fire( npc, be, bw, false, npc_rank )
+        end
+      else
+        set_weapons_fire( npc, be, bw, false, npc_rank )
+      end
+    else
+      set_transfer_state( npc, be )
+    end
+    choose_idle_scheme( npc, "attack" )
+
+  elseif
+    ( npc:see( be ) and not ( be:see( npc ) or raytrace_see ) )
+    or ( is_armor( be ) and not get_armor_vis( be, npc ) )
+  then
+    -- если видим врага и он НЕ видит нас - стреляем, маневрируя
+    time_hide[ npc:id() ] = nil
+    if is_fanatic( npc ) then
+      assist_point   = select_position( npc, be )
+      last_algorythm = "select_pos_be"
+    else
+      if actor_at_height then
+        if npc_rank == "novice" then
+          assist_point   = select_position( npc )
+          last_algorythm = "select_pos"
+        elseif npc_rank == "experienced" then
+          assist_point   = select_position( npc, be )
+          last_algorythm = "select_pos_be"
+        elseif npc_rank == "veteran" then
+          assist_point   = find_cover( npc, be, 2 )
+          last_algorythm = "find_cover_2"
+        else
+          assist_point   = find_cover( npc, be, 2 )
+          last_algorythm = "find_cover_2"
+        end
+      else
+        if npc_rank == "novice" then
+          assist_point   = select_position( npc, be )
+          last_algorythm = "select_pos_be"
+        elseif npc_rank == "experienced" then
+          assist_point   = select_position( npc, be )
+          last_algorythm = "select_pos_be"
+        else
+          if actor_at_height then
+            assist_point   = select_position( npc, be )
+            last_algorythm = "select_pos_be_actor_height"
+          else
+            assist_point   = select_position( npc )
+            last_algorythm = "select_pos_be"
+          end
+        end
+      end
+    end
+
+    set_combat_sight( npc, be, bw )
+    if can_fire[ npc:id() ] then
+      set_combat_state( npc, be, bw )
+      if is_close_range then
+        local enemy_cover = enemy_covered_value( npc, be )
+        if enemy_cover < 0.5 then
+          set_weapons_fire( npc, be, bw, false, npc_rank )
+        end
+      else
+        set_weapons_fire( npc, be, bw, false, npc_rank )
+      end
+    else
+      set_transfer_state( npc, be )
+    end
+    choose_idle_scheme( npc, "attack_notsee" )
+
+  elseif ( not npc:see( be ) ) and ( be:see( npc ) or raytrace_see ) then
+    -- если НЕ видим врага и он видит нас - убегаем, ищем укрытие
+    if not time_hide[ npc:id() ] then
+      time_hide[ npc:id() ] = time_global() + math.random( 7000, 15000 )
+        + ( 1000 * ogse.armor_type( npc ) )
+    end
+    if is_fanatic( npc ) then
+      assist_point   = select_position( npc, be )
+      last_algorythm = "select_pos_be"
+      if can_fire[ npc:id() ] then
+        set_combat_state( npc, be, bw )
+        set_weapons_fire( npc, be, bw, true, npc_rank )
+      else
+        set_transfer_state( npc, be )
+      end
+    else
+      if actor_at_height then
+        assist_point = find_cover( npc, be, 2 )
+        if can_fire[ npc:id() ] then
+          set_weapons_fire( npc, be, bw, true, npc_rank )
+          set_combat_state( npc, be, bw )
+        else
+          set_transfer_state( npc, be )
+        end
+        last_algorythm = "find_cover_2"
+      else
+        if npc_rank == "novice" then
+          assist_point   = select_position( npc )
+          last_algorythm = "select_pos"
+          set_transfer_state( npc, be )
+        elseif npc_rank == "experienced" then
+          assist_point   = find_cover( npc, be, 1 )
+          last_algorythm = "find_cover_1"
+          set_transfer_state( npc, be )
+        elseif npc_rank == "veteran" then
+          assist_point   = find_cover( npc, be, 0 )
+          last_algorythm = "find_cover_0"
+          if can_fire[ npc:id() ] then
+            set_combat_state( npc, be, bw )
+            set_weapons_fire( npc, be, bw, true, npc_rank )
+          else
+            set_transfer_state( npc, be )
+          end
+        else
+          assist_point   = find_cover( npc, be, 2 )
+          last_algorythm = "find_cover_2"
+          if can_fire[ npc:id() ] then
+            set_combat_state( npc, be, bw )
+            set_weapons_fire( npc, be, bw, true, npc_rank )
+          else
+            set_transfer_state( npc, be )
+          end
+        end
+      end
+    end
+
+    set_combat_sight( npc, be, bw )
+    choose_idle_scheme(npc, "defence")
+
+  else
+    -- если НЕ видим врага и он НЕ видит нас - ищем врага
+    if not time_hide[ npc:id() ] then
+      time_hide[ npc:id() ] = time_global() + math.random( 7000, 15000 )
+        + ( 1000 * ogse.armor_type( npc ) )
+    end
+    if is_fanatic( npc ) then
+      assist_point   = select_enemy_pos( npc, be )
+      last_algorythm = "enemy_vertex"
+      -- необходимо оформить как отдельный алгоритм
+    else
+      if time_hide[ npc:id() ] < time_global() then
+        if actor_at_height then
+          assist_point   = select_position( npc, be )
+          last_algorythm = "select_pos_be_actor_height"
+        else
+          if
+            ( not last_choosed_path[ npc:id() ] )
+            or (
+              last_choosed_path[ npc:id() ]
+              and last_choosed_path[ npc:id() ].timeout < time_global()
+            )
+          then
+            local rand = math.random()
+            if rand < 0.2 then
+              assist_point   = find_cover( npc, be, 1 )
+              last_algorythm = "find_cover_1"
+              last_choosed_path[ npc:id() ] = {
+                alg     = last_algorythm,
+                timeout = time_global() + time_mantain_tactics,
+              }
+            elseif ( rand >= 0.2 and rand < 0.4 ) and not actor_at_height then
+              assist_point   = select_last_known_enemy_pos( npc )
+              last_algorythm = "last_enemy_vertex"
+              last_choosed_path[ npc:id() ] = {
+                alg     = last_algorythm,
+                timeout = time_global() + time_mantain_tactics,
+              }
+            elseif rand >= 0.4 and rand < 0.6 then
+              assist_point   = find_cover( npc, be, 2 )
+              last_algorythm = "find_cover_2"
+              last_choosed_path[ npc:id() ] = {
+                alg     = last_algorythm,
+                timeout = time_global() + time_mantain_tactics,
+              }
+            elseif ( rand >= 0.6 and rand < 0.8 ) then
+              assist_point   = select_position( npc, be )
+              last_algorythm = "select_pos_be"
+              last_choosed_path[ npc:id() ] = {
+                alg     = last_algorythm,
+                timeout = time_global() + time_mantain_tactics,
+              }
+            elseif not actor_at_height then
+              assist_point   = select_enemy_pos( npc, be )
+              last_algorythm = "enemy_vertex"
+              last_choosed_path[ npc:id() ] = {
+                alg     = last_algorythm,
+                timeout = time_global() + time_mantain_tactics,
+              }
+            end
+          else
+            local algorythm = last_choosed_path[ npc:id() ]
+            if algorythm.alg == "find_cover_1" then
+              assist_point   = find_cover( npc, be, 1 )
+              last_algorythm = "find_cover_1"
+            elseif algorythm.alg == "find_cover_2" then
+              assist_point   = find_cover( npc, be, 2 )
+              last_algorythm = "find_cover_2"
+            elseif algorythm.alg == "last_enemy_vertex" then
+              assist_point   = select_last_known_enemy_pos( npc )
+              last_algorythm = "last_enemy_vertex"
+            elseif algorythm.alg == "select_pos" then
+              assist_point   = select_position( npc )
+              last_algorythm = "select_pos"
+            elseif algorythm.alg == "select_pos_be" then
+              assist_point   = select_position( npc, be )
+              last_algorythm = "select_pos_be"
+            elseif algorythm.alg == "enemy_vertex" then
+              assist_point   = select_enemy_pos( npc, be )
+              last_algorythm = "enemy_vertex"
+            end
+          end
+        end
+      else
+        assist_point   = find_cover( npc, be, 2 )
+        last_algorythm = "find_cover_2"
+      end
+    end
+
+    set_combat_sight( npc, be, bw )
+    set_transfer_state( npc, be )
+    choose_idle_scheme( npc, "lost" )
+  end
+
+  if IsMonster( be ) then
+    assist_point   = select_position( npc )
+    last_algorythm = "select_pos_monster"
+  end
+
+  if not assist_point then
+    assist_point = last_sent_vertex[ npc:id() ]
+    if last_algorythm == "last_enemy_vertex" then
+      assist_point = select_enemy_pos( npc, be )
+    elseif last_algorythm == "find_cover_1" then
+      assist_point = find_cover( npc, be, 0 )
+    elseif last_algorythm == "find_cover_2" then
+      assist_point = find_cover( npc, be, 0 )
+    end
+    if not assist_point then
+      assist_point = randomize_position( npc )
+    end
+  elseif assist_point == 0 then
+    -- Простой таймаут
+    assist_point = last_sent_vertex[ npc:id() ]
+  end
+
+  if assist_point then
+    if
+      npc:level_vertex_id() == assist_point
+      or npc:position():distance_to( level.vertex_position( assist_point ) ) <= 1.0
+    then
+      if is_safe_to_block_movement( npc, be ) then
+        self.object:movement_enabled( false )
+      end
+    else
+      if hit_timeout[ npc:id() ] and hit_timeout[ npc:id() ] > time_global()
+      then
+        self.object:movement_enabled( false )
+      elseif hit_timeout[ npc:id() ] then
+        hit_timeout[ npc:id() ] = nil
+        utils.send_to_nearest_accessible_vertex( npc, assist_point )
+      else
+        utils.send_to_nearest_accessible_vertex( npc, assist_point )
+      end
+    end
+  end
 end
 
 
@@ -1175,16 +1241,11 @@ end
 
 
 function action_altcombat:finalize()
-        action_base.finalize(self)
-        xr_sound.set_sound(self.object, nil)
-        self.object:movement_enabled(true)
-        stop_play_sound(self.object)
+  action_base.finalize( self )
+  xr_sound.set_sound( self.object, nil )
+  self.object:movement_enabled( true )
+  stop_play_sound( self.object )
 end
-
-
-----------------------------------------------------------------------------------------------------
--- Служебные функции для ведения реестра врагов
-----------------------------------------------------------------------------------------------------
 
 
 function check_friends_enemy( npc, enemy_id )
@@ -1263,403 +1324,447 @@ function notify_friends( npc, enemy )
 end
 
 
-function disable_object(npc, enemy) -- забыть объект
-        if npc and enemy then
-                local id = enemy:id()
-                if not disabled_objects[npc:id()] then
-                        disabled_objects[npc:id()] = {}
-                end
-                if not disabled_objects[npc:id()][id] then
-                        npc:enable_memory_object( enemy, false )
-                        disabled_objects[npc:id()][id] = id
-                end
-        end
+function disable_object( npc, enemy ) -- забыть объект
+  if npc and enemy then
+    local id = enemy:id()
+    if not disabled_objects[ npc:id() ] then
+      disabled_objects[ npc:id() ] = {}
+    end
+    if not disabled_objects[ npc:id() ][ id ] then
+      npc:enable_memory_object( enemy, false )
+      disabled_objects[ npc:id() ][ id ] = id
+    end
+  end
 end
 
-function enable_object(npc, enemy) -- вспомнить объект
-        if npc and enemy then
-                local id = enemy:id()
-                if disabled_objects[npc:id()] and disabled_objects[npc:id()][id] then
-                        npc:enable_memory_object( enemy, true )
-                        disabled_objects[npc:id()][id] = nil
-                end
-        end
+
+function enable_object( npc, enemy ) -- вспомнить объект
+  if npc and enemy then
+    local id = enemy:id()
+    if disabled_objects[ npc:id() ] and disabled_objects[ npc:id() ][ id ] then
+      npc:enable_memory_object( enemy, true )
+      disabled_objects[ npc:id() ][ id ] = nil
+    end
+  end
 end
+
 
 local damage_from_actor = {}
-
-local crit_anims = {
-        ["pistol"]      = {
-                ["heavy"]       = {
-                        ["head"] = "norm_1_critical_hit_head_0",
-                        ["hand_left"] = "norm_1_critical_hit_hend_left_0",
-                        ["hand_right"] = "norm_1_critical_hit_hend_right_0",
-                        ["leg_left"] = "norm_1_critical_hit_legs_left_0",
-                        ["leg_right"] = "norm_1_critical_hit_legs_right_0",
-                        ["torso"] = "norm_1_critical_hit_torso_0",
-                        ["belly"] = "norm_1_critical_hit_torso_0",              
-                },
-                ["medium"]      = {
-                        ["head"] = "norm_1_critical_hit_head_0",
-                        ["hand_left"] = "norm_1_critical_hit_hend_left_0",
-                        ["hand_right"] = "norm_1_critical_hit_hend_right_0",
-                        ["leg_left"] = "norm_1_critical_hit_legs_left_0",
-                        ["leg_right"] = "norm_1_critical_hit_legs_right_0",
-                        ["torso"] = "norm_1_critical_hit_torso_0",
-                        ["belly"] = "norm_1_critical_hit_torso_0",                      
-                },
-                ["light"]       = {
-                        ["head"] = "norm_1_critical_hit_head_0",
-                        ["hand_left"] = "norm_1_critical_hit_hend_left_0",
-                        ["hand_right"] = "norm_1_critical_hit_hend_right_0",
-                        ["leg_left"] = "norm_1_critical_hit_legs_left_0",
-                        ["leg_right"] = "norm_1_critical_hit_legs_right_0",
-                        ["torso"] = "norm_1_critical_hit_torso_0",
-                        ["belly"] = "norm_1_critical_hit_torso_0",                      
-                },
-        },
-        ["rifle"]       = {
-                ["heavy"]       = {
-                        ["head"] = "norm_3_critical_hit_head_0",
-                        ["hand_left"] = "norm_3_critical_hit_hend_left_0",
-                        ["hand_right"] = "norm_3_critical_hit_hend_right_0",
-                        ["leg_left"] = "norm_3_critical_hit_legs_left_0",
-                        ["leg_right"] = "norm_3_critical_hit_legs_right_0",
-                        ["torso"] = "norm_2_critical_hit_torso_0",
-                        ["belly"] = "norm_3_critical_hit_torso_0",              
-                },
-                ["medium"]      = {
-                        ["head"] = "norm_8_critical_hit_head_1",
-                        ["hand_left"] = "norm_8_critical_hit_hend_left_2",
-                        ["hand_right"] = "norm_8_critical_hit_hend_right_2",
-                        ["leg_left"] = "norm_8_critical_hit_legs_left_1",
-                        ["leg_right"] = "norm_8_critical_hit_legs_right_1",
-                        ["torso"] = "norm_2_critical_hit_torso_0",
-                        ["belly"] = "norm_2_critical_hit_torso_1",                      
-                },
-                ["light"]       = {
-                        ["head"] = "norm_8_critical_hit_head_0",
-                        ["hand_left"] = "norm_8_critical_hit_hend_left_0",
-                        ["hand_right"] = "norm_8_critical_hit_hend_right_0",
-                        ["leg_left"] = "norm_8_critical_hit_legs_left_0",
-                        ["leg_right"] = "norm_8_critical_hit_legs_right_0",
-                        ["torso"] = "norm_8_critical_hit_torso_1",
-                        ["belly"] = "norm_8_critical_hit_torso_2",                      
-                },      
-        },
+local crit_anims        = {
+  [ "pistol" ] = {
+    [ "heavy"  ] = {
+      [ "belly"      ] = "norm_1_critical_hit_torso_0",
+      [ "hand_left"  ] = "norm_1_critical_hit_hend_left_0",
+      [ "hand_right" ] = "norm_1_critical_hit_hend_right_0",
+      [ "head"       ] = "norm_1_critical_hit_head_0",
+      [ "leg_left"   ] = "norm_1_critical_hit_legs_left_0",
+      [ "leg_right"  ] = "norm_1_critical_hit_legs_right_0",
+      [ "torso"      ] = "norm_1_critical_hit_torso_0",
+    },
+    [ "medium" ] = {
+      [ "belly"      ] = "norm_1_critical_hit_torso_0",
+      [ "hand_left"  ] = "norm_1_critical_hit_hend_left_0",
+      [ "hand_right" ] = "norm_1_critical_hit_hend_right_0",
+      [ "head"       ] = "norm_1_critical_hit_head_0",
+      [ "leg_left"   ] = "norm_1_critical_hit_legs_left_0",
+      [ "leg_right"  ] = "norm_1_critical_hit_legs_right_0",
+      [ "torso"      ] = "norm_1_critical_hit_torso_0",
+    },
+    [ "light"  ] = {
+      [ "belly"      ] = "norm_1_critical_hit_torso_0",
+      [ "hand_left"  ] = "norm_1_critical_hit_hend_left_0",
+      [ "hand_right" ] = "norm_1_critical_hit_hend_right_0",
+      [ "head"       ] = "norm_1_critical_hit_head_0",
+      [ "leg_left"   ] = "norm_1_critical_hit_legs_left_0",
+      [ "leg_right"  ] = "norm_1_critical_hit_legs_right_0",
+      [ "torso"      ] = "norm_1_critical_hit_torso_0",
+    },
+  },
+  [ "rifle" ] = {
+    [ "heavy"  ] = {
+      [ "belly"      ] = "norm_3_critical_hit_torso_0",
+      [ "hand_left"  ] = "norm_3_critical_hit_hend_left_0",
+      [ "hand_right" ] = "norm_3_critical_hit_hend_right_0",
+      [ "head"       ] = "norm_3_critical_hit_head_0",
+      [ "leg_left"   ] = "norm_3_critical_hit_legs_left_0",
+      [ "leg_right"  ] = "norm_3_critical_hit_legs_right_0",
+      [ "torso"      ] = "norm_2_critical_hit_torso_0",
+    },
+    [ "medium" ] = {
+      [ "head"       ] = "norm_8_critical_hit_head_1",
+      [ "hand_left"  ] = "norm_8_critical_hit_hend_left_2",
+      [ "hand_right" ] = "norm_8_critical_hit_hend_right_2",
+      [ "leg_left"   ] = "norm_8_critical_hit_legs_left_1",
+      [ "leg_right"  ] = "norm_8_critical_hit_legs_right_1",
+      [ "torso"      ] = "norm_2_critical_hit_torso_0",
+      [ "belly"      ] = "norm_2_critical_hit_torso_1",
+    },
+    [ "light"  ] = {
+      [ "belly"      ] = "norm_8_critical_hit_torso_2",
+      [ "hand_left"  ] = "norm_8_critical_hit_hend_left_0",
+      [ "hand_right" ] = "norm_8_critical_hit_hend_right_0",
+      [ "head"       ] = "norm_8_critical_hit_head_0",
+      [ "leg_left"   ] = "norm_8_critical_hit_legs_left_0",
+      [ "leg_right"  ] = "norm_8_critical_hit_legs_right_0",
+      [ "torso"      ] = "norm_8_critical_hit_torso_1",
+    },
+  },
 }
 
 function hit_fx( obj, amount, who, bone_index )
+  if ( not obj ) or xr_wounded.is_wounded( obj ) or not obj:alive() then
+    return
+  end
 
-        if not obj or xr_wounded.is_wounded(obj) or not obj:alive() then
-                return
-        end
+  local binder = obj:binded_object()
+  if not binder.last_hit_data then return end
+  local hd       = binder.last_hit_data
+  local hit_type = hd.hit_type
+  ASSERT( hit_type, "hit_type not found" )
+  if not ( hit_type == hit.fire_wound or hit_type == hit.explosion ) then
+    return
+  end
+  if not ( hd.weapon_id or hd.who_id ) then return end
+  local wpn = level.object_by_id( hd.weapon_id or hd.who_id )
+  if not wpn then return end
 
-        local binder = obj:binded_object()
-        if not binder.last_hit_data then return end
-        local hd       = binder.last_hit_data
-        local hit_type = hd.hit_type
-        ASSERT( hit_type, "hit_type not found" )
-        if not ( hit_type == hit.fire_wound or hit_type == hit.explosion ) then
-          return
-        end
-        if not ( hd.weapon_id or hd.who_id ) then return end
-        local wpn = level.object_by_id( hd.weapon_id or hd.who_id )
-        if not wpn then return end
-        
-        local weap_class = get_u32( wpn:section(), "ef_weapon_type" )
-        if not weap_class then return end
+  local weap_class = get_u32( wpn:section(), "ef_weapon_type" )
+  if not weap_class then return end
 
-        if hit_timeout[obj:id()] and hit_timeout[obj:id()] > time_global() then
-                return
-        elseif hit_timeout[obj:id()] then       
-                hit_timeout[obj:id()] = nil
-        end             
-        
-        local key_1
-        if weap_class > 5 then
-                key_1 = "rifle"
-        else
-                key_1 = "pistol"
-        end
+  if hit_timeout[ obj:id() ] and hit_timeout[ obj:id() ] > time_global() then
+    return
+  elseif hit_timeout[ obj:id() ] then
+    hit_timeout[ obj:id() ] = nil
+  end
 
-        local key_2 = nil
-        if amount > 0.01 then
-                if amount > 0.01 and amount <= 0.1 then
-                        key_2 = "light"
-                        hit_timeout[obj:id()] = time_global() + 1000
-                elseif amount > 0.1 and amount <= 0.25 then
-                        key_2 = "medium"
-                        hit_timeout[obj:id()] = time_global() + 1500
-                elseif amount > 0.25 then
-                        key_2 = "heavy"
-                        hit_timeout[obj:id()] = time_global() + 2000
-                end     
-        end
-        
-        local key_3
-        local need_drop = false
+  local key_1
+  if weap_class > 5 then
+    key_1 = "rifle"
+  else
+    key_1 = "pistol"
+  end
 
-        if bone_index and bone_index > 0 then
-        
-                if bone_index < 5 then
-                        key_3 = "leg_left"
-                elseif (bone_index >= 5 and bone_index < 9) then
-                        key_3 = "leg_right"
-                elseif (bone_index == 9) then
-                        key_3 = "belly"
-                elseif (bone_index == 10) then          
-                        key_3 = "torso"
-                elseif (bone_index >= 11 and bone_index < 18) then      
-                        key_3 = "head"
-                elseif (bone_index >= 18 and bone_index < 31) then      
-                        key_3 = "hand_left"
-                elseif (bone_index >= 31 and bone_index < 40) then      
-                        key_3 = "hand_right"
-                        local r = -1
-                        if (bone_index == 33) then
-                                -- попадание в предплечье
-                                r = math.random()*100
-                                need_drop = (r<30)
-                        end
-                        if ((bone_index >= 34) and (bone_index <= 38)) then
-                                -- по кисти или пальцам
-                                r = math.random()*100
-                                need_drop = (r<50)
-                        end
-                end
-        end
-        
-        if dsh.is_exo_visual( obj ) then
-                key_2 = "light"
-                hit_timeout[obj:id()] = time_global() + 1000    
-                need_drop = false
-        end
-        
-        if key_1 and key_2 and key_3 then
-                local anim = crit_anims[key_1][key_2][key_3]
-                if anim then
-                        obj:add_animation(anim, true, false)
-                end
-        end     
-        
-        if need_drop and who:id() == db.actor:id() then
-          local active_item = obj:active_item()
-          if active_item then
-            obj:drop_item( active_item )
+  local key_2
+  if amount > 0.01 then
+    if amount > 0.01 and amount <= 0.1 then
+      key_2 = "light"
+      hit_timeout[ obj:id() ] = time_global() + 1000
+    elseif amount > 0.1 and amount <= 0.25 then
+      key_2 = "medium"
+      hit_timeout[ obj:id() ] = time_global() + 1500
+    elseif amount > 0.25 then
+      key_2 = "heavy"
+      hit_timeout[ obj:id() ] = time_global() + 2000
+    end
+  end
+
+  local key_3
+  local need_drop = false
+  if bone_index and bone_index > 0 then
+    if bone_index < 5 then
+      key_3 = "leg_left"
+    elseif bone_index >= 5 and bone_index < 9 then
+      key_3 = "leg_right"
+    elseif bone_index == 9 then
+      key_3 = "belly"
+    elseif bone_index == 10 then
+      key_3 = "torso"
+    elseif bone_index >= 11 and bone_index < 18 then
+      key_3 = "head"
+    elseif bone_index >= 18 and bone_index < 31 then
+      key_3 = "hand_left"
+    elseif bone_index >= 31 and bone_index < 40 then
+      key_3 = "hand_right"
+      local r = -1
+      if bone_index == 33 then
+        -- попадание в предплечье
+        r = math.random() * 100
+        need_drop = r < 30
+      end
+      if bone_index >= 34 and bone_index <= 38 then
+        -- по кисти или пальцам
+        r = math.random()*100
+        need_drop = r < 50
+      end
+    end
+  end
+
+  if dsh.is_exo_visual( obj ) then
+    key_2 = "light"
+    hit_timeout[ obj:id() ] = time_global() + 1000
+    need_drop = false
+  end
+
+  if key_1 and key_2 and key_3 then
+    local anim = crit_anims[ key_1 ][ key_2 ][ key_3 ]
+    if anim then
+      obj:add_animation( anim, true, false )
+    end
+  end
+
+  if need_drop and who:id() == db.actor:id() then
+    local active_item = obj:active_item()
+    if active_item then
+      obj:drop_item( active_item )
+    end
+  end
+end
+
+
+function hit_callback( obj, amount, local_direction, who, bone_index )
+  -- если объект был ранее забыт - очухиваем его, если нету в табличке
+  -- записываем в табличку
+  local npc = obj
+  if who and npc and who:id() == npc:id() then return end
+  hit_fx( npc, amount, who, bone_index )
+
+  if
+    amount and amount > 0.01 and npc:alive() and not xr_wounded.is_wounded( npc )
+  then
+    if IsStalker( who ) then
+      if who:alive() then
+        if
+          targets_list[ npc:id() ] and not targets_list[ npc:id() ][ who:id() ]
+        then
+          if who:id() == db.actor:id() then
+            enable_object( npc, who )
+            if check_is_enemy( npc, who ) then
+              register_as_target( npc, who )
+            else
+              if not damage_from_actor[ npc:id() ] then
+                damage_from_actor[ npc:id() ] = amount
+              else
+                damage_from_actor[ npc:id() ] =
+                  damage_from_actor[ npc:id() ] + amount
+              end
+              if damage_from_actor[ npc:id() ] > 0.2 then
+                register_as_target( npc, who )
+              end
+            end
+            -- npc:make_object_visible_somewhen( who )
+          else
+            enable_object( npc, who )
+            process_enemy( npc, who )
+            -- npc:make_object_visible_somewhen( who )
           end
-        end     
-        
+        elseif
+          targets_list[ npc:id() ] and targets_list[ npc:id() ][ who:id() ]
+        then
+          local enemy_record = targets_list[ npc:id() ] [who:id() ]
+          enemy_record.last_time_seen = time_global()
+          enemy_record.vertex         = who:level_vertex_id()
+        end
+        if
+          not (
+            (
+              npc:relation( who ) ~= game_object.enemy
+              or npc:character_community() == who:character_community()
+            )
+            and who:id() ~= db.actor:id()
+            and not xr_companion.is_companion( who:id() )
+          )
+        then
+          if not hit_memory[ npc:id() ] then
+            hit_memory[ npc:id() ] = {}
+          end
+          local mem = hit_memory[ npc:id() ]
+          mem[ who:id() ] = true
+          if amount > 0.1 then
+            primary_target[ npc:id() ] = who:id()
+          end
+        elseif
+          npc:relation(who) ~= game_object.enemy
+          or npc:character_community() == who:character_community()
+        then
+          set_sound_event( npc, "ff" )
+        end
+      end
+    elseif IsMonster( who ) then
+      if who:alive() then
+        if
+          targets_list[ npc:id() ] and not targets_list[ npc:id() ][ who:id() ]
+        then
+          enable_object( npc, who )
+          process_enemy( npc, who )
+          -- npc:make_object_visible_somewhen( who )
+        elseif
+          targets_list[ npc:id() ] and targets_list[ npc:id() ][ who:id() ]
+        then
+          local enemy_record = targets_list[ npc:id() ][ who:id() ]
+          enemy_record.last_time_seen = time_global()
+          enemy_record.vertex         = who:level_vertex_id()
+        end
+      end
+    elseif is_armor( who ) and armor_alive( who ) then
+      if
+        targets_list[ npc:id() ] and not targets_list[ npc:id() ][ who:id() ]
+      then
+        enable_object( npc, who )
+        process_enemy( npc, who )
+        -- npc:make_object_visible_somewhen( who )
+      elseif
+        targets_list[ npc:id() ] and targets_list[ npc:id() ][ who:id() ]
+      then
+        local enemy_record = targets_list[ npc:id() ][ who:id() ]
+        enemy_record.last_time_seen = time_global()
+        enemy_record.vertex         = who:level_vertex_id()
+      end
+    end
+
+    if in_hideout( npc ) then
+      if last_hideout[ npc:id() ] then
+        locked_vertexes[ 0 ] = last_hideout[ npc:id() ].vtx
+        bad_hide[ last_hideout[ npc:id() ].vtx ] = time_global() + 15000
+        last_hideout[ npc:id()     ] = nil
+        last_time_send[ npc:id()   ] = nil
+        last_sent_vertex[ npc:id() ] = nil
+      end
+    end
+
+    local deadman = have_fresh_deadman( npc )
+    if deadman ~= false then
+      last_target[ npc:id() ][ deadman ] = nil
+      last_time_send[ npc:id()    ] = nil
+      last_enemy[ npc:id()        ] = nil
+      last_enemy_id[ npc:id()     ] = nil
+      primary_target[ npc:id()    ] = nil
+      last_reprioritize[ npc:id() ] = nil
+    end
+  end
 end
 
-function hit_callback(  obj, amount, local_direction, who, bone_index )
-        -- если объект был ранее забыт - очухиваем его, если нету в табличке - записываем в табличку
-        -- данная функция помещается в xr_motivator.hit_callback
-        local npc = obj
-        
-        if who and obj and who:id() == obj:id() then
-                return
-        end
-        
-        hit_fx( obj, amount, who, bone_index )
-        
-        if amount and amount > 0.01 and npc:alive() and not xr_wounded.is_wounded(npc) then
-        
-                if IsStalker(who) then
-                        if who:alive() then
-                                if targets_list[npc:id()] and not targets_list[npc:id()][who:id()] then
-                                        if who:id() == db.actor:id() then
-                                                enable_object(obj, who)
-                                                if check_is_enemy(obj, who) then
-                                                        register_as_target(obj, who)
-                                                else
-                                                        if not damage_from_actor[obj:id()] then
-                                                                damage_from_actor[obj:id()] = amount
-                                                        else    
-                                                                damage_from_actor[obj:id()] = damage_from_actor[obj:id()] + amount
-                                                        end                                                     
-                                                        if damage_from_actor[obj:id()] > 0.2 then
-                                                                register_as_target(obj, who)
-                                                        end
-                                                end
-                                                -- obj:make_object_visible_somewhen(who)
-                                        else
-                                                enable_object(obj, who)
-                                                process_enemy(obj, who)
-                                                -- obj:make_object_visible_somewhen(who)
-                                        end
-                                elseif targets_list[npc:id()] and targets_list[npc:id()][who:id()] then
-                                        local enemy_record = targets_list[npc:id()][who:id()]
-                                        enemy_record.last_time_seen = time_global()
-                                        enemy_record.vertex = who:level_vertex_id()
-                                end
-                                if not ((obj:relation(who) ~= game_object.enemy or obj:character_community() == who:character_community()) and not who:id() == db.actor:id() and not xr_companion.is_companion(who:id())) then
-                                        if not hit_memory[obj:id()] then
-                                                hit_memory[obj:id()] = {}
-                                        end
-                                        local mem = hit_memory[obj:id()]
-                                        mem[who:id()] = true
-                                        if amount > 0.1 then
-                                                primary_target[obj:id()] = who:id()
-                                        end
-                                elseif obj:relation(who) ~= game_object.enemy or obj:character_community() == who:character_community() then    
-                                        set_sound_event(npc, "ff")
-                                end                             
-                        end
-                elseif IsMonster(who) then
-                        if who:alive() then
-                                if targets_list[npc:id()] and not targets_list[npc:id()][who:id()] then
-                                        enable_object(obj, who)
-                                        process_enemy(obj, who)
-                                        -- obj:make_object_visible_somewhen(who)
-                                elseif targets_list[npc:id()] and targets_list[npc:id()][who:id()] then
-                                        local enemy_record = targets_list[npc:id()][who:id()]
-                                        enemy_record.last_time_seen = time_global()
-                                        enemy_record.vertex = who:level_vertex_id()                                     
-                                end     
-                        end
-                elseif is_armor(who) and armor_alive(who) then
-                        if targets_list[npc:id()] and not targets_list[npc:id()][who:id()] then
-                                enable_object(obj, who)
-                                process_enemy(obj, who)
-                                -- obj:make_object_visible_somewhen(who)
-                        elseif targets_list[npc:id()] and targets_list[npc:id()][who:id()] then
-                                local enemy_record = targets_list[npc:id()][who:id()]
-                                enemy_record.last_time_seen = time_global()
-                                enemy_record.vertex = who:level_vertex_id()                                     
-                        end                             
-                end
-                
-                if in_hideout(obj) then
-                        if last_hideout[obj:id()] then
-                                locked_vertexes[0] = last_hideout[obj:id()].vtx
-                                bad_hide[last_hideout[obj:id()].vtx] = time_global() + 15000
-                                last_hideout[obj:id()] = nil
-                                last_time_send[obj:id()] = nil
-                                last_sent_vertex[obj:id()] = nil
-                        end
-                end
-
-                local deadman = have_fresh_deadman(obj)
-                if deadman ~= false then
-                        last_target[obj:id()][deadman] = nil
-                        last_time_send[obj:id()] = nil
-                        last_enemy[obj:id()] = nil
-                        last_enemy_id[obj:id()] = nil
-                        primary_target[obj:id()] = nil
-                        last_reprioritize[obj:id()] = nil
-                end     
-                
-        end
-end
 
 function death_place( obj, who )
-        local npc = obj
-        local vertex = npc:level_vertex_id()
-        local community = npc:character_community() 
-        death_places[vertex] = {
-                comm = community,
-                killer = who:id()       
-        }
-        local check = active_grenades[npc:id()]
-        if check then
-                grenka_already_blow[check.grenade] = true
-                escape_point[npc:id()] = nil
-                active_grenades[npc:id()] = nil
-        end
-        reset_everything(obj)
+  local npc       = obj
+  local vertex    = npc:level_vertex_id()
+  local community = npc:character_community()
+  death_places[ vertex ] = {
+    comm   = community,
+    killer = who:id(),
+  }
+  local check = active_grenades[ npc:id() ]
+  if check then
+    grenka_already_blow[ check.grenade ] = true
+    escape_point[ npc:id()    ] = nil
+    active_grenades[ npc:id() ] = nil
+  end
+  reset_everything( npc )
 end
+
 
 function go_offline( obj )
-        reset_everything( obj )
+  reset_everything( obj )
 end
 
-function reset_everything(npc)
-        last_time_send[npc:id()] = nil
-        last_sent_vertex[npc:id()] = nil
-        last_hideout[npc:id()] = nil
-        sounds_timeout[npc:id()] = nil
-        intro_time[npc:id()] = nil
-        already_hear[npc:id()] = nil
-        choosen_hide_combat_state[npc:id()] = nil
-        choosen_hide_state[npc:id()] = nil
-        cooldown[npc:id()] = nil
-        disabled_objects[npc:id()] = nil
-        targets_list[npc:id()] = {}
-        last_reprioritize[npc:id()] = nil
-        primary_target[npc:id()] = nil
-        last_enemy[npc:id()] = nil
-        last_enemy_id[npc:id()] = nil
-        inited[npc:id()] = nil
-        locked_vertexes[npc:id()] = nil
-        time_hide[npc:id()] = nil
-        hit_memory[npc:id()] = nil
-        deadman_vtx[npc:id()] = nil
-        last_choosed_path[npc:id()] = nil
-        restore_restrictions(npc)
+
+function reset_everything( npc )
+  already_hear[ npc:id() ] = nil
+  choosen_hide_combat_state[ npc:id() ] = nil
+  choosen_hide_state[ npc:id() ] = nil
+  cooldown[ npc:id() ] = nil
+  deadman_vtx[ npc:id() ] = nil
+  disabled_objects[ npc:id() ] = nil
+  hit_memory[ npc:id() ] = nil
+  inited[ npc:id() ] = nil
+  intro_time[ npc:id() ] = nil
+  last_choosed_path[ npc:id() ] = nil
+  last_enemy[ npc:id() ] = nil
+  last_enemy_id[ npc:id() ] = nil
+  last_hideout[ npc:id() ] = nil
+  last_reprioritize[ npc:id() ] = nil
+  last_sent_vertex[ npc:id() ] = nil
+  last_time_send[ npc:id() ] = nil
+  locked_vertexes[ npc:id() ] = nil
+  primary_target[ npc:id() ] = nil
+  sounds_timeout[ npc:id() ] = nil
+  targets_list[ npc:id() ] = {}
+  time_hide[ npc:id() ] = nil
+  restore_restrictions( npc )
 end
 
-function its_a_trap(npc, vertex)
-        local community = npc:character_community() 
-        local vertex_pos = level.vertex_position(vertex)
-        for k, v in pairs(death_places) do
-                local k_pos = level.vertex_position(k)
-                local check_dist = k_pos:distance_to(vertex_pos)
-                if k == vertex or check_dist < 5 then
-                        if v.comm == community then
-                                local enemy = level.object_by_id(v.killer)
-                                if enemy 
-                                and (IsStalker(enemy) or v.killer == db.actor:id() or is_armor(enemy)) 
-                                and (enemy:alive() or (is_armor(enemy) and armor_alive(enemy)))
-                                and not xr_wounded.is_wounded(enemy) then
-                                        return true
-                                end
-                                if enemy and ((is_armor(enemy) and not armor_alive(enemy)) or (not enemy:alive())) then
-                                        death_places[k] = nil
-                                end
-                        end                     
-                end
+
+function its_a_trap( npc, vertex )
+  local community  = npc:character_community()
+  local vertex_pos = level.vertex_position( vertex )
+  for k, v in pairs( death_places ) do
+    local k_pos      = level.vertex_position( k )
+    local check_dist = k_pos:distance_to( vertex_pos )
+    if k == vertex or check_dist < 5 then
+      if v.comm == community then
+        local enemy = level.object_by_id( v.killer )
+        if
+          enemy
+          and (
+            IsStalker( enemy ) or v.killer == db.actor:id() or is_armor( enemy )
+          )
+          and (
+            enemy:alive() or ( is_armor( enemy ) and armor_alive( enemy ) )
+          )
+          and not xr_wounded.is_wounded( enemy )
+        then
+          return true
         end
-        return false
+        if
+          enemy
+          and (
+            ( is_armor( enemy ) and not armor_alive( enemy ) )
+            or ( not enemy:alive() )
+          )
+        then
+          death_places[ k ] = nil
+        end
+      end
+    end
+  end
+  return false
 end
 
-function process_enemy(npc, may_be_enemy)
-        local valid, enemy = validate_enemy_object( may_be_enemy )
-        if valid == false or not enemy then
-                return
-        end     
-        if npc:id() ~= enemy:id() then
-                if not already_know_about[npc:id()] then
-                        already_know_about[npc:id()] = {}
-                end
-                if npc:relation(enemy) == game_object.friend or (IsStalker(enemy) and npc:character_community() == enemy:character_community()) then
-                        if not enemy:alive() then
-                                if not already_know_about[npc:id()][enemy:id()] then
-                                        set_sound_event(npc, "dead")
-                                        already_know_about[npc:id()][enemy:id()] = true
-                                end
-                        elseif IsStalker(enemy) and xr_wounded.is_wounded(enemy) then
-                                if not already_know_about[npc:id()][enemy:id()] then
-                                        set_sound_event(npc, "fr_hit")
-                                        already_know_about[npc:id()][enemy:id()] = true
-                                end
-                        end
-                end     
-        else
-                return
+
+function process_enemy( npc, may_be_enemy )
+  local valid, enemy = validate_enemy_object( may_be_enemy )
+  if valid == false or not enemy then return end
+  if npc:id() ~= enemy:id() then
+    if not already_know_about[ npc:id() ] then
+      already_know_about[ npc:id() ] = {}
+    end
+    if
+      npc:relation( enemy ) == game_object.friend
+      or (
+        IsStalker( enemy )
+        and npc:character_community() == enemy:character_community()
+      )
+    then
+      if not enemy:alive() then
+        if not already_know_about[ npc:id() ][ enemy:id() ] then
+          set_sound_event( npc, "dead" )
+          already_know_about[ npc:id() ][ enemy:id() ] = true
         end
-        if enemy:alive() and not (IsStalker(enemy) and xr_wounded.is_wounded(enemy)) then
-                if we_are_under_attack(npc, enemy) then
-                        -- человек ты иль монструшка
-                        -- check_is_enemy(npc, enemy)
-                        if IsStalker(enemy) and check_is_enemy(npc, enemy) then
-                                register_as_target(npc, enemy)
-                        elseif IsMonster(enemy) and check_is_enemy(npc, enemy) then
-                                register_as_target(npc, enemy)
-                        end
-                end
+      elseif IsStalker( enemy ) and xr_wounded.is_wounded( enemy ) then
+        if not already_know_about[ npc:id() ][ enemy:id() ] then
+          set_sound_event( npc, "fr_hit" )
+          already_know_about[ npc:id() ][ enemy:id() ] = true
         end
+      end
+    end
+  else
+    return
+  end
+  if
+    enemy:alive()
+    and not ( IsStalker( enemy ) and xr_wounded.is_wounded( enemy ) )
+  then
+    if we_are_under_attack( npc, enemy ) then
+      -- человек ты иль монструшка
+      -- check_is_enemy( npc, enemy )
+      if IsStalker( enemy ) and check_is_enemy( npc, enemy ) then
+        register_as_target( npc, enemy )
+      elseif IsMonster( enemy ) and check_is_enemy( npc, enemy ) then
+        register_as_target( npc, enemy )
+      end
+    end
+  end
 end
+
 
 function we_are_under_attack(npc, enemy)
         if enemy:id() ~= db.actor:id() then
@@ -2841,7 +2946,7 @@ function set_escape_state(npc, enemy)
         elseif hit_timeout[npc:id()] then       
                 hit_timeout[npc:id()] = nil
         end     
-
+*
         if in_hideout(npc) then
                 state_mgr.set_state(npc, "claim", nil, nil, {look_object = enemy}, emerg )
         elseif in_transit(npc) then
