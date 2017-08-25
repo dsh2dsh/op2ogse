@@ -3714,6 +3714,51 @@ function select_position( npc, target, flag )
 end
 
 
+function find_vertex_in_radius( npc, around_vertex, radius )
+  local dist = math.random( 0, radius )
+  if dist == 0 then
+    if
+      npc:accessible( around_vertex )
+      and not check_vertex_locked( npc, around_vertex )
+    then
+      return around_vertex
+    else
+      return
+    end
+  end
+  local around_pos = level.vertex_position( around_vertex )
+  local new_dir    = vector():set(
+    math.random( -1000, 1000 ) / 1000, 0, math.random( -1000, 1000 ) / 1000
+  )
+  new_dir:normalize()
+  local ai_step     = 0.7 -- шаг AI сетки
+  local math_pi_180 = 180 / math.pi
+  local pi2         = math.pi * 2
+  while dist >= ai_step do
+    -- итератор вращения направления
+    local rotate_angle = math.asin( ai_step / dist )
+    local cur_angle, cur_dir = 0, new_dir
+    while math.abs( cur_angle ) < pi2 do
+      -- ищем вертекс
+      -- нужная нам позиция
+      local pos     = vector():mad( around_pos, cur_dir, dist )
+      local vert_ok = level.vertex_id_by_pos( pos )
+      if
+        vert_ok ~= -1
+        and npc:accessible( vert_ok )
+        and not check_vertex_locked( npc, vert_ok )
+      then
+        return vert_ok
+      end
+      -- поворачиваем направление поиска
+      cur_angle = cur_angle + rotate_angle
+      cur_dir   = vector_rotate_y( cur_dir, rotate_angle * math_pi_180 )
+    end
+    dist = dist - ai_step
+  end
+end
+
+
 function select_last_known_enemy_pos( npc )
   if
     last_time_send[ npc:id() ]
@@ -3726,8 +3771,8 @@ function select_last_known_enemy_pos( npc )
     is_sniper( npc )
     and not (
       check_vertex_locked( npc, npc:level_vertex_id() )
-        or its_a_trap( npc, npc:level_vertex_id() )
-            )
+      or its_a_trap( npc, npc:level_vertex_id() )
+    )
   then
     last_sent_vertex[ npc:id() ] = npc:level_vertex_id()
     locked_vertexes[ npc:id()  ] = npc:level_vertex_id()
@@ -3736,34 +3781,17 @@ function select_last_known_enemy_pos( npc )
   locked_vertexes[ npc:id() ] = nil
   last_hideout[ npc:id()    ] = nil
 
-  local move_speed = 2
-  local last_vtx
-  local counter = 0
   local known_enemy_vtx = get_last_enemy_lertex( npc )
   if not known_enemy_vtx then return nil end
-
-  local level_vertexes = amk_anoms.level_vertexes[ level.name() ]
-  while last_vtx == nil do
-    last_vtx = math.random(
-      math.max( 1, known_enemy_vtx - 30 ),
-      math.min( known_enemy_vtx + 30, level_vertexes )
-    )
-    if
-      check_vertex_locked( npc, last_vtx )
-      or not npc:accessible( last_vtx )
-    then
-      last_vtx = nil
-    end
-    counter = counter + 1
-    if counter > 50 then break end
-  end
+  local last_vtx = find_vertex_in_radius( npc, known_enemy_vtx, 20 )
 
   if not last_vtx then
     return nil
   else
     local dist_to_point = npc:position()
       :distance_to( level.vertex_position( last_vtx ) )
-    local move_time = dist_to_point / move_speed
+    local move_speed    = 2
+    local move_time     = dist_to_point / move_speed
     last_time_send[ npc:id()   ] = time_global() + move_time + time_to_maneuver
     last_sent_vertex[ npc:id() ] = last_vtx
     locked_vertexes[ npc:id()  ] = last_vtx
@@ -3794,34 +3822,17 @@ function select_enemy_pos( npc, enemy )
   locked_vertexes[ npc:id() ] = nil
   last_hideout[ npc:id()    ] = nil
 
-  local move_speed = 2
-  local last_vtx
-  local counter = 0
   local known_enemy_vtx = enemy:level_vertex_id()
   if not known_enemy_vtx then return nil end
-
-  local level_vertexes = amk_anoms.level_vertexes[ level.name() ]
-  while last_vtx == nil do
-    last_vtx = math.random(
-      math.max( 1, known_enemy_vtx - 30 ),
-      math.min( known_enemy_vtx + 30, level_vertexes )
-    )
-    if
-      check_vertex_locked( npc, last_vtx )
-      or not npc:accessible( last_vtx )
-    then
-      last_vtx = nil
-    end
-    counter = counter + 1
-    if counter > 50 then break end
-  end
+  local last_vtx = find_vertex_in_radius( npc, known_enemy_vtx, 20 )
 
   if not last_vtx then
     return nil
   else
     local dist_to_point = npc:position()
       :distance_to( level.vertex_position( last_vtx ) )
-    local move_time = dist_to_point / move_speed
+    local move_speed    = 2
+    local move_time     = dist_to_point / move_speed
     last_time_send[ npc:id()   ] = time_global() + move_time + time_to_maneuver
     last_sent_vertex[ npc:id() ] = last_vtx
     locked_vertexes[ npc:id()  ] = last_vtx
@@ -3846,7 +3857,7 @@ function select_enemy_pos_fanatic( npc, enemy )
   if not known_enemy_vtx then known_enemy_vtx = randomize_position( npc ) end
   local dist_to_point   = npc:position()
     :distance_to( level.vertex_position( known_enemy_vtx ) )
-  local move_time  = ( dist_to_point / move_speed ) * 0.5
+  local move_time       = ( dist_to_point / move_speed ) * 0.5
   last_time_send[ npc:id()   ] = time_global() + move_time
   last_sent_vertex[ npc:id() ] = known_enemy_vtx
   locked_vertexes[ npc:id()  ] = known_enemy_vtx
@@ -3869,32 +3880,14 @@ function randomize_position( npc )
   locked_vertexes[ npc:id() ] = nil
   last_hideout[ npc:id()    ] = nil
 
-  local move_speed = 2
-  local counter    = 0
-
-  local level_vertexes = amk_anoms.level_vertexes[ level.name() ]
-  local last_vtx
-  while last_vtx == nil do
-    last_vtx = math.random(
-      math.min( 1, npc:level_vertex_id() - 70 ),
-      math.max( npc:level_vertex_id() + 70, level_vertexes )
-    )
-    if
-      check_vertex_locked( npc, last_vtx )
-      or not npc:accessible( last_vtx )
-    then
-      last_vtx = nil
-    end
-    counter = counter + 1
-    if counter > 50 then break end
-  end
-
+  local last_vtx = find_vertex_in_radius( npc, npc:level_vertex_id(), 50 )
   if not last_vtx then
     return nil
   else
     local dist_to_point = npc:position()
       :distance_to( level.vertex_position( last_vtx ) )
-    local move_time = dist_to_point / move_speed
+    local move_speed    = 2
+    local move_time     = dist_to_point / move_speed
     last_time_send[ npc:id()   ] = time_global() + move_time + time_to_hide
     last_sent_vertex[ npc:id() ] = last_vtx
     locked_vertexes[ npc:id()  ] = last_vtx
