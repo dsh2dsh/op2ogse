@@ -3502,6 +3502,44 @@ function is_safe_to_block_movement( npc, enemy )
 end
 
 
+function find_vertex_around( npc, around_vertex, dir, rotate_min, rotate_max, offset_min, offset_max, sign )
+  if not sign then sign = 1 end
+  local ai_step     = 0.7 -- шаг AI сетки
+  local math_pi_180 = 180 / math.pi
+
+  local random_rotate    = math.random( rotate_min, rotate_max )
+  local cur_dir          = vector_rotate_y( dir, random_rotate * sign )
+  local random_offset    = math.random( offset_min, offset_max )
+  local rotate_angle     = math.asin( ai_step / random_offset )
+  local rotate_angle_deg = rotate_angle * math_pi_180 * sign
+  local cur_angle        = 0
+  local vertex_id
+  while not vertex_id do
+    -- проверяем точку слева
+    vertex_id = level.vertex_in_direction(
+      around_vertex, cur_dir, random_offset
+    )
+    if
+      vertex_id == around_vertex
+      or ( not npc:accessible( vertex_id ) )
+      or check_vertex_locked( npc, vertex_id )
+    then
+      vertex_id = nil
+      -- поворачиваем направление поиска
+      cur_angle = cur_angle + rotate_angle
+      if rotate_min + cur_angle * math_pi_180 > rotate_max then
+        break
+      else
+        cur_dir = vector_rotate_y( cur_dir, rotate_angle_deg )
+      end
+    else
+      break
+    end
+  end
+  return vertex_id
+end
+
+
 -- если не указан target, то от себя
 -- если указан target, то от target
 -- если указан флаг, то нельзя вернуть nil, обязательно нормальное значение
@@ -3546,18 +3584,15 @@ function select_position( npc, target, flag )
     bw = act_item
   end
 
-  local node_1_vertex_id, node_1_distance
-  local node_2_vertex_id, node_2_distance
-  local around_vertex   = around_object:level_vertex_id()
-  local random_offset_1 = math.random(
-    close_combat_distance, distant_combat_distance
+  local max_wpn_range     = get_max_weapon_range( npc )
+  local random_offset_min = math.min(
+    close_combat_distance, max_weapon_range / 2
   )
-  local random_offset_2 = math.random(
-    close_combat_distance, distant_combat_distance
-  )
-  local random_rotate_1 =  math.random( 45, 120 )
-  local random_rotate_2 = -math.random( 45, 120 )
+  local random_offset_max = max_weapon_range
+  local random_rotate_min =  45
+  local random_rotate_max = 120
 
+  local around_vertex = around_object:level_vertex_id()
   if target then
     local last_vtx = get_last_enemy_lertex( npc )
     local pos      = target:position()
@@ -3568,86 +3603,46 @@ function select_position( npc, target, flag )
     if pos.y > pos_npc.y then
       local height = pos.y - pos_npc.y
       if height < 3 or target:id() ~= db.actor:id() then
-        if IsShotgun( bw ) then
-          random_offset_1 = math.random( 5, 7 )
-          random_offset_2 = math.random( 5, 7 )
-        elseif IsSniperRifle( bw ) then
-          random_offset_1 = math.random(
-            distant_combat_distance, get_max_weapon_range( npc )
+        if IsSniperRifle( bw ) then
+          random_offset_min = math.min(
+            distant_combat_distance, max_weapon_range / 2
           )
-          random_offset_2 = math.random(
-            distant_combat_distance, get_max_weapon_range( npc )
-          )
-        else
-          random_offset_1 = math.random( 7, close_combat_distance )
-          random_offset_2 = math.random( 7, close_combat_distance )
         end
       else
         if target:id() == db.actor:id() and height >= 3 then
-          random_rotate_1 =  math.random( 90, 150 )
-          random_rotate_2 = -math.random( 90, 150 )
+          random_rotate_min =  90
+          random_rotate_max = 150
         end
       end
     end
     if not target:alive() then
-      random_offset_1 = math.random( 5, 7 )
-      random_offset_2 = math.random( 5, 7 )
+      random_offset_min = 5
+      random_offset_max = 7
     end
   end
 
-  local move_speed = 2
-  local counter    = 0
-  while node_1_vertex_id == nil do
-    -- проверяем точку слева
-    local desired_direction = vector_rotate_y(
-      around_object:direction(), random_rotate_1
-    )
-    node_1_vertex_id = level.vertex_in_direction(
-      around_vertex, desired_direction, random_offset_1
-    )
-    if
-      npc:accessible( node_1_vertex_id ) ~= true
-      or node_1_vertex_id == around_vertex
-      or check_vertex_locked( npc, node_1_vertex_id )
-    then
-      node_1_vertex_id = nil
-    end
-    counter = counter + 1
-    if counter > 100 then break end
-  end
-
-  counter = 0
-  while node_2_vertex_id == nil do
-    -- проверяем точку справа
-    local desired_direction = vector_rotate_y(
-      around_object:direction(), random_rotate_2
-    )
-    node_2_vertex_id = level.vertex_in_direction (
-      around_vertex, desired_direction, random_offset_2
-    )
-    if
-      npc:accessible( node_2_vertex_id ) ~= true
-      or node_2_vertex_id == around_vertex
-      or check_vertex_locked( npc, node_2_vertex_id )
-    then
-      node_2_vertex_id = nil
-    end
-    counter = counter + 1
-    if counter > 100 then break end
-  end
+  local node_1_vertex_id = find_vertex_around(
+    npc, around_vertex, around_object:direction(),
+    random_rotate_min, random_rotate_max,
+    random_offset_min, random_offset_max
+  )
+  local node_2_vertex_id = find_vertex_around(
+    npc, around_vertex, around_object:direction(),
+    random_rotate_min, random_rotate_max,
+    random_offset_min, random_offset_max, -1
+  )
 
   -- Проверяем растояния до точек
-  if node_1_vertex_id ~= nil then
+  local node_1_distance = -1
+  if node_1_vertex_id then
     node_1_distance = npc:position()
-      :distance_to_sqr( level.vertex_position( node_1_vertex_id ) )
-  else
-    node_1_distance = -1
+      :distance_to( level.vertex_position( node_1_vertex_id ) )
   end
-  if node_2_vertex_id ~= nil then
+
+  local node_2_distance = -1
+  if node_2_vertex_id then
     node_2_distance = npc:position()
-      :distance_to_sqr( level.vertex_position( node_2_vertex_id ) )
-  else
-    node_2_distance = -1
+      :distance_to( level.vertex_position( node_2_vertex_id ) )
   end
 
   -- Выбираем ближайшую из существующих
@@ -3661,10 +3656,9 @@ function select_position( npc, target, flag )
     end
   end
 
+  local move_speed = 2
   if node_1_distance == -1 then
-    local dist_to_point = npc:position()
-      :distance_to( level.vertex_position( node_2_vertex_id ) )
-    local move_time = dist_to_point / move_speed
+    local move_time = node_2_distance / move_speed
     last_time_send[ npc:id()   ] = time_global() + move_time + time_to_maneuver
     last_sent_vertex[ npc:id() ] = node_2_vertex_id
     locked_vertexes[ npc:id()  ] = node_2_vertex_id
@@ -3672,9 +3666,7 @@ function select_position( npc, target, flag )
   end
 
   if node_2_distance == -1 then
-    local dist_to_point = npc:position()
-      :distance_to( level.vertex_position( node_1_vertex_id ) )
-    local move_time = dist_to_point / move_speed
+    local move_time = node_1_distance / move_speed
     last_time_send[ npc:id()   ] = time_global() + move_time + time_to_maneuver
     last_sent_vertex[ npc:id() ] = node_1_vertex_id
     locked_vertexes[ npc:id()  ] = node_1_vertex_id
@@ -3682,8 +3674,8 @@ function select_position( npc, target, flag )
   end
 
   if
-    ( node_1_distance > 0 and node_1_distance < 50 )
-    and ( node_2_distance > 0 and node_2_distance < 50 )
+    node_1_distance > 0 and node_1_distance < 50
+    and node_2_distance > 0 and node_2_distance < 50
   then
     local choose_table = { node_1_vertex_id, node_2_vertex_id }
     if
@@ -3707,17 +3699,13 @@ function select_position( npc, target, flag )
   end
 
   if node_1_distance < node_2_distance then
-    local dist_to_point = npc:position()
-      :distance_to( level.vertex_position( node_1_vertex_id ) )
-    local move_time = dist_to_point / move_speed
+    local move_time = node_1_distance / move_speed
     last_time_send[ npc:id()   ] = time_global() + move_time + time_to_maneuver
     last_sent_vertex[ npc:id() ] = node_1_vertex_id
     locked_vertexes[ npc:id()  ] = node_1_vertex_id
     return node_1_vertex_id
   else
-    local dist_to_point = npc:position()
-      :distance_to( level.vertex_position( node_2_vertex_id ) )
-    local move_time = dist_to_point / move_speed
+    local move_time = node_2_distance / move_speed
     last_time_send[ npc:id()   ] = time_global() + move_time + time_to_maneuver
     last_sent_vertex[ npc:id() ] = node_2_vertex_id
     locked_vertexes[ npc:id()  ] = node_2_vertex_id
