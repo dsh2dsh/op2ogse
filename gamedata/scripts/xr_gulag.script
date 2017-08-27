@@ -3,7 +3,7 @@
 
 --' в работах поле object хранит id объекта
 
-level_gulags = {
+local level_gulags = {
   gulag_general,
   gulag_escape,
   gulag_garbage,
@@ -24,11 +24,27 @@ level_gulags = {
   gulag_new,
 }
 
-level_groups = {l01_escape = 1, l02_garbage = 2, l03_agroprom = 3, l03u_agr_underground = 4,
-                l04_darkvalley = 5, l04u_labx18 = 6, l05_bar = 7, l06_rostok = 8,
-                l07_military = 9, l08_yantar = 10, l08u_brainlab = 11, l10_radar = 12,
-                l10u_bunker = 13, l11_pripyat = 14, l12_stancia = 15, l12u_sarcofag = 16, 
-                l12u_control_monolith = 17, l12_stancia_2 = 18, marsh = 19}
+local level_groups = {
+  l01_escape            = 1,
+  l02_garbage           = 2,
+  l03_agroprom          = 3,
+  l03u_agr_underground  = 4,
+  l04_darkvalley        = 5,
+  l04u_labx18           = 6,
+  l05_bar               = 7,
+  l06_rostok            = 8,
+  l07_military          = 9,
+  l08_yantar            = 10,
+  l08u_brainlab         = 11,
+  l10_radar             = 12,
+  l10u_bunker           = 13,
+  l11_pripyat           = 14,
+  l12_stancia           = 15,
+  l12u_sarcofag         = 16,
+  l12u_control_monolith = 17,
+  l12_stancia_2         = 18,
+  marsh                 = 19,
+}
 
 local gulag_tasks_file_name  = "misc\\gulag_tasks.ltx"
 local gulag_tasks_ltx        = ini_file( gulag_tasks_file_name )
@@ -83,37 +99,52 @@ end
 
 -- загрузка работ
 function gulag:load_jobs()
-	self.Job                  = {} -- работы
-	self.Job_avail_in_state_0 = {}
+  self.Job                  = {} -- работы
+  self.Job_avail_in_state_0 = {}
 
-	gulag_tasks.loadJob( self.Job, self.name, self.type, self.squad, self.groups, self )
-	self:init_ltx( self.name, self.type )
+  self.gulag_script = gulag_tasks.loadJob()
+  ASSERT(
+    self.gulag_script,
+    "[%s]: %s: gulag_script not defined after loadJob()",
+    script_name(), self.name
+  )
+  self:init_ltx()
+  table.sort( self.Job, function( a, b ) return a.prior > b.prior end )
+  self:prepare_jobs_for_new_state()
 
-	table.sort( self.Job, function(a,b) return a.prior > b.prior end )
+  local capacity = 0
+  for i, job in ipairs( self.Job ) do
+    if self:job_exists_in_state_0( job ) then
+      table.insert( self.Job_avail_in_state_0, job )
+      capacity = capacity + 1
+    end
 
-	self:prepare_jobs_for_new_state()
+    if type( job.online ) == "string" then
+      job.online_condlist = job.online
+      job.online          = xr_logic.parse_condlist(
+        self.smrttrn, "gulag:setup_job_online", "job_online",
+        job.online_condlist
+      )
+    end
+  end
 
-	local capacity = 0
+  self.capacity               = math.min( capacity, self.capacity )
+  self.capacity_non_exclusive = self.capacity
 
-	for i, job in ipairs( self.Job ) do
-		if self:job_exists_in_state_0( job ) then
-			table.insert( self.Job_avail_in_state_0, job )
-			capacity = capacity + 1
-		end
-
-		if type( job.online ) == "string" then
-			job.online_condlist = job.online
-			job.online          = xr_logic.parse_condlist( self.smrttrn, "gulag:setup_job_online", "job_online", job.online_condlist )
-		end
-	end
-
-	self.capacity               = math.min( capacity, self.capacity )
-	self.capacity_non_exclusive = self.capacity
-
-	--log2("LOAD JOBS %s", tostring(self.name))
-	-- DEBUG
---	self:validate_jobs()
+  -- log2( "LOAD JOBS %s", tostring( self.name ) )
+  -- self:validate_jobs()
 end
+
+
+function gulag:loadJob()
+  for k, v in pairs( level_gulags ) do
+    v.load_job( self.Job, self.name, self.type, self.squad, self.groups, self )
+    if table.getn( self.Job ) > 0 then
+      return v
+    end
+  end
+end
+
 
 -- проверки правильности набора работ.
 -- а) в любом состоянии кол-во 100-но доступных работ должно быть >= ёмкости смарта
@@ -148,8 +179,18 @@ function gulag:initialize()
   self.restrictors = {}
 
   self:prepare_jobs()
+  ASSERT(
+    self.gulag_script,
+    "[%s]: %s: gulag_script not defined",
+    script_name(), self.name
+  )
   if not self:dsh_is_free_logic() then
-    self.calculateStates = gulag_tasks.loadStates( self.name, self.type )
+    self.calculateStates = self.gulag_script.load_states( self.name, self.type )
+    ASSERT(
+      self.calculateStates,
+      "[%s]: %s: not states after load_states()",
+      script_name(), self.name
+    )
   end
 
   local ini  = self.smrttrn:spawn_ini()
@@ -248,18 +289,23 @@ function gulag:job_exists_in_state_0( job )
 	return false
 end
 
+
 -- подгрузка ltx с секциями логики для работ.
 -- может подгрузить либо динамический ltx, либо статический (gulag_tasks.ltx)
-function gulag:init_ltx(name, type)
-	local ltx, ltx_name = gulag_tasks.loadLtx(name, type)
+function gulag:init_ltx()
+  local ltx, ltx_name = self:loadLtx()
+  if ltx then
+    self.ltx      = ltx
+    self.ltx_name = ltx_name
+  else
+    self.ltx      = gulag_tasks_ltx
+    self.ltx_name = gulag_tasks_file_name
+  end
+end
 
-	if ltx then
-		self.ltx      = ltx
-		self.ltx_name = ltx_name
-	else
-		self.ltx      = gulag_tasks_ltx
-		self.ltx_name = gulag_tasks_file_name
-	end
+
+function gulag:get_ltx()
+  return self.ltx
 end
 
 
@@ -1431,6 +1477,65 @@ function gulag:is_state_switch_1()
 end
 
 
+function gulag:set_gulag_script( s )
+  self.gulag_script = s
+end
+
+
+function gulag:checkStalker( npc_community, npc_rank, se_obj )
+  if
+    gulag_type == "campers"
+    or gulag_type == "walkers"
+    or gulag_type == "rest"
+    or gulag_type == "search"
+  then
+    return npc_community ~= "military"
+  end
+  ASSERT(
+    self.gulag_script,
+    "[%s]: %s: gulag_script not defined",
+    script_name(), self.name
+  )
+  return self.gulag_script.checkStalker(
+    npc_community, self.type, npc_rank, se_obj, self.smrttrn
+  )
+end
+
+
+function gulag:checkMonster( npc_community, npc_rank, se_obj )
+  ASSERT(
+    self.gulag_script,
+    "[%s]: %s: gulag_script not defined",
+    script_name(), self.name
+  )
+  return self.gulag_script.checkMonster(
+    npc_community, self.type, npc_rank, se_obj, self.smrttrn
+  )
+end
+
+
+function gulag:checkNpc( npc_community, is_stalker, npc_rank, se_obj )
+  if is_stalker then
+    return self:checkStalker( npc_community, npc_rank, se_obj )
+  else
+    return self:checkMonster( npc_community, npc_rank, se_obj )
+  end
+end
+
+
+function gulag:loadLtx()
+  ASSERT(
+    self.gulag_script,
+    "[%s]: %s: gulag_script not defined",
+    script_name(), self.name
+  )
+  local ltx = self.gulag_script.load_ltx( self.name, self.type )
+  if ltx then
+    return create_ini_file( ltx ), string.format( "*%s*%s", self.name, self.type )
+  end
+end
+
+
 ----------------------------------------------------------------------------------------------------------------------
 -- Функции, которые могут вызываться извне
 ----------------------------------------------------------------------------------------------------------------------
@@ -1495,20 +1600,18 @@ function setup_gulag_and_logic_on_spawn( obj, st, sobject, stype, loaded )
 	end
 end
 
+
 -- получить гулаг по имени смарта.
 -- работает только для смартов, которые в онлайне.
 function get_gulag_by_name( name )
-	local go_strn = db.zone_by_name[name]
-
-	if go_strn then
-		local strn = alife():object( go_strn:id() )
-
-		strn:initialize_if_needed()
-
-		return strn.gulag
-	else
-		return nil
-	end
+  local go_strn = db.zone_by_name[ name ]
+  if go_strn then
+    local strn = alife():object( go_strn:id() )
+    strn:initialize_if_needed()
+    return strn.gulag
+  else
+    return nil
+  end
 end
 
 -- получить гулаг по story id смарта
@@ -1521,13 +1624,14 @@ function get_gulag_by_sid( sid )
 	return strn.gulag
 end
 
+
 -- получить гулаг по имени или story id смарта
 function get_gulag( name_or_sid )
-	if type( name_or_sid ) == "number" then
-		return get_gulag_by_sid( name_or_sid )
-	else
-		return get_gulag_by_name( name_or_sid )
-	end
+  if type( name_or_sid ) == "number" then
+    return get_gulag_by_sid( name_or_sid )
+  else
+    return get_gulag_by_name( name_or_sid )
+  end
 end
 
 
@@ -1674,51 +1778,6 @@ function is_info_restricted( obj_id, info_pos )
 	end
 
 	return not r:inside( info_pos )
-end
-
-
-function checkStalker( npc_community, gulag_type, npc_rank, se_obj, strn )
-  if gulag_type == "test" or gulag_type == "test1" or gulag_type == "test_restr_changer" or gulag_type == "test_out"  then
-    return true
-  end
-  if
-    gulag_type == "campers"
-    or gulag_type == "walkers"
-    or gulag_type == "rest"
-    or gulag_type == "search"
-  then
-    return npc_community ~= "military"
-  end
-  for i, v in pairs( level_gulags ) do
-    if v.checkStalker( npc_community, gulag_type, npc_rank, se_obj, strn ) then
-      return true
-    end
-  end
-  return false
-end
-
-
-function checkMonster( npc_community, gulag_type, npc_rank, se_obj, strn )
-  if gulag_type == "test_mob" or gulag_type == "test_mob1" then
-    return true
-  end
-  for i, v in pairs( level_gulags ) do
-    if v.checkMonster( npc_community, gulag_type, npc_rank, se_obj, strn ) then
-      return true
-    end
-  end
-  return false
-end
-
-
-function checkNpc(
-  npc_community, is_stalker, gulag_type, npc_rank, se_obj, strn
-)
-  if is_stalker then
-    return checkStalker( npc_community, gulag_type, npc_rank, se_obj, strn )
-  else
-    return checkMonster( npc_community, gulag_type, npc_rank, se_obj, strn )
-  end
 end
 
 
