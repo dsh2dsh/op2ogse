@@ -76,6 +76,7 @@ function restrictor_teleport:net_spawn( data )
   t.y = pos.y
   t.z = pos.z
   -- «апомним координаты куда телепортимс€
+  t.pos_rnd_radius = get_float( sect, "pos_rnd_radius" )
   t.poz_rnd = get_u32( sect, "poz_rnd" )
   local s   = t.poz_rnd and math.random( t.poz_rnd ) or ""
   t.poz_x   = get_float( sect, "poz_x" .. s )
@@ -154,13 +155,24 @@ function restrictor_teleport:actor_update()
         ) ~= nil
       )
     then
-      -- јктер в зоне действи€ телепорта, запустим телепорт
-      db.actor:give_info_portion( "teleport_started" )
-      s.teleporte = true
-      self.sm:reschedule( 1000 )
-      -- «апускаем спецэфекты телепортации
-      level.add_pp_effector( "teleport.ppe", 2006, false )
-      return
+      local can_teleport = true
+      if s.pos_rnd_radius then
+        local pos = get_random_pos_in_radius( s.pos_rnd_radius )
+        if pos then
+          s.poz_x, s.poz_y, s.poz_z = pos.x, pos.y, pos.z
+        else
+          can_teleport = false
+        end
+      end
+      if can_teleport then
+        -- јктер в зоне действи€ телепорта, запустим телепорт
+        db.actor:give_info_portion( "teleport_started" )
+        s.teleporte = true
+        self.sm:reschedule( 1000 )
+        -- «апускаем спецэфекты телепортации
+        level.add_pp_effector( "teleport.ppe", 2006, false )
+        return
+      end
     end
   end
   local dist = self.object:position():distance_to( db.actor:position() )
@@ -168,4 +180,34 @@ function restrictor_teleport:actor_update()
     ( dist < 25 and 200 ) or ( dist < 100 and 1000 )
     or math.random( 5000, 6000 )
   )
+end
+
+
+function get_random_pos_in_radius( radius )
+  local ai_step     = 0.7 -- шаг AI сетки
+  local math_pi_180 = 180 / math.pi
+  local pi2         = math.pi * 2
+  -- выравниваем вектора по горизонтали
+  local dir = device().cam_dir
+  dir = vector():set( dir.x, 0, dir.z ):normalize()
+  dir = vector_rotate_y( dir, math.random( 360 ) )
+  local dist = math.random( 25, radius )
+  -- итератор вращени€ направлени€
+  local rotate_angle = math.asin( ai_step / dist )
+  local cur_angle    = 0
+  while math.abs( cur_angle ) < pi2 do
+    -- подход€щий угол, ищем вертекс
+    -- нужна€ нам позици€
+    local pos     = vector():mad( db.actor:position(), dir, dist )
+    local vert_ok = level.vertex_id_by_pos( pos )
+    if vert_ok ~= -1 then
+      local vert_pos = level.vertex_position( vert_ok )
+      if battle.no_anomaly_in( vert_pos ) then
+        return vert_pos
+      end
+    end
+    -- поворачиваем направление поиска
+    cur_angle = cur_angle + rotate_angle
+    dir       = vector_rotate_y( dir, rotate_angle * math_pi_180 )
+  end
 end
