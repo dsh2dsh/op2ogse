@@ -243,13 +243,14 @@ function CRandomTask:__init()
   end
 
   -- Создание дополнительных ассоциативных таблиц для облегчения поиска
-  self.task_id_by_type                = {}
-  self.task_id_by_complex_type        = {}
-  self.task_id_by_parent              = {}
-  self.task_id_by_yes_phrase_id       = {}
+  self.by_target                      = {}
   self.task_id_by_completed_phrase_id = {}
+  self.task_id_by_complex_type        = {}
   self.task_id_by_desc_phrase_id      = {}
   self.task_id_by_init_phrase_id      = {}
+  self.task_id_by_parent              = {}
+  self.task_id_by_type                = {}
+  self.task_id_by_yes_phrase_id       = {}
   self.active_task_by_type            = {}
   self.task_id_self_inited            = {}
   for k, v in pairs( self.task_info ) do
@@ -258,6 +259,15 @@ function CRandomTask:__init()
       self.task_id_by_type[ v.type ] = {}
     end
     table.insert( self.task_id_by_type[ v.type ], k )
+    if v.target then
+      local t = self.by_target[ v.type ]
+      if not t then
+        t = {}
+        self.by_target[ v.type ] = t
+      end
+      if not t[ v.target ] then t[ v.target ] = {} end
+      table.insert( t[ v.target ], k )
+    end
     -- По типу вендора
     if self.task_id_by_parent[ v.parent ] == nil then
       self.task_id_by_parent[ v.parent ] = {}
@@ -1322,56 +1332,34 @@ end
 
 -- Регистрация целей для квестов.
 function CRandomTask:register_target( obj )
-  if IAmAStalker[ obj:clsid() ] then
+  local tasks
+  if IsStalker( obj ) then
     -- Возможно регистрируется цель для квеста "убить сталкера"
-    for k, v in pairs(self.task_id_by_type.kill_stalker ) do
-      local t = self.task_info[ v ]
-      if
-        obj.alive ~= nil and obj:alive() == true
-        and obj:profile_name() == t.target
-      then
-        if t.target_objects == nil then
-          t.target_objects = {}
-        end
-        table.insert( t.target_objects, obj.id )
-      end
-    end
+    tasks = self.by_target.kill_stalker[ obj:profile_name() ]
+    if tasks and not obj:alive() then tasks = nil end
   elseif obj:clsid() == clsid.smart_terrain then
     -- Возможно регистрируется цель для квеста "вынести лагерь"
-    for k, v in pairs( self.task_id_by_type.eliminate_lager ) do
-      local t = self.task_info[ v ]
-      if obj:name() == t.target then
-        if t.target_objects == nil then
-          t.target_objects = {}
-        end
-        table.insert( t.target_objects, obj.id )
-      end
-    end
-    -- Либо регистрируется цель для квеста "защитить лагерь"
-    for k, v in pairs( self.task_id_by_type.defend_lager ) do
-      local t = self.task_info[ v ]
-      if obj:name() == t.target then
+    tasks = self.by_target.eliminate_lager[ obj:name() ]
+    if not tasks then
+      -- Либо регистрируется цель для квеста "защитить лагерь"
+      tasks = self.by_target.defend_lager[ obj:name() ]
+      if tasks then
         -- Проверка что в кастом дате указано от кого защищать
-        local sm_ini        = obj:spawn_ini()
-        local defend_target = utils.cfg_get_number(
-          sm_ini, "random_task", "defend_target", nil, true
+        ASSERT(
+          get_u32( "random_task", "defend_target", nil, obj:spawn_ini() ),
+          "[%s] %s: need defend_target", script_name(), obj:name()
         )
-        if t.target_objects == nil then
-          t.target_objects = {}
-        end
-        table.insert( t.target_objects, obj.id )
       end
     end
   else
     -- Возможно регистрируется цель для квеста "найти предмет"
-    for k, v in pairs( self.task_id_by_type.find_item ) do
-      local t = self.task_info[ v ]
-      if obj:section_name() == t.target then
-        if t.target_objects == nil then
-          t.target_objects = {}
-        end
-        table.insert( t.target_objects, obj.id )
-      end
+    tasks = self.by_target.find_item[ obj:section_name() ]
+  end
+  if tasks then
+    for _, k in ipairs( tasks ) do
+      local t = self.task_info[ k ]
+      if not t.target_objects then t.target_objects = {} end
+      table.insert( t.target_objects, obj.id )
     end
   end
 end
@@ -1379,28 +1367,21 @@ end
 
 -- ОТРегистрация целей для квестов.
 function CRandomTask:unregister_target( obj )
-  if IAmAStalker[ obj:clsid() ] then
+  local tasks
+  if IsStalker( obj ) then
     -- Возможно регистрируется цель для квеста "убить сталкера"
-    for k, v in pairs( self.task_id_by_type.kill_stalker) do
-      local t = self.task_info[ v ]
-      if t.target_objects ~= nil then
-        for kk, vv in pairs( t.target_objects ) do
-          if vv == obj.id then
-            table.remove( t.target_objects, vv )
-            break
-          end
-        end
-      end
-    end
-  elseif obj:clsid() == clsid.smart_terrain then
-  else
+    tasks = self.by_target.kill_stalker[ obj:profile_name() ]
+  elseif obj:clsid() ~= clsid.smart_terrain then
     -- Возможно регистрируется цель для квеста "найти предмет"
-    for k, v in pairs( self.task_id_by_type.find_item ) do
-      local t = self.task_info[ v ]
-      if t.target_objects ~= nil then
-        for kk, vv in pairs( t.target_objects ) do
-          if vv == obj.id then
-            table.remove( t.target_objects, vv )
+    tasks = self.by_target.find_item[ obj:section_name() ]
+  end
+  if tasks then
+    for _, k in ipairs( tasks ) do
+      local t = self.task_info[ k ]
+      if t.target_objects then
+        for i, v in pairs( t.target_objects ) do
+          if v == obj.id then
+            table.remove( t.target_objects, i )
             break
           end
         end
