@@ -1,10 +1,16 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
+  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
   sm:subscribe({ signal = "on_first_update", fun = this.on_actor_first_update })
   sm:subscribe({ signal = "on_npc_death", fun = this.on_death     })
   sm:subscribe({ signal = "on_npc_first_update", fun = this.on_first_update })
   sm:subscribe({ signal = "on_npc_spawn", fun = this.on_npc_spawn })
+end
+
+
+function on_spawn()
+  load_letters()
 end
 
 
@@ -972,8 +978,35 @@ end
 
 
 -- Письма
-local letters_ini   = ini_file( "misc\\letters.ltx" )
-local total_letters = 43        -- всего писем
+local all_letters = {}
+
+function load_letters()
+  local i    = 1
+  local ini  = ini_file( "misc\\letters.ltx" )
+  local sect = "letter_1"
+  while ini:section_exist( sect ) do
+    if not db.actor:has_info( sect ) then
+      local t = {
+        [ "info" ] = sect,
+      }
+      local comms = get_string( sect, "communities", nil, ini )
+      if comms then
+        t.comms = {}
+        for _, comm in ipairs( parse_names( comms ) ) do
+          t.comms[ comm ] = true
+        end
+      end
+      table.insert( all_letters, t )
+    end
+    i    = i + 1
+    sect = "letter_" .. i
+  end
+  log2(
+    "[%s]: %s / %s letters loaded",
+    script_name(), table.getn( all_letters ), i
+  )
+end
+
 
 function give_letter( npc )
   if math.random() > 0.02 then return end
@@ -986,31 +1019,21 @@ end
 -- Рандомное письмо
 function get_letter( npc )
   local avail_letters = {}
-  local j = 0
-  for i = 1, total_letters do
-    if
-      ( not has_alife_info( "letter_" .. i ) )
-      and
-      (
-        ( not letters_ini:line_exist( "letter_" .. i, "communities" ) )
-        or string.find(
-          letters_ini:r_string( "letter_" .. i, "communities" ),
-          npc:character_community()
-        )
-      )
-    then
-      -- подходит по community
-      j = j + 1
-      avail_letters[ j ] = i
+  for i, t in ipairs( all_letters ) do
+    t.index = i
+    if ( not t.comms ) or t.comms[ npc:character_community() ] then
+      table.insert( avail_letters, t )
     end
   end
-  if j > 0 then
+  if table.getn( all_letters ) > 0 then
     -- есть письмо
-    db.actor:give_info_portion(
-      "letter_" .. avail_letters[ math.random( table.getn( avail_letters ) ) ]
-    )
+    local rnd = math.random( table.getn( avail_letters ) )
+    local t   = avail_letters[ rnd ]
+    db.actor:give_info_portion( t.info )
+    table.remove( all_letters, t.index )
+    return true
   end
-  return j > 0
+  return false
 end
 
 
