@@ -205,8 +205,34 @@ function se_respawn:on_unregister()
 end
 
 
--- Создаем объект
 local cur_se_respawn_create
+local created_custom_data
+
+function se_on_before_register( e )
+  local respawn = cur_se_respawn_create
+  if respawn then
+    local sobj = e.sobj
+    table.insert( respawn.spawned_obj, sobj.id )
+    all_spawned_obj[ sobj.id ] = respawn.id
+    cur_se_respawn_create = nil
+  end
+  if created_custom_data then
+    local sobj = e.sobj
+    local pk   = get_netpk( sobj, 1 )
+    ASSERT( ( pk and pk:isOk() ), "can't read netpacket of %s", sobj:name() )
+    local data = pk:get()
+    local cd   = data.custom_data:getTable()
+    for k, v in pairs( created_custom_data ) do
+      cd[ k ] = v
+    end
+    data.custom_data:set( cd )
+    pk:set( data )
+    created_custom_data = nil
+  end
+end
+
+
+-- Создаем объект
 function se_respawn:create( prob )
   if     tostring( prob ) == "true" then
     prob = 80
@@ -254,24 +280,19 @@ function se_respawn:create( prob )
       parent_id = s_obj.id
     end
 
-    local sini = self:spawn_ini()
-    if sini:line_exist( "respawn", "creature_binded_logic" ) then
+    if spawn_section ~= "m_crow" then
+      local sini     = self:spawn_ini()
       local cfg_name = get_string(
         "respawn", "creature_binded_logic", nil, sini
       )
-      local cfg_path = "scripts\\amk\\" .. cfg_name .. ".ltx"
-      se_monster.on_before_register_callback = function( sobj )
-        local pk = get_netpk( sobj, 1 )
-        if pk:isOk() then
-          local data = pk:get()
-          local cd   = data.custom_data:getTable()
-          cd.logic = {
+      if cfg_name then
+        local cfg_path = "scripts\\amk\\" .. cfg_name .. ".ltx"
+        created_custom_data = {
+          [ "logic" ] = {
             [ "cfg"             ] = cfg_path,
             [ "dsh_replace_ini" ] = "true",
-          }
-          data.custom_data:set( cd )
-          pk:set( data )
-        end
+          },
+        }
       end
     end
 
@@ -304,6 +325,11 @@ function se_respawn:create( prob )
         [ "sobj" ] = obj,
       })
     end
+    ASSERT(
+      created_custom_data == nil,
+      "[%s]: %s: found created_custom_data exists after %s",
+      script_name(), self:name(), obj:name()
+    )
 
     local tt = self.sectSpawnProps[ spawn_section ]
     if self.item_spawn == false then
@@ -826,15 +852,4 @@ function startup_respawners()
     end
   )
   log2( "[%s]: %s respawners started", script_name(), cnt )
-end
-
-
-function se_on_before_register( e )
-  local respawn = cur_se_respawn_create
-  if respawn then
-    local sobj = e.sobj
-    table.insert( respawn.spawned_obj, sobj.id )
-    all_spawned_obj[ sobj.id ] = respawn.id
-    cur_se_respawn_create = nil
-  end
 end

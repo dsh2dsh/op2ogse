@@ -8,6 +8,15 @@ function attach( sm )
   sm:subscribe({ signal = "on_save",          fun = this.on_save  })
 end
 
+function init()
+  event( "se_monster:on_before_register" ):register(
+    this.se_on_before_register
+  )
+  event( "se_stalker:on_before_register" ):register(
+    this.se_on_before_register
+  )
+end
+
 
 local loaded = {}
 
@@ -153,7 +162,20 @@ function dsh_respawner:init_respawn_params()
   self.conditions     = xr_logic.parse_condlist(
     self, sect, "conditions", self.str_conditions
   )
+
   self.creature_binded_logic = get_string( sect, "creature_binded_logic" )
+  if self.creature_binded_logic then
+    local ini = dsh.cached_ini_file( self.creature_binded_logic )
+    if ini:section_exist( "smart_terrains" ) then
+      self.smart_terrains = get_section_keys_and_values(
+        "smart_terrains", ini
+      )
+    end
+    ASSERT(
+      ( self.smart_terrains and self.smart_terrains.none ),
+      "[%s]: %s: wrong smart_terrains", script_name(), self.name
+    )
+  end
 
   local xyzlg = get_string( sect, "xyzlg" )
   if xyzlg then
@@ -284,16 +306,31 @@ function dsh_respawner:do_refresh_spawned_obj()
     local filtered = {}
     for _, v in ipairs( self.spawned_obj ) do
       local sobj = alife():object( v )
+      local keep = true
       if sobj and our_sections[ sobj:section_name() ] then
         if IsStalker( sobj ) or IsMonster( sobj ) then
           if sobj:alive() then
-            table.insert( filtered, v )
+            if self.smart_terrains and self.smart_terrains.none then
+              if sobj:smart_terrain_id() ~= 65535 then
+                local strn = alife():object( sobj:smart_terrain_id() )
+                log2(
+                  "[%s]: %s: %s has smart_terrain_id = %s (%s)",
+                  script_name(), self.name, sobj:name(),
+                  ( strn and strn:name() or "unknown" ),
+                  sobj:smart_terrain_id()
+                )
+                keep = false
+              end
+            end
           else
-            all_spawned_obj[ v ] = nil
+            keep = false
           end
-        else
-          table.insert( filtered, v )
         end
+      else
+        keep = false
+      end
+      if keep then
+        table.insert( filtered, v )
       else
         all_spawned_obj[ v ] = nil
       end
@@ -338,6 +375,24 @@ function dsh_respawner:do_refresh_spawned_obj()
 end
 
 
+local created_custom_data
+function se_on_before_register( e )
+  if created_custom_data then
+    local sobj = e.sobj
+    local pk   = get_netpk( sobj, 1 )
+    ASSERT( ( pk and pk:isOk() ), "can't read netpacket of %s", sobj:name() )
+    local data = pk:get()
+    local cd   = data.custom_data:getTable()
+    for k, v in pairs( created_custom_data ) do
+      cd[ k ] = v
+    end
+    data.custom_data:set( cd )
+    pk:set( data )
+    created_custom_data = nil
+  end
+end
+
+
 function dsh_respawner:create( prob )
   if     tostring( prob ) == "true" then
     prob = 80
@@ -368,42 +423,20 @@ function dsh_respawner:create( prob )
     end
     if not spawn_section then return false end
 
-    if self.creature_binded_logic then
-      local ini = dsh.cached_ini_file( self.creature_binded_logic )
-      local smarts
-      if ini:section_exist( "smart_terrains" ) then
-        smarts = get_section_keys_and_values( "smart_terrains", ini )
-      end
-      se_monster.on_before_register_callback = function( sobj )
-        local pk = get_netpk( sobj, 1 )
-        if pk:isOk() then
-          local data = pk:get()
-          local cd   = data.custom_data:getTable()
-          if smarts then
-            cd.smart_terrains = smarts
-          end
-          cd.logic = {
-            [ "cfg" ] = self.creature_binded_logic,
---            [ "dsh_replace_ini" ] = "true",
-          }
-          data.custom_data:set( cd )
-          pk:set( data )
-        end
-      end
+    if spawn_section ~= "m_crow" and self.creature_binded_logic then
+      created_custom_data = {
+        [ "smart_terrains" ] = self.smart_terrains,
+        [ "logic"          ] = {
+          [ "cfg" ] = self.creature_binded_logic,
+        },
+      }
     end
     local sobj = alife():create( spawn_section, unpack( self.xyzlg ) )
-
-    local tt = self.sectSpawnProps[ spawn_section ]
-    if tt.check == true and not self.creature_binded_logic then
-      sobj:brain():update()
-      if
-        sobj:smart_terrain_id() == 65535
-        and not dsh.is_free_logic_mob( sobj )
-      then
-        alife():release( sobj, true )
-        return false
-      end
-    end
+    ASSERT(
+      created_custom_data == nil,
+      "[%s]: %s: found created_custom_data exists after %s",
+      script_name(), self.name, sobj:name()
+    )
 
     table.insert( self.spawned_obj, sobj.id )
     all_spawned_obj[ sobj.id ] = self.name
