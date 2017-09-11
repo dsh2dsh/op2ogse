@@ -117,12 +117,8 @@ function on_first_update()
   local enemies = ogse.load_var_safe( "dsh_hand_teleporter.enemies" )
   ogse.delete_var( "dsh_hand_teleporter.enemies" )
   if enemies and table.getn( enemies ) > 0 then
-    local ids = {}
-    for _, id in ipairs( enemies ) do
-      table.insert( ids, tonumber( id ) )
-    end
     teleport_enemies_to_me(
-      ids, 5, ( 30 * ( 4 - level.get_game_difficulty() ) ) -- от 30 до 120
+      enemies, 5, ( 30 * ( 4 - level.get_game_difficulty() ) ) -- от 30 до 120
     )
   end
   if teleported then teleported_actor_effects() end
@@ -361,21 +357,39 @@ end
 
 
 function teleport_enemies_to_me( enemies, min, radius )
-  for _, id in ipairs( enemies ) do
-    local sobj = alife():object( id )
-    if sobj then
-      local pos, lvid = dsh.get_random_pos_in_radius( radius, min )
-      if pos then
-        smart_terrain.unregister_npc( sobj )
-        sobj:brain():can_choose_alife_tasks( false )
-        alife():teleport_object( "", pos, lvid, db.actor:game_vertex_id(), id )
+  for _, t in ipairs( enemies ) do
+    local id, dist = unpack( t )
+    if dist > 0 then
+      dsh.timeout(
+        dist / 10 * 1000,
+        function( id, pos, lvid )
+          local sobj = alife():object( id )
+          if sobj and sobj:alive() then
+            smart_terrain.unregister_npc( sobj )
+            alife():teleport_object(
+              "", pos, lvid, db.actor:game_vertex_id(), id
+            )
+          end
+        end,
+        id, db.actor:position(), db.actor:level_vertex_id()
+      )
+    else
+      local sobj = alife():object( id )
+      if sobj then
+        local pos, lvid = dsh.get_random_pos_in_radius( radius, min )
+        if pos then
+          smart_terrain.unregister_npc( sobj )
+          alife():teleport_object(
+            "", pos, lvid, db.actor:game_vertex_id(), id
+          )
+        end
       end
     end
   end
 end
 
 
-function get_enemies_around( radius )
+function get_enemies_around( radius, check_see )
   local enemies = {}
   for id in pairs( db.creature ) do
     if id then
@@ -386,15 +400,25 @@ function get_enemies_around( radius )
           obj:relation( db.actor ) == game_object.enemy
           and ( not ogse.is_quest_npc( obj ) )
           and (
-            ( obj:best_enemy() and obj:best_enemy():id() == db.actor:id() )
-            or obj:position():distance_to( db.actor:position() ) <= radius
+            (
+              obj:best_enemy() and obj:best_enemy():id() == db.actor:id()
+              and ( ( not check_see ) or obj:see( db.actor ) )
+            )
+            or dist <= radius
           )
         then
           local sobj = alife():object( obj:id() )
           if sobj then
             smart_terrain.unregister_npc( sobj )
             self:brain():can_choose_alife_tasks( false )
-            table.insert( enemies, sobj.id )
+            dsh_respawn.on_release_npc( sobj.id )
+            table.insert(
+              enemies,
+              {
+                [ "dist" ] = dist,
+                [ "id"   ] = sobj.id,
+              }
+            )
           end
         end
       end
@@ -410,14 +434,24 @@ end
 
 
 function on_save()
-  if db.actor:dont_has_info( "teleport_started" ) then return end
-  if not utils.level_changing() then return end
-  local enemies = get_enemies_around(
-    5 * ( level.get_game_difficulty() + 1 ) -- от 5 до 20
-  )
+  local enemies
+  if db.actor:has_info( "teleport_started" ) then
+    enemies = get_enemies_around(
+      5 * ( level.get_game_difficulty() + 1 ) -- от 5 до 20
+    )
+    for _, e in ipairs( enemies ) do
+      e.dist = 0
+    end
+  elseif utils.level_changing() then
+    enemies = get_enemies_around( 10, true )
+  end
   if table.getn( enemies ) > 0 then
+    local t = {}
+    for _, e in ipairs( enemies ) do
+      table.insert( t, { e.id, e.dist } )
+    end
     ogse.save_var(
-      "dsh_hand_teleporter.enemies", enemies, "array_template", { "u16" }
+      "dsh_hand_teleporter.enemies", t, "array_template", { "u16", "u16" }
     )
   end
 end
