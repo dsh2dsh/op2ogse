@@ -5,10 +5,11 @@ local teleport_sid = story_ids.level_changer
 
 function attach( sm )
   sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
-  sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
+  sm:subscribe({ signal = "on_save",         fun = this.on_save         })
+  sm:subscribe({ signal = "on_spawn",        fun = this.on_spawn        })
   -- sm:subscribe({ signal = "on_take",  fun = this.on_take })
   -- sm:subscribe({ signal = "on_take_from_box", fun = this.on_take_from_box })
-  sm:subscribe({ signal = "on_use",   fun = this.on_use   })
+  sm:subscribe({ signal = "on_use",          fun = this.on_use          })
 end
 
 
@@ -108,8 +109,10 @@ function on_first_update()
   local radius = ogse.load_var( "dsh_hand_teleporter.randomize_pos", 0 )
   ogse.delete_var( "dsh_hand_teleporter.randomize_pos" )
   if radius > 0 then
-    local pos = randomize_position( db.actor, radius )
-    db.actor:set_actor_position( pos )
+    local pos = dsh.get_random_pos_in_radius( radius )
+    if pos then
+      db.actor:set_actor_position( pos )
+    end
   end
   local enemies = ogse.load_var_safe( "dsh_hand_teleporter.enemies" )
   ogse.delete_var( "dsh_hand_teleporter.enemies" )
@@ -170,14 +173,6 @@ function teleport_me( t )
   ogse.save_var( "dsh_hand_teleporter.teleport_me", true )
   if t.randomize_pos then
     ogse.save_var( "dsh_hand_teleporter.randomize_pos", t.randomize_pos )
-  end
-  local enemies = get_enemies_around(
-    5 * ( level.get_game_difficulty() + 1 ) -- от 5 до 20
-  )
-  if table.getn( enemies ) > 0 then
-    ogse.save_var(
-      "dsh_hand_teleporter.enemies", enemies, "array_template", { "u16" }
-    )
   end
   db.actor:give_info_portion( "teleport_started" )
   db.actor:disable_info_portion( "no_gravigun" )
@@ -365,72 +360,15 @@ function create_level_changer( sid, position, lvid, gvid, spot, hint, dest_posit
 end
 
 
-function randomize_position( npc, radius )
-  local anoms = amk_anoms.get_anomaly_list( npc, radius )
-  local lname = level.name()
-  local gvn, gvx, lvx = amk_anoms.game_vertexes[ lname ][ 1 ], amk_anoms.game_vertexes[ lname ][ 2 ], amk_anoms.level_vertexes[ lname ]
-  local lvids = {}
-  for new_lv = 1, lvx do
-    local pos  = level.vertex_position( new_lv )
-    local dist = npc:position():distance_to( pos )
-    if dist <= radius then
-      local near_anom = false
-      for _, anom in ipairs( anoms ) do
-        if pos:distance_to( anom.pos ) <= anom.radius then
-          near_anom = true
-          break
-        end
-      end
-      if not near_anom then table.insert( lvids, new_lv ) end
-    end
-  end
-  local new_lv   = lvids[ get_next_random( 1, table.getn( lvids ) ) ]
-  local pos      = level.vertex_position( new_lv )
-  local new_gv   = 0
-  local min_dist = 100000
-  for a = gvn, gvx do
-    local tmp = game_graph():vertex( a ):level_point()
-    if tmp:distance_to( pos ) < min_dist then
-      min_dist = tmp:distance_to( pos )
-      new_gv   = a
-    end
-  end
-  if game_graph():valid_vertex_id( new_gv ) then
-    return pos, new_lv, new_gv
-  end
-  return npc:position(), npc:level_vertex_id(), npc:game_vertex_id()
-end
-
-
 function teleport_enemies_to_me( enemies, min, radius )
-  local lname = level.name()
-  local gvn, gvx, lvx = amk_anoms.game_vertexes[ lname ][ 1 ], amk_anoms.game_vertexes[ lname ][ 2 ], amk_anoms.level_vertexes[ lname ]
-  local lvids = {}
-  for new_lv = 1, lvx do
-    local pos  = level.vertex_position( new_lv )
-    local dist = db.actor:position():distance_to( pos )
-    if dist > min and dist <= radius then
-      table.insert( lvids, new_lv )
-    end
-  end
   for _, id in ipairs( enemies ) do
     local sobj = alife():object( id )
     if sobj then
-      smart_terrain.unregister_npc( sobj )
-      sobj:brain():can_choose_alife_tasks( false )
-      local new_lv   = lvids[ math.random( 1, table.getn( lvids ) ) ]
-      local pos      = level.vertex_position( new_lv )
-      local new_gv   = 0
-      local min_dist = 100000
-      for a = gvn, gvx do
-        g1 = game_graph():vertex( a ):game_point()
-        if g1:distance_to( pos ) < min_dist then
-          min_dist = g1:distance_to( pos )
-          new_gv   = a
-        end
-      end
-      if game_graph():valid_vertex_id( new_gv ) then
-        alife():teleport_object( "", pos, new_lv, new_gv, id )
+      local pos, lvid = dsh.get_random_pos_in_radius( radius, min )
+      if pos then
+        smart_terrain.unregister_npc( sobj )
+        sobj:brain():can_choose_alife_tasks( false )
+        alife():teleport_object( "", pos, lvid, db.actor:game_vertex_id(), id )
       end
     end
   end
@@ -468,4 +406,18 @@ end
 
 function get_next_random( ... )
   return dsh.get_next_random( "dsh_hand_teleporter.rnd", ... )
+end
+
+
+function on_save()
+  if db.actor:dont_has_info( "teleport_started" ) then return end
+  if not utils.level_changing() then return end
+  local enemies = get_enemies_around(
+    5 * ( level.get_game_difficulty() + 1 ) -- от 5 до 20
+  )
+  if table.getn( enemies ) > 0 then
+    ogse.save_var(
+      "dsh_hand_teleporter.enemies", enemies, "array_template", { "u16" }
+    )
+  end
 end
