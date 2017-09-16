@@ -8,11 +8,24 @@ local exclude_flames = {
   -- [ "zone_flame_small_kamin" ] = true, -- камин рядом со Свибловым
 }
 
+-- объекты с этими визуалами замечены в воспарении и их нужно
+-- возвращать на место
+local koster_palki = {
+  [ "objects\\koster_negorit"      ] = true,
+  [ "objects\\koster_palki"        ] = true,
+  [ "objects\\koster_palki_nastil" ] = true,
+}
+
+
 
 function attach(sm)
   sm:subscribe({
     signal = "on_before_actor_conditions_update",
     fun    = this.actor_conditions_update
+  })
+  sm:subscribe({
+    signal = "on_bind_physic_object",
+    fun    = this.on_bind_physic_object
   })
   sm:subscribe({ signal = "on_update", fun = this.on_actor_update })
 end
@@ -88,6 +101,12 @@ function unknown_light_binder:net_spawn( data )
   if not object_binder.net_spawn( self, data ) then
     return false
   end
+  ASSERT(
+    db.net_spawning_obj == nil ,
+    "found net_spawning_obj = %s",
+    tostring( db.net_spawning_obj and db.net_spawning_obj:name() or nil )
+  )
+  db.net_spawning_obj = self.object
   lights[ self.object:level_vertex_id() ] = self.object:id()
   lights_no_flame[ self.object:id()     ] = true
   for id, campfire in pairs( flames_no_light ) do
@@ -110,6 +129,7 @@ function unknown_light_binder:net_spawn( data )
       end
     end
   end
+  db.net_spawning_obj = nil
   return true
 end
 
@@ -222,6 +242,7 @@ function campfire_binder:__init( obj ) super( obj )
   self.state_down    = get_string(
     obj:section(), "ogse_campfire.state_down", "down"
   )
+  self.switch_light_on_update = false
 end
 
 
@@ -270,6 +291,10 @@ function campfire_binder:update( delta )
       self.object, self.st, self.loaded, db.actor, modules.stype_item
     )
   end
+  if self.switch_light_on_update then
+    self:switch_light( false )
+    self.switch_light_on_update = false
+  end
   local time = time_global()
   if not self.scan_time then
     self.scan_time = time
@@ -302,6 +327,12 @@ function campfire_binder:net_spawn( data )
   if not object_binder.net_spawn( self, data ) then
     return false
   end
+  ASSERT(
+    db.net_spawning_obj == nil ,
+    "found net_spawning_obj = %s",
+    tostring( db.net_spawning_obj and db.net_spawning_obj:name() or nil )
+  )
+  db.net_spawning_obj = self.object
   flames[ self.object:id() ] = self
   if self.has_light then
     local light = self:find_light()
@@ -326,6 +357,7 @@ function campfire_binder:net_spawn( data )
     end
     if light then self:switch_light( false ) end
   end
+  db.net_spawning_obj = nil
   return true
 end
 
@@ -426,5 +458,76 @@ end
 
 
 function campfire_binder:on_light_spawn()
-  self:switch_light( false )
+  self.switch_light_on_update = true
+end
+
+
+function on_bind_physic_object( obj )
+  if koster_palki[ obj:get_visual_name() ] then
+    obj:bind_object( koster_palki_binder( obj ) )
+    return true
+  end
+end
+
+
+class "koster_palki_binder" ( object_binder )
+function koster_palki_binder:__init( obj ) super( obj )
+  self.updated = false
+end
+
+
+function koster_palki_binder:net_spawn( data )
+  if not object_binder.net_spawn( self, data ) then
+    return false
+  end
+  ASSERT(
+    db.net_spawning_obj == nil ,
+    "found net_spawning_obj = %s",
+    tostring( db.net_spawning_obj and db.net_spawning_obj:name() or nil )
+  )
+  return true
+end
+
+
+function koster_palki_binder:update( delta )
+  if self.updated then return end
+  local sobj = alife():object( self.object:id() )
+  if sobj then
+    local dist = sobj.position:distance_to( self.object:position() )
+    if dist > 0.1 then
+      log2(
+        "[%s]: found wrong position of %s: dist = %s",
+        script_name(), self.object:name(), dist
+      )
+      local pk = get_netpk( sobj, 1 )
+      ASSERT( ( pk and pk:isOk() ), "can't read netpacket of %s", sobj:name() )
+      local orig = pk:get()
+      local new  = alife():create(
+        "physic_object",
+        sobj.position, sobj.m_level_vertex_id, sobj.m_game_vertex_id
+      )
+      pk = get_netpk( new, 1 )
+      ASSERT( ( pk and pk:isOk() ), "can't read netpacket of %s", sobj:name() )
+      local data = pk:get()
+      for _, k in ipairs({
+        "fixed_bones", "mass", "physic_type", "visual_name"
+      }) do
+        data[ k ] = orig[ k ]
+      end
+      data.custom_data:setTable( orig.custom_data:getTable() )
+      pk:set( data )
+      log2(
+        "[%s]: new %s spawned: %s",
+        script_name(), data.visual_name, new:name()
+      )
+      dsh.exec_on_update(
+        function( id )
+          local sobj = alife():object( id )
+          if sobj then alife():release( sobj ) end
+        end,
+        sobj.id
+      )
+    end
+  end
+  self.updated = true
 end
