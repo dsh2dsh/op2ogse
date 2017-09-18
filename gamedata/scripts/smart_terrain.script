@@ -360,36 +360,19 @@ function se_smart_terrain:read_params()
   local gp       = {}
   self.npc_info  = {}           -- group и squad для каждого npc
   self.gparams   = gp           -- настройки гулага
-  gp.type        = get_string( sect, "type",   nil, ini )
   gp.preset_name = get_string( sect, "preset", nil, ini )
-  -- ёмкость. а настоящая ёмкость = min(эта_ёмкость, ёмкость гулага)
-  gp.capacity    = get_float( sect, "capacity", 100, ini )
   gp.squad       = get_float( sect, "squad", nil, ini )
   gp.idle_min, gp.idle_max = r_2nums( ini, sect, "idle", 0, 0 )
   gp.duration_min, gp.duration_max = r_2nums(
     ini, sect, "duration", 10000, 10001
   )
-  gp.stay_min, gp.stay_max = smart_terrain_params.get_stay_time_interval(
-    get_string( sect, "stay", "default", ini )
-  )
   gp.respawn = get_string( sect, "respawn", nil, ini )
   gp.groups  = get_string( sect, "groups",  nil, ini )
   self.rank_inc_min = get_string( "smart_terrain_rank_change", "min" )
   self.rank_inc_max = get_string( "smart_terrain_rank_change", "max" )
-  self.accepted_communities = nil
-  self.communities = get_string( sect, "communities", nil, ini )
 
   self:init_idle_times()
   self:dsh_override_params()
-
-  if not gp.cond then
-    gp.cond = get_string( sect, "cond", nil, ini )
-    if gp.cond then
-      gp.cond = dsh.cached_condlist(
-        xr_logic.parse_condlist( nil, sect, "cond", gp.cond ), 1000
-      )
-    end
-  end
 
   if gp.groups then
     gp.groups = parse_nums( gp.groups )
@@ -440,7 +423,6 @@ function se_smart_terrain:set_active_profile( profile, persist )
   if profile ~= self.dsh_active_profile then
     self.dsh_active_profile = profile
     self:dsh_override_params()
-    self.gulag:set_capacity( self.gparams.capacity )
   end
   if persist then
     local s_storage = m_netpk.custom_data( self.s_storage )
@@ -476,11 +458,30 @@ end
 
 
 function se_smart_terrain:dsh_override_params()
-  if not dsh.is_gulag_fixes_enabled() then return end
+  local ini  = self:spawn_ini()
+  local sect = "smart_terrain"
+  if not ini:section_exist( sect ) then
+    sect = "gulag1"
+  end
+  ASSERT(
+    ini:section_exist( sect ),
+    "[%s]: %s: default section not found", script_name(), self:name()
+  )
+
+  local gp = self.gparams
+  gp.capacity = get_float(  sect, "capacity", 100, ini )
+  gp.cond     = get_string( sect, "cond",     nil, ini )
+  gp.type     = get_string( sect, "type",     nil, ini )
+  gp.stay_min, gp.stay_max = smart_terrain_params.get_stay_time_interval(
+    get_string( sect, "stay", "default", ini )
+  )
+  self.accepted_communities = nil
+  self.communities = get_string( sect, "communities", nil, ini )
+
   local dsh_override_opts = {
     [ "capacity" ] = {
       [ "getter" ] = function( ... ) return get_float(  ... ) end,
-      [ "setter" ] = function( v ) self.gparams.capacity = v end,
+      [ "setter" ] = function( v ) gp.capacity = v end,
     },
     [ "communities" ] = {
       [ "getter" ] = function( ... ) return get_string( ... ) end,
@@ -488,34 +489,27 @@ function se_smart_terrain:dsh_override_params()
     },
     [ "cond" ] = {
       [ "getter" ] = function( ... ) return get_string( ... ) end,
-      [ "setter" ] = function( cond )
-        if cond then
-          cond = dsh.cached_condlist(
-            xr_logic.parse_condlist( nil, sect, "cond", cond ), 1000
-          )
-        end
-        self.gparams.cond = cond
-      end,
+      [ "setter" ] = function( v ) gp.cond = v end,
     },
     [ "stay" ] = {
       [ "getter" ] = function( ... ) return get_numbers( ... ) end,
       [ "setter" ] = function( v )
-        self.gparams.stay_min = v[ 1 ]
+        gp.stay_min = v[ 1 ]
         if table.getn( v ) > 1 then
-          self.gparams.stay_max = v[ 2 ]
+          gp.stay_max = v[ 2 ]
         else
-          self.gparams.stay_max = v[ 1 ]
+          gp.stay_max = v[ 1 ]
         end
       end,
     },
     [ "type" ] = {
       [ "getter" ] = function( ... ) return get_string( ... ) end,
-      [ "setter" ] = function( v ) self.gparams.type = v end,
+      [ "setter" ] = function( v ) gp.type = v end,
     },
   }
+
   local dsh_sect = "dsh.gulag.override." .. self:name()
   local profile  = self.dsh_active_profile
-  local sect
   if profile then
     sect = dsh_sect .. "." .. profile
   else
@@ -529,7 +523,16 @@ function se_smart_terrain:dsh_override_params()
       end
     end
   end
+
   self:parse_communities()
+  if gp.cond then
+    gp.cond = dsh.cached_condlist(
+      xr_logic.parse_condlist( nil, sect, "cond", gp.cond ), 1000
+    )
+  end
+  if self.gulag then
+    self.gulag:set_capacity( gp.capacity )
+  end
 end
 
 
@@ -893,7 +896,7 @@ end
 
 -- отпустить npc
 -- TODO а если такого объекта уже нету?
-function se_smart_terrain:unregister_npc( obj )
+function se_smart_terrain:unregister_npc( obj, ignore_on_empty )
   -- Если анрегистрим мертвого эксклюзивного НПС, нужно уменьшить
   -- счетчик эксклюзивности
   if obj.smart_terrain_conditions then
@@ -928,7 +931,7 @@ function se_smart_terrain:unregister_npc( obj )
   obj:clear_smart_terrain()
   dsh.remember_mobs_smart_terrain( obj.id, self, false )
 
-  if self:is_empty() and db.actor then
+  if self:is_empty() and db.actor and not ignore_on_empty then
     local sm = ogse_signals.get_mgr()
     sm:call( "on_empty_smart_terrain", self )
   end
@@ -1041,7 +1044,7 @@ end
 
 -- всех освободить, убить гулаг, создать новый нерабочий гулаг,
 -- зарезервировать в нём места для эксклюзивных
-function se_smart_terrain:remove_gulag( disable )
+function se_smart_terrain:remove_gulag( disable, ignore_on_empty )
   self.disabled = disable
   if not self.gulag_working then
     return
@@ -1051,7 +1054,7 @@ function se_smart_terrain:remove_gulag( disable )
   -- )
   -- освободить всех персонажей
   for id, npc_info in pairs( self.npc_info ) do
-    self:unregister_npc( npc_info.se_obj )
+    self:unregister_npc( npc_info.se_obj, ignore_on_empty )
     -- если смарт закрылся, попытаемся всех распределить по другим смартам,
     -- как можно быстрее. Что бы не бродили неприкаянные и получили свою
     -- логику.
