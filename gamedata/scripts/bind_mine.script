@@ -1,57 +1,68 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 -- Биндер мин
-function init(obj)
-    local new_binder = mine_binder(obj)
-    obj:bind_object(new_binder)
+
+function init( obj )
+  obj:bind_object( mine_binder( obj ) )
 end
 
----------------------------------------------------------------------------------------------
--- Порядок загрузки:
--- reload
--- reinit
--- load
--- net_spawn
----------------------------------------------------------------------------------------------
-class "mine_binder" (object_binder)
-function mine_binder:__init(obj) super(obj)
-        self.beep = sound_object([[zwuk\radiomayak]])
-end 
 
-function mine_binder:net_spawn(data)
-    if not object_binder.net_spawn(self, data) then
-        return false
+class "mine_binder" ( object_binder )
+function mine_binder:__init( obj ) super( obj )
+end
+
+
+function mine_binder:net_spawn( data )
+  if not object_binder.net_spawn( self, data ) then return false end
+  ASSERT(
+    db.net_spawning_obj == nil ,
+    "found net_spawning_obj = %s",
+    tostring( db.net_spawning_obj and db.net_spawning_obj:name() or nil )
+  )
+  db.net_spawning_obj = self.object
+  if not self.object:parent() then
+    self.beep = sound_object( "zwuk\\radiomayak" )
+    self.beep:play_at_pos(
+      db.actor, self.object:position(), 0,
+      sound_object.s3d + sound_object.looped
+    )
+  end
+  db.net_spawning_obj = nil
+  return true
+end
+
+
+function mine_binder:update( delta )
+  object_binder.update( self, delta )
+  if not self.object:parent() then return end
+  local sect = get_string( self.object:section(), "dsh_babah_proxy.real" )
+  ASSERT(
+    sect,
+    "[%s]: %s: dsh_babah_proxy.real not found",
+    script_name(), self.object:name()
+  )
+  dsh.exec_on_update(
+    function( id, sect, pid )
+      local sobj = alife():object( id )
+      if sobj then
+        alife():release( sobj )
+      end
+      local parent = ( pid == db.actor:id() )
+        and db.actor or level.object_by_id( pid )
+      if parent then
+        ogse.spawn_item_in_inv( sect, parent )
+      end
     end
-        
-        self.beep:play_at_pos(db.actor, self.object:position(), 0, sound_object.s3d+sound_object.looped)
-        
---      get_console():execute("load ~~~ net_spawn: "..self.object:id())
-    return true
+    self.object:id(), sect, self.object:parent():id()
+  )
 end
+
 
 function mine_binder:net_destroy()
---      get_console():execute("load ~~~ net_destroy: "..self.object:id())
-
-        self.beep:stop()
-        
-        if self.object:position():distance_to(db.actor:position()) < system_ini():r_float("alife","switch_distance") and not has_alife_info("teleport_started") then
-                -- мина исчезла в онлайне и не телепорт = взрыв
---              get_console():execute("load ~~~ blow: "..self.object:id())
-                db.actor:give_info_portion("info_mina_"..string.sub(self.object:section(),6))
-        
-                -- проверяем, все ли мины подорваны
-                local all_mines_done = true
-                for i = 1,20 do         -- количество мин
-                        if not has_alife_info("info_mina_"..tostring(i)) then
-                                all_mines_done = false
-                                break
-                        end
-                end
-                
-                if all_mines_done then
-                        -- все - выдаем поршень завершения задания
---                      news_manager.send_tip(db.actor, "%c[255,160,160,160]".."СТРЕЛОК:".."\\n".."%c[255,255,128,128]Все мины взорваны.".."\n", nil, nil, 10000)
-                end
-        end
-
-    object_binder.net_destroy(self)
+  if self.beep then
+    self.beep:stop()
+  end
+  if not alife():object( self.object:id() ) then
+    db.actor:give_info_portion( "info_" .. self.object:section() )
+  end
+  object_binder.net_destroy( self )
 end
