@@ -359,7 +359,79 @@ local point_flags = {
   processed   = 4,              -- 100b
 }
 
-function StaticForecast:load( forecast_data )
+function StaticForecast:load()
+  ogse_surge_mgr.surge_log( "StaticForecast:on_load" )
+  -- читаем данные прогноза
+  local forecast_data = ogse.load_var_safe(
+    string.format( "ogse_weather_mgr.StaticForecast.%s", self.name )
+  )
+  if not forecast_data then
+    log2(
+      "[%s]: StaticForecast: loading of %s skipped: data not found",
+      script_name(), self.name
+    )
+    return
+  end
+  ogse_surge_mgr.surge_log( "forecast points" )
+  self.forecast = {}
+  for _, t in ipairs( forecast_data ) do
+    local cycle, flags, point_idx, time = unpack( t )
+    local p = {}
+    -- название цикла. Для статики будет избыточность, но не хочется
+    -- дублировать код
+    p.cycle = cycle
+    p.time  = time
+    -- читаем и разбираем флаги точки
+    local pflags = flags16():assign( flags )
+    p.surge_start = pflags:test( point_flags.surge_begin )
+    p.surge_frame = pflags:test( point_flags.surge_frame )
+    p.processed   = pflags:test( point_flags.processed )
+    -- как только встретим первый true, то так true и останется
+    self.surge_frame_assigned = self.surge_frame_assigned or p.surge_start
+    -- в конце ещё проверим на валидность
+    ASSERT(
+      point_idx ~= 0,
+      "[StaticForecast:on_load] cycle '%s' without index", p.cycle
+    )
+    -- в зависимости от типа точки обычная/выброс данные о цикле берём
+    -- либо из общей таблицы погодных циклов, либо из дополнительно
+    -- подгруженной таблицы для выброса
+    local cycle_points = {}
+    if p.surge_frame then
+      read_cycle_points( p.cycle, cycle_points )
+    else
+      cycle_points = self.cycles[p.cycle].points
+    end
+    p.data = cycle_points[ point_idx ]
+    table.insert( self.forecast, p )
+    ogse_surge_mgr.surge_log(
+      "cycle '%s', idx = %d/%d, t = %s, %s %s",
+      p.cycle,
+      p.data.index, point_idx,
+      time2string( p.time ),
+      p.surge_start and "surge_start" or "",
+      p.surge_frame and "surge_frame" or ""
+    )
+  end
+  log2(
+    "[%s]: StaticForecast: %s loaded: %s items",
+    script_name(), self.name, table.getn( self.forecast )
+  )
+  ogse_surge_mgr.surge_log( "StaticForecast:on_load - END" )
+end
+
+
+function StaticForecast:clear_saved_data()
+  local var_name = string.format(
+    "ogse_weather_mgr.StaticForecast.%s", self.name
+  )
+  if ogse.var_exists( var_name ) then
+    ogse.delete_var( var_name )
+  end
+end
+
+
+function StaticForecast:load_old( forecast_data )
   ogse_surge_mgr.surge_log( "StaticForecast:on_load" )
   -- читаем данные прогноза
   ogse_surge_mgr.surge_log( "forecast points" )
@@ -403,28 +475,30 @@ function StaticForecast:load( forecast_data )
       p.surge_frame and "surge_frame" or ""
     )
   end
-  -- self:check_and_fail()
   ogse_surge_mgr.surge_log( "StaticForecast:on_load - END" )
 end
 
 
-function StaticForecast:save( forecast_data )
+function StaticForecast:save()
   ogse_surge_mgr.surge_log( "StaticForecast:on_save" )
   -- начинаем записывать свои данные
   -- пишем данные текушего прогноза
-  forecast_data:w_u16( #self.forecast ) -- количество точек
   ogse_surge_mgr.surge_log( "forecast_points:" )
+  local data = {}
   for _, point_data in ipairs( self.forecast ) do -- сами точки
     -- записываем минимум информации для восстановления точки в дальнейшем
-    forecast_data:w_stringZ( point_data.cycle ) -- название цикла
     -- формируем и записываем флаги точки
     local pflags = flags16():zero()
     pflags:set( point_flags.surge_begin, point_data.surge_start == true )
     pflags:set( point_flags.surge_frame, point_data.surge_frame == true )
     pflags:set( point_flags.processed,   point_data.processed   == true )
-    forecast_data:w_u16( pflags:get() )
-    forecast_data:w_u8( point_data.data.index ) -- индекс точки цикла
-    utils.w_CTime_ex( forecast_data, point_data.time )
+    local t = {
+      point_data.cycle,         -- название цикла
+      pflags:get(),             -- флаги точки
+      point_data.data.index,    -- индекс точки цикла
+      point_data.time,
+    }
+    table.insert( data, t )
     ogse_surge_mgr.surge_log(
       "cycle '%s', idx = %d, t = %s, %s %s",
       point_data.cycle,
@@ -434,6 +508,14 @@ function StaticForecast:save( forecast_data )
       point_data.surge_frame and "surge_frame" or ""
     )
   end
+  ogse.save_var(
+    string.format( "ogse_weather_mgr.StaticForecast.%s", self.name ),
+    data, "array_template", { "string", "u16", "u8", "time" }
+  )
+  log2(
+    "[%s]: StaticForecast: %s saved: %s items",
+    script_name(), self.name, table.getn( data )
+  )
   ogse_surge_mgr.surge_log( "StaticForecast:on_save - END" )
 end
 
@@ -887,7 +969,51 @@ function DynamicForecast:__init()
 end
 
 
-function DynamicForecast:load( forecast_data )
+function DynamicForecast:load()
+  ogse_surge_mgr.surge_log( "DynamicForecast:load" )
+  local prefix = string.format(
+    "ogse_weather_mgr.DynamicForecast.%s.", self.name
+  )
+  local forecast_data = ogse.load_var_safe( prefix .. "cycles" )
+  if not forecast_data then
+    log2(
+      "[%s]: DynamicForecast: loading of %s skipped: data not found",
+      script_name(), self.name
+    )
+    return
+  end
+  -- читаем данные для рандомайзера прогноза
+  self.last_weather_time = ogse.load_var( prefix .. "last_weather_time" )
+  for _, item in ipairs( forecast_data ) do
+    local cycle_name, skipped = unpack( item )
+    self.cycles[ cycle_name ].skipped = skipped
+  end
+  log2(
+    "[%s]: DynamicForecast: %s loaded: %s items",
+    script_name(), self.name, table.getn( forecast_data )
+  )
+  -- читаем данные текушего прогноза
+  -- используем метод базового класса
+  StaticForecast.load( self )
+  ogse_surge_mgr.surge_log( "DynamicForecast:load - END" )
+end
+
+
+function DynamicForecast:clear_saved_data()
+  StaticForecast.clear_saved_data( self )
+  local prefix = string.format(
+    "ogse_weather_mgr.DynamicForecast.%s.", self.name
+  )
+  for _, var_name in ipairs({ "last_weather_time", "cycles" }) do
+    local v = prefix .. var_name
+    if ogse.var_exists( v ) then
+      ogse.delete_var( v )
+    end
+  end
+end
+
+
+function DynamicForecast:load_old( forecast_data )
   ogse_surge_mgr.surge_log( "DynamicForecast:load" )
   -- читаем данные для рандомайзера прогноза
   self.last_weather_time = forecast_data:r_float()
@@ -898,24 +1024,35 @@ function DynamicForecast:load( forecast_data )
   end
   -- читаем данные текушего прогноза
   -- используем метод базового класса
-  StaticForecast.load( self, forecast_data )
+  StaticForecast.load_old( self, forecast_data )
   ogse_surge_mgr.surge_log( "DynamicForecast:load - END" )
 end
 
 
-function DynamicForecast:save( forecast_data )
+function DynamicForecast:save()
   ogse_surge_mgr.surge_log( "DynamicForecast:save" )
   -- начинаем записывать свои данные
   -- пишем данные для рандомайзера прогноза
-  forecast_data:w_float( self.last_weather_time )
+  local t = {}
   for cycle_name, cycle_data in pairs( self.cycles ) do
-    forecast_data:w_stringZ( cycle_name )
-    forecast_data:w_s16( cycle_data.skipped )
+    table.insert( t, { cycle_name, cycle_data.skipped } )
   end
-  forecast_data:w_stringZ( "" ) -- завершающий маркер
+  local prefix = string.format(
+    "ogse_weather_mgr.DynamicForecast.%s.", self.name
+  )
+  ogse.save_var(
+    prefix .. "last_weather_time", self.last_weather_time, "float"
+  )
+  ogse.save_var(
+    prefix .. "cycles", t, "array_template", { "string", "s16" }
+  )
+  log2(
+    "[%s]: DynamicForecast: %s saved: %s items",
+    script_name(), self.name, table.getn( t )
+  )
   -- пишем данные текушего прогноза
   -- остаток делаем базовым классом
-  StaticForecast.save( self, forecast_data )
+  StaticForecast.save( self )
   ogse_surge_mgr.surge_log( "DynamicForecast:save - END" )
 end
 
@@ -1213,10 +1350,17 @@ function WeatherManager:on_load()
     ogse_surge_mgr.surge_log(
       "resetting weather was requested: will delete all saved data"
     )
-    if ogse.var_exists( "ogse_weather_next_surge_time" ) then
-      ogse.delete_var( "ogse_weather_next_surge_time" )
+    local vars = {
+      "ogse_weather_mgr.version",
+      "ogse_weather_next_surge_time",
+    }
+    for _, var_name in ipairs( vars ) do
+      if ogse.var_exists( var_name ) then
+        ogse.delete_var( var_name )
+      end
     end
     for weather_name, forecast in pairs( self.forecasts ) do
+      forecast:clear_saved_data()
       local var_name = "ogse_weather_forecast_data_" .. weather_name
       if ogse.var_exists( var_name ) then
         ogse.delete_var( var_name )
@@ -1228,12 +1372,17 @@ function WeatherManager:on_load()
     return
   end
 
+  self.load_version    = ogse.load_var_safe( "ogse_weather_mgr.version" )
   self.next_surge_time = ogse.load_var( "ogse_weather_next_surge_time" )
   for weather_name, forecast in pairs( self.forecasts ) do
-    local var_name = "ogse_weather_forecast_data_" .. weather_name
-    if ogse.var_exists( var_name ) then
-      local forecast_data = ogse.load_var( var_name )
-      forecast:load( forecast_data )
+    if self.load_version then
+      forecast:load()
+    else
+      local var_name = "ogse_weather_forecast_data_" .. weather_name
+      if ogse.var_exists( var_name ) then
+        forecast:load_old( ogse.load_var( var_name ) )
+        log2( "[%s]: %s loaded", script_name(), weather_name )
+      end
     end
   end
 
@@ -1247,16 +1396,15 @@ function WeatherManager:on_save()
   ogse.save_var(
     "ogse_weather_next_surge_time", self.next_surge_time, "time"
   )
-  -- каждый отдельный прогноз имеет свой чанк с данными (поскольку
-  -- есть вероятность, что все прогнозы не влезут в один нетпакет)
+  ogse.save_var( "ogse_weather_mgr.version", 1, "u8" )
   for weather_name, forecast in pairs( self.forecasts ) do
-    local forecast_data = net_packet()
-    forecast_data:w_begin( 123 ) -- двухбайтовая заглушка
-    forecast_data:r_seek( 2 ) -- чтобы пропустить эти два байта при чтении
-    forecast:save( forecast_data )
-    ogse.save_var(
-      "ogse_weather_forecast_data_" .. weather_name, forecast_data, "chunk"
-    )
+    forecast:save()
+    if not self.load_version then
+      local old_var_name = "ogse_weather_forecast_data_" .. weather_name
+      if ogse.var_exists( old_var_name ) then
+        ogse.delete_var( old_var_name )
+      end
+    end
   end
   ogse_surge_mgr.surge_log( "WeatherManager:on_save - END" )
 end
