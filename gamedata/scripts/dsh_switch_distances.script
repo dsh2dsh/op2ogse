@@ -20,10 +20,11 @@ function load_switch_distances( sobj )
 end
 
 
-local cache_switch_distance = {}
 function get_switch_distance( sobj )
-  if not cache_switch_distance[ sobj.id ] then
-    cache_switch_distance[ sobj.id ] = {}
+  local t = sobj.dsh_switch_distances__get_switch_distance
+  if not t then
+    t = {}
+    sobj.dsh_switch_distances__get_switch_distance = t
     local level_switch_distances = load_switch_distances( sobj )
     local sd = level_switch_distances[ sobj:name() ]
     if not sd then
@@ -39,20 +40,17 @@ function get_switch_distance( sobj )
         sd = level_switch_distances.human
       end
     end
-    if sd then
-      cache_switch_distance[ sobj.id ].sd = sd
-    end
+    if sd then t.sd = sd end
   end
-  return cache_switch_distance[ sobj.id ].sd
+  return t.sd
 end
 
 
 function se_can_switch_online( sobj )
-  if not db.actor then return end
   local sd = get_switch_distance( sobj )
-  if sd then
+  if sd and sd < alife():switch_distance() then
     if sobj.online then sd = sd + 20 end
-    return sobj.position:distance_to( db.actor:position() ) <= sd
+    return sobj.position:distance_to( alife():actor().position ) <= sd
   end
 end
 
@@ -79,41 +77,45 @@ function load_can_switch_offline( sobj )
 end
 
 
-local cache_switch_offline = {}
 function se_can_switch_offline( sobj )
-  if not cache_switch_offline[ sobj.id ] then
-    cache_switch_offline[ sobj.id ] = {}
+  local t = sobj.dsh_switch_distances__se_can_switch_offline
+  if not t then
+    t = {}
+    sobj.dsh_switch_distances__se_can_switch_offline = t
     local level_can_switch_offline = load_can_switch_offline( sobj )
-    local can
-    if IsStalker( sobj ) then
-      can = level_can_switch_offline[ "human" ]
+    local can = level_can_switch_offline[ sobj:name() ]
+    if can == nil and IsStalker( sobj ) then
+      can = level_can_switch_offline[ sobj:profile_name() ]
     end
     if can == nil then
-      can = level_can_switch_offline[ sobj:name() ]
-      if can == nil and IsStalker( sobj ) then
-        can = level_can_switch_offline[ sobj:profile_name() ]
-      end
-      if can == nil then
-        local strn_name = get_smart_terrain_name( sobj )
-        if strn_name then
-          can = level_can_switch_offline[ strn_name ]
-        end
+      local strn_name = get_smart_terrain_name( sobj )
+      if strn_name then
+        can = level_can_switch_offline[ strn_name ]
       end
     end
-    if can ~= nil then
-      cache_switch_offline[ sobj.id ].can = can
+    if can == nil then
+      if IsMonster( sobj ) then
+        can = level_can_switch_offline.monster
+      elseif IsStalker( sobj ) then
+        can = level_can_switch_offline.human
+      end
     end
+    if can ~= nil then t.can = can end
   end
-  return cache_switch_offline[ sobj.id ].can
+  if t.can == false then return false end
+  local sd = get_switch_distance( sobj )
+  if sd and sd > alife():switch_distance() then
+    if sobj.online then sd = sd + 20 end
+    return sobj.position:distance_to( alife():actor().position ) > sd
+  end
 end
 
 
 function get_smart_terrain_name( sobj )
-  local strn_id
-  if sobj.smart_terrain_id then
-    strn_id = sobj:smart_terrain_id()
-  else
-    strn_id = 65535
+  local strn_id       = sobj:smart_terrain_id()
+  local free_logic_id = dsh.is_free_logic_mob( sobj )
+  if free_logic_id then
+    strn_id = free_logic_id
   end
   if strn_id ~= 65535 then
     local strn = alife():object( strn_id )
