@@ -10,7 +10,7 @@ local exclude_flames = {
 
 -- объекты с этими визуалами замечены в воспарении и их нужно
 -- возвращать на место
-local koster_palki = {
+local known_visuals = {
   [ "objects\\koster_negorit"      ] = true,
   [ "objects\\koster_palki"        ] = true,
   [ "objects\\koster_palki_nastil" ] = true,
@@ -35,6 +35,7 @@ auto_attach = true
 local flames, flames_no_light = {}, {}
 local lights, lights_no_flame = {}, {}
 local looking_into_flame = false
+local nearest_campfire
 local prev_actor_pos
 local start_stand_time   = time_global()
 
@@ -48,10 +49,9 @@ function on_actor_update()
   prev_actor_pos     = db.actor:position()
   looking_into_flame = false
   if db.actor.psy_health < 1 and stand_time() > 3000 then
-    local npos = device().cam_pos
-    local pos  = get_nearest_flame_pos( npos, 3 )
+    local pos = get_nearest_flame_pos( 3 )
     if pos then
-      local diff  = vector():sub( pos, npos ):normalize()
+      local diff  = vector():sub( pos, device().cam_pos ):normalize()
       local vd    = device().cam_dir
       local cp    = vector():crossproduct( vd, diff )
       local dp    = vd:dotproduct( diff )
@@ -64,13 +64,10 @@ function on_actor_update()
 end
 
 
-function get_nearest_flame_pos( npos, dist )
-  for _, campfire in pairs( flames ) do
-    local pos = campfire.object:position()
-    local d   = pos:distance_to( npos )
-    if d <= dist then
-      if campfire.flame_enabled then return pos end
-    end
+function get_nearest_flame_pos( dist )
+  if nearest_campfire and nearest_campfire.enabled then
+    local pos = nearest_campfire.object:position()
+    if pos:distance_to( db.actor:position() ) < dist then return pos end
   end
 end
 
@@ -190,7 +187,7 @@ states = {
     next = function( self, has_users, now, prev )
       if has_users then
         return states.firing
-      elseif prev + SCAN_TIME < now then
+      elseif prev + 5000 < now then
         return states.flame_off
       else
         return states.down
@@ -299,7 +296,7 @@ function campfire_binder:update( delta )
   if not self.scan_time then
     self.scan_time = time
     self.state.action( self )
-    self.time = time
+    self.time      = time
   elseif self.scan_time < time then
     local users = false
     for npc_id, is_npc in pairs( db.creature ) do
@@ -320,6 +317,29 @@ function campfire_binder:update( delta )
     end
     self.scan_time = time + SCAN_TIME
   end
+  if ( not self.check_actor ) or self.check_actor < time_global() then
+    local delay, dist = self:get_actor_check_delay()
+    if nearest_campfire then
+      local obj = nearest_campfire.object
+      if obj:id() ~= self.object:id() then
+        if dist < obj:position():distance_to( db.actor ) then
+          nearest_campfire = self
+        end
+      end
+    else
+      nearest_campfire = self
+    end
+    self.check_actor = time_global() + delay
+  end
+end
+
+
+function campfire_binder:get_actor_check_delay( dist )
+  local dist  = self.object:position():distance_to( db.actor )
+  local delay = ( dist < 25 and 500 )
+    or ( dist < 100 and 1000 )
+    or math.random( 5000, 6000 )
+  return delay, dist
 end
 
 
@@ -433,11 +453,12 @@ end
 
 
 function campfire_binder:start_idle()
-  self.idle_t = dsh.wait_condition(
-    function() return false end,
-    function() end,
+  local sm = ogse_signals.get_mgr()
+  self.idle_t = dsh.exec_periodic(
     function()
-      ogse_signals.get_mgr():reschedule( SCAN_TIME )
+      if ogse_sleep_mgr.is_sleep_active() then return end
+      local delay, dist = self:get_actor_check_delay()
+      sm:reschedule( delay )
       self:update()
     end
   )
@@ -463,7 +484,7 @@ end
 
 
 function on_bind_physic_object( obj )
-  if koster_palki[ obj:get_visual_name() ] then
+  if known_visuals[ obj:get_visual_name() ] then
     obj:bind_object( koster_palki_binder( obj ) )
     return true
   end
