@@ -1,6 +1,183 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
----------------------- Инициализация расширений движка ------------------------
-RvP()
+
+--=============================================================================
+log1( "--LUA version: [" .. ( jit.version or _VERSION ) .. "]" )
+--====================================[LuaFileSystem]==========================
+if jit.version_num < 20000 then
+  require( "jit.opt" ).start( 2 )
+  log1( "--Enabled LuaJIT optimization!" )
+end
+--=============================================================================
+if jit.version_num >= 20000 then
+  FFI = require( "ffi" ) --Делать только здесь и только один раз!
+end
+--=============================================================================
+--===================[string.lower и string.upper с поддержкой русских букв]===
+-- KRodin: Из-за setlocale могут возникать проблемы. В ОГСЕ, вроде бы, таких
+-- проблем нету.
+-- Для старых версий LuaJIT достаточно установить правильную локаль.
+os.setlocale( "", "ctype" )
+-- В новых версиях установки локали недостаточно
+if jit.version_num >= 20000 then
+  FFI.cdef[[
+    int tolower( int code );
+    int toupper( int code );
+  ]]
+  string.lower = function( s )
+    return s:gsub(
+      ".", function( x )
+        return string.char( FFI.C.tolower( x:byte() ) )
+      end
+    )
+  end
+  string.upper = function( s )
+    return s:gsub(
+      ".", function( x )
+        return string.char( FFI.C.toupper( x:byte() ) )
+      end
+    )
+  end
+end
+--=============================================================================
+math.randomseed( os.time() )
+
+-- lfs.dll должен быть в папке bin. Утащил из Prosectors Project.
+xpcall( function() require( "lfs" ) end, log1 )
+--=======================================[LuaXML]==============================
+--_luaxml.lua должен быть в папке scripts.
+xpcall(
+  function()
+    dofile( getFS():update_path( "$game_scripts$", "_luaxml.lua" ) )
+  end,
+  log1
+)
+--=================================[Функции из xrLuaFix]=======================
+-- Cрезать первое "слово"
+string.trim_w = function( s ) return s:gsub( "%s-(%S+)%s+", "", 1 ) end
+-- Срезать пробелы слева
+string.trim_l = function( s ) return s:gsub( "^%s+", "" ) end
+-- Срезать пробелы справа
+string.trim_r = function( s ) return s:gsub( "%s*$", "" ) end
+-- Срезать пробелы слева и справа
+string.trim   = function( s ) return s:match( "^%s*(.*%S)" ) or "" end
+--=============================================================================
+-- Взято из аддона Naxac'a
+local to_ptrn = {
+  [ " " ] = "%s",
+  [ "." ] = "%.",
+  [ "%" ] = "%%",
+  [ "*" ] = "%*",
+  [ "-" ] = "%-",
+}
+string.explode = function( div, str, clear )
+-- div   -- разделитель
+-- str   -- строка
+-- clear -- обрезать ли пробелы по краям строк (false/true)
+  local ret = {}
+  for s in str:gmatch( "([^" .. ( to_ptrn[ div ] or div ) .. "]+)" ) do
+   table.insert( ret, ( clear and s:trim() or s ) )
+  end
+  return ret
+end
+--=============================================================================
+-- Форматирование текста по ширине
+-- http://www.amk-team.ru/forum/topic/13216-sborochnyy-ceh/?do=findComment&comment=959286
+string.width = function( str, width, return_table, indent, paragrapf )
+  indent    = indent    or 0
+  paragrapf = paragrapf or 0
+  width     = ( width or 80 ) - indent
+    
+  local i    = string.rep( " ", indent )
+  local t    = {}
+  local line = string.rep( " ", paragrapf )
+    
+  for exp, word in str:gmatch( "(%s-(%S+))" ) do
+    if line == "" and table.getn( t ) ~= 0 then
+      exp = word
+    end
+
+    local l_len = #line
+    local len   = l_len + #exp
+        
+    if len > width then
+      table.getn( t, line )       
+      line = word
+    else
+      line = line .. exp
+      if l_len == width then
+        table.getn( t, line )       
+        line = ""
+      end
+    end
+  end
+
+  table.getn( t, line )       
+
+  if return_table then
+    return t
+  else
+    return i .. table.concat( t, "\n" .. i )
+  end
+end
+--=============================================================================
+-- поверхностное (простое) клонирование таблицы: 
+-- создаётся копия таблицы и копии всех элементов без их клонирования,
+-- т.е. для ссылочных типов обе таблицы будут содержать ссылки на одни и те же данные
+-- метатаблицы не копируются
+function table.clone_simple( tbl )
+  local res = {}
+  for k, v in pairs( tbl ) do
+    res[ k ] = v
+  end
+  return res
+end
+--=============================================================================
+function table.copy( tbl ) -- Возвращает копию таблицы.
+  local mt  = getmetatable( tbl )
+  local res = {}
+  for k, v in pairs( tbl ) do
+    if type( k ) == "table" then
+      k = table.copy( k )
+    end
+    if type( v ) == "table" then
+      v = table.copy( v )
+    end
+    res[ k ] = v
+  end
+  setmetatable( res, mt )
+  return res
+end
+-------------------------------------------------------------------------------
+-- Возвращает кол-во элементов в таблице. Для массивов надо использовать
+-- оператор #.
+table.size = function( t )
+  local size = 0
+  for _ in pairs( t ) do size = size + 1 end
+  return size
+end
+-- Возвращает случайный элемент массива. Для обычных таблиц такое делать нет
+-- никакого смысла. В движке было сделано как-то странно.
+table.random = function( t )
+  return t[ math.random( table.getn( t ) ) ]
+end
+-- Возвращает массив с ключами таблицы
+table.keys = function( t )
+  local arr = {}
+  for k, _ in pairs( t ) do
+    table.insert( arr, k )
+  end
+  return arr
+end
+-- Возвращает массив с значениями таблицы
+table.values = function( t )
+  local arr = {}
+  for _, v in pairs( t ) do
+    table.insert( arr, v )
+  end
+  return arr
+end
+--=============================================================================
+
 
 excluded_restrictors = {
 		["agr_factory_skirmish_defence"] = true,
@@ -26,82 +203,6 @@ excluded_restrictors = {
 		["rad_tramplin_sniper_restrictor"] = true,
 		["bar_arena_restrictor"] = true
 	}
-
-pairs_old = pairs
-pairs = function(t)
-     if not t or type(t)~="table" then
-          log1("!! error, try to call 'pairs' with " .. tostring(t) .. " param")
-          log1(debug.traceback())
-          return
-     end
-     return pairs_old(t)
-end
-
-
-if type(SetLog) == "function" and os and os.clock() < 30 then
-	local name = getFS():update_path("$logs$", "_ogse.log")
-	SetLog(name)
-	log1("--SetLogCallback to file " .. name)
-end
---
-local dir 		= "$fs_root$"
-local ext_path 	= "bin\\extensions"
-local path  	= getFS():update_path(dir, ext_path)
-
-package.cpath = package.cpath..";"..path.."\\?.dll"
-
-local function IsDll(fname)
-	return fname:sub(-4) == ".dll"
-end
-
-if type(init_external_libs) == "function" then
-	init_external_libs()
-end
-
---лучше наверное оставить в главном модуле lfs и грузить им.
-if not lfs then
-	fail("check lfs namespace")
-end
-for file in lfs.dir(path) do
-	log1("file: "..file)
-	if file ~= "." and file ~= ".." then
-		if IsDll(file) then
-			local mod = file:sub(1, -5)
-			log1("--try to load " .. file)
-			log1("fname: "..mod)
-			local rez, msg = pcall(require, mod)
-			if (not(not rez)) then
-				log1("~~    loaded")
-			else
-				log1("!!    error, msg : " .. tostring(msg))
-			end
-		end
-	end
-end
-
-if os and os.clock() < 30 then
-	log1("~~        _G : os.clock() = " .. tostring(os.clock()) .. "    math.randomseed()")
-	math.randomseed(os.time())
-end
-
-local additional_libraries = {
-	--["luaXml"] = true
-}
-prefetch("luaxml")
-
-for k,v in pairs(additional_libraries) do
-	if v then
-			log1("--try to load " .. k)
-			local rez, msg = pcall(require, k)
-			if (not(not rez)) then
-				log1("~~    loaded")
-			else
-				log1("!!    error, msg : " .. tostring(msg))
-			end
-	end
-end
-
-set_static_rescale_factor(device().height / device().width / 0.75)
 
 -- жуткая затычка для проблемы с большими целыми числами при сложении в Lua
 -- родное сложение начинает округлять и терять часть суммы, а функция sum_args
@@ -720,43 +821,11 @@ end
 ----------------------------------------------------------------------
 
 function printf(fmt,...)
---[[ Раскомментить это для включения расширенного лога
-	local con = get_console() 
-	con:execute(string.gsub(string.format(fmt,...), " ", "_")) 
-	con:execute("flush") 
---]]
-
---[[
-  local arg={...}
-  if arg==nil or arg[0]==nil then
-    mylog(fmt)
-  else
-    mylog(string.format(fmt,...))
-  end
---]]
 end
 
 local bufferedmessages={}
 
 function mylog(msg)
---[[
-  if msg==nil then
-    return 
-  end
-  if db and db.actor then
-    if bufferedmessages then
-      for k,v in ipairs(bufferedmessages) do
-        db.actor:give_game_news(v, "ui\\ui_iconsTotal", Frect():set(0,0,200,200), 0, 15000)
-      end
-      bufferedmessages=nil
-    end
-  db.actor:give_game_news(msg, "ui\\ui_iconsTotal", Frect():set(0,0,200,200), 0, 15000)
-  else
-    if bufferedmessages then
-      table.insert(bufferedmessages,msg)
-    end
-  end
-]]
   if get_console() then
     get_console():execute("load "..tostring(msg))
     get_console():execute("flush")
@@ -764,9 +833,6 @@ function mylog(msg)
 end
 
 function dbglog(fmt,...)
-  local msg = string.format(fmt, ...)
-  local msg_no_ws = string.gsub(msg, "%s", "_")
-  get_console():execute("dbg:" .. msg_no_ws)
 end
 
 
@@ -836,7 +902,7 @@ function split_string(str,split_pos)
 end
 
 ----------------------------------------------------------------------
-if nil == time_global then
+if not time_global then
   time_global = function () return device():time_global() end
 end
 
@@ -1495,49 +1561,45 @@ function r_num(spawn_ini, section, line, default)
 	end
 end
 
---/ парсит строку вида "ааа, ббб, ввв ..." в таблицу { "ааа", "ббб", "ввв", ... }
+-- Отличается от split_comma_separated_list тем, что кроме запятых обрабатывает
+-- ещё и пробелы.
 function parse_names( s )
-	local t = {}
-	for name in s:gmatch("[^,%s]+" ) do
-		table.insert( t, name )
-	end
-    return t
+  return string.explode( ",", s, true )
 end
 
 
+-- Конвертирует строку вида "actor, 0, actor_dolg, 1, actor_freedom, 2, ..."
+-- В таблицу вида { ["actor"] = "0", ["actor_dolg"] = "1", ["actor_freedom"] = "2", ... }
 function parse_key_value( s )
-    local t = {}
-  if s == nil then
-    return nil
+  if s == nil then return nil end -- бывает и такое
+  local t  = {}
+  local t0 = parse_names( s )
+  for i = 1, table.getn( t0 ), 2 do
+    local key, nam = t0[ i ], t0[ i + 1 ]
+    ASSERT(
+      nam,
+      "parse_key_value: stopped at %s: [%s] - [%s]",
+      i, key or "nil", nam or "nil"
+    )
+    t[ key ] = nam
   end
-    local key, nam = nil, nil
-    for name in string.gfind( s, "([%w_\\]+)%p*" ) do
-    if key == nil then
-      key = name
-    else
-      t[key] = name
-      key = nil
-    end
-    end
-    return t
+  return t
 end
 
 
---/ парсит строку вида "n1, n2, n3..." в таблицу { n1, n2, n3, ... } где n1, n2, n3... - дробные числа
+-- Парсит строку вида "n1, n2, n3..." в таблицу { n1, n2, n3, ... } где n1, n2,
+-- n3... - числа
 function parse_nums( s )
-    local t = {}
-    for i,entry in ipairs(parse_names( s )) do
-		local v = tonumber( entry )
-		if not v then
-			--log1("xxxxxxxxxxxxxxxxxxxxxxxxxx")
-			--log3("parse_nums: '%s', stopped at %d:'%s'", tostring(s), i, tostring(entry))
-			--ASSERT(v, "parse_nums: '%s', stopped at %d:'%s'", tostring(s), i, tostring(entry))
-			abort("aaaaaaaaaaaaaaa")
-		end
-		table.insert(t,  v)
-    end
-    return t
+  local t = {}
+  for i, entry in ipairs( parse_names( s ) ) do
+    local v = tonumber( entry )
+    ASSERT( v, "parse_nums: [%s], stopped at [%s]: [%s]", s, i, entry )
+    table.insert( t,  v )
+  end
+  return t
 end
+
+
 function r_2nums( spawn_ini, section, line, def1, def2 )
 	--log3("r_2nums: %s, %s", section, line)
 	if spawn_ini:line_exist( section, line ) then
@@ -1574,12 +1636,6 @@ function get_clsid( obj )
 end
 
 
-function isWeapon (object, class_id)
-	if object and (string.find(object:name(), "wpn_binoc") or string.find(object:name(), "bolt")) then
-	return false end
-	local id = class_id or get_clsid(object)
-	return IAmAWeapon[id] == true
-end
 function isWeaponGrenade( object, class_id )
   local id = class_id or get_clsid( object )
   return IAmAGrenade[ id ] == true
@@ -2042,23 +2098,53 @@ function get_actor_id()
   return level.actor():id()
 end
 -------------------------------------------------------------------------------------------
-function IsMonster (object, class_id)
-    local id = class_id or get_clsid (object)
-    return IAmAMonster[ id ] or false
+local monster_classes = {}
+local anomaly_classes = {}
+local stalker_classes = {}
+local weapon_classes  = {}
+local outfit_classes  = {}
+
+function IsMonster(object, class_id)
+  local id = class_id or get_clsid( object )
+  return id and monster_classes[ id ]
 end
+
+function IsActor( object, class_id )
+  local id = class_id or get_clsid( object )
+  return id == clsid.actor
+end
+
+function IsStalker( object, class_id )
+  local id = class_id or get_clsid( object )
+  return id and stalker_classes[ id ]
+end
+
+function IsAnomaly( object, class_id )
+  local id = class_id or get_clsid( object )
+  return id and anomaly_classes[ id ]
+end
+
+function isWeapon( object, class_id )
+  local id = class_id or get_clsid( object )
+  return id and weapon_classes[ id ]
+end
+
+function isOutfit( object, class_id )
+  local id = class_id or get_clsid( object )
+  return id and outfit_classes[ id ]
+end
+
+function isLc( object, class_id )
+  local id = class_id or get_clsid( object )
+  return id == clsid.level_changer
+end
+
+function isKnife( object, class_id )
+  local id = class_id or get_clsid( object )
+  return id == clsid.wpn_knife or id == clsid.wpn_knife_s
+end
+
 -------------------------------------------------------------------------------------------
-function IsActor (object, class_id)
-		local id = class_id or get_clsid(object)
-		if id then
-			return id == clsid.actor
-		end
-		return false
-end
--------------------------------------------------------------------------------------------
-function IsStalker (object, class_id)
-    local id = class_id or get_clsid (object)
-    return IAmAStalker[ id ] or false
-end
 IAmAStalker = {}
 function IAmAStalkerInit()
     IAmAStalker = {
@@ -2137,14 +2223,6 @@ function level_object_by_sid( sid )
 end
 
 -------------------------------------------------------------------------------------------
-function isKnife(object, class_id)
-		local id = class_id or get_clsid(object)
-		if id == clsid.wpn_knife or id == clsid.wpn_knife_s then
-			return true
-		end
-		return false
-end
--------------------------------------------------------------------------------------------
 function isRegisteredLevel(game_vertex_id)
 	local level_id = game_graph():vertex(game_vertex_id):level_id()
 	return (level_id > 0 and level_id < 24) -- при добавлении новых локаций увеличить счетчик
@@ -2180,57 +2258,12 @@ function level_object_by_sid( sid )
 	return nil
 end
 
-local crash_counter = 0
-local crash_text = game.translate_string("msg_crash_text")
-
 -- Крешнуть игру (после вывода сообщения об ошибке в лог)
-function abort(fmt, ...)
-	log1("info-"..fmt)
-	local message = string.format(fmt, ...)
---[=[
-	for i = 0,9 do
-		log1(msg_crash[i])
-	end
-	ogse_debug.dump_actor_codes()
---]=]
-	log1(debug.traceback())
---	log1("ПОСЛЕДНЕЕ СООБЩЕНИЕ СИСТЕМЫ OFFLINE_ALIFE: "..amk_offline_alife.last_debug_message)
-	log1("ОПИСАНИЕ ОШИБКИ: "..message)
-	get_console():execute("flush")
-
---[=[
-	local hud = get_hud()
-	local critical = hud:GetCustomStatic("btr_critical")
-	if not critical then
-		hud:AddCustomStatic("btr_critical", true)
-		critical = hud:GetCustomStatic("btr_critical"):wnd()
-		critical:SetText(crash_text)
-	end	
---]=]
-	
-	if crash_counter == 0 then
-		crash_counter = crash_counter + 1	
-		log3("ABORT: fail(message)")
-		fail(message)
-	elseif crash_counter == 1 then
-		crash_counter = crash_counter + 1
-		log3("ABORT: 1/crash")	
-		local crash
-		local ooops = 1/crash
-	elseif crash_counter == 2 then
-		crash_counter = crash_counter + 1
-		log3("ABORT: string.format")	
-		string.format("%s")		
-	elseif crash_counter == 3 then
-		crash_counter = crash_counter + 1
-		log3("ABORT: log3")	
-		log3("%s")		
-	else
-	
-		crash_counter = crash_counter + 1
-		log3("get_console():execute quit")
-		get_console():execute("quit")
-	end
+function abort( fmt, ... )
+  log1( debug.traceback() )
+  log3( fmt, ... )
+  cmd( "flush" )
+  fail( tostring( fmt ) )
 end
 
 
@@ -2340,6 +2373,112 @@ end
 
 
 function start_game_callback()
+	monster_classes = {
+		[clsid.bloodsucker] 			= true,
+		[clsid.boar] 					= true,
+		[clsid.dog_red] 				= true,
+		[clsid.dog_black] 				= true,
+		[clsid.flesh] 					= true,
+		[clsid.burer] 					= true,
+		[clsid.cat] 					= true,
+		[clsid.chimera] 				= true,
+		[clsid.controller] 				= true,
+		[clsid.fracture] 				= true,
+		[clsid.poltergeist] 			= true,
+		[clsid.zombie] 					= true,
+		[clsid.snork] 					= true,
+		[clsid.tushkano] 				= true,
+		[clsid.psy_dog] 				= true,
+		[clsid.psy_dog_phantom] 		= true,	
+		[clsid.pseudo_gigant] 			= true,	
+		[clsid.bloodsucker_s] 			= true,
+		[clsid.boar_s] 					= true,
+		[clsid.dog_s] 					= true,
+		[clsid.flesh_s] 				= true,
+		[clsid.pseudodog_s] 			= true,
+		[clsid.burer_s] 				= true,
+		[clsid.cat_s] 					= true,
+		[clsid.chimera_s] 				= true,
+		[clsid.controller_s] 			= true,
+		[clsid.fracture_s] 				= true,
+		[clsid.poltergeist_s] 			= true,
+		[clsid.gigant_s] 				= true,
+		[clsid.zombie_s] 				= true,
+		[clsid.snork_s] 				= true,
+		[clsid.tushkano_s] 				= true,
+		[clsid.psy_dog_s] 				= true,
+		[clsid.psy_dog_phantom_s] 		= true
+		}
+	anomaly_classes = {
+		[clsid.zone_acid_fog] = true,
+		[clsid.zone_bfuzz] = true,
+		[clsid.zone_bfuzz_s] = true,
+		[clsid.zone_dead] = true,
+		[clsid.zone_galant_s] = true,
+		[clsid.zone_galantine] = true,
+		[clsid.zone_mbald_s] = true,
+		[clsid.zone_mincer] = true,
+		[clsid.zone_mincer_s] = true,
+		[clsid.zone_mosquito_bald] = true,
+		[clsid.ameba_zone] = true,
+		[clsid.zone_rusty_hair] = true,
+		[clsid.torrid_zone] = true,
+		[clsid.zone_radioactive] = true
+		}
+	stalker_classes = {
+		[clsid.actor] 					= true,
+		[clsid.script_stalker] 			= true
+		}	
+	weapon_classes = {
+		[clsid.wpn_ak74] 				= true,
+		[clsid.wpn_ak74_s] 				= true,
+		[clsid.wpn_binocular] 			= true,
+		[clsid.wpn_binocular_s] 		= true,
+		[clsid.wpn_bm16] 				= true,
+		[clsid.wpn_bm16_s] 				= true,
+		[clsid.wpn_fn2000] 				= true,
+		[clsid.wpn_fort]				= true,
+		[clsid.wpn_grenade_f1] 			= true,
+		[clsid.wpn_grenade_fake] 		= true,
+		[clsid.wpn_grenade_launcher] 	= true,
+		[clsid.wpn_grenade_rgd5] 		= true,
+		[clsid.wpn_grenade_rpg7]		= true,
+		[clsid.wpn_groza] 				= true,
+		[clsid.wpn_groza_s] 			= true,
+		[clsid.wpn_hpsa] 				= true,
+		[clsid.wpn_hpsa_s] 				= true,
+		[clsid.wpn_knife] 				= true,
+		[clsid.wpn_knife_s] 			= true,
+		[clsid.wpn_lr300] 				= true,
+		[clsid.wpn_lr300_s] 			= true,
+		[clsid.wpn_mounted] 			= true,
+		[clsid.wpn_pm] 					= true,
+		[clsid.wpn_pm_s] 				= true,
+		[clsid.wpn_rg6] 				= true,
+		[clsid.wpn_rg6_s] 				= true,
+		[clsid.wpn_rpg7] 				= true,
+		[clsid.wpn_rpg7_s] 				= true,
+		[clsid.wpn_shotgun] 			= true,
+		[clsid.wpn_shotgun_s] 			= true,
+		[clsid.wpn_stat_mgun] 			= true,
+		[clsid.wpn_svd] 				= true,
+		[clsid.wpn_svd_s] 				= true,
+		[clsid.wpn_svu] 				= true,
+		[clsid.wpn_svu_s] 				= true,
+		[clsid.wpn_usp45] 				= true,
+		[clsid.wpn_usp45_s] 			= true,
+		[clsid.wpn_val] 				= true,
+		[clsid.wpn_val_s] 				= true,
+		[clsid.wpn_vintorez] 			= true,
+		[clsid.wpn_vintorez_s] 			= true
+	}
+	outfit_classes = {
+		[clsid.equ_exo] 				= true,
+		[clsid.equ_military]			= true,
+		[clsid.equ_scientific] 			= true,
+		[clsid.equ_stalker] 			= true,
+		[clsid.equ_stalker_s] 			= true	
+	}
   dsh_cfg.on_game_start()
   task_manager.clear_task_manager()
   treasure_manager.clear_treasure_manager()
@@ -2362,10 +2501,9 @@ function ammo_section( section )
 end
 
 
-function ASSERT( cond, msg, ... )
+function ASSERT( cond, ... )
   if not cond then
-    log1( debug.traceback() )
-    abort( msg, ... )
+    abort( ... )
   end
 end
 
@@ -2487,14 +2625,13 @@ function get_class( section )
 end
 
 
--- делит строку в виде "aaa,bbb,ccc" на строки "aaa", "bbb", "ccc" и возвращает их в виде массива
-function split_comma_separated_list(s)
-	local res = {}
-	for v in string.gmatch(s, "[^,]+") do
-		table.insert(res, v)
-	end
-	return res
+-- делит строку в виде "aaa,bbb,ccc" на строки "aaa", "bbb", "ccc" и возвращает
+-- их в виде массива
+function split_comma_separated_list( s )
+  return string.explode( ",", s )
 end
+
+
 -- читает время, сохранённое в виде строки со значениями, разделёнными запятой, и конвертирует в значение класса CTime
 function unpack_time_from_string(str_time)
 	local time_values = {}
@@ -2637,40 +2774,91 @@ function level_name_by_gvid( gvid )
 end
 
 
-function clear_log()
-	get_console():execute("clear_log")	
+--***********************************[Функции для вывода в лог]****************
+-------------------------------------------------------------------------------
+local tostring_all_tbl = {
+	["table"] =		function(table, ind) --Распечатка таблиц
+						local res = "{" --Начало
+						local end_res = ind and "\n"..ind.."}" or "\n}" --Конец
+						local def_ind = "  " --Отступ от начала строки
+						ind = ind and ind..def_ind or def_ind --Для каждой "таблицы внутри таблицы" отступ увеличивается в 2 раза
+						for k, v in pairs(table) do
+							res = res.."\n"..ind.."["..tostring_all(k, ind).."] = "..tostring_all(v, ind)..","
+						end
+						return res..end_res
+					end,
+	["string"] =	function(v) return "'"..v.."'" end, --Строки берём в кавычки. Это нужно, чтобы можно было отличить строку "123" от числа 123, "nil" от nil и тд...
+	["number"] =	function(v) return tostring(v) end,
+	["boolean"] =	function(v) return tostring(v) end,
+	["nil"] =		function(v) return tostring(v) end,
+	["function"] =	function() return "[[FUNCTION]]" end, --Function, Userdata и Thread распечатать нельзя, просто заменим на строки
+	["userdata"] =	function() return "[[USERDATA]]" end,
+	["thread"] =	function() return "[[THREAD]]" end,
+}
+--Конвертирование чего угодно в строку. Использовать только для вывода в лог!
+function tostring_all(obj, ind) --ind - служебный аргумент для распечатки "таблиц в таблицах".
+	return tostring_all_tbl[type(obj)](obj, ind)
 end
-function flush_log()
-	get_console():execute("flush")
+
+--Функциональная обёртка для log1.
+--Делает дополнительную работу по конвертации параметров, которые не воспринимаются родной функцией string.format.
+--Параметры можно передавать ЛЮБОГО ТИПА! В строке формата они должны стоять как %s (потому, что будут сконвертированы в строки).
+function log3(fmt, ...)
+	local args = {...}
+	for i=1, #args do
+		args[i] = tostring_all(args[i])
+	end
+	local res, msg = pcall(string.format, fmt, unpack(args))
+	--
+	--if res then msg = msg.."\nlog3 called from: "..debug.traceback() end
+	--
+	if not res then --Если произошла ошибка
+		msg = "!!log3 failed: "..msg.."\n"..debug.traceback()
+	end
+	log1(msg)
 end
--- просто удобная обёртка для log1
-function log2(fmt,...)
-	ASSERT(fmt, "log2: has no format string")
+-----------------------------------------------------------------------------------------
+-- Помогает определить, из за чего в некоторых случаях перезагружается _G
+log1("--_G loaded from: "..debug.traceback())
+-----------------------------------------------------------------------------------------
+local logs_cach = {}
+--Функция создаёт новый лог-файл и выводит текст в него.
+--fname - название лог-файла, например "Anomaly_Evader". Он будет создан в папке logs, к названию добавится дата и время создания.
+--fmt, ... - строка формата с параметрами как и в функции log3
+function log4(fname, fmt, ...)
+	local f = logs_cach[fname]
+	if not f then
+		local dt = os.date("*t")
+		local fpath = getFS():update_path("$logs$", string.format("%s_%02d.%02d.%02d_%02d.%02d.%02d.log",fname,dt.day,dt.month,dt.year,dt.hour,dt.min,dt.sec))
+		f = io.open(fpath, "w")
+		logs_cach[fname] = f
+	end
+	local args = {...}
+	for i=1, #args do
+		args[i] = tostring_all(args[i])
+	end
+	local res, msg = pcall(string.format, fmt, unpack(args))
+	if not res then
+		msg = "!!log4 failed: "..msg.."\n"..debug.traceback()
+	end
+	f:write(msg..'\n')
+	f:flush()
+end
+-----------------------------------------------------------------------------------------
+
+-----------------------------------------------------------------------------------------
+function log2(fmt, ...) --Простая обёртка для log1.
 	log1(fmt:format(...))
 end
--- делает дополнительную работу по конвертации некоторых параметров, которые не воспринимаются родной функцией string.format
--- невоспринимаемые параметры (nil, boolean, userdata) должны в строке формата стоять как %s (потому, что будут заменены на строки)
--- работает медленней, чем log2
-function log3(fmt,...)
-	ASSERT(fmt, "log3: has no format string")
-	local args = {...}
-	for i=1,#args do -- Цикл ipairs здесь не работает, поскольку останавливается на первом _значении_ nil, что исключает возможность иметь nil-аргументы
-		local arg = args[i]
-		local typ = type(arg)
-		if typ == "boolean" then
-			args[i] = tostring(arg)
-		elseif typ == "userdata" then
-			args[i] = "userdata"
-		elseif typ == "table" then
-			args[i] = "table"
-		elseif typ == "nil" then
-			args[i] = "nil"
-		end
-	end
-	local res,msg = pcall(log2, fmt, unpack(args))
-	if not res then
-		log1("log3 failed:\n"..msg)
-	end
+-----------------------------------------------------------------------------------------
+function clear_log() --Очистить лог
+	cmd("clear_log")	
+end
+-----------------------------------------------------------------------------------------
+--*****************************************************************************************************
+
+function flush_log()
+	get_console():execute("flush")
 end
 
 function get_item_weight_by_section(section)
@@ -2779,7 +2967,7 @@ function get_disp_crouch_factor() return db.actor:get_actor_float(1500) end
 function get_disp_crouch_no_accel_factor()  return db.actor:get_actor_float(1504) end
 -- получение некоторых целых и логических значений
 -- режим прицеливания
-function zoom_mode() return bit_and(db.actor:get_actor_int(nil, 1480), 1) end -- возвращает 0/1
+function zoom_mode() return db.actor:zoom_mode() end -- возвращает true/false
 
 -- установка некоторых значений
 -- параметры бега
@@ -2870,17 +3058,6 @@ end
 function get_anomaly_invisibility(npc)
 	local fl = npc:get_actor_relation_flags()
 	return fl:test(anomaly_invisibility_flag)
-end
--- поверхностное (простое) клонирование таблицы: 
---  создаётся копия таблицы и копии всех элементов без их клонирования,
---  т.е. для ссылочных типов обе таблицы будут содержать ссылки на одни и те же данные
---  метатаблицы не копируются
-function table.clone_simple(tbl)
-	local res = {}
-	for k,v in pairs(tbl) do
-		res[k] = v
-	end
-	return res
 end
 
 function get_day_time_sec(t)
@@ -3042,6 +3219,8 @@ callback_ex = {
 
 	["pda_contact"]                  = 180,
 }
+
+
 inventory_item_offsets = {
 	["health_influence"]    = 220,
 	["power_influence"]     = 224,
@@ -3062,15 +3241,12 @@ inventory_item_offsets = {
 -- то эту функцию либо использовать нельзя, либо надо таким же образом восстанавливать свойства предмета
 -- в событии использования (стандартный колбек callback.use, который в сущности является колбеком на 
 -- "послеиспользование", когда эффекты предмета уже применены)
-function zero_all_item_effects(item)
-	ASSERT(item:is_eatable_item(), "")
-	for param, offset in pairs(inventory_item_offsets) do
-		-- параметр влияния алкоголя годится только для объекта-бутылки
-		if param ~= "alcohol_influence" or item:is_bottle_item() then
-			item:set_inventory_item_float(nil, 0.0, offset)
-		end
-	end
+function zero_all_item_effects( item )
+  ASSERT( item:is_eatable_item(), "" )
+  item:zero_effects()
 end
+
+
 -- набор констант для использования в колбеках на использование и предиспользование инвентарных предметов
 -- константы сигналят, что надо делать с предметом после его обработки: 
 --     удалить, создать его дубликат, не делать ничего
