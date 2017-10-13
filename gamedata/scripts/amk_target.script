@@ -1,0 +1,146 @@
+
+local cparm={
+  tgt_color=0, -- подсветка цели: 0-все одноцветные, 1-по отношению
+  tgt_sign=0, -- значок цели: 0-все одинаковые
+  bal_comp=0, -- баллистический вычислитель: 0 -нет, 1-есть
+  tgt_lock=4, -- количество сопровождаемых целей
+  tgt_view=4, -- количество отображаемых целей
+  tgt_range=300, -- дистанция обраружения
+  snd_new_target=[[detectors\contact_9]] -- звук при обнаружении новой цели
+}
+
+-- Текущее состояние детектора
+local targets={} -- отображаемые цели и соответствующие hud объекты
+
+local scantime=0
+-- Обновляет прицельные метки
+function update()
+  if amk.is_debug then
+    create_restore_hud_items()
+    -- сейчас массив targets инициализирован
+    if scantime<time_global() then
+      scantime=time_global()+1000
+      scan_targets() -- пересканировать всю живность и возможно обновить targets
+    end
+    track_targets() -- переместить метки целей и, возможно, выбрать другую цель
+  end
+end
+
+local distupdtime=0
+
+function threat_comp(i1,i2) -- возвращает true если i1 опаснее i2
+  return i1.threat>i2.threat
+end
+
+local updatedist=false
+
+function scan_targets()
+  local best_tgts={}
+  for i=1,cparm.tgt_lock,1 do
+    table.insert(best_tgts,{threat=-1000000})
+  end
+  local cpos=device().cam_pos
+  local cdir=device().cam_dir  
+  for id,obj in pairs(db.creatures) do
+    local stalker=IAmAStalker[obj:clsid()]
+    local monster=IAmAMonster[obj:clsid()]
+    if (stalker or monster) and obj:alive() then
+      -- радиус-вектор цели
+      local r=obj:position():sub(cpos)
+      local dp=r:dotproduct(cdir)
+      if r:magnitude()<cparm.tgt_range and id~=db.actor:id() then
+        local threat=1
+        if stalker then
+          local rel=obj:relation(db.actor)
+          if rel==game_object.enemy then 
+--            threat=3
+          elseif rel==game_object.friend then 
+--            threat=-1
+          end
+        else
+          threat=1
+        end
+        local it={threat=threat/r:magnitude(),obj=obj,dist=r:magnitude(),id=id}
+        if threat_comp(it,best_tgts[cparm.tgt_lock]) then
+          table.insert(best_tgts,it)
+          table.sort(best_tgts,threat_comp)
+          table.remove(best_tgts)
+        end
+      end
+    end
+  end
+  for i=1,cparm.tgt_view,1 do
+    targets[i].obj=best_tgts[i].obj
+    targets[i].dist=best_tgts[i].dist
+    targets[i].id=best_tgts[i].id
+  end
+  updatedist=true
+end
+
+function track_targets()
+  local cpos=device().cam_pos
+  local cdir=device().cam_dir
+  for i,tgt in pairs(targets) do
+    local best_obj=tgt.obj
+    local best_r=best_obj and best_obj:bone_position("bip01_head"):sub(cpos)
+    local best_dp=best_obj and cdir:dotproduct(best_r)
+    if best_obj==nil or best_dp<=0 then
+      -- TODO: убирать метку
+      tgt.wnd:SetWndPos(-100,-100)
+    else
+      -- Рассчитываем экранные координаты
+      best_r.y=best_r.y+0.25
+      local fov2=device().fov/180*math.pi/2
+      local fovmul=math.tan(fov2)/device().aspect_ratio
+      local cr,ct=device().cam_right,device().cam_top
+      -- проецируем на экранную плоскость
+      local x=cr:dotproduct(best_r)
+      local y=ct:dotproduct(best_r)
+      -- масштабируем по расстоянию и преобразуем в экранные координаты
+      x=512-32+512/fovmul*x/best_dp
+      y=768/2-32-512/fovmul*y/best_dp
+      -- перемещаем метку
+      tgt.wnd:SetWndPos(x,y)
+      if updatedist then
+--        local dist=string.format("%.1f",tgt.dist)
+        local dist=tostring(db.storage[tgt.obj:id()] and db.storage[tgt.obj:id()].active_section)
+        dist=string.format([[dist:%.1f group:%s\n%s]],tgt.dist,tostring(tgt.obj:group()),dist)
+        tgt.wnd:SetTextST(dist)
+      end
+    end
+  end
+  updatedist=false
+end
+
+function create_restore_hud_items()
+  for i=1,cparm.tgt_view,1 do
+    local huditem
+    while true do
+      huditem=get_hud():GetCustomStatic("hud_target"..i)
+      if huditem then
+        break
+      else
+        get_hud():AddCustomStatic("hud_target"..i)
+      end
+    end
+    if targets[i]==nil then targets[i]={} end
+    targets[i].wnd=huditem:wnd()
+  end
+end
+
+function play_contact_sound()
+  if cparm.snd_new_target then
+    local snd_obj=xr_sound.get_safe_sound_object(cparm.snd_new_target)
+    snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
+  end
+end
+
+-- Коллбэк на уход в оффлайн или уничтожение
+function net_destroy(npc)
+  for i=1,cparm.tgt_view,1 do
+    if targets[i] and targets[i].id==npc:id() then
+      targets[i].obj=nil
+      targets[i].id=0
+    end
+  end
+end

@@ -1,0 +1,95 @@
+-- Биндер взрывающихся бочек
+
+local barrels = 0
+
+function init(obj)
+    local new_binder = barrel_binder(obj)
+    obj:bind_object(new_binder)
+end
+
+---------------------------------------------------------------------------------------------
+-- Порядок загрузки:
+-- reload
+-- reinit
+-- load
+-- net_spawn
+---------------------------------------------------------------------------------------------
+class "barrel_binder" (object_binder)
+function barrel_binder:__init(obj) super(obj)
+end 
+
+function barrel_binder:reload(section)
+    object_binder.reload(self, section)
+end
+
+function barrel_binder:reinit()
+    object_binder.reinit(self)
+end
+
+function barrel_binder:net_save_relevant()
+    return true
+end
+
+function barrel_binder:save(packet)
+    object_binder.save(self, packet)
+end
+
+function barrel_binder:load(reader)
+	object_binder.load(self, reader)
+end
+
+function barrel_binder:net_spawn(data)
+    if not object_binder.net_spawn(self, data) then
+        return false
+    end
+	barrels = barrels+1
+    return true
+end
+
+function barrel_binder:net_destroy()
+    barrels = barrels-1
+		
+	-- озвучка разбивания бутылок
+    if self.object:section() == "quest_vodka" and self.object:position():distance_to(db.actor:position()) < system_ini():r_float("alife","switch_distance") and not has_alife_info("teleport_started") then
+			xr_sound.get_safe_sound_object([[material\bottle\collide\bottle_break_1]]):play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
+	end
+
+    if barrels <= 5 then
+        -- больше нету бочек, смотрим, куда они делись
+        if self.object:position():distance_to(db.actor:position()) < system_ini():r_float("alife","switch_distance") and not has_alife_info("teleport_started") and not has_alife_info("sklad_barrel_have")
+		then
+            -- бочки исчезли в онлайне и не телепорт = взрыв - выдаем поршень завершения
+			db.actor:give_info_portion("sklad_barrel_have")
+			db.actor:give_info_portion("borov_bottle_have")
+            --[[ Здесь можно проверять несколько заданий. вот пример:
+            if has_alife_info("sklad_barrel_start") and not has_alife_info("sklad_barrel_have") then
+                db.actor:give_info_portion("sklad_barrel_have")
+            elseif has_alife_info("sklad_barrel_start2") and not has_alife_info("sklad_barrel_have2") then
+                db.actor:give_info_portion("sklad_barrel_have2")
+            end
+            -- и т.д. так что можно сделать подрыв нескольких складов))
+			
+			также, можно использовать не только бочки а ЛЮБЫЕ взрывающиеся секции. для этого нужно создать уникальную секцию (чтобы не пересекались с уже имеющимися в игре) и прописать ей этот биндер. И все - будут учитываться и канистры и газовые баллоны и все остальное))
+
+			-- ограничения по этому варианту:
+			1. можно выполнять в онлайне только одно задание одновременно, т.к. бочки считаются кучей.
+			2. в оффлайне может быть одновременно несколько заданий, но тогда для каждого нужна своя уникальная секция, и в проверку выполнения нужно добавить проверку по секции if self.object:section() == "секция1" then выдаем поршень1, если секция2, то поршень2 и т.д.
+			3. если задания выдаются последовательно, одно за другим, то тогда уникальных секций не нужно, достаточно проверки по поршням.
+			4. места взрыва должны быть дальше расстояния алайфа (160м) от любого перехода между территориями. иначе задание также зачтется при переходе. Ручные телепорты я отсек проверкой поршня teleport_started, а левелченджеры так не отсечь - им нужно придумывать биндер, в котором проверять заход - это лишнее. На Локах из ЗП места полно вдали от переходов. 
+			]]
+		else
+			-- гг ушел в оффлайн или телепортировался - ничего не делаем
+		end
+	end
+
+    object_binder.net_destroy(self)
+end
+
+function barrel_binder:update(delta)
+	if has_alife_info("sklad_barrel_have") then -- рвануло - убираем невзорвавшиеся бочки
+		alife():release(alife():object(self.object:id()))
+	end
+	
+    object_binder.update(self, delta)
+end
+

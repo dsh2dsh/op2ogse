@@ -1,0 +1,335 @@
+--Vergas часы-таймер
+
+local lost_id = -1			-- объяснить трудно, но вещь нужная. Идентификатор, короче
+local timer_set = nil		-- стринг показаний часов (ЧЧ:ММ)
+local timer_flag  	   		--флаг запуска таймера 
+local sek_flag				--флаг запуска секундомера
+local counter_sek = 0  		--имитация секунд
+local timer_mm        		-- установленное время таймера в минутах
+local time_t_old	  		-- минуты, при предыдущем обращении к функции show_time_timer()
+local sch					-- просто счетчик
+local snd_obj = {}
+snd_obj = xr_sound.get_safe_sound_object([[soundtrack\escape_theme]])
+
+
+
+function lose_item(obj)
+--Вызывается из bind_stalker.script (функция actor_binder:on_item_drop (obj))
+--отслеживает исчезновение часов из инвентаря
+
+	--потеря часов (ушли из инвентаря)
+	if obj:section() == "timer" then
+		lost_id = obj:id() --признак, что объект именно часы
+	else
+		lost_id = -1       --признак того что объект не часы
+	end
+end
+
+function used_item()
+-- Вызывается из xr_detector.script (функция actor_detector:update())
+-- отслеживает использование часов
+
+	if (lost_id > 0) and (alife():object(lost_id)==nil) then 
+		used_timer()	-- открываю часы в инвентаре
+	end
+	
+end
+
+function used_timer() 
+--использование часов (просмотр, установка таймера или секундомера)
+
+	lost_id = -1
+	local spwn=ui_cheat_timer.cheat(get_hud())
+	level.start_stop_menu(spwn,true)		--запускаю ui_cheat_timer.script
+end
+
+--function spawn_item_in_inv(spawn_item,npc) 
+-- восстановление часов в инвенторе
+
+--	if npc==nil then 
+--		npc=db.actor 
+--	end
+--	return alife():create(spawn_item, 
+--	npc:position(),
+--	npc:level_vertex_id(),  
+--	npc:game_vertex_id(),
+--	npc:id())
+--end
+
+function show_time_timer()
+-- вызывается из sak.script
+--формирует отображение времени, таймера и секундомера на худе
+	
+	--вывожу время
+	local hud = get_hud()
+    local cs = hud:GetCustomStatic("hud_show_time")
+	local cs_t = hud:GetCustomStatic("hud_show_timer")
+	
+	-- Условие: а есть ли у ГГ часы?
+	if db.actor:object("timer") == nil then
+		if cs ~= nil then		
+			hud:RemoveCustomStatic("hud_show_time")  -- убираю статис времени
+		end
+		if cs_t ~= nil then		
+			hud:RemoveCustomStatic("hud_show_timer")  -- убираю статис таймера
+		end
+		return	    	-- часов у ГГ нет,время, таймер, не показываю не показываю
+	end
+	
+	if cs ~= nil then		-- убираю статис времени
+		hud:RemoveCustomStatic("hud_show_time")
+	end
+	
+    hud:AddCustomStatic("hud_show_time", true)
+    cs = hud:GetCustomStatic("hud_show_time")
+	local time_h = level.get_time_hours()
+	local time_m = level.get_time_minutes()
+	local str = timer_str(time_m, time_h)
+	
+	cs:wnd():SetText("Время  "..str)
+	
+	-- вывожу таймер или секундомер
+	local cs_t = hud:GetCustomStatic("hud_show_timer")
+			
+	--Условие: а запущены ли таймёр али секундомёр?
+	if (timer_flag == 0) and (sek_flag == 0) then --таймёр не запущен и секундёр тож
+		if cs_t ~= nil then		
+			hud:RemoveCustomStatic("hud_show_timer")  -- убираю статис таймера
+		end
+	end
+	-- кручу таймер
+	if timer_flag == 1 then   --таймер запущен
+		if cs_t ~= nil then		-- убираю статис таймера
+			hud:RemoveCustomStatic("hud_show_timer")
+		end
+	
+		hud:AddCustomStatic("hud_show_timer", true)
+		cs_t = hud:GetCustomStatic("hud_show_timer")
+	
+		--обработчик показаний таймера
+		-- Отлавливаю изменение минут в показаниях времени
+		if time_m ~= time_t_old then
+			timer_mm = timer_mm - 1
+			time_t_old = time_m
+			--=============================================
+			--здесь должен быть звуковой сигнал
+			s_play([[device\pda\timer]])
+			--=============================================
+		end
+		
+		if timer_mm > 0 then     							--таймер работает
+			local timer_set = h_m_from_mm() 
+			cs_t:wnd():SetText("До выброса "..timer_set)
+		else
+			cs_t:wnd():SetText("УГРОЗА ВЫБРОСА!")			-- таймер закончил работу
+			if timer_mm == 0 then
+				sch = level.get_time_minutes()
+				timer_mm = timer_mm - 1
+			--=============================================
+			--здесь должен быть звуковой сигнал
+			s_play([[device\pda\pda_sos]])
+			--=============================================
+			else
+				if sch ~= level.get_time_minutes() then
+					sch = level.get_time_minutes()
+					--=============================================
+					--здесь должен быть звуковой сигнал
+					s_play([[device\pda\pda_sos]])
+					--=============================================
+				end
+				
+			end
+		end
+	end
+	
+	-- кручу секундомёр
+	if sek_flag == 1 then   --секундомер запущен
+		if cs_t ~= nil then		-- убираю статис таймера
+			hud:RemoveCustomStatic("hud_show_timer")
+		end
+	
+		hud:AddCustomStatic("hud_show_timer", true)
+		cs_t = hud:GetCustomStatic("hud_show_timer")
+
+		--обработчик показаний секундомера
+		-- Отлавливаю изменение минут в показаниях времени
+		if time_m ~= time_t_old then
+			timer_mm = timer_mm+1
+			time_t_old = time_m
+			--=============================================
+			--здесь должен быть звуковой сигнал
+			s_play([[device\pda\timer]])
+			--=============================================
+		end
+		local timer_set = h_m_from_mm() 
+		cs_t:wnd():SetText("Секундомер "..timer_set)
+	end
+end
+
+function h_m_from_mm()
+-- расчитывает кол-во часов и минут из общего кол-ва минут
+	local m_t
+	local h_t
+	if timer_mm <0 then
+		m_t = 0
+		h_t = 0
+	else
+		m_t = timer_mm%60  						-- минуты 
+		h_t = (timer_mm -m_t)/60 					-- часы 
+	end
+	local t_set = timer_str(m_t, h_t)
+	return t_set
+end
+function timer_flag_in_cheat(kl)
+	if kl == 1 then
+		return timer_flag
+	elseif kl == 2 then
+		return sek_flag
+	end
+end
+
+function timer_str(m, h) --возвращает стринг времени в формате (ЧЧ:ММ)
+	local hm_str
+	
+	if h < 10 then
+		if m < 10 then
+			hm_str = string.format("0%d:0%d", h, m)
+		else
+			hm_str = string.format("0%d:%d", h, m)
+		end
+	else
+		if m < 10 then
+			hm_str = string.format("%d:0%d", h, m)
+		else
+			hm_str = string.format("%d:%d", h, m)
+		end
+	end
+	return hm_str
+end
+
+function imitation_sek(h,m) 
+-- имитирует секунды в показаниях времени на худе часов
+	local sek = 0
+	if h > m then
+		sek = h - m
+	else
+		sek = m - h
+	end
+	counter_sek = counter_sek + 1
+	if counter_sek >59 then
+		counter_sek = 0
+	end
+	sek = sek + counter_sek
+	if sek > 59 then
+		sek = sek - 60
+	end
+	if sek > 9 then
+		str_sek = ":"..sek
+	else
+		str_sek = ":0"..sek
+	end
+	return str_sek
+end 
+
+function set_timer_flag(r,fl,h,m)
+--управляет флагом запуска таймера и секундомера
+
+	if r == 1 then		--режим таймера
+		if fl == 1 then --таймер запущен
+			timer_flag = 1
+			timer_mm = h*60+m
+			time_t_old = level.get_time_minutes()
+		else
+			timer_flag = 0
+			timer_mm  = 0		   --таймер сброшен
+			time_t_old = 0
+		end
+	end
+	
+	if r == 2 then  --режим секундомера
+		if fl == 1 then
+			sek_flag = 1
+			timer_mm = 0
+			timer_old = level.get_time_minutes()
+		else
+			sek_flag = 0		--секундомер сброшен
+			timer_mm = 0
+			timer_old = 0
+		end
+	end
+end
+
+function s_play(path)
+	local snd_obj = xr_sound.get_safe_sound_object(path)
+	snd_obj:play_at_pos(db.actor, vector ():set (0, 0, 0), 0, sound_object.s2d)
+end
+
+
+function save(packet)
+--Вызывается из bind_stalker.script (функция actor_binder:save_old(packet))
+--выполняет запись переменных
+	if timer_flag ~= nil then
+		save_variable("timer_flag_var", timer_flag)
+	end
+	
+	if sek_flag ~= nil then
+		save_variable("sek_flag_var", sek_flag)
+	end
+	if timer_mm ~= nil and time_t_old ~= nil then	
+		save_variable("timer_mm_var", timer_mm)
+		save_variable("time_t_old_var", time_t_old)
+	end
+
+end
+
+function load(reader)
+--Вызывается из amk.script (функция on_game_load())
+--выполняет загрузку записанных переменных
+	
+	local s_flag = load_variable("sek_flag_var", nil)
+	local t_flag = load_variable("timer_flag_var", nil)
+	local t_mm = load_variable("timer_mm_var", nil)
+	local t_old = load_variable("time_t_old_var", nil)
+
+	if t_flag ~= nil then
+		timer_flag = t_flag												   
+		del_variable("timer_flag_var")
+	end
+	
+	if s_flag ~= nil then
+		sek_flag = s_flag												   
+		del_variable("sek_flag_var")
+	end
+	if t_mm ~= nil and t_old ~= nil then 
+		timer_mm = t_mm
+		del_variable("timer_mm_var")
+		time_t_old = t_old
+		del_variable("time_t_old_var")
+	end
+end
+
+function save_variable(variable_name, value)
+--записываю переменную
+
+  if value==nil then
+    del_variable(variable_name)
+  else
+    xr_logic.pstor_store(db.actor, variable_name, value)
+  end
+end
+
+function load_variable(variable_name, value_if_not_found)
+--загружаю переменную
+  return xr_logic.pstor_retrieve(db.actor, variable_name, value_if_not_found)
+end
+
+function del_variable(variable_name)
+--удаляю переменную
+
+  if db.storage[db.actor:id()].pstor[variable_name] then
+    db.storage[db.actor:id()].pstor[variable_name] = nil
+  end
+end
+
+
+

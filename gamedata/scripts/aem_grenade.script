@@ -1,0 +1,399 @@
+
+
+---------------------------------------------------------------------------------------------------
+-- вывод отладочной информации
+---------------------------------------------------------------------------------------------------
+function printf(fmt, ...)
+	local msg = string.format(fmt, ...)
+	local msg_no_ws = string.gsub(msg, "%s", "_")
+	get_console():execute("dbg:" .. msg_no_ws)
+end
+
+--------
+-- 
+--------
+function unload1()
+	--printf("unload1")
+	local sim = alife()
+	local sys = system_ini()
+	local actor = db.actor
+	local lvid = actor:level_vertex_id()
+	local gvid = actor:game_vertex_id()
+	local pos = actor:position()
+	pos.x = pos.x + 10
+	pos.y = pos.y + 10
+	pos.z = pos.z + 10
+	local slot2_id = 0
+	local cnt = 0
+	local ids = {}
+
+	local obj = actor:item_in_slot(2)
+	if obj then
+		slot2_id = obj:id()
+	end
+
+	local i, cid, section, launcher
+	local n = actor:object_count()
+	for i=0, n-1 do
+		obj = actor:object(i)
+		cid = obj:clsid()
+		if cid == clsid.wpn_ak74_s or cid == clsid.wpn_groza_s then
+			--printf(" name='%s'", obj:name())
+			section = obj:section()
+			launcher = sys:r_u32(section, "grenade_launcher_status")
+			if launcher ~= 0 then
+				--printf(" launcher - ~0")
+				local id = obj:id()
+				local se_obj = sim:object(id)
+				local state = get_state(se_obj)
+				local update = get_update(se_obj)
+				if (launcher == 1) or (launcher == 2 and bit_and(state.addon_flags, 2) == 2) then
+					--printf(" launcher - ok")
+					if update.grenade_mode == 1 then
+						--printf(" grenade_mode")
+						if state.ammo_elapsed > 0 then
+							--printf(" unload_magazine")
+							obj:unload_magazine()
+						end
+					else
+						sim:release(se_obj, true)
+						se_obj = sim:create(section, pos, lvid, gvid)
+						set_state(se_obj, state)
+						cnt = cnt + 1
+						if id == slot2_id and cnt > 1 then
+							--printf(" slot2 weapon (%d)", se_obj.id)
+							ids[cnt] = ids[1]
+							ids[1] = se_obj.id
+						else
+							--printf(" inventory weapon (%d)", se_obj.id)
+							ids[cnt] = se_obj.id
+						end
+					end
+				end
+			end
+		end
+	end
+
+	if cnt == 0 then
+		return nil
+	end
+
+	return ids
+end
+
+--------
+-- 
+--------
+function unload2(ids)
+	--printf("unload2")
+	local i, id, obj
+	for i, id in pairs(ids) do
+		--printf(" %d) id=%d", i, id)
+		obj = level.object_by_id(id)
+		if not obj then
+			--printf(" nil obj")
+			return false
+		end
+	end
+	for i, id in pairs(ids) do
+		obj = level.object_by_id(id)
+		obj:transfer_item(obj, db.actor)
+	end
+	return true
+end
+
+function get_state(se_obj)
+	local packet = net_packet()
+	se_obj:STATE_Write(packet)
+	local st = {}
+	st.game_vertex_id	= packet:r_u16()
+	st.distance		= packet:r_float()
+	st.direct_control	= packet:r_s32()
+	st.level_vertex_id	= packet:r_s32()
+	st.object_flags		= packet:r_s32()
+	st.custom_data		= packet:r_stringZ()
+	st.story_id		= packet:r_s32()
+	st.spawn_story_id	= packet:r_s32()
+	st.visual_name		= packet:r_stringZ()
+	st.visual_flags		= packet:r_u8()
+	st.condition		= packet:r_float()
+	st.ammo_current		= packet:r_u16()
+	st.ammo_elapsed		= packet:r_u16()
+	st.weapon_state		= packet:r_u8()
+	st.addon_flags		= packet:r_u8()
+	st.ammo_type		= packet:r_u8()
+	return st
+end
+
+function set_state(se_obj, st)
+	local packet = net_packet()
+	packet:w_u16(st.game_vertex_id)
+	packet:w_float(st.distance)
+	packet:w_s32(st.direct_control)
+	packet:w_s32(st.level_vertex_id)
+	packet:w_s32(st.object_flags)
+	packet:w_stringZ(st.custom_data)
+	packet:w_s32(st.story_id)
+	packet:w_s32(st.spawn_story_id)
+	packet:w_stringZ(st.visual_name)
+	packet:w_u8(st.visual_flags)
+	packet:w_float(st.condition)
+	packet:w_u16(st.ammo_current)
+	packet:w_u16(st.ammo_elapsed)
+	packet:w_u8(st.weapon_state)
+	packet:w_u8(st.addon_flags)
+	packet:w_u8(st.ammo_type)
+	se_obj:STATE_Read(packet, packet:w_tell())
+end
+
+function get_update(se_obj)
+	local packet = net_packet()
+	se_obj:UPDATE_Write(packet)
+	local st = {}
+	st.grenade_mode		= packet:r_u8()
+	st.num_items		= packet:r_u8()		-- !!! warning !!!
+	st.condition		= packet:r_u8()
+	st.weapon_flags		= packet:r_u8()
+	st.ammo_elapsed		= packet:r_u16()
+	st.addon_flags		= packet:r_u8()
+	st.ammo_type		= packet:r_u8()
+	st.weapon_state		= packet:r_u8()
+	st.weapon_zoom		= packet:r_u8()
+	st.current_fire_mode	= packet:r_u8()
+	return st
+end
+
+function set_update(se_obj, st)
+	local packet = net_packet()
+	packet:w_u8(st.grenade_mode)
+	packet:w_u8(st.num_items)
+	packet:w_u8(st.condition)
+	packet:w_u8(st.weapon_flags)
+	packet:w_u16(st.ammo_elapsed)
+	packet:w_u8(st.addon_flags)
+	packet:w_u8(st.ammo_type)
+	packet:w_u8(st.weapon_state)
+	packet:w_u8(st.weapon_zoom)
+	packet:w_u8(st.current_fire_mode)
+	se_obj:UPDATE_Read(packet)
+end
+
+function set_all(se_obj, state, update)
+	local packet = net_packet()
+
+	packet:w_u16(state.game_vertex_id)
+	packet:w_float(state.distance)
+	packet:w_s32(state.direct_control)
+	packet:w_s32(state.level_vertex_id)
+	packet:w_s32(state.object_flags)
+	packet:w_stringZ(state.custom_data)
+	packet:w_s32(state.story_id)
+	packet:w_s32(state.spawn_story_id)
+	packet:w_stringZ(state.visual_name)
+	packet:w_u8(state.visual_flags)
+	packet:w_float(state.condition)
+	packet:w_u16(state.ammo_current)
+	packet:w_u16(state.ammo_elapsed)
+	packet:w_u8(state.weapon_state)
+	packet:w_u8(state.addon_flags)
+	packet:w_u8(state.ammo_type)
+
+	packet:w_u8(update.grenade_mode)
+	packet:w_u8(update.num_items)
+	packet:w_u8(update.condition)
+	packet:w_u8(update.weapon_flags)
+	packet:w_u16(update.ammo_elapsed)
+	packet:w_u8(update.addon_flags)
+	packet:w_u8(update.ammo_type)
+	packet:w_u8(update.weapon_state)
+	packet:w_u8(update.weapon_zoom)
+	packet:w_u8(update.current_fire_mode)
+
+	se_obj:STATE_Read(packet, packet:w_tell())
+end
+
+function printf_state(st)
+	printf(" cse_alife_object")
+	printf("  gvid=%d", st.game_vertex_id)
+	printf("  dist=%f", st.distance)
+	printf("  ctrl=%d", st.direct_control)
+	printf("  lvid=%d", st.level_vertex_id)
+	printf("  flags=%x", st.object_flags)
+	printf("  custom=%s", st.custom_data)
+	printf("  sid=%d", st.story_id)
+	printf("  ssid=%d", st.spawn_story_id)
+	printf(" cse_visual")
+	printf("  visual_name=%s", st.visual_name)
+	printf("  visual_flags=%x", st.visual_flags)
+	printf(" cse_alife_item")
+	printf("  condition=%f", st.condition)
+	printf(" cse_alife_item_weapon")
+	printf("  ammo_current=%x", st.ammo_current)
+	printf("  ammo_elapsed=%x", st.ammo_elapsed)
+	printf("  weapon_state=%x", st.weapon_state)
+	printf("  addon_flags=%x", st.addon_flags)
+	printf("  ammo_type=%x", st.ammo_type)
+	printf("")
+end
+
+function printf_update(st)
+	printf(" cse_alife_item")
+	printf("  num_items=%x", st.num_items)
+	printf(" cse_alife_item_weapon")
+	printf("  condition=%x", st.condition)
+	printf("  weapon_flags=%x", st.weapon_flags)
+	printf("  ammo_elapsed=%x", st.ammo_elapsed)
+	printf("  addon_flags=%x", st.addon_flags)
+	printf("  ammo_type=%x", st.ammo_type)
+	printf("  weapon_state=%x", st.weapon_state)
+	printf("  weapon_zoom=%x", st.weapon_zoom)
+	printf(" cse_alife_item_weapon_magazined")
+	printf("  current_fire_mode=%x", st.current_fire_mode)
+	printf(" cse_alife_item_weapon_magazined_w_gl")
+	printf("  grenade_mode=%x", st.grenade_mode)
+	printf("")
+end
+
+---------
+-- если установить g_id (id оружия) и вызывать функцию scan_dif из апдейта актёра, то
+-- в консоле можно видеть изменения в пакетах при различных действиях с этим оружием
+---------
+
+local g_id = nil
+local g_st1 = nil
+local g_st2 = nil
+
+function scan_run()
+	local obj = db.actor:item_in_slot(2)
+	if not obj then
+		g_id = nil
+		g_st1 = nil
+		g_st2 = nil
+	else
+		g_id = obj:id()
+	end
+end
+
+function scan_dif()
+	if not g_id then
+		return
+	end
+
+	local se_obj = alife():object(g_id)
+	local st1 = get_state(se_obj)
+	local st2 = get_update(se_obj)
+
+	if not g_st1 then
+		printf(" gvid=%d", st1.game_vertex_id)
+		printf(" dist=%f", st1.distance)
+		printf(" ctrl=%d", st1.direct_control)
+		printf(" lvid=%d", st1.level_vertex_id)
+		printf(" flags=%x", st1.object_flags)
+		printf(" custom=%s", st1.custom_data)
+		printf(" sid=%d", st1.story_id)
+		printf(" ssid=%d", st1.spawn_story_id)
+		printf(" visual_name=%s", st1.visual_name)
+		printf(" visual_flags=%x", st1.visual_flags)
+		printf(" condition=%f", st1.condition)
+		printf(" ammo_current=%x", st1.ammo_current)
+		printf(" ammo_elapsed=%x", st1.ammo_elapsed)
+		printf(" weapon_state=%x", st1.weapon_state)
+		printf(" addon_flags=%x", st1.addon_flags)
+		printf(" ammo_type=%x", st1.ammo_type)
+		printf("")
+	else
+		if st1.game_vertex_id ~= g_st1.game_vertex_id then
+			printf(" std:game_vertex_id=%d", st1.game_vertex_id)
+		end
+		if st1.distance ~= g_st1.distance then
+			printf(" std:distance=%f", st1.distance)
+		end
+		if st1.direct_control ~= g_st1.direct_control then
+			printf(" std:direct_control=%d", st1.direct_control)
+		end
+		if st1.level_vertex_id ~= g_st1.level_vertex_id then
+			printf(" std:level_vertex_id=%d", st1.level_vertex_id)
+		end
+		if st1.object_flags ~= g_st1.object_flags then
+			printf(" std:object_flags=%x", st1.object_flags)
+		end
+		if st1.custom_data ~= g_st1.custom_data then
+			printf(" std:custom_data='%s'", st1.custom_data)
+		end
+		if st1.story_id ~= g_st1.story_id then
+			printf(" std:story_id=%d", st1.story_id)
+		end
+		if st1.spawn_story_id ~= g_st1.spawn_story_id then
+			printf("  std:spawn_story_id=%d", st1.spawn_story_id)
+		end
+		if st1.visual_name ~= g_st1.visual_name then
+			printf(" std:visual_name='%s'", st1.visual_name)
+		end
+		if st1.condition ~= g_st1.condition then
+			printf(" std:distance=%f", st1.distance)
+		end
+		if st1.ammo_current ~= g_st1.ammo_current then
+			printf(" std:ammo_current=%x", st1.ammo_current)
+		end
+		if st1.ammo_elapsed ~= g_st1.ammo_elapsed then
+			printf(" std:ammo_elapsed=%x", st1.ammo_elapsed)
+		end
+		if st1.weapon_state ~= g_st1.weapon_state then
+			printf(" std:weapon_state=%x", st1.weapon_state)
+		end
+		if st1.addon_flags ~= g_st1.addon_flags then
+			printf(" std:addon_flags=%x", st1.addon_flags)
+		end
+		if st1.ammo_type ~= g_st1.ammo_type then
+			printf(" std:ammo_type=%x", st1.ammo_type)
+		end
+	end
+
+	if not g_st2 then
+		printf("  num_items=%x", st2.num_items)
+		printf("  condition=%x", st2.condition)
+		printf("  weapon_flags=%x", st2.weapon_flags)
+		printf("  ammo_elapsed=%x", st2.ammo_elapsed)
+		printf("  addon_flags=%x", st2.addon_flags)
+		printf("  ammo_type=%x", st2.ammo_type)
+		printf("  weapon_state=%x", st2.weapon_state)
+		printf("  weapon_zoom=%x", st2.weapon_zoom)
+		printf("  current_fire_mode=%x", st2.current_fire_mode)
+		printf("  grenade_mode=%x", st2.grenade_mode)
+		printf("")
+	else
+		if st2.num_items ~= g_st2.num_items then
+			printf("  upd:num_items=%x", st2.num_items)
+		end
+		if st2.condition ~= g_st2.condition then
+			printf("  upd:condition=%x", st2.condition)
+		end
+		if st2.weapon_flags ~= g_st2.weapon_flags then
+			printf("  upd:weapon_flags=%x", st2.weapon_flags)
+		end
+		if st2.ammo_elapsed ~= g_st2.ammo_elapsed then
+			printf("  upd:ammo_elapsed=%x", st2.ammo_elapsed)
+		end
+		if st2.addon_flags ~= g_st2.addon_flags then
+			printf("  upd:addon_flags=%x", st2.addon_flags)
+		end
+		if st2.ammo_type ~= g_st2.ammo_type then
+			printf("  upd:ammo_type=%x", st2.ammo_type)
+		end
+		if st2.weapon_state ~= g_st2.weapon_state then
+			printf("  upd:weapon_state=%x", st2.weapon_state)
+		end
+		if st2.weapon_zoom ~= g_st2.weapon_zoom then
+			printf("  upd:weapon_zoom=%x", st2.weapon_zoom)
+		end
+		if st2.current_fire_mode ~= g_st2.current_fire_mode then
+			printf("  upd:current_fire_mode=%x", st2.current_fire_mode)
+		end
+		if st2.grenade_mode ~= g_st2.grenade_mode then
+			printf("  upd:grenade_mode=%x", st2.grenade_mode)
+		end
+	end
+
+	g_st1 = st1
+	g_st2 = st2
+end

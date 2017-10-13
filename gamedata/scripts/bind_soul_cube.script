@@ -1,0 +1,463 @@
+local icon = nil
+local souls = 0
+
+function add_soul()
+	if souls < 5 then
+		souls = souls + 1
+	end
+end
+
+function init(obj)
+	local new_binder = soul_cube_binder(obj)
+	obj:bind_object(new_binder)
+end
+
+---------------------------------------------------------------------------------------------
+class "soul_cube_binder" (object_binder)
+function soul_cube_binder:__init(obj) super(obj)
+	self.initialized = false
+	self.loaded = false
+end 
+
+function soul_cube_binder:reload(section)
+	object_binder.reload(self, section)
+	self.ammo_max = system_ini():r_u32(section, "ammo_mag_size")
+	self.impulse_max = system_ini():r_u32(section, "hit_impulse")
+
+	self.slash_time = 0
+	self.souls = 0
+
+	self.sound_idle = sound_object([[weapons\soul_cube\idle]])
+	self.sound_energize = sound_object([[weapons\soul_cube\energize]])
+	self.sound_fly_start = sound_object([[weapons\soul_cube\fly_start]])
+	self.sound_fly_loop = sound_object([[weapons\soul_cube\fly_loop]])
+	self.sound_fly_end = sound_object([[weapons\soul_cube\fly_end]])
+	self.sound_health_up = sound_object([[weapons\soul_cube\health_up]])
+end
+
+function soul_cube_binder:reinit()
+	object_binder.reinit(self)
+end
+
+function soul_cube_binder:net_spawn(data)
+	if not object_binder.net_spawn(self, data) then
+		return false
+	end
+	self.lbutton_pressed = false
+	self.first_update = true
+	self.target = nil
+	self.last_ammo_elapsed = 0
+	self.last_accuracy = 0
+	self.last_in_slot = false
+	return true
+end
+
+function soul_cube_binder:update(delta)
+	object_binder.update(self, delta)
+	-- провер€ем, у актора ли куб
+	if self.object:parent() and self.object:parent():id() == db.actor:id() then
+		self.souls = self.souls + souls -- подзар€жаем куб
+		if self.cube and souls ~= 0 then
+			self:OnRemove()
+			self:OnTake()
+		end
+		if self.souls >= 5 then
+			self.souls = 5
+			if not self.charged then
+				self.sound_energize:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 0.5)
+				self.charged = true
+			end
+		end
+	end
+	souls = 0 -- обнул€ем счетчик убитых
+	
+	local ammo_elapsed = self.object:get_ammo_in_magazine()
+	local accuracy = db.actor:accuracy()
+	--позици€ партиклов и звуков
+
+	if self.first_update then
+		self.first_update = false
+		self.last_ammo_elapsed = ammo_elapsed
+		self.last_accuracy = accuracy
+		return
+	end
+	
+	-- генерируем событи€ вз€ти€ в руки и убирани€
+	local active_item = db.actor:active_item()
+	local qwerty = active_item and (self.object:id() == active_item:id())
+	if qwerty then 
+		if not self.last_in_slot then -- только вз€ли
+			self.last_in_slot = true
+			self:OnTake()
+			self.in_hands = true
+			self.object:set_fastcall( self.sound_particle_fastcall, self )
+		else -- просто держим
+			self:OnHold(delta)
+		end
+	else
+		if self.last_in_slot then -- только убрали
+			self.last_in_slot = false
+			self:OnRemove()
+			self.in_hands = false
+		end
+		return -- больше ничего не делаем
+	end
+
+	-- ќпредел€ем что делаем с левой кнопокой мыши
+	local da = self.last_ammo_elapsed - ammo_elapsed
+	if da > 0 then -- это либо первое нажатие, либо удержание
+		if not self.lbutton_pressed then -- первое нажатие
+			self:OnLButtonDown(delta)
+			self.lbutton_pressed = true
+		else -- удерживание
+			self:OnLButtonHold(delta)
+		end
+	elseif self.lbutton_pressed then -- отпускание
+		self:OnLButtonUp()
+		self.lbutton_pressed = false
+	end
+	self.last_ammo_elapsed = ammo_elapsed
+	
+	if self.attack then
+		self:attack_cycle(delta)
+	end
+	if self.bint_id1 then
+		local bint1 = level.object_by_id(self.bint_id1)
+		if bint1 then
+			db.actor:eat(bint1)
+			self.bint_id1 = nil
+		end
+	end
+	if self.bint_id2 then
+		local bint2 = level.object_by_id(self.bint_id2)
+		if bint2 then
+			db.actor:eat(bint2)
+			self.bint_id2 = nil
+		end
+	end
+end
+
+function soul_cube_binder:net_destroy()
+	self.lbutton_pressed = false
+	self.target = nil
+--	self:HideCrosshair() отключен худ
+	object_binder.net_destroy(self)
+end
+
+function soul_cube_binder:net_save_relevant()
+	return true
+end
+
+function soul_cube_binder:save(packet)
+--	self:OnRemove()
+	object_binder.save(self, packet)
+--	self:OnTake()
+	packet:w_u8(self.souls)
+	if not self.cube_id then
+		self.cube_id = 70000
+	end
+	packet:w_u32(self.cube_id)
+end
+
+function soul_cube_binder:load(reader)
+	self.loaded = true
+	object_binder.load(self, reader)
+	self.souls = reader:r_u8()
+	self.cube_id = reader:r_u32()
+	if self.cube_id ~= 70000 then
+		alife():release(alife():object(self.cube_id),true)
+	end
+	self.cube_id = nil
+	self.charged = self.souls >= 5
+end
+
+-----------------------------------------------------------------------------------
+function soul_cube_binder:sound_particle_fastcall()
+	if self.in_hands or self.attack then
+		if self.cube then
+			if self.sound_idle:playing() then
+				self.sound_idle:set_position(self.cube:position())
+			end
+			if self.sound_fly_loop:playing() then
+				self.sound_fly_loop:set_position(self.cube:position())
+			end
+		end
+		return false
+	else
+		return true
+	end
+end
+
+function soul_cube_binder:seek_target() -- поиск цели
+	local targets = {}
+	local pos = device().cam_pos
+	local dist_search = 50
+	local cone_min = 0.5
+	self.target = nil
+	-- перебираем мутантов
+	for k,v in pairs (db.monster) do
+		local rvec = v:position():sub(device().cam_pos)
+		local r = rvec:magnitude()
+		if r <= dist_search and db.actor:see(v) and v:clsid() ~= clsid.boar_s then -- если цель в зоне поражени€
+			local proj = rvec:dotproduct(device().cam_dir)
+			local cos_a = proj/r
+			if cos_a >= cone_min then -- объект ближе к оси прицеливани€
+				-- сужаем конус поиска и запоминаем цель
+				cone_min = cos_a 
+				self.target = v
+			end
+		end
+	end
+end
+
+function soul_cube_binder:OnLButtonDown(delta) -- атака, если есть энерги€
+	-- провер€ем, есть ли энерги€ на атаку
+	if not self.charged then
+		return -- недостаточно энергии
+	end
+	
+	-- ищем цель
+	self:seek_target()
+	if not self.target then
+		return -- атаковать некого
+	end
+	
+	-- атакуем
+	self:OnRemove()
+	self:OnTake("a")
+	self:attack_cycle(delta)
+	
+end
+
+function soul_cube_binder:OnLButtonHold(delta) -- was R
+end
+
+function soul_cube_binder:OnLButtonUp() -- was R
+end
+
+
+function soul_cube_binder:OnTake(cube_type)
+	if self.cube then return end -- если куб есть, второй не спавним.
+	if not cube_type then
+		if self.souls > 5 then
+			self.souls = 5
+		end
+		cube_type = tostring(self.souls)
+	end
+	self.sound_idle:play_at_pos(db.actor, device().cam_pos:mad(device().cam_dir, 1.5))
+	local cube_section = "soulcube_"..cube_type
+	local cube = alife():create(cube_section,(device().cam_pos:mad(device().cam_dir, 1.5)),db.actor:level_vertex_id(),db.actor:game_vertex_id())
+	self.cube_id = cube.id
+--	self:ShowCrosshair() -- отключен худ
+end
+
+function soul_cube_binder:OnHold(delta)
+	local ammo = self.object:get_ammo_in_magazine()
+	if ammo < self.ammo_max then ammo = ammo + 1 end
+	self.object:set_ammo_elapsed(ammo)
+	
+	if self.cube_id and not self.cube then
+		local obj = level.object_by_id(self.cube_id)
+		if obj then
+			self.cube = obj
+			self.mass = self.cube:mass()
+			self.steer_force = 100
+			self.cube:set_const_force(vector():set(0,1,0), 19.62*self.mass, 65535*65535)
+			self.ps = self.cube:get_physics_shell()
+			self.front = self.ps:get_element_by_bone_name("front")
+			self.back = self.ps:get_element_by_bone_name("back")
+			self.top = self.ps:get_element_by_bone_name("top")
+			self.bottom = self.ps:get_element_by_bone_name("bottom")
+			self.main_blades_bottom = self.ps:get_joint_by_bone_name("main_blades_bottom")
+			self.main_blades_top = self.ps:get_joint_by_bone_name("main_blades_top")
+			self.aux_blades_r = self.ps:get_joint_by_bone_name("aux_blades_r")
+			self.aux_conter_r = self.ps:get_joint_by_bone_name("aux_conter_r")
+			self.aux_blades_l = self.ps:get_joint_by_bone_name("aux_blades_l")
+			self.aux_conter_l = self.ps:get_joint_by_bone_name("aux_conter_l")
+		end
+	else
+		if not self.attack then
+			self:hold_cycle(delta)
+			if not self.sound_idle:playing() then
+				self.sound_idle:play_at_pos(db.actor,self.cube:position())
+			end
+		end
+	end
+end
+
+function soul_cube_binder:OnRemove()
+	if self.attack then return end -- если атака началась, не прерываем.
+	self.sound_idle:stop()
+	alife():release(alife():object(self.cube_id),true)
+	self.cube_id = nil
+	self.cube = nil
+	self.lbutton_pressed = false
+--	self:HideCrosshair() -- отключен худ
+end
+
+function soul_cube_binder:hold_cycle(delta)
+	self.hang_pos = device().cam_pos:mad(device().cam_dir, 2):mad(device().cam_top, -0.25)
+	local current_velocity = vector()
+	self.ps:get_linear_vel(current_velocity)
+	local rvec = self.hang_pos:sub(self.cube:center()) -- вектор от текущей позиции к точке назначени€
+	local impulse = rvec:mul(0.7*self.mass / (1e-3*delta))
+	local current_impulse = current_velocity:mul(self.mass)
+	local result_impulse = impulse:sub(current_impulse):mul(100)
+	self.ps:apply_force(result_impulse.x, result_impulse.y, result_impulse.z)
+	self:align(device().cam_dir:invert())
+	self:align_v()
+end
+
+function soul_cube_binder:attack_cycle(delta)
+	if not self.attack then
+		self.hang_pos = device().cam_pos:mad(device().cam_dir, 2):mad(device().cam_top, -0.25)
+		self.attack = true
+		self.sound_idle:stop()
+		self.sound_fly_start:play_at_pos(db.actor,self.hang_pos)
+	end
+	if not self.cube then return end
+	if not self.sound_fly_start:playing() and not self.sound_fly_loop:playing() then
+		self.sound_fly_loop:play_at_pos(db.actor,self.cube:position())
+	end
+	local mode = ""
+	local cube_pos = self.cube:position()
+	local pos
+	if self.target and self.target:alive() then
+		self.target_pos = self.target:bone_position("bip01_head")
+		pos = self.target:bone_position("bip01_head")
+		mode = "attack"
+	else
+		self.target_pos = device().cam_pos:mad(device().cam_top, 2)
+		pos = device().cam_pos:mad(device().cam_top, 2)
+		mode = "back"
+	end
+	self:move(self.target_pos,2.5,5,delta)
+	self:align_v()
+	self:rotate_blades()
+	if pos:distance_to(cube_pos) <= 1 then
+		if mode == "attack" then
+			self:slash_target()
+		else
+			self.attack = false
+			self.charged = false
+			self.souls = 0
+			self.sound_fly_loop:stop()
+			self.sound_fly_end:play_at_pos(db.actor,self.cube:position())
+			self:OnRemove()
+			self:OnTake()
+			archievements.acv_count_event("acv_soul", 5, "Ћовец душ")
+		end
+	end
+end
+
+function soul_cube_binder:slash_target()
+	if time_global() >= self.slash_time then
+		local health = self.target.health
+		local health_rate = 0.2
+		if health > health_rate then
+			health = health_rate
+		end
+		self.target.health = -1*health
+		self.sound_health_up:play_at_pos(db.actor, device().cam_pos)
+		db.actor.health = health
+		db.actor.power = health
+		db.actor.psy_health = health
+		db.actor.radiation = -1*health
+		if not self.bint_id1 then
+			local bint1 = alife():create("bleeding_heal",db.actor:position(),db.actor:level_vertex_id(),db.actor:game_vertex_id(),db.actor:id())
+			self.bint_id1 = bint1.id
+		end
+		if not self.bint_id2 then
+			local bint2 = alife():create("bleeding_heal",db.actor:position(),db.actor:level_vertex_id(),db.actor:game_vertex_id(),db.actor:id())
+			self.bint_id2 = bint2.id
+		end
+		self.slash_time = time_global() + self.sound_health_up:length()/2
+	end
+end
+
+function soul_cube_binder:move(target_pos,vmax,vfactor,delta)
+	if target_pos == nil then
+		return
+	end
+	local dir = (vector():sub(target_pos,self.cube:position())):normalize()
+	self:align(dir)
+	
+	local v = math.min(vmax,(self.cube:position():distance_to(target_pos)*vfactor))
+	local pos = vector()
+	pos = self.cube:position():mad(dir, v*delta/1000)
+	local current_velocity = vector()
+	self.ps:get_linear_vel(current_velocity)
+	local rvec = target_pos:sub(self.cube:center()) -- вектор от текущей позиции к точке назначени€
+	local impulse = rvec:mul(0.7*self.mass / (1e-3*delta))
+	local current_impulse = current_velocity:mul(self.mass)
+	local result_impulse = impulse:sub(current_impulse):mul(100)
+	self.ps:apply_force(result_impulse.x, result_impulse.y, result_impulse.z)
+end
+
+function soul_cube_binder:rotate_blades()
+	local rforce,rvel,axis = 10,1880,1
+	self.main_blades_top:set_max_force_and_velocity(rforce, rvel, axis)
+	self.main_blades_bottom:set_max_force_and_velocity(rforce, rvel, axis)
+	self.aux_blades_r:set_max_force_and_velocity(rforce, rvel, axis)
+	self.aux_conter_r:set_max_force_and_velocity(rforce, rvel, axis)
+	self.aux_blades_l:set_max_force_and_velocity(rforce, rvel, axis)
+	self.aux_conter_l:set_max_force_and_velocity(rforce, rvel, axis)
+end
+
+function soul_cube_binder:align_v()
+	local dir2 = vector():set(0,1,0) 
+	local cos_v = dir_up(self.object:direction()):dotproduct(dir2)
+	local force_v = self.steer_force*(1+1*cos_v)
+	local top = vector():set(dir2.x,dir2.y,dir2.z):mul(force_v)
+	local bottom = vector():set(dir2.x,dir2.y,dir2.z):mul(-1*force_v)
+	self.top:apply_force(top.x,top.y,top.z)
+	self.bottom:apply_force(bottom.x,bottom.y,bottom.z)
+end
+
+function soul_cube_binder:align(dir1)
+	local cos_l = self.object:direction():dotproduct(dir1)
+	local force_l = self.steer_force*(20+20*cos_l)
+	local front = vector():set(dir1.x,dir1.y,dir1.z):mul(force_l)
+	local back = vector():set(dir1.x,dir1.y,dir1.z):mul(-1*force_l)
+	self.front:apply_force(front.x,front.y,front.z)
+	self.back:apply_force(back.x,back.y,back.z)
+end
+
+
+function soul_cube_binder:ShowCrosshair()
+	local ar = device().aspect_ratio
+	if not icon then
+		local pos_x
+		local scale_x = 48
+		if ar > 0.75 then
+			pos_x = 975
+		else
+			pos_x = 996
+		end
+		local text = tostring(self.souls).."/5"
+		local scale_y = math.floor(scale_x*0.8/ar)
+		icon = CUIStatic()
+		icon:Init(pos_x-scale_x/2,730-scale_y/2,scale_x,scale_y)
+		icon:InitTexture("wpn\\soul_cube\\soulcube_icon")
+		icon:SetStretchTexture(true)
+		icon:SetTextColor(255, 238, 155, 23)
+		icon:SetFont(GetFontGraffiti32Russian())
+		icon:SetTextX(-40)
+		icon:SetTextY(13)
+		icon:SetText(text)
+		get_hud():AddDialogToRender(icon)
+	end
+end
+
+function soul_cube_binder:HideCrosshair()
+	if icon then
+		get_hud():RemoveDialogToRender(icon)
+		icon = nil
+	end
+end
+
+function dir_up(dir)
+	local dir_xz = vector():set(dir.x,0,dir.z):magnitude() -- проекци€ вектора dir на горизонтальную плоскость
+	local dir_xz1 = vector():set((-1*dir.x) ,0,(-1*dir.z)):set_length(dir.y)
+	return vector():set(dir_xz1.x ,dir_xz,dir_xz1.z):normalize()
+end
