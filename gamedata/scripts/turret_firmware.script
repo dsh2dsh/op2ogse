@@ -1,0 +1,180 @@
+local state_idle			= 0
+local state_firing_enemy	= 1
+local state_killed_enemy	= 2
+local state_lost_enemy		= 3
+
+class "turret_firmware"
+
+function turret_firmware:__init(obj, storage)
+	self.object = obj
+	self.heli = obj:get_helicopter()
+	self.st = storage
+	self.position = self.object:position()
+end
+
+function turret_firmware:reset_scheme(loading)
+	self.st.signals = {}
+	if not loading then
+		self.heli:ClearEnemy()
+		self.enemy = nil
+	end
+	self.force_actor_enemy = xr_logic.pstor_retrieve(self.object, "force_actor_enemy", false)
+	self.state = state_idle
+	self.update_time = -1
+	self.alarm_time = -1
+	self.community = db.storage[self.object:id()].community
+end
+
+function turret_firmware:distance_sqr(obj)
+	return self.position:distance_to_sqr(obj:position())
+end
+
+function turret_firmware:find_enemy()
+	if self.actor_enemy and math.random(100) <= self.st.hunt_actor_prob and
+	   db.actor:alive() and self:distance_sqr(db.actor) < self.st.search_dist_sqr and
+	   self.heli:isVisible(db.actor) then
+		return db.actor
+	end
+
+	local best_enemy
+	local min_distance_sqr = 10000
+	local k,v,npc
+	for k,v in pairs(db.creature) do
+		npc = level.object_by_id(k)
+		if npc ~= nil then
+			distance_sqr = self:distance_sqr(npc)
+			if distance_sqr < self.st.search_dist_sqr and npc:alive() and
+			   distance_sqr < min_distance_sqr and
+			   (v == false or (v == true and utils2.community_relation(self.community, npc) <= -400)) and
+			   self.heli:isVisible(npc) then
+				best_enemy = npc
+				min_distance_sqr = distance_sqr
+			end
+		end
+	end
+	if best_enemy ~= nil then
+		dbglog("turret '%s' found enemy '%s'", self.object:name(), best_enemy:name())
+	end
+	return best_enemy
+end
+
+function turret_firmware:alarm_owner_gulag()
+	if self.alarm_time < time_global() then
+		local gulag = xr_gulag.get_gulag(self.st.owner_gulag)
+		if gulag ~= nil then
+			local obj_id, obj, d
+			for obj_id, obj in pairs(gulag.Object) do
+				obj = level.object_by_id(obj_id)
+				if obj ~= nil then
+					local h = hit()
+					h.power = 0.001
+					h.impulse = 1
+					h.draftsman = db.actor
+					h.type = hit.wound
+					h.direction = utils.vector_copy_by_val(obj:position()):sub(db.actor:position())
+					obj:hit(h)
+				end
+			end
+		end
+		self.alarm_time = time_global() + 5000
+	end
+end
+
+function turret_firmware:set_new_enemy(suggested_enemy)
+	local enemy = suggested_enemy or self:find_enemy()
+	if enemy ~= nil then
+		if enemy:id() == db.actor:id() then
+			self:alarm_owner_gulag()
+		end
+		self.heli:SetEnemy(enemy)
+		self.state = state_firing_enemy
+		self.enemy = enemy
+		return true
+	end
+	return false
+end
+
+function turret_firmware:update(delta)
+	if xr_logic.try_switch_to_another_section(self.object, self.st, db.actor) then
+		return
+	end
+
+	self.actor_enemy = self.force_actor_enemy or
+		utils2.community_relation(self.community, db.actor) <= -400
+
+	if self.actor_enemy and self:distance_sqr(db.actor) < self.st.explode_dist_sqr then
+		self.heli:SetfHealth(0)
+		return
+	end
+
+	local time = time_global()
+	if self.state == state_idle then
+		if self.update_time < time and not self:set_new_enemy() then
+			self.update_time = time + 500
+		end
+	elseif self.state == state_firing_enemy then
+		if not self.enemy:alive() then
+			dbglog("turret '%s' killed enemy '%s'", self.object:name(), self.enemy:name())
+			self.state = state_killed_enemy
+			if self.enemy:id() == db.actor:id() then
+				-- в тушку актёра постреляем подольше
+				self.update_time = time + 10000
+			else
+				self.update_time = time + 2000
+			end
+		elseif not self.heli:isVisible(self.enemy) then
+			dbglog("turret '%s' lost enemy '%s'", self.object:name(), self.enemy:name())
+			self.heli:SetEnemy(self.enemy:position())
+			self.state = state_lost_enemy
+			self.update_time = time + 1000
+		end
+	elseif self.update_time < time then
+		if not self:set_new_enemy() then
+			self.heli:ClearEnemy()
+			self.enemy = nil
+			self.state = state_idle
+		end
+	end
+end
+
+function turret_firmware:hit_callback(obj, amount, local_direction, who, bone_index)
+	if amount == 0 or who == nil or not IAmAStalker[who:clsid()] then
+		return
+	end
+	if who:id() == db.actor:id() then
+        	self.force_actor_enemy = true
+	elseif utils2.community_relation(self.community, who) > -400 then
+		return
+	end
+	if self.state == state_firing_enemy then
+		if self.enemy and IAmAMonster[self.enemy:clsid()] then
+			self:set_new_enemy(who)
+		end
+	else
+		self:set_new_enemy(who)
+	end
+end
+
+function turret_firmware:save()
+	if self.force_actor_enemy == true then
+		xr_logic.pstor_store(self.object, "force_actor_enemy", true)
+	end
+end
+
+function add_to_binder(npc, ini, scheme, section, storage)
+	xr_logic.subscribe_action_for_events(npc, storage, turret_firmware(npc, storage))
+end
+
+function set_scheme(npc, ini, scheme, section)
+	local st = xr_logic.assign_storage_and_bind(npc, ini, scheme, section)
+	st.logic = xr_logic.cfg_get_switch_conditions(ini, section, npc)
+
+	st.owner_gulag = utils.cfg_get_string(ini, section, "owner_gulag", npc, false, "", "")
+	st.search_dist_sqr = math.pow(utils.cfg_get_number(ini, section, "search_dist", npc, false, 100), 2)
+	st.explode_dist_sqr = math.pow(utils.cfg_get_number(ini, section, "explode_dist", npc, false, 5), 2)
+	st.hunt_actor_prob = utils.cfg_get_number(ini, section, "hunt_actor_prob", npc, false, 50)
+
+	-- перенести в turret_binder?
+	st = db.storage[npc:id()]
+	st.community = utils.cfg_get_string(ini, section, "community", npc, false, "", "none")
+end

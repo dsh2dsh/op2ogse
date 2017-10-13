@@ -1,0 +1,241 @@
+
+actions_id = {
+	anomaly_scanner_base = xr_actions_id.narrator_actions + 500
+}
+evaluators_id = {
+	anomaly_scanner_base = xr_evaluators_id.narrator_evaluators + 500
+}
+
+-----------------------------------------------------------------------
+
+local top_lvid, top_gvid
+local top_game_vertex_ids
+
+local function gg_backward_scan(gg, lid, gvid)
+	while true do
+		gvid = gvid - 1
+		if gvid < 0 or gg:vertex(gvid):level_id() ~= lid then
+			return gvid + 1
+		end
+	end
+	abort("gg_backward_scan")
+	return nil
+end
+
+local function fill_top_game_vertex_ids(gg)
+	top_game_vertex_ids = {}
+	local sim = alife()
+	local lid, gvid = -1, 0
+	while gg:valid_vertex_id(gvid) == true do
+		if gg:vertex(gvid):level_id() ~= lid then
+			lid = gg:vertex(gvid):level_id()
+			top_game_vertex_ids[sim:level_name(lid)] = gg_backward_scan(gg, lid, gvid)
+		end
+		gvid = gvid + 10
+	end
+end
+
+function get_top_graph_ids(level_name)
+	if level_name ~= nil then
+		local gg = game_graph()
+		if top_game_vertex_ids == nil then
+			fill_top_game_vertex_ids(gg)
+		end
+		local gvid = top_game_vertex_ids[level_name]
+		return gg:vertex(gvid):level_vertex_id(), gvid
+	end
+	if top_gvid == nil then
+		local gg = game_graph()
+		local gvid = db.actor:game_vertex_id()
+		top_gvid = gg_backward_scan(gg, gg:vertex(gvid):level_id(), gvid)
+		top_lvid = gg:vertex(top_gvid):level_vertex_id()
+	end
+	return top_lvid, top_gvid
+end
+
+-----------------------------------------------------------------------
+
+function r_bool(ini, section, line, default)
+	return se_respawn.r_bool(ini, section, line, default)
+end
+
+function r_str(ini, section, line, default)
+	return se_respawn.r_str(ini, section, line, default)
+end
+
+function r_num(ini, section, line, default)
+	return se_respawn.r_num(ini, section, line, default)
+end
+
+function r_2nums(ini, section, line, default1, default2)
+	if ini:line_exist(section, line) then
+		local s = ini:r_string(section, line)
+		local at, to, num1, num2 = string.find(s, "([%d%.]+)%s*,%s*([%d%.]+)")
+		return (tonumber(num1) or default1), (tonumber(num2) or default2)
+	else
+		return default1, default2
+	end
+end
+
+function parse_sections(s, mult)
+	local result = {}
+	local tokens = parse_names(s)
+	local k, n = 1, table.getn(tokens)
+	while k <= n do
+		local t = {section = tokens[k], prob = 100}
+		k = k + 1
+		if k <= n then
+			local prob = tonumber(tokens[k])
+			if prob ~= nil then
+				t.prob = prob * mult
+				k = k + 1
+			end
+		end
+		table.insert(result, t)
+	end
+	return result
+end
+
+-----------------------------------------------------------------------
+
+local packet_pool = {}
+local packet_pool_used = 0
+
+function packet_pool_get()
+	if packet_pool_used > 5 then
+		abort("too many packets used in the pool")
+	end
+	packet_pool_used = packet_pool_used + 1
+	if table.getn(packet_pool) == 0 then
+		return net_packet()
+	else
+		return table.remove(packet_pool)
+	end
+end
+
+function packet_pool_put(packet)
+	if packet_pool_used == 0 then
+		abort("unknown packet origin")
+	end
+	packet_pool_used = packet_pool_used - 1
+	packet:w_begin(0)
+	packet:r_seek(2)
+	table.insert(packet_pool, packet)
+end
+
+function packet_copy(dst_packet, src_packet, size)
+	while size > 3 do
+		dst_packet:w_s32(src_packet:r_s32())
+		size = size - 4
+	end
+	while size > 0 do
+		dst_packet:w_u8(src_packet:r_u8())
+		size = size - 1
+	end
+end
+
+-----------------------------------------------------------------------
+-- обобщить до deferred_callback?
+
+local deferred_release_queue
+
+local function init_deferred_release_queue()
+	if deferred_release_queue == nil then
+		deferred_release_queue = xr_logic.pstor_get_custom(db.actor, "defer_rel_q", "defer_rel_q")
+	end
+end
+
+function deferred_release(object_id, timeout)
+	init_deferred_release_queue()
+	deferred_release_queue[object_id] = math.floor(time_global() * 0.001 + (timeout or -1))
+	dbglog("object %d scheduled for the deferred release in %d sec", object_id, timeout or -1)
+end
+
+function deferred_release_update()
+	init_deferred_release_queue()
+	local k,v,se_obj
+	local time = math.floor(time_global() * 0.001)
+	for k,v in pairs(deferred_release_queue) do
+		if v <= time then
+			se_obj = alife():object(k)
+			if se_obj ~= nil then
+				dbglog("deferred release of object id=%d done", k)
+				alife():release(se_obj)
+				deferred_release_queue[k] = nil
+			else
+				abort("no object id=%d, though it was scheduled for the deferred release", k)
+			end
+		end
+	end
+end
+
+-----------------------------------------------------------------------
+
+local communities_relations
+local index_for_community
+
+local function load_communities_relations()
+	local index = 1
+	local comm,id,rel
+
+	index_for_community = {}
+	communities_relations = {}
+
+	local ini = system_ini()
+	local communities = ini:r_string("game_relations", "communities")
+	for comm,id in string.gfind(communities, "([%w_]+)%s*,%s*([%d%.%-]+)%,*") do
+		local t = {}
+		local relations = ini:r_string("communities_relations", comm)
+		for rel in string.gfind(relations, "([%d%.%-]+)%,*") do
+			table.insert(t, tonumber(rel))
+		end
+		communities_relations[comm] = t
+		index_for_community[comm] = index
+		index = index + 1
+	end
+end
+
+function community_relation(community, npc)
+	if index_for_community == nil then
+		load_communities_relations()
+	end
+	local relations = communities_relations[community]
+	if relations == nil then
+		return -5000
+	end
+--	dbglog("community_relation(%s,%s): goodwill=%f relation=%f", community, npc:name(),
+--			relation_registry.community_goodwill(community, npc:id()),
+--			relations[index_for_community[npc:character_community()]])
+	return relations[index_for_community[npc:character_community()]] +
+			relation_registry.community_goodwill(community, npc:id())
+end
+
+-----------------------------------------------------------------------
+
+function frandom(min, max)
+	return min + math.random() * (max - min)
+end
+
+-----------------------------------------------------------------------
+
+function show_coordinates()
+	local hud = get_hud()
+	local cs = hud:GetCustomStatic("cs_debug")
+	if cs == nil then
+		hud:AddCustomStatic("cs_debug", true)
+		cs = hud:GetCustomStatic("cs_debug")
+	end
+	local lvid, gvid = db.actor:level_vertex_id(), db.actor:game_vertex_id()
+	local pos, dir = db.actor:position(), db.actor:direction()
+	local pos2 = level.vertex_position(lvid)
+	local d = vector():sub(pos, pos2)
+	local valid = (math.abs(d.x) <= 0.35 and math.abs(d.y) < 1.0 and math.abs(d.z) <= 0.35)
+	local msg = string.format("lvid: %d\\n", lvid) ..
+				string.format("gvid: %d\\n", gvid) ..
+				string.format("pos: %f,%f,%f\\n", pos.x, pos.y, pos.z) ..
+				string.format("dir: %f,%f,%f\\n", dir.x, dir.y, dir.z) ..
+				"valid: " .. tostring(valid)
+	if cs ~= nil then
+		cs:wnd():SetText(msg)
+	end
+end

@@ -1,0 +1,149 @@
+
+function i_am_friend(talker,target)
+  if xr_wounded.is_wounded(target) then
+    -- Не будем приставать с просьбой о помощи к раненным
+    return false
+  end
+  return target:relation(talker)==game_object.friend
+end
+
+-- За основу этой функции взята функция dialogs.actor_have_medkit
+function npc_have_medkit(talker, target)
+  return talker:object("medkit") ~= nil or
+       talker:object("medkit_army") ~= nil or
+       talker:object("medkit_scientic") ~= nil
+end
+function npc_havent_medkit(talker, target)
+  return not npc_have_medkit(talker,target)
+end
+
+-- Так как модель поведения еще не написана, вставим заглушки
+local scheme_status={}
+function scheme_is_active(talker,target) -- talker - ГГ
+  return scheme_status[target:id()]==true -- сравниваем с true, чтобы функция не возвращала nil
+end
+function scheme_is_not_active(talker,target)
+  return not scheme_is_active(talker,target)
+end
+function scheme_is_not_active_npc(talker,target) -- talker - NPC
+  return not scheme_is_active(target,talker)
+end
+function scheme_is_active_npc(talker,target) -- talker - NPC
+  return scheme_is_active(target,talker)
+end
+function activate_scheme(talker,target)
+  scheme_status[talker:id()]=true
+end
+function deactivate_scheme(talker,target)
+  scheme_status[talker:id()]=nil -- присваиваем nil, чтобы освободить память, занятую этим элементом массива
+end
+
+local abuse_count={}
+local abuse_punch_limit={}
+function abuse_limit(talker,target)
+  mylog("alimit")
+  return abuse_count[target:id()] and abuse_count[target:id()]==3
+end
+function abuse_limit2(talker,target)
+  mylog("alimit2")
+  return abuse_count[target:id()] and abuse_count[target:id()]>3
+end
+function no_abuse_limit(talker,target)
+  mylog("noalimit")
+  return abuse_count[target:id()]==nil or abuse_count[target:id()]<3
+end
+function init_punch(talker)
+  if abuse_punch_limit[talker:id()]==nil then
+    abuse_punch_limit[talker:id()]=math.random(6,15)
+  end
+end
+function abuse_punch(talker,target) -- talker - ГГ
+  mylog("punch")
+  init_punch(target)
+  return abuse_count[target:id()] and abuse_count[target:id()]>abuse_punch_limit[target:id()]
+end
+function abuse_no_punch(talker,target)
+  mylog("nopunch")
+  return not abuse_punch(talker,target)
+end
+
+function reset_abuse(talker,target)
+  abuse_count[talker:id()]=nil
+  abuse_punch_limit[talker:id()]=nil
+end
+function inc_abuse(talker,target)
+  abuse_count[talker:id()]=(abuse_count[talker:id()] or 0)+1
+end
+function do_punch(talker,target) -- talker - NPC
+  xr_abuse.enable_abuse(talker)
+  xr_abuse.add_abuse(talker, 100000) -- для верности
+-- взято из xr_effects.actor_punch
+  local active_slot = db.actor:active_slot()
+  if active_slot == 1 or
+     active_slot == 2
+  then
+    local active_item = db.actor:active_item()
+    if active_item then
+      db.actor:drop_item(active_item)
+    end
+  end  
+  set_inactivate_input_time(30)
+  local snd_obj = xr_sound.get_safe_sound_object([[affects\hit_fist]])
+  snd_obj:play_no_feedback(db.actor, sound_object.s2d, 0, vector(), 1.0)
+  level.add_cam_effector("camera_effects\\fusker.anm", 999, false, "")    
+end
+-- Получить напрямую степень опьянения ГГ по-видимому невозможно. Можно отслеживать использование бутылок водки, но это оставлю на потом
+function actor_drunk(talker,target)
+  mylog("drunk")
+  return true
+end
+-- надет ли на target костюм с противогазом или замкнутой системой дыхания
+function actor_antigas(talker,target)
+  mylog("antigas")
+  local outfit=target:get_current_outfit()
+  if outfit==nil or outfit.section==nil then
+    return false
+  else
+    local sect=outfit:section()
+    if sect=="novice_outfit" or sect=="bandit_outfit" or sect=="killer_outfit"
+      or sect=="monolit_outfit" or sect=="specops_outfit" or sect=="military_outfit"
+      or sect=="stalker_outfit" or sect=="svoboda_light_outfit" then
+      return false
+    end
+  end
+  return true
+end
+function actor_no_antigas(talker,target)
+  mylog("noantigas")
+  return not actor_antigas(talker,target)
+end
+
+local decision_switch={} -- Будем отслеживать как часто ГГ меняет своё решение о помощи
+
+function status_changed(talker,targer) -- talker - NPC
+  if decision_switch[talker:id()] then
+    local ds=decision_switch[talker:id()]
+    if time_global()<ds.time then
+    -- если ГГ меняет решение слишком часто, то увеличим счётчик
+      ds.count=ds.count+1
+    else
+      ds.count=0
+    end
+    ds.time=time_global()+20000
+  else
+    decision_switch[talker:id()]={time=time_global(),count=0}
+  end  
+end
+
+-- ГГ не слишком часто менял своё решение
+function actor_can_decide(talker,target) -- talker - ГГ
+  if decision_switch[target:id()] and decision_switch[target:id()].time<time_global() then
+  -- прошло установленное время и NPC готов нас выслушать
+    decision_switch[target:id()]=nil
+  end
+  return decision_switch[target:id()]==nil or decision_switch[target:id()].count<3
+end
+
+function actor_cannot_decide(talker,target) -- talker - ГГ
+  return not actor_can_decide(talker,target)
+end
