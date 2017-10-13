@@ -8,12 +8,13 @@ local exclude_flames = {
   -- [ "zone_flame_small_kamin" ] = true, -- камин рядом со Свибловым
 }
 
--- объекты с этими визуалами замечены в воспарении и их нужно
+-- объекты с этими визуалами замечены в левитации и их нужно
 -- возвращать на место
 local known_visuals = {
   [ "objects\\koster_negorit"      ] = true,
   [ "objects\\koster_palki"        ] = true,
   [ "objects\\koster_palki_nastil" ] = true,
+  [ "physics\\decor\\gas_burner"   ] = true,
 }
 
 
@@ -32,8 +33,10 @@ end
 auto_attach = true
 
 
-local flames, flames_no_light = {}, {}
+local flames, flames_no_light, flames_no_palki = {}, {}, {}
 local lights, lights_no_flame = {}, {}
+local palki,  palki_no_flame  = {}, {}
+
 local looking_into_flame = false
 local nearest_campfire
 local prev_actor_pos
@@ -281,6 +284,14 @@ function campfire_binder:find_light()
 end
 
 
+function campfire_binder:find_palki()
+  local id = palki[ self.object:level_vertex_id() ]
+  if id then
+    return level.object_by_id( id )
+  end
+end
+
+
 function campfire_binder:update( delta )
   if ( not self.initialized ) and db.actor then
     self.initialized = true
@@ -318,29 +329,29 @@ function campfire_binder:update( delta )
     self.scan_time = time + SCAN_TIME
   end
   if ( not self.check_actor ) or self.check_actor < time_global() then
-    local delay, dist = self:get_actor_check_delay()
+    self:get_actor_check_delay()
     if nearest_campfire then
       local obj = nearest_campfire.object
       if obj:id() ~= self.object:id() then
-        if dist < obj:position():distance_to( db.actor ) then
+        if self.actor_dist < obj:position():distance_to( db.actor ) then
           nearest_campfire = self
         end
       end
     else
       nearest_campfire = self
     end
-    self.check_actor = time_global() + delay
+    self.check_actor = time_global() + self.actor_delay
   end
 end
 
 
 function campfire_binder:get_actor_check_delay()
-  local dist  = self.object:position():distance_to( db.actor:position() )
-  local delay = ( dist < 10 and 500 )
+  self.actor_dist  = self.object:position():distance_to( db.actor:position() )
+  self.actor_delay = ( dist < 10 and 500 )
     or ( dist <  50 and math.random( 1000, 1500 ) )
     or ( dist < 100 and math.random( 2000, 3000 ) )
     or math.random( 5000, 6000 )
-  return delay, dist
+  return self.actor_delay, self.actor_dist
 end
 
 
@@ -356,6 +367,7 @@ function campfire_binder:net_spawn( data )
   db.net_spawning_obj = self.object
   flames[ self.object:id() ] = self
   if self.has_light then
+    -- ищем лампочку
     local light = self:find_light()
     if light then
       lights_no_flame[ light:id() ] = nil
@@ -377,6 +389,27 @@ function campfire_binder:net_spawn( data )
       end
     end
     if light then self:switch_light( false ) end
+  end
+  -- ищем кострище
+  local palki = self:find_palki()
+  if palki then
+    palki_no_flame[ palki:id() ] = nil
+  else
+    for id, _ in pairs( palki_no_flame ) do
+      local obj = level.object_by_id( id )
+      if obj then
+        local dist = self.object:position():distance_to( obj:position() )
+        if dist < 1 then
+          palki = obj
+          palki[ self.object:level_vertex_id() ] = id
+          palki_no_flame[ id ] = nil
+          break
+        end
+      end
+    end
+    if not palki then
+      flames_no_palki[ self.object:id() ] = self
+    end
   end
   db.net_spawning_obj = nil
   return true
@@ -459,9 +492,8 @@ function campfire_binder:start_idle()
     nil,
     function()
       if ogse_sleep_mgr.is_sleep_active() then return end
-      local delay, dist = self:get_actor_check_delay()
-      sm:reschedule( delay )
       self:update()
+      sm:reschedule( self.actor_delay )
     end
   )
 end
@@ -482,6 +514,10 @@ end
 
 function campfire_binder:on_light_spawn()
   self.switch_light_on_update = true
+end
+
+
+function campfire_binder:on_palki_spawn()
 end
 
 
@@ -508,7 +544,36 @@ function koster_palki_binder:net_spawn( data )
     "found net_spawning_obj = %s",
     tostring( db.net_spawning_obj and db.net_spawning_obj:name() or nil )
   )
+  palki[ self.object:level_vertex_id() ] = self.object:id()
+  palki_no_flame[ self.object:id()     ] = true
+  for id, campfire in pairs( flames_no_palki ) do
+    if
+      self.object:level_vertex_id() == campfire.object:level_vertex_id()
+    then
+      flames_no_palki[ id ] = nil
+      palki_no_flame[ self.object:id() ] = nil
+      campfire:on_palki_spawn()
+      break
+    else
+      local dist = self.object:position()
+        :distance_to( campfire.object:position() )
+      if dist < 1 then
+        flames_no_palki[ id ] = nil
+        palki[ campfire.object:level_vertex_id() ] = self.object:id()
+        palki_no_flame[ self.object:id()         ] = nil
+        campfire:on_palki_spawn()
+        break
+      end
+    end
+  end
   return true
+end
+
+
+function koster_palki_binder:net_destroy()
+  palki[ self.object:level_vertex_id() ] = nil
+  palki_no_flame[ self.object:id()     ] = nil
+  object_binder.net_destroy( self )
 end
 
 
