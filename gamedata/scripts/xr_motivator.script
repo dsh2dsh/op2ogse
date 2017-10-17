@@ -467,7 +467,7 @@ function motivator_binder:net_spawn( sobject )
       callback.death, motivator_binder.death_callback, self
     )
     self.object:set_callback(
-      callback_ex.entity_alive_before_hit, self.before_hit_callback, self
+      callback.entity_alive_before_hit, self.before_hit_callback, self
     )
     self.object:set_callback( callback.on_item_drop, self.on_item_drop, self )
     self.object:set_callback( callback.on_item_take, self.on_item_take, self )
@@ -671,74 +671,65 @@ function motivator_binder:clear_callbacks()
 end
 
 
-function motivator_binder:before_hit_callback( p_s_hit, p_ignore_flags )
-  self.last_hit_data = read_hit_data( p_s_hit )
+function motivator_binder:before_hit_callback( hit_data )
+  self.last_hit_data = hit_data
   local ignored = false
-  if self.last_hit_data ~= 0 then
-    local obj = level.object_by_id( self.last_hit_data.who_id )
-    local was_explosive = false
-    if obj and obj:is_explosive() then
-      -- возможно это ручная или подствольная граната непися
-      local who_id = rx_gl.get_grenade_owner_id( obj:id() )
-        or xrs_grenade.get_grenade_owner_id( obj:id() )
-      if who_id then            -- действительно
-        -- тогда назначим нового виновника
-        write_memory_int16( obj:id(), p_s_hit, hit_offset.weaponID )
-        write_memory_int16( who_id,   p_s_hit, hit_offset.whoID    )
-        self.last_hit_data = read_hit_data( p_s_hit )
-        obj = level.object_by_id( who_id )
-        was_explosive = true
-      end
+  local obj = level.object_by_id( hit_data.who_id )
+  local was_explosive = false
+  if obj and obj:is_explosive() then
+    -- возможно это ручная или подствольная граната непися
+    local who_id = rx_gl.get_grenade_owner_id( obj:id() )
+      or xrs_grenade.get_grenade_owner_id( obj:id() )
+    if who_id then            -- действительно
+      -- тогда назначим нового виновника
+      hit_data.weapon_id = obj:id()
+      hit_data.who_id    = who_id
+      obj = level.object_by_id( who_id )
+      hit_data.who       = obj
+      was_explosive = true
     end
-    if obj then -- если есть виновник хита
-      -- проверяем условия игнорирования урона от дружественного огня
-      local obj_id = obj:id()
-      if
-        (
-          obj_id == db.actor:id()
-          and db.actor:has_info( "volna_goodwill" )
-          and level.name() == "zaton"
-        )
+  end
+  if obj then -- если есть виновник хита
+    -- проверяем условия игнорирования урона от дружественного огня
+    local obj_id = obj:id()
+    if
+      (
+        obj_id == db.actor:id()
+        and db.actor:has_info( "volna_goodwill" )
+        and level.name() == "zaton"
+      )
+      or (
+        ( obj_id == self.object:id() and was_exposive )
         or (
-          ( obj_id == self.object:id() and was_exposive )
-          or (
-            obj_id ~= self.object:id()
-            and obj_id ~= db.actor:id()
-            and IsStalker( obj )
-            and self.object:relation( obj ) ~= game_object.enemy
-            and obj:relation( self.object ) ~= game_object.enemy
-          )
+          obj_id ~= self.object:id()
+          and obj_id ~= db.actor:id()
+          and IsStalker( obj )
+          and self.object:relation( obj ) ~= game_object.enemy
+          and obj:relation( self.object ) ~= game_object.enemy
         )
+      )
+    then
+      -- подстрелил друг, игнорируем
+      hit_data.ignore_hit = true
+    else
+      if
+        get_bool( obj:section(), "dsh.hit_who_is_actor", false )
+        or (
+          obj:is_grenade() and not string.find( obj:section(), "_test" )
+        )
+        or smart_monster_parts.is_handmade_monster( obj )
       then
-        -- подстрелил друг, игнорируем
-        write_memory_int( 1, p_ignore_flags )
-        self.last_hit_data.ignored = true
-      else
-        if
-          get_bool( obj:section(), "dsh.hit_who_is_actor", false )
-          or (
-            obj:is_grenade() and not string.find( obj:section(), "_test" )
-          )
-          or smart_monster_parts.is_handmade_monster( obj )
-        then
-          write_memory_int16( db.actor:id(), p_s_hit, hit_offset.whoID )
-          self.last_hit_data = read_hit_data( p_s_hit )
-        end
+        hit_data.who    = db.actor
+        hit_data.who_id = db.actor:id()
       end
     end
   end
 
-  if not self.last_hit_data.ignored then
-    local hit_power = self.last_hit_data.power
-    self.am:call(
-      "on_npc_before_hit",
-      self.object, self.last_hit_data, p_s_hit, p_ignore_flags
-    )
-    if not self.last_hit_data.ignored then
-      local cur_hit_data  = read_hit_data( p_s_hit )
-      self.fake_hit_power = (
-        cur_hit_data.power < hit_power and cur_hit_data.power == 0
-      )
+  if not hit_data.ignore_hit then
+    local hit_power = hit_data.power
+    self.am:call( "on_npc_before_hit", self.object, hit_data )
+    if not hit_data.ignore_hit then
+      self.fake_hit_power = hit_data.power < hit_power and hit_data.power == 0
     end
   end
 end
