@@ -91,6 +91,16 @@ function find_nearest_flame_pos( dist )
 end
 
 
+function get_nearest_campfire( pos, radius )
+  for _, campfire in pairs( flames ) do
+    local dist = campfire.object:position():distance_to( pos )
+    if dist < radius then
+      return campfire
+    end
+  end
+end
+
+
 function actor_conditions_update( ext )
   if looking_into_flame then
     ext.psy_health_restore_speed = ext.psy_health_restore_speed + 0.006
@@ -170,8 +180,10 @@ states = {
   -- костер полностью погашен: аномалия отключена, лампа погашена,
   -- партиклы не играют
   turn_off = {
+    need_actor = false,
+    usable     = true,
     next = function( self, now )
-      if self.has_actor or self.has_users then
+      if self.has_users then
         return states.firing
       else
         return states.turn_off
@@ -187,6 +199,8 @@ states = {
 
   -- костер горит на полную: аномалия включена, лампочка горит, партиклов нет
   firing = {
+    need_actor = true,
+    usable     = false,
     next = function( self, now )
       if self.has_actor or self.has_users or self.time + 300000 > now then
         return states.firing
@@ -205,6 +219,8 @@ states = {
   -- костер начинает гаснуть: аномалия еще включена, лампочка горит,
   -- включается партикл затухающего огня
   down = {
+    need_actor = true,
+    usable     = false,
     next = function( self, now )
       if self.has_actor or self.has_users then
         return states.firing
@@ -227,6 +243,8 @@ states = {
   -- следующий этап угасания: отключается аномалия, но лампочка еще горит,
   -- партикл играется
   flame_off = {
+    need_actor = true,
+    usable     = false,
     next = function( self, now )
       if self.has_actor or self.has_users then
         return states.firing
@@ -281,7 +299,7 @@ function campfire_binder:check_npc( npc )
   if dist > dists[ npc:id() == db.actor:id() ] then
     return false
   end
-  if npc:id() == 0 then
+  if npc:id() == db.actor:id() then
     if stand_time() < 3000 then return false end
   else
     local camp_anims = {
@@ -331,26 +349,18 @@ function campfire_binder:update( delta )
     if
       nearest_campfire and nearest_campfire.object:id() == self.object:id()
     then
-      self.has_actor = self:check_npc( db.actor )
+      if self.state.need_actor then
+        self.has_actor = self:check_npc( db.actor )
+      else
+        self.has_actor = false
+      end
     else
       self.has_actor = false
-    end
-    self.has_users = false
-    for npc_id, is_npc in pairs( db.creature ) do
-      if is_npc and npc_id ~= db.actor:id() then
-        local npc = level.object_by_id( npc_id )
-        if self:check_npc( npc ) then
-          has_users = true
-          break
-        end
-      end
     end
     local new_state = self.state.next( self, time )
     ASSERT( new_state ~= nil, "new_state ~= nil" )
     if new_state ~= self.state then
-      new_state.action( self )
-      self.state = new_state
-      self.time  = time
+      self:set_state( new_state, time )
     end
     self.scan_time = time + SCAN_TIME
   end
@@ -551,7 +561,7 @@ end
 
 
 function campfire_binder:on_palki_spawn()
-  if self.state == states.turn_off then
+  if self.state.usable then
     self:enable_palki_on_use()
   end
 end
@@ -588,6 +598,7 @@ function campfire_binder:show_quick_info()
         quick_info_campfire:lost_quick_info()
       end
       quick_info_campfire = self
+      self:subscribe_use_events()
       dsh_hud_quickinfo.show_quick_info( self:get_quick_info_text() )
       self.has_quick_info = true
     elseif self.has_quick_info then
@@ -602,6 +613,7 @@ end
 
 
 function campfire_binder:lost_quick_info()
+  self:unsubscribe_use_events()
   self.has_quick_info = false
   quick_info_campfire = nil
 end
@@ -609,6 +621,44 @@ end
 
 function campfire_binder:get_quick_info_text()
   return dsh_busy_hands.actor_has_free_hands() and "Разжечь" or "dsh_busy_hands"
+end
+
+
+function campfire_binder:set_state( state, time )
+  state.action( self )
+  self.state = state
+  self.time  = time or time_global()
+end
+
+
+function campfire_binder:subscribe_use_events()
+  self.use_events_subscribed = {
+    signal = "on_key_down", fun = this.on_key_down, self = self
+  }
+  ogse_signals.get_mgr():subscribe( self.use_events_subscribed )
+end
+
+
+function campfire_binder:unsubscribe_use_events()
+  ogse_signals.get_mgr():unsubscribe( self.use_events_subscribed )
+  self.use_events_subscribed = nil
+end
+
+
+function campfire_binder:on_key_down( key, bind )
+  if
+    level.main_input_receiver()
+    or bind ~= key_bindings.kUSE
+  or dsh_busy_hands.actor_has_free_hands()
+  then
+    return
+  end
+  self:fire_campfire()
+end
+
+
+function campfire_binder:fire_campfire()
+  self:set_state( states.firing )
 end
 
 
@@ -739,4 +789,5 @@ end
 
 function koster_palki_binder:use_callback( obj, who )
   if self.dsh_busy_hands_nonusable then return end
+  self.campfire:fire_campfire()
 end
