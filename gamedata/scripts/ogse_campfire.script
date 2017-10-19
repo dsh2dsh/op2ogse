@@ -43,10 +43,21 @@ local prev_actor_pos
 local start_stand_time   = time_global()
 
 
+function is_actor_looking_to_pos( pos, max_angle )
+  local diff  = vector():sub( pos, device().cam_pos ):normalize()
+  local vd    = device().cam_dir
+  local cp    = vector():crossproduct( vd, diff )
+  local dp    = vd:dotproduct( diff )
+  local angle = math.atan2( cp:magnitude(), dp )
+  return angle < max_angle
+end
+
+
 function on_actor_update()
   ogse_signals.get_mgr():reschedule( 1000 )
   if not prev_actor_pos then prev_actor_pos = db.actor:position() end
-  if prev_actor_pos:distance_to( db.actor:position() ) > 0.1 then
+  local dist = prev_actor_pos:distance_to( db.actor:position() )
+  if dist > 0.1 then
     start_stand_time = time_global()
   end
   prev_actor_pos     = db.actor:position()
@@ -54,14 +65,7 @@ function on_actor_update()
   if db.actor.psy_health < 1 and stand_time() > 3000 then
     local pos = get_nearest_flame_pos( 2 )
     if pos then
-      local diff  = vector():sub( pos, device().cam_pos ):normalize()
-      local vd    = device().cam_dir
-      local cp    = vector():crossproduct( vd, diff )
-      local dp    = vd:dotproduct( diff )
-      local angle = math.atan2( cp:magnitude(), dp )
-      if math.abs( angle ) < 0.75 then
-        looking_into_flame = true
-      end
+      looking_into_flame = is_actor_looking_to_pos( pos, 0.3 )
     end
   end
 end
@@ -259,6 +263,7 @@ function campfire_binder:__init( obj ) super( obj )
     obj:section(), "ogse_campfire.state_down", "down"
   )
   self.switch_light_on_update = false
+  self.usable        = false
 end
 
 
@@ -360,6 +365,12 @@ function campfire_binder:update( delta )
       end
     else
       nearest_campfire = self
+    end
+    if not self:find_palki() then
+      self:show_quick_info()
+    elseif self.has_quick_info then
+      self:lost_quick_info()
+      dsh_hud_quickinfo.hide_quick_info()
     end
     self.check_actor = time_global() + self.actor_delay
   end
@@ -547,6 +558,7 @@ end
 
 
 function campfire_binder:enable_palki_on_use()
+  self.usable = true
   local palki = self:find_palki()
   if palki then
     palki:enable_on_use()
@@ -555,10 +567,48 @@ end
 
 
 function campfire_binder:disable_palki_on_use()
+  self.usable = false
   local palki = self:find_palki()
   if palki then
     palki:disable_on_use()
   end
+end
+
+
+local quick_info_campfire
+function campfire_binder:show_quick_info()
+  if
+    self.usable
+    and self.actor_dist < db.actor:get_actor_take_dist()
+    and not level.get_target_obj()
+  then
+    local looking = is_actor_looking_to_pos( self.object:position(), 0.3 )
+    if looking then
+      if quick_info_campfire then
+        quick_info_campfire:lost_quick_info()
+      end
+      quick_info_campfire = self
+      dsh_hud_quickinfo.show_quick_info( self:get_quick_info_text() )
+      self.has_quick_info = true
+    elseif self.has_quick_info then
+      self:lost_quick_info()
+      dsh_hud_quickinfo.hide_quick_info()
+    end
+  elseif self.has_quick_info then
+    self:lost_quick_info()
+    dsh_hud_quickinfo.hide_quick_info()
+  end
+end
+
+
+function campfire_binder:lost_quick_info()
+  self.has_quick_info = false
+  quick_info_campfire = nil
+end
+
+
+function campfire_binder:get_quick_info_text()
+  return dsh_busy_hands.actor_has_free_hands() and "Разжечь" or "dsh_busy_hands"
 end
 
 
