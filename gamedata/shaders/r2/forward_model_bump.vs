@@ -62,4 +62,12 @@ p_bumped	main(v_model_skinned_1 v) 	{ return _main(skinning_1(v)); }
 p_bumped	main(v_model_skinned_2 v) 	{ return _main(skinning_2(v)); }
 #endif
 
+#ifdef	SKIN_3
+p_bumped	main(v_model_skinned_3 v) 	{ return _main(skinning_3(v)); }
+#endif
+
+#ifdef	SKIN_4
+p_bumped	main(v_model_skinned_4 v) 	{ return _main(skinning_4(v)); }
+#endif
+
 FXVS;
