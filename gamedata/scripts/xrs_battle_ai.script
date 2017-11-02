@@ -127,6 +127,17 @@ local forbidden_profiles = {    -- запретные профили и имена
   [ "sar_monolith_commander"   ] = true,
 }
 
+local forbidden_by_lname = {
+  [ "l12u_control_monolith" ] = true,
+  [ "l12u_sarcofag"         ] = true,
+}
+
+local community_forbidden_locations = {
+  -- [ "monolith" ] = {
+  --   [ "l12_stancia_2" ] = true,
+  -- },
+}
+
 local headshot_prob = {
   [ "novice"      ] = 0.1,
   [ "experienced" ] = 0.2,
@@ -411,16 +422,16 @@ function is_combat_ignore( npc, enemy )
 end
 
 
-local forbidden_by_lname = {
-  [ "l12u_control_monolith" ] = true,
-  [ "l12u_sarcofag" ] = true,
-}
-
-local community_forbidden_locations = {
-  -- [ "monolith" ] = {
-  --   [ "l12_stancia_2" ] = true,
-  -- },
-}
+function get_obj_rank_name( obj )
+  local enemy = get_target( obj )
+  if
+    enemy and enemy:id() == db.actor:id()
+    and db.actor:character_rank() > obj:character_rank()
+  then
+    obj = db.actor
+  end
+  return ranks.get_obj_rank_name( obj )
+end
 
 
 -- продолжаем вооруженное общение до умиротворения объекта
@@ -507,13 +518,12 @@ function evaluator_check_altcombat:evaluate()
     campers[ self.object:id()  ] = nil
   end
 
-  local npc_rank = ranks.get_obj_rank_name( self.object )
-  local targ     = have_fresh_deadman( self.object )
-  if primary_target[ self.object:id() ] ~= nil then
-    local best_enemy = level.object_by_id( primary_target[ self.object:id() ] )
+  local npc_rank   = get_obj_rank_name( self.object )
+  local targ       = have_fresh_deadman( self.object )
+  local best_enemy = get_target( self.object )
+  if best_enemy then
     if
-      best_enemy
-      and (
+      (
         best_enemy:alive()
         or ( is_armor( best_enemy ) and armor_alive( best_enemy ) )
       )
@@ -607,13 +617,7 @@ function action_altcombat:execute()
     xr_sound.set_sound( npc, nil )
   end
 
-  local enemy                   -- текущий враг
-  if primary_target[ npc:id() ] ~= nil then
-    -- если есть целеуказание от селектора
-    -- получим объект цели
-    enemy = level.object_by_id( primary_target[ npc:id() ] )
-  end
-
+  local enemy   = get_target( npc ) -- текущий враг
   local deadman = have_fresh_deadman( npc )
   if ( not enemy ) and deadman == false then
     last_time_send[ npc:id()    ] = nil
@@ -647,7 +651,7 @@ function action_altcombat:execute()
 
   local assist_point, last_algorythm
   -- если ещё свежий труп
-  if primary_target[ npc:id() ] == nil and deadman ~= false then
+  if ( not get_target( npc ) ) and deadman ~= false then
     stop_play_sound( npc )
     local deadman_target = level.object_by_id( deadman )
     if deadman_target then
@@ -747,7 +751,7 @@ function action_altcombat:execute()
 
   local npc_pos  = npc:position()
   local be       = enemy
-  local npc_rank = ranks.get_obj_rank_name(npc)
+  local npc_rank = get_obj_rank_name( npc )
   local be_pos   = be:position()
   local distance = be_pos:distance_to( npc_pos )
   local cover
@@ -1161,7 +1165,7 @@ function action_altcombat:check_single_object( obj )
   local npc = self.object
   if not ( IsStalker( obj ) or IsMonster( obj ) ) then return end
   if obj.clsid and obj:alive() and npc:id() ~= obj:id() then
-    if IsStalker( obj ) and not primary_target[ npc:id() ] == obj:id() then
+    if IsStalker( obj ) and primary_target[ npc:id() ] ~= obj:id() then
       self.objects[ npc:relation( obj ) ][ obj:id() ] = obj
     elseif IsMonster( obj ) then
       self.objects.monsters[ obj:id() ] = obj
@@ -3180,7 +3184,7 @@ end
 
 
 function add_deviation( npc, position, weapon, distance, enemy )
-  local npc_rank   = ranks.get_obj_rank_name( npc )
+  local npc_rank   = get_obj_rank_name( npc )
   local npc_comm   = npc:character_community()
   local deviations = deviation_table[ npc_rank ]
   local dev_coeff  = community_deviation_coeff[ npc_comm ]
@@ -3257,7 +3261,7 @@ function set_combat_sight( npc, enemy, weapon )
         if st.time and st.time > time_global() then
           bone        = st.bone
         else
-          local rank = ranks.get_obj_rank_name( npc )
+          local rank = get_obj_rank_name( npc )
           if math.random() < headshot_prob[ rank ] then
             local bones = { "bip01_head", "eyelid_1", "bip01_neck" }
             bone = bones[ math.random( table.getn( bones ) ) ]
