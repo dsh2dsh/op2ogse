@@ -68,9 +68,13 @@
 -- что и при сохранении.
 
 
+local xvars = get_stored_vars()
+
 function attach(sm)
-  sm:subscribe({signal = "on_load_before_all", fun = this.on_load})
-  sm:subscribe({signal = "on_save_after_all", fun = this.on_save})
+  -- старое хранилище уже сконвертировали?
+  if xvars[ "ogse_unist.converted" ] then return end
+  sm:subscribe({ signal = "on_load_before_all", fun = this.on_load })
+  -- sm:subscribe({signal = "on_save_after_all", fun = this.on_save})
 end
 
 
@@ -262,6 +266,14 @@ end
 
 
 function on_load()
+  xvars[ "ogse_unist.converted" ] = true
+  -- есть вообще старое хранилище или это НИ?
+  if not ogse_base_storage.storage_exist( "ST_" .. storage_guid .. "1" ) then
+    return
+  end
+  -- имеется старое хранилище, значит загружается старый сейв и нужно
+  -- конвертировать хранилище.
+
   -- корневое хранилище, содержит переменную с общим количеством хранилищ
   st_objects[ 1 ] = base_single_storage( 1 )
   local st_count_key = "ST_COUNT_" .. storage_guid -- её имя
@@ -294,6 +306,22 @@ function on_load()
   end
   -- ASSERT( ready, "ogse_unist.on_init: storage was not succesfully created" )
   ogse_unist.print_storage_usage()
+
+  -- старое хранилище загружено, теперь его нужно конвертировать
+  local cnt = 0
+  for k, item in pairs( storage ) do
+    set_value( k, item:get_value() )
+    cnt = cnt + 1
+  end
+  log2( "[%s]: %s old vars converted", script_name(), cnt )
+
+  -- можно удалить все custom_storage, которые использовались для хранилища
+  cnt = 0
+  for _, st in pairs( st_objects ) do
+    alife():release( st.st_obj )
+    cnt = cnt + 1
+  end
+  log2( "[%s]: %s old storage objects deleted", script_name(), cnt )
 end
 
 
@@ -640,7 +668,8 @@ function vector_element:__init( name, value )
 end
 
 function vector_element:get_value()
-  return vector():set( self.value ) -- возвращаем копию
+  -- return vector():set( self.value ) -- возвращаем копию
+  return { self.value.x, self.value.y, self.value.z }
 end
 
 function vector_element:get_string()
@@ -687,7 +716,8 @@ function time_element:write_value( data )
 end
 
 function time_element:get_value()
-  return game.CTime( self.value ) -- возвращаем копию
+  -- return game.CTime( self.value ) -- возвращаем копию
+  return { self.value:get() }
 end
 
 function time_element:data_size()
@@ -989,9 +1019,12 @@ function chunk_template_element:get_value()
     if type( v ) == "table" then
       table.insert( value, self.value[ i ]:get_value() )
     elseif v == "vector" then
-      table.insert( value, vector():set( self.value[ i ] ) )
+      local vec = self.value[ i ]
+      -- table.insert( value, vector():set( self.value[ i ] ) )
+      table.insert( value, { vec.x, vec.y, vec.z } )
     elseif v == "time" then
-      table.insert( value, game.CTime( self.value[ i ] ) )
+      -- table.insert( value, game.CTime( self.value[ i ] ) )
+      table.insert( value, { self.value[ i ]:get() } )
     else
       table.insert( value, self.value[ i ] )
     end
@@ -1244,82 +1277,61 @@ item_types_registry = {
 }
 
 
---------------| Публичный интерфейс модуля |------------------------------------
+--------------| Публичный интерфейс модуля |-----------------------------------
+
+function unpack_value( value )
+  if type( value ) == "userdata" then
+    value = value( true )
+  end
+  return value
+end
+
 
 function value_exist( name )
-  return ( storage[ name ] ~= nil )
+  return xvars[ name ] ~= nil
 end
 
 
-function set_value( name, value, typ, subtype )
-  ASSERT( ready, "ogse_unist.set_value: storage is not yet ready" )
-  -- сначала в любом случае удаляем старое значение, если было
-  if value_exist( name ) then
-    remove_value( name )
-  end
-  -- создаём элемент
-  local item = create_item( name, value, typ, subtype )
-  -- сохраняем в глобальном хранилище
-  storage[ item.name ] = item
+function set_value( name, value )
+  xvars[ name ] = value
 end
 
 
-function get_value( name, default_value, typ, subtype )
-  ASSERT( ready, "ogse_unist.get_value: storage is not yet ready" )
-  local item = storage[ name ]
-  if not item then
-    if default_value ~= nil then -- может быть равно false
-      set_value( name, default_value, typ, subtype )
-      return default_value
-    end
-    abort(
-      "get_value: neither value '" .. name
-        .. "' is exist, nor default value is provided"
+function get_value( name, default_value )
+  local value = xvars[ name ]
+  if value == nil then
+    ASSERT(
+      default_value ~= nil,
+      "get_value: neither value '%s' is exist, nor default value is provided",
+      name
     )
+    set_value( name, default_value )
+    return default_value
   end
-  return item:get_value()
+  return unpack_value( value )
 end
 
 
 -- в случае, если не существует, просто вернуть nil
 function get_value_safe( name )
-  ASSERT( ready, "ogse_unist.get_value: storage is not yet ready" )
-  local item = storage[ name ]
-  if item then
-    return item:get_value()
-  end
-  return nil
+  return unpack_value( xvars[ name ] )
 end
 
 
 function remove_value( name )
-  ASSERT( ready, "ogse_unist.remove_value: storage is not yet ready" )
-  local item = storage[ name ]
-  if not item then
-    -- надо подумать, насколько это безобидная ситуация
-    -- пока ставлю просто игнор
-    return
-    -- но возможно стоит поставить вылет
-    -- break(string.format("ogse_unist.remove_value: trying to remove nonexistent value '%s'", name))
-  end
-  -- удалить значение из общего хранилища
-  storage[ name ] = nil
+  xvars[ name ] = nil
 end
 
 
-function set_or_remove_value( name, value, typ, subtype )
+function set_or_remove_value( name, value )
   if value then
-    set_value( name, value, typ, subtype )
+    set_value( name, value )
   else
     remove_value( name )
   end
 end
 
 
-function get_all_names()
-  local names = {}
-  for k, _ in pairs( storage ) do
-    table.insert( names, k )
-  end
-  return names
+function get_all_vars()
+  return xvars()
 end

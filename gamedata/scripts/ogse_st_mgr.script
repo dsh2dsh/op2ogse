@@ -137,7 +137,7 @@ end
 -- загрузка всех таймеров
 function on_load()
   local timers = ogse.load_var_safe( "ogse_st_mgr.timers" )
-  if not timers then return on_load_old() end
+  if not timers then return end
   local t_cnt = 0
   for _, timer_class in ipairs( timers ) do
     local st = ogse.load_var(
@@ -160,44 +160,6 @@ function on_load()
   end
   sort_all_timers()
   log2( "[%s]: %s all timers loaded", script_name(), t_cnt )
-end
-
-
-function on_load_old()
-  local chunks = ogse.load_var_safe( "ogse_st_mgr.chunks" )
-  if not chunks then return on_load_old2() end
-  for _, pk in ipairs( chunks ) do
-    local timer_id    = pk:r_stringZ()
-    local timer_class = pk:r_stringZ()
-    local f, msg = loadstring( "return " .. timer_class .. "(...)" )
-    ASSERT( f, msg )
-    local timer = f( timer_id )
-    timer:_aux_load_old( pk )
-    timer.loaded = true
-    timer:start()
-  end
-  ogse.delete_var( "ogse_st_mgr.chunks" )
-  sort_all_timers()
-  log2( "[%s]: %s timers loaded", script_name(), table.getn( chunks ) )
-end
-
-
-function on_load_old2()
-  local timers_list = ogse.load_var( root_guid, {}, "array" )
-  for _, timer_id in ipairs( timers_list ) do
-    local timer_chunk = ogse.load_var( storage_guid .. "_" .. timer_id )
-    local timer_class = timer_chunk:r_stringZ()
-    local f, msg = loadstring( "return " .. timer_class .. "(...)" )
-    ASSERT( f, msg )
-    local timer = f( timer_id )
-    timer:_aux_load_old( timer_chunk )
-    timer:start()
-    ogse.delete_var( storage_guid .. "_" .. timer_id )
-  end
-  ogse.delete_var( root_guid )
-  log2(
-    "[%s]: %s old timers loaded", script_name(), table.getn( timers_list )
-  )
 end
 
 
@@ -372,38 +334,15 @@ function savable_timer:_aux_load( t )
     self:set_delay( res_time )
   end
   -- загружаем игровое время срабатывания
-  local end_t = table.remove( t, 1 )
+  local end_t = dsh.unpack_time( table.remove( t, 1 ) )
   if end_t ~= game.CTime() then
     self:set_gtime( end_t )
   end
   -- загружаем игровое время запуска
-  self._start_time = table.remove( t, 1 )
+  self._start_time = dsh.unpack_time( table.remove( t, 1 ) )
   -- загружаем данные пользователя, если есть
   if table.getn( t ) > 0 then
     self:load( t )
-  end
-end
-
-
-function savable_timer:_aux_load_old( packet )
-  self._high_priority = packet:r_bool()
-  -- загружаем сохранённое время срабатывания по шкале реальных и игровых
-  -- секунд
-  local res_time = packet:r_float()
-  if res_time ~= 0 then
-    -- строго нулевое значение означает, что таймер реальных секунд не задан
-    self:set_delay( res_time )
-  end
-  -- загружаем игровое время срабатывания
-  local end_t = utils.r_CTime_ex( packet )
-  if end_t ~= game.CTime() then
-    self:set_gtime( end_t )
-  end
-  -- загружаем игровое время запуска
-  self._start_time = utils.r_CTime_ex( packet )
-  -- загружаем данные пользователя, если есть
-  if not packet:r_eof() then
-    self:load_old( packet )
   end
 end
 
@@ -435,12 +374,12 @@ function savable_timer:_aux_save( t )
   end
   -- сохраняем игровое время срабатывания
   if self._game_termination_time then
-    table.insert( t, self._game_termination_time )
+    table.insert( t, { self._game_termination_time:get() } )
   else
-    table.insert( t, game.CTime() )
+    table.insert( t, { game.CTime():get() } )
   end
   -- сохраняем время запуска
-  table.insert( t, self._start_time )
+  table.insert( t, { self._start_time:get() } )
   -- теперь сохраняем данные пользователя, если есть
   return self:save( t, template )
 end
@@ -575,7 +514,6 @@ function savable_timer:taction() end
 
 -- переопределять для сохранения/загрузки пользовательских данных
 function savable_timer:load( t ) end
-function savable_timer:load_old( packet ) end
 function savable_timer:save( t, template ) return template end
 
 
@@ -609,22 +547,6 @@ function delayed_fun_start:load( t )
     "delayed_fun_start:load: can not compile function with the name '%s'",
     tostring( self.action_name )
   )
-end
-
-function delayed_fun_start:load_old( packet )
-  self.action_name = packet:r_stringZ()
-  self.user_action = loadstring( "return " .. self.action_name .. "( ... )" )
-  ASSERT(
-    self.user_action,
-    "delayed_fun_start:load: can not compile function with the name '%s'",
-    tostring( self.action_name )
-  )
-  local array_item = ogse_unist.read_item_from_packet( packet )
-  ASSERT(
-    array_item.type == ogse_unist.types.array,
-   "delayed_fun_start:load: wrong parameters readed"
-  )
-  self.fun_params = array_item:get_value()
 end
 
 function delayed_fun_start:save( t, template )

@@ -378,7 +378,7 @@ function StaticForecast:load()
     -- название цикла. Для статики будет избыточность, но не хочется
     -- дублировать код
     p.cycle = cycle
-    p.time  = time
+    p.time  = dsh.unpack_time( time )
     -- читаем и разбираем флаги точки
     local pflags = flags16():assign( flags )
     p.surge_start = pflags:test( point_flags.surge_begin )
@@ -398,7 +398,7 @@ function StaticForecast:load()
     if p.surge_frame then
       read_cycle_points( p.cycle, cycle_points )
     else
-      cycle_points = self.cycles[p.cycle].points
+      cycle_points = self.cycles[ p.cycle ].points
     end
     p.data = cycle_points[ point_idx ]
     table.insert( self.forecast, p )
@@ -429,54 +429,6 @@ function StaticForecast:clear_saved_data()
 end
 
 
-function StaticForecast:load_old( forecast_data )
-  ogse_surge_mgr.surge_log( "StaticForecast:on_load" )
-  -- читаем данные прогноза
-  ogse_surge_mgr.surge_log( "forecast points" )
-  self.forecast = {}
-  for i = 1, forecast_data:r_u16() do
-    local p = {}
-    -- название цикла. Для статики будет избыточность, но не хочется
-    -- дублировать код
-    p.cycle = forecast_data:r_stringZ()
-    -- читаем и разбираем флаги точки
-    local pflags = flags16():assign( forecast_data:r_u16() )
-    p.surge_start = pflags:test( point_flags.surge_begin )
-    p.surge_frame = pflags:test( point_flags.surge_frame )
-    p.processed   = pflags:test( point_flags.processed )
-    -- как только встретим первый true, то так true и останется
-    self.surge_frame_assigned = self.surge_frame_assigned or p.surge_start
-    -- в конце ещё проверим на валидность
-    local point_idx = forecast_data:r_u8() -- индекс точки цикла
-    ASSERT(
-      point_idx ~= 0,
-      "[StaticForecast:on_load] cycle '%s' without index", p.cycle
-    )
-    p.time = utils.r_CTime_ex( forecast_data )
-    -- в зависимости от типа точки обычная/выброс данные о цикле берём
-    -- либо из общей таблицы погодных циклов, либо из дополнительно
-    -- подгруженной таблицы для выброса
-    local cycle_points = {}
-    if p.surge_frame then
-      read_cycle_points( p.cycle, cycle_points )
-    else
-      cycle_points = self.cycles[p.cycle].points
-    end
-    p.data = cycle_points[ point_idx ]
-    table.insert( self.forecast, p )
-    ogse_surge_mgr.surge_log(
-      "cycle '%s', idx = %d/%d, t = %s, %s %s",
-      p.cycle,
-      p.data.index, point_idx,
-      time2string( p.time ),
-      p.surge_start and "surge_start" or '',
-      p.surge_frame and "surge_frame" or ""
-    )
-  end
-  ogse_surge_mgr.surge_log( "StaticForecast:on_load - END" )
-end
-
-
 function StaticForecast:save()
   ogse_surge_mgr.surge_log( "StaticForecast:on_save" )
   -- начинаем записывать свои данные
@@ -494,7 +446,7 @@ function StaticForecast:save()
       point_data.cycle,         -- название цикла
       pflags:get(),             -- флаги точки
       point_data.data.index,    -- индекс точки цикла
-      point_data.time,
+      { point_data.time:get() },
     }
     table.insert( data, t )
     ogse_surge_mgr.surge_log(
@@ -1012,22 +964,6 @@ function DynamicForecast:clear_saved_data()
 end
 
 
-function DynamicForecast:load_old( forecast_data )
-  ogse_surge_mgr.surge_log( "DynamicForecast:load" )
-  -- читаем данные для рандомайзера прогноза
-  self.last_weather_time = forecast_data:r_float()
-  while true do
-    local cycle_name = forecast_data:r_stringZ()
-    if cycle_name == "" then break end -- встретили завершающий маркер
-    self.cycles[ cycle_name ].skipped = forecast_data:r_s16()
-  end
-  -- читаем данные текушего прогноза
-  -- используем метод базового класса
-  StaticForecast.load_old( self, forecast_data )
-  ogse_surge_mgr.surge_log( "DynamicForecast:load - END" )
-end
-
-
 function DynamicForecast:save()
   ogse_surge_mgr.surge_log( "DynamicForecast:save" )
   -- начинаем записывать свои данные
@@ -1332,16 +1268,12 @@ function WeatherManager:on_load()
   end
 
   self.load_version    = ogse.load_var_safe( "ogse_weather_mgr.version" )
-  self.next_surge_time = ogse.load_var( "ogse_weather_next_surge_time" )
+  self.next_surge_time = dsh.unpack_time(
+    ogse.load_var( "ogse_weather_next_surge_time" )
+  )
   for weather_name, forecast in pairs( self.forecasts ) do
     if self.load_version then
       forecast:load()
-    else
-      local var_name = "ogse_weather_forecast_data_" .. weather_name
-      if ogse.var_exists( var_name ) then
-        forecast:load_old( ogse.load_var( var_name ) )
-        log2( "[%s]: %s loaded", script_name(), weather_name )
-      end
     end
   end
 
@@ -1353,7 +1285,7 @@ end
 function WeatherManager:on_save()
   ogse_surge_mgr.surge_log( "WeatherManager:on_save" )
   ogse.save_var(
-    "ogse_weather_next_surge_time", self.next_surge_time, "time"
+    "ogse_weather_next_surge_time", { self.next_surge_time:get() }, "time"
   )
   ogse.save_var( "ogse_weather_mgr.version", 1, "u8" )
   for weather_name, forecast in pairs( self.forecasts ) do
