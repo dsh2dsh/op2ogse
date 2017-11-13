@@ -84,22 +84,24 @@ function quick_timer:prepare_start()
     -- то запоминаем врем€ останова
     self.termination_time = self.start_time + self.timeout
   end
-  if not self.script_name then
-    local d = debug.getinfo( 2, "S" )
-    if d then
-      self.script_name = d.source
-    end
-  end
 end
 
 
 -- «апуск таймера
 function quick_timer:start()
   self:prepare_start()
-  self.level_call = level.add_call( self, self.aux_cond, self.aux_action )
-  if self.timeout then
-    self.level_call:add_pause( self.timeout )
+  if not self.script_name then
+    local d = debug.getinfo( 2, "S" )
+    if d then
+      self.script_name = d.source
+    end
   end
+  self.slot_desc = {
+    signal = "on_update", self = self, fun = self.aux_cond,
+    script_name = self.script_name,
+  }
+  self.sm = ogse_signals.get_mgr()
+  self.sm:subscribe( self.slot_desc )
   return self
 end
 
@@ -119,26 +121,33 @@ end
 -- функци€ принудительного останова, никаких действий при этом не
 -- выполн€етс€
 function quick_timer:stop()
-  if self.level_call then
-    level.remove_call( self, self.aux_cond, self.action )
-    self.level_call = nil
-  end
+  self.sm:unsubscribe( self.slot_desc )
+  self.slot_desc = nil
 end
 
 
 -- проверка в базовом классе таймера обеспечивает сервис остановки по
 -- таймауту и возможность принудительной остановки
 function quick_timer:aux_cond()
-  ASSERT(
-    self.level_call, "[%s]: oops, we've lost self.level_call", script_name()
-  )
   self:update()
-  return self.termination_time or self:condition()
+  if self.termination_time then -- если имеетс€ таймаут
+    -- и он сработал на первом апдейте
+    if self.termination_time <= time_global() then
+      self:taction()            -- выполн€ем действие по таймауту
+      self:stop()               -- останавливаем проверки
+    else                        -- засыпаем до срабатывани€
+      self:reschedule( self.termination_time - time_global() )
+    end
+  elseif self:condition() then  -- если сработало условие
+    self:action()               -- выполн€ем действие по услови€
+    self:stop()
+  end
 end
 
 
 function quick_timer:aux_action()
   self.level_call = nil
+  if self.stopped then return end
   if self.termination_time then -- если имеетс€ таймаут
     self:taction()              -- выполн€ем действие по таймауту
   else
@@ -171,56 +180,79 @@ end
 
 -- пауза на ms миллисекунд
 function quick_timer:reschedule( ms )
+  self.sm:reschedule( ms )
+end
+
+
+function quick_timer:set_script_name( name )
+  self.script_name = name
+  if self.slot_desc then
+    self.slot_desc.script_name = self.script_name
+  end
+end
+
+
+class "quick_level_timer" ( quick_timer )
+function quick_level_timer:__init( timeout ) super( timeout )
+end
+
+
+function quick_level_timer:start()
+  self:prepare_start()
+  if not self.script_name then
+    local d = debug.getinfo( 2, "S" )
+    if d then
+      self.script_name = d.source
+    end
+  end
+  self.level_call = level.add_call(
+    function() return self:aux_cond() end,
+    function() self:aux_action() end
+  )
+  self.stopped    = nil
+  if self.timeout then
+    self.level_call:set_pause( self.timeout )
+  end
+  return self
+end
+
+
+function quick_level_timer:stop()
+  if self.level_call then
+    self.level_call:set_pause( 0 )
+    self.level_call = nil
+    self.stopped    = true
+  end
+end
+
+
+function quick_level_timer:aux_cond()
+  if self.stopped then return true end
   ASSERT(
-    self.level_call, "[%s]: oops, we've lost self.level_call", script_name()
+    self.level_call,
+    "[%s]: script_name = %s: oops, we've lost self.level_call",
+    script_name(), self.script_name
+  )
+  if device():is_paused() then
+    self.level_call:set_pause( 1 )
+    return
+  end
+  self:update()
+  return self.termination_time or self:condition()
+end
+
+
+function quick_level_timer:reschedule( ms )
+  if self.stopped then return end
+  ASSERT(
+    self.level_call,
+    "[%s]: script_name = %s: oops, we've lost self.level_call",
+    script_name(), self.script_name
   )
   self.level_call:set_pause( ms )
 end
 
 
--- таймер на апдейте актора. »меет смысл использовать дл€ тех
--- таймеров, которые след€т за актором и должны выполн€тьс€ во врем€
--- сна.
-class "quick_timer_on_update"
-function quick_timer_on_update:__init( timeout ) super( timeout )
-end
-
-
-function quick_timer_on_update:start()
-  self:prepare_start()
-  self.slot_desc = {
-    signal = "on_update", self = self, fun = self.aux_cond,
-    script_name = self.script_name,
-  }
-  self.sm = ogse_signals.get_mgr()
-  self.sm:subscribe( self.slot_desc )
-  return self
-end
-
-
-function quick_timer_on_update:stop()
-  self.sm:unsubscribe( self.slot_desc )
-  self.slot_desc = nil
-end
-
-
-function quick_timer_on_update:aux_cond()
-  self:update()
-  if self.termination_time then -- если имеетс€ таймаут
-    -- и он сработал на первом апдейте
-    if self.termination_time <= time_global() then
-      self:taction()            -- выполн€ем действие по таймауту
-      self:stop()               -- останавливаем проверки
-    else                        -- засыпаем до срабатывани€
-      self:reschedule( self.termination_time - time_global() )
-    end
-  elseif self:condition() then  -- если сработало условие
-    self:action()               -- выполн€ем действие по услови€
-    self:stop()
-  end
-end
-
-
-function quick_timer:reschedule( ms )
-  self.sm:reschedule( ms )
+function quick_level_timer:set_script_name( name )
+  self.script_name = name
 end
