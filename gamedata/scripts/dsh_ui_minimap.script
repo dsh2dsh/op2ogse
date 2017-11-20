@@ -1,107 +1,132 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
+  sm:subscribe(
+    {
+      signal = "dsh_ui_minimap.on_key_down",
+      fun    = this.minimap_on_key_down,
+    }
+  )
   sm:subscribe({ signal = "on_destroy",  fun = this.on_destroy  })
   sm:subscribe({ signal = "on_key_down", fun = this.on_key_down })
+  sm:subscribe({ signal = "on_mm_return_game", fun = this.on_mm_return_game })
   sm:subscribe({ signal = "on_spawn",    fun = this.on_spawn    })
 end
 
 
-local minimap_wnd
 function on_spawn()
-  minimap_wnd = hand_minimap()
+  init_hand_minimap()
+  rebind_keys()
 end
 
 
-local key_pressed = false
+local dik_minimap
+function rebind_keys()
+  dik_minimap = {}
+  local data = dsh_cfg.get_data()
+  for _, kn in ipairs( parse_names( data.cam_3 ) ) do
+    local dik = keyname_to_dik( kn )
+    ASSERT( dik, "keyname to dik not found: %s", kn )
+    dik_minimap[ dik ] = true
+  end
+  cmd( "unbind cam_3" )
+  cmd( "unbind_sec cam_3" )
+end
+
+
+function on_mm_return_game()
+  rebind_keys()
+end
+
+
+local restore_weapon_check = {
+  signal = "can_restore_weapon",
+  fun    = function( res )
+    res[ 1 ] = false
+    return true
+  end,
+}
+local weapon_hidden = false
 
 function on_key_down( key, bind )
-  if key ~= dsh.get_kbd_key( "show_minimap" ) then return end
-  if not key_pressed then
-    key_pressed = true
-    if minimap_wnd:is_showing() then
-      minimap_wnd:toggle()
-      dsh.timeout(
-        500,
-        function()
-          bind_stalker.restore_weapon()
-          key_pressed = false
-        end
-      )
-    else
-      bind_stalker.hide_weapon( 1000 )
-      dsh.timeout(
-        500,
-        function()
-          minimap_wnd:toggle()
-          key_pressed = false
-        end
-      )
-    end
+  if level.main_input_receiver() then return end
+  if not dik_minimap[ key ] then return end
+  bind_stalker.redirect_keys_to( "dsh_ui_minimap" )
+  if db.actor:active_item() then
+    weapon_hidden = true
+    ogse_signals.get_mgr():subscribe( restore_weapon_check )
+    bind_stalker.hide_weapon( 1000 )
+    dsh.timeout(
+      500,
+      function() show_hand_minimap() end
+    )
+  else
+    weapon_hidden = false
+    show_hand_minimap()
   end
   return true
 end
 
 
+function minimap_on_key_down( key, bind )
+  if not dik_minimap[ key ] then return true end
+  hide_hand_minimap()
+  if weapon_hidden then
+    weapon_hidden = false
+    ogse_signals.get_mgr():unsubscribe( restore_weapon_check )
+    bind_stalker.restore_weapon()
+  end
+  bind_stalker.redirect_keys_to()
+  return true
+end
+
+
 function on_destroy()
-  minimap_wnd:hide()
+  hide_hand_minimap()
 end
 
 
-class "hand_minimap"
-function hand_minimap:__init()
-  self.showing = false
-  self:InitControls()
+local minimap_static, back_static, frame_static, compass_static
+local showing = false
+
+function init_hand_minimap()
+  local wnd = get_main_window()
+  minimap_static = wnd:GetStatic( "minimap" )
+  back_static    = wnd:GetStatic( "minimap:background" )
+  frame_static   = wnd:GetStatic( "minimap:level_frame" )
+  compass_static = wnd:GetStatic( "minimap:compass" )
 end
 
 
-function hand_minimap:InitControls()
-  local wnd    = get_main_window()
-  self.minimap = wnd:GetStatic( "minimap" )
-  self.back    = wnd:GetStatic( "minimap:background" )
-  self.frame   = wnd:GetStatic( "minimap:level_frame" )
-  self.center  = wnd:GetStatic( "minimap:center" )
-  self.compass = wnd:GetStatic( "minimap:compass" )
-end
-
-
-function hand_minimap:show()
-  if self.showing then return end
-  self.back:SetWndPos( 0, 0)
+function show_hand_minimap()
+  if showing then return end
+  ogse_dynamic_hud.hide_my_suit_hud( true, true )
+  back_static:SetWndPos( 0, 0)
   get_hud():AddCustomStatic( "hud_mm_back" )
   for i= 1, 4 do
     get_hud():AddCustomStatic( "hud_mm_watch_back_" .. i )
   end
-  self.frame:SetWndRect(    Frect():set( 510, 350, 760, 550 ) )
-  self.minimap:SetClipRect( Frect():set( 510, 350, 760, 550 ) )
-  self.compass:SetWndRect(  Frect():set( 515, 365, 549, 399 ) )
-  self.showing = true
+  frame_static:SetWndRect(    Frect():set( 510, 350, 760, 550 ) )
+  minimap_static:SetClipRect( Frect():set( 510, 350, 760, 550 ) )
+  if is_16_9_mode() then
+    compass_static:SetWndRect( Frect():set( 710, 365, 745, 400 ) )
+  else
+    compass_static:SetWndRect( Frect():set( 705, 365, 740, 400 ) )
+  end
+  showing = true
 end
 
 
-function hand_minimap:hide()
-  if not self.showing then return end
-  self.compass:SetWndRect(  Frect():set( -1000, 365,  549, 399 ) )
-  self.minimap:SetClipRect( Frect():set( -1000, 350, -738, 550 ) )
-  self.frame:SetWndRect(    Frect():set( -1000, 350, -738, 550 ) )
+function hide_hand_minimap()
+  if not showing then return end
+  compass_static:SetWndRect(  Frect():set( -1000, 365,  549, 400 ) )
+  minimap_static:SetClipRect( Frect():set( -1000, 350, -738, 550 ) )
+  frame_static:SetWndRect(    Frect():set( -1000, 350, -738, 550 ) )
   get_hud():RemoveCustomStatic( "hud_mm_back" )
   for i = 1, 4 do
     get_hud():RemoveCustomStatic( "hud_mm_watch_back_" .. i )
   end
-  self.back:SetWndPos( -1050, 0)
-  self.showing = false
-end
-
-
-function hand_minimap:toggle()
-  if self.showing then
-    self:hide()
-  else
-    self:show()
-  end
-end
-
-
-function hand_minimap:is_showing()
-  return self.showing
+  back_static:SetWndPos( -1050, 0 )
+  ogse_dynamic_hud.hide_my_suit_hud( false, false )
+  showing = false
 end
