@@ -6,13 +6,24 @@
 
 function attach(sm)
   sm:subscribe({ signal = "on_actor_before_hit", fun = this.on_before_hit })
+  sm:subscribe(
+    {
+      signal = "on_actor_weapon_zoom_in",
+      fun    = this.on_actor_weapon_zoom_in,
+    }
+  )
+  sm:subscribe(
+    {
+      signal = "on_actor_weapon_zoom_out",
+      fun    = this.on_actor_weapon_zoom_out,
+    }
+  )
   sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
-  sm:subscribe({ signal = "on_destroy",  fun = this.on_destroy     })
+  sm:subscribe({ signal = "on_destroy",  fun = this.on_destroy })
   sm:subscribe({ signal = "on_helmet_on_off_done", fun = this.on_helmet_on_off_done })
-  sm:subscribe({ signal = "on_key_down", fun = this.chek_keys      })
-  sm:subscribe({ signal = "on_key_up",   fun = this.chek_keys_free })
+  sm:subscribe({ signal = "on_key_down", fun = this.chek_keys  })
   sm:subscribe({ signal = "on_mm_return_game", fun = this.on_mm_return_game })
-  sm:subscribe({ signal = "on_spawn",    fun = this.on_spawn       })
+  sm:subscribe({ signal = "on_spawn",    fun = this.on_spawn   })
   sm:subscribe({
     signal = "on_update", fun = this.check_my_suit_hud_update,
     script_name = "ogse_dynamic_hud.check_my_suit_hud_update",
@@ -25,14 +36,12 @@ end
 auto_attach = true
 
 
-local cam_fov          = get_con_float( "cam_fov" ) or 67.5
+local cam_fov          = get_con_float( "fov" ) or 67.5
 local mycurrent_suithud
-local need_sniper_chek = false
-local sniper_mode      = false
+local sniper_mode_check
 local suit_condition
 local suithud, suithud_enable = true, false
 local wotsuittype      = ""
-local wpn_zoom_mode    = false
 
 local sm = ogse_signals.get_mgr()
 
@@ -47,6 +56,7 @@ function on_spawn()
     suithud, suithud_enable = false, false
   end
   rebind_keys()
+  sniper_mode_check = check_sniper_class()
 end
 
 
@@ -54,6 +64,7 @@ local dik_helmet
 function rebind_keys()
   dik_helmet = {}
   local data = dsh_cfg.get_data()
+  if not data.buy_menu then return end
   for _, kn in ipairs( parse_names( data.buy_menu ) ) do
     local dik = keyname_to_dik( kn )
     ASSERT( dik, "keyname to dik not found: %s", kn )
@@ -89,97 +100,86 @@ function on_item_to_slot( obj )
 end
 
 
-class "check_sniper_timer" ( ogse_qt.quick_timer )
-function check_sniper_timer:__init() super()
+function on_actor_weapon_zoom_in()
+  sniper_mode_check:check_sniper()
+  sniper_mode_check:update_hud_elements()
+end
+
+
+function on_actor_weapon_zoom_out()
+  sniper_mode_check:reset()
+  sniper_mode_check:update_hud_elements()
+end
+
+
+class "check_sniper_class"
+function check_sniper_class:__init()
   self.hidden         = false
   self.on_sniper_mode = false
-  self.sm             = ogse_signals.get_mgr()
-  self.sniper_mode    = false
-  self.zoom_mode      = false
   self.zoomed         = false
+  self:reset()
 end
 
 
-function check_sniper_timer:condition()
-  return not ( self.sniper_mode or self.zoom_mode )
-end
-
-
-function check_sniper_timer:action()
-end
-
-
-function check_sniper_timer:update()
-  self:check_sniper()
-  self:update_hud_elements()
-end
-
-
--- Убирание худа при использовании оптического прицела или бинокля
-function check_sniper_timer:check_sniper()
-  sniper_mode            = false
+function check_sniper_class:reset()
   bind_stalker.scopeUsed = false
   self.sniper_mode       = false
   self.zoom_mode         = false
-  wpn_zoom_mode          = false
-  if
-    db.actor and db.actor:alive()
-    and ( need_sniper_chek == true or sniper_mode == true )
-  then
-    if zoom_mode() then
-      local wpn = db.actor:active_item()
-      if wpn and wpn:is_weapon() then
-        if self.scope_sect == nil then
-          self.scope_sect = ogse_night_vision.get_active_scope_section( wpn )
-            or false
-        end
-        if self.scope_sect then
-          local gl_status = 0
-          if wpn:is_weapon_gl() then
-            gl_status = ogse_wpn_utils.get_grenade_launcher_status( wpn )
-          end
-          local gl_flag = gl_status == 1
-            or (
-              gl_status == 2 and ogse_wpn_utils.get_grenade_launcher_flag( wpn )
-            )
-          if gl_flag and ogse_wpn_utils.get_gl_mode( wpn ) then
-            self.zoom_mode = true
-            wpn_zoom_mode  = true
-          else
-            local binder = wpn:binded_object()
-            if binder and binder[ "dsh_switch_scope.use_iron_scope" ] then
-              self.zoom_mode = true
-              wpn_zoom_mode  = true
-            else
-              sniper_mode            = true
-              bind_stalker.scopeUsed = true
-              self.sniper_mode       = true
-            end
-          end
-        else
-          self.zoom_mode = true
-          wpn_zoom_mode  = true
-        end
-      end
-    end
+  if self.zooming_t then
+    self.zooming_t:stop()
+    self.zooming_t = nil
   end
 end
 
 
--- Обновление динамических элементов худа
-function check_sniper_timer:update_hud_elements()
-  if self.sniper_mode then
-    if not self.on_sniper_mode then
-      if not self.hidden then
-        if suithud_enable then
-          hide_my_suit_hud( true )
-        end
-        self.hidden = true
-      end
-      if not wpn_IsRotatingToZoom( db.actor:active_item() ) then
-        self:change_on_sniper_mode( true )
+-- Убирание худа при использовании оптического прицела или бинокля
+function check_sniper_class:check_sniper()
+  self:reset()
+  local wpn = db.actor:active_item()
+  if not ( wpn and wpn:is_weapon() ) then return end
+  local scope_sect = ogse_night_vision.get_active_scope_section( wpn ) or false
+  if scope_sect then
+    local gl_status = 0
+    if wpn:is_weapon_gl() then
+      gl_status = ogse_wpn_utils.get_grenade_launcher_status( wpn )
+    end
+    local gl_flag = gl_status == 1
+      or (
+        gl_status == 2 and ogse_wpn_utils.get_grenade_launcher_flag( wpn )
+      )
+    if gl_flag and ogse_wpn_utils.get_gl_mode( wpn ) then
+      self.zoom_mode = true
+    else
+      local binder = wpn:binded_object()
+      if binder and binder[ "dsh_switch_scope.use_iron_scope" ] then
+        self.zoom_mode = true
+      else
+        bind_stalker.scopeUsed = true
+        self.sniper_mode       = true
       end
     end
+  else
+    self.zoom_mode = true
+  end
+  self.zooming_t = dsh.wait_condition(
+    function()
+      return not wpn_IsRotatingToZoom( db.actor:active_item() )
+    end,
+    function()
+      self.zooming_t = nil
+      self:change_on_sniper_mode( true )
+    end
+  )
+end
+
+
+-- Обновление динамических элементов худа
+function check_sniper_class:update_hud_elements()
+  if self.sniper_mode then
+    if suithud_enable then
+      hide_my_suit_hud( true )
+    end
+    self.hidden = true
   elseif self.hidden then
     if suithud and not suithud_enable then
       hide_my_suit_hud( false )
@@ -189,10 +189,8 @@ function check_sniper_timer:update_hud_elements()
     end
     self.hidden = false
   elseif self.zoom_mode then
-    if not self.zoomed then
-      check_my_suit_hud( true )
-      self.zoomed = true
-    end
+    check_my_suit_hud( true )
+    self.zoomed = true
   elseif self.zoomed then
     check_my_suit_hud( true )
     self.zoomed = false
@@ -200,8 +198,8 @@ function check_sniper_timer:update_hud_elements()
 end
 
 
-function check_sniper_timer:change_on_sniper_mode( mode )
-  self.sm:call( "on_sniper_mode", mode )
+function check_sniper_class:change_on_sniper_mode( mode )
+  ogse_signals.get_mgr():call( "on_sniper_mode", mode )
   self.on_sniper_mode = mode
 end
 
@@ -219,13 +217,14 @@ end
 local helmet_in_process, helmet_lock = false, false
 
 function chek_keys( key, bind )
-  if sniper_mode or level.main_input_receiver() or not db.actor:alive() then
+  if
+    sniper_mode_check.sniper_mode
+    or level.main_input_receiver()
+    or not db.actor:alive()
+  then
     return
   end
-  if bind == key_bindings.kWPN_ZOOM then
-    need_sniper_chek = true
-    check_sniper_timer():start()
-  elseif
+  if
     ( not helmet_lock )
     and (
       dik_helmet[ key ]
@@ -240,14 +239,6 @@ function chek_keys( key, bind )
     end
   elseif bind == key_bindings.kCAM_ZOOM_IN then
     helmet_lock = false
-  end
-end
-
-
--- Проверка отпускания клавиш
-function chek_keys_free( key, bind )
-  if bind == key_bindings.kWPN_ZOOM then
-    need_sniper_chek = false
   end
 end
 
@@ -320,7 +311,7 @@ local hidden_hud
 
 function set_my_suit_hud( dynamic_hud_enable, hudtype, redraw, changed_cond )
   if not hudtype and not dynamic_hud_enable then
-    if is_helmet_on and not sniper_mode then
+    if is_helmet_on and not sniper_mode_check.sniper_mode then
       sm:call( "on_actor_before_helmet_off" )
     end
     local wchud = get_hud():GetCustomStatic( mycurrent_suithud )
@@ -330,11 +321,11 @@ function set_my_suit_hud( dynamic_hud_enable, hudtype, redraw, changed_cond )
     end
     suitfirstrun = true
     switch_shader_effects( "off" )
-    if sniper_mode then
+    if sniper_mode_check.sniper_mode then
       hidden_hud = mycurrent_suithud
     end
     mycurrent_suithud = nil
-    if is_helmet_on and not sniper_mode then
+    if is_helmet_on and not sniper_mode_check.sniper_mode then
       is_helmet_on = false
       sm:call( "on_actor_helmet_off" )
     end
@@ -349,7 +340,7 @@ function set_my_suit_hud( dynamic_hud_enable, hudtype, redraw, changed_cond )
     if hudtype then
       sm:call( "on_before_hud_show" )
       local cs = get_hud():AddCustomStatic( hudtype )
-      if cs and wpn_zoom_mode then
+      if cs and sniper_mode_check.zoom_mode then
         cs:wnd():SetWndRect( -512, -32, 1536, 800 )
       end
       sm:call( "on_hud_show" )
@@ -388,7 +379,7 @@ end
 
 function hide_my_suit_hud( hide, sniper_mode_override )
   if sniper_mode_override ~= nil then
-    sniper_mode = sniper_mode_override
+    sniper_mode_check.sniper_mode = sniper_mode_override
   end
   if hide then
     suithud_enable = false
@@ -402,7 +393,7 @@ end
 
 function get_current_helmet()
   if is_helmet_on then
-    if sniper_mode then
+    if sniper_mode_check.sniper_mode then
       return ( hidden_hud        or "" ), wotsuittype
     else
       return ( mycurrent_suithud or "" ), wotsuittype
@@ -517,12 +508,12 @@ end
 
 
 function is_sniper_mode()
-  return sniper_mode
+  return sniper_mode_check.sniper_mode
 end
 
 
 function is_wpn_zoom_mode()
-  return wpn_zoom_mode
+  return sniper_mode_check.zoom_mode
 end
 
 
