@@ -4,6 +4,7 @@ function attach( sm )
   sm:subscribe({ signal = "on_actor_fire", fun = this.on_actor_fire })
   sm:subscribe({ signal = "on_inventory_hide", fun = this.on_inventory_hide })
   sm:subscribe({ signal = "on_key_down",   fun = this.on_key_down   })
+  sm:subscribe({ signal = "on_throw_grenade", fun = this.on_throw_grenade })
   sm:subscribe({ signal = "on_update",     fun = this.on_update     })
 end
 
@@ -287,54 +288,37 @@ function on_actor_fire( t, state )
 end
 
 
-local grenade_fire_t, grenade_showing_t
+local grenade_throwing_t
 
 function on_key_down( key, bind )
-  if bind == key_bindings.kWPN_FIRE or bind == key_bindings.kWPN_ZOOM then
-    if db.actor:active_slot() == 3 then
-      local item = db.actor:active_item()
-      if item and item:is_grenade() then
-        if grenade_fire_t then grenade_fire_t:stop() end
-        grenade_showing_t     = nil
-        local fire_power_loss = get_fire_power_loss( item )
-        local id       = item:id()
-        local sect     = item:section()
-        grenade_fire_t = dsh.wait_condition(
-          function()
-            local item = db.actor:active_item()
-            if item and item:id() == id then
-              return item:get_hud_item_state() == weapon_states.hiding
-            end
-            return true
-          end,
-          function()
-            local max_power_loss = 0
-            if grenade_showing_t then
-              local force_max   = get_float( sect, "force_max" )
-              local force_min   = get_float( sect, "force_min" )
-              local force_speed = get_float( sect, "force_grow_speed" )
-              local max_t = ( force_max - force_min ) / force_speed * 1000
-              local t     = time_global() - grenade_showing_t
-              if t > max_t then t = max_t end
-              max_power_loss = fire_power_loss * 3 * ( t / max_t )
-            end
-            db.actor.power = fire_power_loss + max_power_loss
-            grenade_fire_t = nil
-          end,
-          function()
-            local item = db.actor:active_item()
-            if item and item:id() == id then
-              if not grenade_showing_t then
-                if item:get_hud_item_state() == weapon_states.showing then
-                  grenade_showing_t = time_global()
-                end
-              end
-            end
-          end
-        )
-      end
-    end
+  if
+    bind ~= key_bindings.kWPN_ZOOM
+    or db.actor:active_slot() ~= 3
+  then
+    return
   end
+  local item = db.actor:active_item()
+  if item and item:is_grenade() then
+    grenade_throwing_t = time_global()
+  end
+end
+
+
+function on_throw_grenade( obj )
+  local fire_power_loss = get_fire_power_loss( obj )
+  local max_power_loss  = 0
+  if grenade_throwing_t then
+    local sect        = obj:section()
+    local force_max   = get_float( sect, "force_max" )
+    local force_min   = get_float( sect, "force_min" )
+    local force_speed = get_float( sect, "force_grow_speed" )
+    local max_t = ( force_max - force_min ) / force_speed * 1000
+    local t     = time_global() - grenade_throwing_t
+    if t > max_t then t = max_t end
+    max_power_loss     = fire_power_loss * 3 * ( t / max_t )
+    grenade_throwing_t = nil
+  end
+  db.actor.power = fire_power_loss + max_power_loss
 end
 
 
