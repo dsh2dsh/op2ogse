@@ -1,12 +1,20 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
-  sm:subscribe({ signal = "on_actor_fire", fun = this.on_actor_fire })
-  sm:subscribe({ signal = "on_actor_weapon_reload", fun = this.on_actor_weapon_reload })
+  sm:subscribe({
+    signal = "on_actor_weapon_fire", fun = this.on_actor_weapon_fire
+  })
+  sm:subscribe({
+    signal = "on_actor_weapon_reload", fun = this.on_actor_weapon_reload
+  })
+  sm:subscribe({
+    signal = "on_actor_weapon_start_firing",
+    fun    = this.on_actor_weapon_start_firing,
+  })
   sm:subscribe({ signal = "on_inventory_hide", fun = this.on_inventory_hide })
-  sm:subscribe({ signal = "on_key_down",   fun = this.on_key_down   })
+  sm:subscribe({ signal = "on_key_down",   fun = this.on_key_down })
   sm:subscribe({ signal = "on_throw_grenade", fun = this.on_throw_grenade })
-  sm:subscribe({ signal = "on_update",     fun = this.on_update     })
+  sm:subscribe({ signal = "on_update",     fun = this.on_update   })
 end
 
 
@@ -15,15 +23,14 @@ local time_factor = get_float( "alife", "time_factor" )
 
 
 local cur_wpn = {}
-function on_update( delta )
-  local wpn = db.actor:active_item()
-  if not ( wpn and wpn:is_weapon() ) then return end
-  if ( not cur_wpn.id ) or cur_wpn.id ~= wpn:id() then
+function get_wpn_info( wpn )
+  if ( not cur_wpn.name ) or cur_wpn.name ~= wpn:name() then
     local t = cur_wpn
-    t.ammo_n           = wpn:get_ammo_in_magazine()
     t.binded           = wpn:binded_object()
     t.dispersion_start = get_u32( wpn:section(), "dispersion_start" )
-    t.fire_dispersion_base = get_float( wpn:section(), "fire_dispersion_base", 0 )
+    t.fire_dispersion_base = get_float(
+      wpn:section(), "fire_dispersion_base", 0
+    )
     t.fire_power_loss  = get_fire_power_loss( wpn )
     t.gl_mode          = nil
     t.gl_name          = nil
@@ -36,11 +43,11 @@ function on_update( delta )
     t.inv_weight       = get_float( wpn:section(), "inv_weight", 0 )
     t.is_knife         = wpn:is_knife()
     t.lowfire_mode     = get_u32( wpn:section(), "lowfire_mode"  )
+    t.name             = wpn:name()
     t.queue_size       = nil
     t.rpm              = get_u32( wpn:section(), "rpm"      )
     t.rpm_high         = get_u32( wpn:section(), "rpm_high" )
     t.rpm_low          = get_u32( wpn:section(), "rpm_low"  )
-    t.shot_n           = 0
     t.silencer_mode    = nil
     t.use_aim_bullet   = get_bool( wpn:section(), "use_aim_bullet", false )
     t.weapon_state     = wpn:get_hud_item_state()
@@ -57,34 +64,17 @@ function on_update( delta )
   if cur_wpn.has_silencer == nil then
     cur_wpn.has_silencer = ( ogse_wpn_utils.get_silencer_status( wpn ) == 2 )
   end
-  check_silencer( wpn )
-  configure_high_rpm( cur_wpn )
-  configure_fire_dispersion( cur_wpn )
-  local state = wpn:get_hud_item_state()
-  if state == cur_wpn.weapon_state then
-    if state == weapon_states.fire or state == weapon_states.fire2 then
-      local ammo_n = wpn:get_ammo_in_magazine()
-      if ammo_n ~= cur_wpn.ammo_n then
-        cur_wpn.ammo_n = ammo_n
-        cur_wpn.shot_n = cur_wpn.shot_n + 1
-        configure_low_rpm( cur_wpn )
-        ogse_signals.get_mgr():call( "on_actor_fire", cur_wpn, state )
-      end
-    end
-  else
-    cur_wpn.shot_n = 0
-    if
-      cur_wpn.weapon_state == weapon_states.fire
-      or cur_wpn.weapon_state == weapon_states.fire2
-    then
-      configure_low_rpm( cur_wpn )
-    end
-    if state == weapon_states.fire or state == weapon_states.fire2 then
-      cur_wpn.ammo_n = wpn:get_ammo_in_magazine()
-      cur_wpn.shot_n = cur_wpn.shot_n + 1
-      configure_low_rpm( cur_wpn )
-      ogse_signals.get_mgr():call( "on_actor_fire", cur_wpn, state )
-    elseif state == weapon_states.switch then
+  return cur_wpn
+end
+
+
+function on_update( delta )
+  local wpn = db.actor:active_item()
+  if not ( wpn and wpn:is_weapon() ) then return end
+  local cur_wpn = get_wpn_info( wpn )
+  local state   = wpn:get_hud_item_state()
+  if state ~= cur_wpn.weapon_state then
+    if state == weapon_states.switch then
       if cur_wpn.has_gl then
         local gl_mode = ogse_wpn_utils.get_gl_mode( wpn )
         if cur_wpn.gl_mode ~= gl_mode then
@@ -128,24 +118,23 @@ function has_wpn_gl( wpn )
 end
 
 
-function check_silencer( wpn )
-  if cur_wpn.has_silencer then
-    local silencer_mode = ogse_wpn_utils.get_silencer_flag( wpn )
-    if cur_wpn.silencer_mode ~= silencer_mode then
-      if get_bool( wpn:section(), "dsh_wpn.check_silencer", true ) then
-        local def_condition_shot_dec = get_float(
-          wpn:section(), "condition_shot_dec"
-        )
-        if silencer_mode then
-          local cond_shot_dec = def_condition_shot_dec * 4
-          ogse_wpn_utils.set_condition_shot_dec( wpn, cond_shot_dec )
-        else
-          ogse_wpn_utils.set_condition_shot_dec( wpn, def_condition_shot_dec )
-        end
+function check_silencer( cur_wpn )
+  if not cur_wpn.has_silencer then return end
+  local wpn           = cur_wpn.wpn
+  local silencer_mode = ogse_wpn_utils.get_silencer_flag( wpn )
+  if cur_wpn.silencer_mode ~= silencer_mode then
+    if get_bool( wpn:section(), "dsh_wpn.check_silencer", true ) then
+      local def_condition_shot_dec = get_float(
+        wpn:section(), "condition_shot_dec"
+      )
+      if silencer_mode then
+        local cond_shot_dec = def_condition_shot_dec * 4
+        ogse_wpn_utils.set_condition_shot_dec( wpn, cond_shot_dec )
+      else
+        ogse_wpn_utils.set_condition_shot_dec( wpn, def_condition_shot_dec )
       end
-      cur_wpn.silencer_mode = silencer_mode
-      ogse_signals.get_mgr():call( "on_wpn_silencer_mode", cur_wpn )
     end
+    cur_wpn.silencer_mode = silencer_mode
   end
 end
 
@@ -171,16 +160,15 @@ end
 function configure_low_rpm( cur_wpn )
   if cur_wpn.lowfire_mode and cur_wpn.lowfire_mode > 1 then
     local wpn = cur_wpn.wpn
-    local rpm
     -- уменьшать время выстрела нужно не после последнего выстрела, а после
     -- предпоследнего, т.к. движок уже вычислил время ожидания и новое время
     -- выстрела вступит в силу только через выстрел.
-    if cur_wpn.shot_n < cur_wpn.lowfire_mode - 1 then
-      rpm = 60 / cur_wpn.rpm
-    else
-      rpm = 60 / cur_wpn.rpm_low
+    local shot_n = wpn:get_weapon_m().shot_num
+    if shot_n == 0 then
+      ogse_wpn_utils.set_time_to_fire( wpn, 60 / cur_wpn.rpm )
+    elseif shot_n == cur_wpn.lowfire_mode - 1 then
+      ogse_wpn_utils.set_time_to_fire( wpn, 60 / cur_wpn.rpm_low )
     end
-    ogse_wpn_utils.set_time_to_fire( wpn, rpm )
   end
 end
 
@@ -205,12 +193,13 @@ end
 
 
 function get_zoom_body_state()
+  local aobj = get_actor_obj()
   return zoom_mode()
     and (
-      get_actor_obj():is_actor_crouch()
+      aobj:is_actor_crouch()
         and "zoom_crouch"
         or (
-          get_actor_obj():is_actor_creep() and "zoom_creep"
+          aobj:is_actor_creep() and "zoom_creep"
         )
         or "zoom_normal"
     )
@@ -218,58 +207,69 @@ function get_zoom_body_state()
 end
 
 
+function on_actor_weapon_start_firing( wpn )
+  local cur_wpn = get_wpn_info( wpn )
+  -- configure_high_rpm( cur_wpn )
+  configure_low_rpm( cur_wpn )
+  configure_fire_dispersion( cur_wpn )
+  check_silencer( cur_wpn )
+end
+
+
 local knife_anim_length = {}
 local knife_fire_t
 
-function on_actor_fire( t, state )
+function on_actor_weapon_fire( wpn )
+  local t = get_wpn_info( wpn )
+  configure_low_rpm( t )
   local fire_power_loss = t.fire_power_loss
-  if fire_power_loss < 0 then
-    if t.is_knife then
-      local sect = t.wpn:section()
-      if not knife_anim_length[ sect ] then
-        knife_anim_length[ sect ] = {}
-      end
-      local power_loss_weight = fire_power_loss * (
-        t.inv_weight > 1 and inv_weight or 1
-      )
-      local max_power_loss = 0
-      if state == weapon_states.fire2 then
-        max_power_loss = fire_power_loss * ( t.hit_power_2 / t.hit_power )
-      end
-      if knife_fire_t then knife_fire_t:stop() end
-      local anim_len = knife_anim_length[ sect ][ state ]
-      if anim_len then
-        knife_fire_t = dsh.timeout( anim_len / 2, function()
-          db.actor.power = power_loss_weight + max_power_loss
-          knife_fire_t   = nil
-        end )
-      else
-        db.actor.power = power_loss_weight + max_power_loss
-        local id     = t.id
-        local fire_t = time_global()
-        knife_fire_t = dsh.wait_condition(
-          function()
-            local item = db.actor:active_item()
-            return not (
-              item and item:id() == id
-              and item:get_hud_item_state() == state
-            )
-          end,
-          function()
-            local item = db.actor:active_item()
-            if item and item:id() == id then
-              knife_anim_length[ sect ][ state ] = time_global() - fire_t
-            end
-            knife_fire_t = nil
-          end
-        )
-      end
-    else
-      local zoom_bs = t.zoom_body_state
-      local k       = ( zoom_bs == "zoom_crouch" and 0.75  )
-        or ( zoom_bs == "zoom_creep" and 0.5 ) or 1
-      db.actor.power = fire_power_loss * k
+  if fire_power_loss >= 0 then return end
+  if t.is_knife then
+    local sect = wpn:section()
+    if not knife_anim_length[ sect ] then
+      knife_anim_length[ sect ] = {}
     end
+    local power_loss_weight = fire_power_loss * (
+      t.inv_weight > 1 and inv_weight or 1
+    )
+    local max_power_loss = 0
+    local state          = wpn:get_hud_item_state()
+    if state == weapon_states.fire2 then
+      max_power_loss = fire_power_loss * ( t.hit_power_2 / t.hit_power )
+    end
+    if knife_fire_t then knife_fire_t:stop() end
+    local anim_len = knife_anim_length[ sect ][ state ]
+    if anim_len then
+      knife_fire_t = dsh.timeout( anim_len / 2, function()
+        db.actor.power = power_loss_weight + max_power_loss
+        knife_fire_t   = nil
+      end )
+    else
+      db.actor.power = power_loss_weight + max_power_loss
+      local name   = t.name
+      local fire_t = time_global()
+      knife_fire_t = dsh.wait_condition(
+        function()
+          local item = db.actor:active_item()
+          return not (
+            item and item:name() == name
+            and item:get_hud_item_state() == state
+          )
+        end,
+        function()
+          local item = db.actor:active_item()
+          if item and item:name() == name then
+            knife_anim_length[ sect ][ state ] = time_global() - fire_t
+          end
+          knife_fire_t = nil
+        end
+      )
+    end
+  else
+    local zoom_bs = t.zoom_body_state
+    local k       = ( zoom_bs == "zoom_crouch" and 0.75  )
+      or ( zoom_bs == "zoom_creep" and 0.5 ) or 1
+    db.actor.power = fire_power_loss * k
   end
 end
 
@@ -316,9 +316,7 @@ function check_hidden_ammo( cur_wpn )
   then
     return
   end
-  if cur_wpn.binded:check_hidden_ammo() then
-    cur_wpn.ammo_n = 0
-  end
+  cur_wpn.binded:check_hidden_ammo()
   cur_wpn.binded.has_gl.loaded = false
 end
 
