@@ -2911,6 +2911,12 @@ end
 
 
 function set_weapons_fire( npc, enemy, weapon, override_vis, npc_rank )
+  if hit_timeout[ npc:id() ] and hit_timeout[ npc:id() ] > time_global() then
+    return
+  elseif hit_timeout[ npc:id() ] then
+    hit_timeout[ npc:id() ] = nil
+  end
+
   if
     enemy
     and ( enemy:alive() or ( is_armor( enemy ) and armor_alive( enemy ) ) )
@@ -2942,68 +2948,67 @@ function set_weapons_fire( npc, enemy, weapon, override_vis, npc_rank )
     end
     local distance = npc_pos:distance_to( be_pos )
 
-    local dir_enemy = utils.vector_copy_by_val( be_pos ):sub( npc_pos )
-    local aim_point = npc_pos --:add( dir_enemy:normalize() )
-    local rq = level.ray_query(
-      aim_point, dir_enemy, distance + 5, rq_target.rqtBoth, npc
-    )
-
-    if rq.result then
-      local dist = rq.range
-      local obj  = rq.object
-      local is_alive_mob = obj and ( IsStalker( obj ) or IsMonster( obj ) )
-        and obj:alive()
+    local rq = true
+    if is_armor( enemy ) and armor_alive( enemy ) then
+      rq           = false
+      type_of_fire = object.fire1
+    else
+      local enemy_cover       = enemy_covered_value( npc, enemy )
+      local weapon_unstrapped = npc:weapon_unstrapped()
+      local anim              = db.storage[ npc:id() ].state_mgr.animstate:state()
       if
-        obj and (
-          obj:id() == enemy:id()
-          or ( is_alive_mob and check_is_enemy( npc, obj, true ) )
-        )
+        ( not weapon_unstrapped ) or not_ready_states[ anim ]
+        or ( IsRPG( weapon ) and ( distance < 25 or enemy_cover < 0.3 ) )
       then
-        type_of_fire = object.fire1
-      else
-        if is_alive_mob then
-          -- log2(
-          --   "dsh: XRS_BATTLE_AI: RAYTRACE WRONG: %s -> %s, distance = %s: %s, dist = %s",
-          --   npc:name(), enemy:name(), distance, obj:name(), dist
-          -- )
-          type_of_fire = object.aim1
+        rq           = false
+        type_of_fire = object.aim1
+      end
+    end
+
+    if rq then
+      local dir_enemy = utils.vector_copy_by_val( be_pos ):sub( npc_pos )
+      local aim_point = npc_pos --:add( dir_enemy:normalize() )
+      rq = level.ray_query(
+        aim_point, dir_enemy, distance + 5, rq_target.rqtBoth, npc
+      )
+      if rq.result then
+        local dist = rq.range
+        local obj  = rq.object
+        local is_alive_mob = obj and ( IsStalker( obj ) or IsMonster( obj ) )
+          and obj:alive()
+        if
+          obj and (
+            obj:id() == enemy:id()
+            or ( is_alive_mob and check_is_enemy( npc, obj, true ) )
+          )
+        then
+          type_of_fire = object.fire1
         else
-          -- ’орошо бы здесь провер€ть пробиваемость материалов, что бы
-          -- непись не считал кусты прип€тсвием и стрел€л сквозь них.
-          -- «ачем здесь проверка in_hideout? ѕочему непись не должен
-          -- стрел€ть, если он находитс€ на своей cover точке? Ќаоборот же,
-          -- он зан€л оборонительную позицию и теперь может подавл€ть огнем.
-          if npc:see( enemy ) then --and not in_hideout( npc ) then
-            type_of_fire = object.fire1
+          if is_alive_mob then
+            -- log2(
+            --   "XRS_BATTLE_AI: RAYTRACE WRONG: %s -> %s, distance = %s: %s, dist = %s",
+            --   npc:name(), enemy:name(), distance, obj:name(), dist
+            -- )
+            type_of_fire = object.aim1
+          else
+            -- ’орошо бы здесь провер€ть пробиваемость материалов, что
+            -- бы непись не считал кусты преп€тствием и стрел€л сквозь
+            -- них. «ачем здесь проверка in_hideout? ѕочему непись не
+            -- должен стрел€ть, если он находитс€ на своей cover
+            -- точке? Ќаоборот же, он зан€л оборонительную позицию и
+            -- теперь может подавл€ть огнем.
+            if npc:see( enemy ) then --and not in_hideout( npc ) then
+              type_of_fire = object.fire1
+            end
           end
         end
+      else                      -- if res
+        -- log2(
+        --   "XRS_BATTLE_AI: RAYTRACE CHECK DOESN RETURN RESULT: %s -> %s, distance = %s",
+        --   npc:name(), enemy:name(), distance
+        -- )
+        type_of_fire = object.fire1
       end
-    else                      -- if res
-      -- log2(
-      --   "dsh: XRS_BATTLE_AI: RAYTRACE CHECK DOESN RETURN RESULT: %s -> %s, distance = %s",
-      --   npc:name(), enemy:name(), distance
-      -- )
-      type_of_fire = object.fire1
-    end
-
-    if is_armor( enemy ) and armor_alive( enemy ) then
-      type_of_fire = object.fire1
-    end
-
-    if hit_timeout[ npc:id() ] and hit_timeout[ npc:id() ] > time_global() then
-      type_of_fire = object.aim1
-    elseif hit_timeout[ npc:id() ] then
-      hit_timeout[ npc:id() ] = nil
-    end
-
-    local enemy_cover       = enemy_covered_value( npc, enemy )
-    local weapon_unstrapped = npc:weapon_unstrapped()
-    local anim              = db.storage[ npc:id() ].state_mgr.animstate:state()
-    if
-      ( not weapon_unstrapped ) or not_ready_states[ anim ]
-      or ( IsRPG( weapon ) and ( distance < 25 or enemy_cover < 0.3 ) )
-    then
-      type_of_fire = object.aim1
     end
 
     if type_of_fire == object.fire1 then
