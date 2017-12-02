@@ -667,7 +667,7 @@ dsh mod для ОП-2
 Основная часть:
 - https://yadi.sk/d/6xuKVU1w3Q9jf2
 
-Последнее обновление:
+Последнее обновление 20171201.2332:
 - https://drive.google.com/open?id=1kex-J7Yp55e0QX3xVHXRD2AKso7f6W_7
 
 
