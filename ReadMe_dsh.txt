@@ -711,6 +711,10 @@ r2_sun_lumscale_hemi 1.5
 Если все равно темно, то можно попробовать еще немного увеличить это
 значение.
 
+Советую в ярлык запуска добавить следующие параметры:
+
+  -nointro -noprefetch -smap2048
+
 
 Дополнения:
 
@@ -733,7 +737,10 @@ $mod_dir$   		= false|	false|	$fs_root$|		mods\
 
 Для удаления дополнения нужно удалить его файл из папки "mods".
 
-Сборка текстур из разных источников: https://yadi.sk/d/RQse9VW23GzhVM
+Сборка текстур из разных источников:
+- https://drive.google.com/open?id=1vMvDyoLHCalcavgLcO0ylmWYLt3s-kKy
+или
+- https://yadi.sk/d/RQse9VW23GzhVM
 Здесь собраны текстуры из паков от V92, adm-ral и что-то из Misery.
 
 
