@@ -36,11 +36,12 @@ local STATE_MOVE_HOME = 2
 
 class "battle_radius"
 function battle_radius:__init( obj, home_radius, home_vertex, onetime )
-  self.home_radius = home_radius
-  self.home_vertex = home_vertex
-  self.initialized = false
-  self.object      = obj
-  self.onetime     = onetime
+  self.home_changed = false
+  self.home_radius  = home_radius
+  self.home_vertex  = home_vertex
+  self.initialized  = false
+  self.object       = obj
+  self.onetime      = onetime
 end
 
 
@@ -48,6 +49,9 @@ function battle_radius:reset_scheme()
   self.state_current = STATE_ALIFE
   self.state_prev    = self.state_current
   xr_logic.mob_release( self.object )
+  if self.onetime then
+    self.startup_time = time_global() + math.random( 1000, 2000 )
+  end
 end
 
 
@@ -56,6 +60,9 @@ function battle_radius:update()
   if not self.initialized then
     self:reset_scheme()
     self.initialized = true
+  end
+  if self.startup_time and self.startup_time > time_global() then
+    return
   end
   self:select_state()
   self:execute_state()
@@ -66,17 +73,17 @@ function battle_radius:select_state()
   self.state_prev = self.state_current
 
   local home_node = self.home_vertex or db.actor:level_vertex_id()
-  ASSERT(
-    home_node,
-    "[%s]: %s: home_node = %s, self.home_vertex = %s",
-    script_name(), self.object:name(), tostring( home_node ),
-    tostring( self.home_vertex )
-  )
   if not self.object:accessible( home_node ) then
-    local vtemp = vector():set( 0, 0, 0 )
-    home_node, vtemp = self.object:accessible_nearest(
-      level.vertex_position( home_node ), vtemp
+    local pos = vector():set( 0, 0, 0 )
+    home_node = self.object:accessible_nearest(
+      level.vertex_position( home_node ), pos
     )
+    log2(
+      "[%s]: %s: home_vertex %s restricted, use %s instead",
+      script_name(), self.object:name(), self.home_vertex, home_node
+    )
+    self.home_changed = true
+    self.home_vertex  = home_node
   end
   self.home_node     = home_node
   self.home_position = level.vertex_position( self.home_node )
@@ -104,6 +111,33 @@ function battle_radius:select_state()
   else
     self.state_current = STATE_MOVE_HOME
   end
+
+  self:check_moving()
+end
+
+
+function battle_radius:check_moving()
+  if not ( self.onetime and self.state_current == STATE_MOVE_HOME ) then
+    return
+  end
+  if not self.check_time then
+    self.check_pos  = self.object:position()
+    self.check_time = time_global() + 1000
+    return
+  end
+  if self.check_time < time_global() then
+    local dist = self.object:position():distance_to( self.check_pos )
+    if dist < 0.1 then
+      log2(
+        "[%s]: %s: too slow: dist = %s",
+        script_name(), self.object:name(), dist
+      )
+      self.state_current = STATE_ALIFE
+    else
+      self.check_pos  = self.object:position()
+      self.check_time = time_global() + 1000
+    end
+  end
 end
 
 
@@ -124,9 +158,13 @@ function battle_radius:execute_state()
     return
   end
 
-  if self.state_current ~= STATE_ALIFE and self.state_prev == STATE_ALIFE then
+  if    
+    ( self.state_current ~= STATE_ALIFE and self.state_prev == STATE_ALIFE )
+    or self.home_changed
+  then
+    self.home_changed = false
     xr_logic.mob_capture( self.object, true )
-    local sobj = alife():object( self.object:id() )
+    local sobj = self.object:get_alife_object()
     if sobj then
       sobj.force_online = true
     end
@@ -134,9 +172,9 @@ function battle_radius:execute_state()
 
   if self.state_current == STATE_MOVE_HOME then
     if not self.object:action() then
-      action(
+      action_first(
         self.object,
-        move( move.run_fwd, self.home_node, self.home_position ),
+        move( move.run_fwd, self.home_node, self.home_position, 1 ),
         cond( cond.move_end )
       )
     end
