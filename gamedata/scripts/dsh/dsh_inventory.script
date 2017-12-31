@@ -1,14 +1,23 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
-  sm:subscribe({ signal = "on_key_down",   fun = this.on_key_down   })
+  sm:subscribe({ signal = "on_destroy",  fun = this.on_destroy  })
+  sm:subscribe({ signal = "on_key_down", fun = this.on_key_down })
   sm:subscribe({ signal = "on_mm_return_game", fun = this.on_mm_return_game })
-  sm:subscribe({ signal = "on_spawn",    fun = this.on_spawn        })
+  sm:subscribe({ signal = "on_spawn",    fun = this.on_spawn    })
 end
 
 
+local rummaged_wnd
 function on_spawn()
   rebind_keys()
+  rummaged_wnd = rummaged()
+end
+
+
+function on_destroy()
+  rummaged_wnd:dsh_unregister_self()
+  rummaged_wnd = nil
 end
 
 
@@ -32,21 +41,262 @@ function on_mm_return_game()
 end
 
 
-local open_t
 function on_key_down( key, bind )
-  if ( not dik_inv_open[ key ] ) or open_t then return end
-  level.disable_input()
+  if ( not dik_inv_open[ key ] ) or level.main_input_receiver() then
+    return
+  end
   db.actor:hide_weapon()
-  -- local snd = sound_object( "rykzack\\rykzack_open_long" )
-  -- snd:play( db.actor, 0, sound_object.s2d )
-  local open_t = dsh.timeout(
-    500, -- snd:length(),
+  rummaged_wnd:ReInitIcons()
+  level.start_stop_menu( rummaged_wnd, true )
+  return true
+end
+
+
+class "rummaged" ( dsh_ui.dshCUIScriptWnd )
+function rummaged:__init() super()
+  self:InitControls()
+  self:ReInitIcons()
+end
+
+function rummaged:__finalize() end
+
+
+function rummaged:InitControls()
+  -- Положение и размеры окна
+  self:Init( 246, 0, 533, 722 )
+	
+  local xml = CScriptXmlInit()
+  xml:ParseFile( "ui_cheat_inv_buttons.xml" )
+	
+  xml:InitStatic( "background_glass", self )
+  xml:InitStatic( "background", self )
+  -- Кнопка ВЫХОД
+  xml:InitStatic( "btn_exit_back", self )
+
+  -- Кнопка выхода
+  self:Register( xml:Init3tButton( "btn_stop", self ), "btn_stop" )
+  self:dshAddCallback(
+    "btn_stop", ui_events.BUTTON_CLICKED, self.on_quit, self
+  )
+
+  -- ставлю иконку костюма
+  self.body_icon    = xml:InitStatic( "body_icon", self )
+  self.rykzack_icon = xml:InitStatic( "rykzack_icon", self )
+
+  xml:InitStatic( "background_ruk", self )
+  -- Кнопка рюкзака (весь)
+  self:Register( xml:Init3tButton( "btn_ruk", self ), "btn_ruk" )
+  self:dshAddCallback(
+    "btn_ruk", ui_events.BUTTON_CLICKED, self.btn_ruk, self
+  )
+
+  xml:InitStatic( "background_wpn", self )
+  -- Кнопка рюкзака (ружья)
+  self:Register( xml:Init3tButton( "btn_wpn", self ), "btn_wpn" )
+  self:dshAddCallback(
+    "btn_wpn", ui_events.BUTTON_CLICKED, self.btn_wpn, self
+  )
+
+  xml:InitStatic( "background_belt", self )
+  -- Кнопка рюкзака (пояс)
+  self:Register( xml:Init3tButton( "btn_belt", self ), "btn_belt" )
+  self:dshAddCallback(
+    "btn_belt", ui_events.BUTTON_CLICKED, self.btn_belt, self
+  )
+
+  xml:InitStatic( "background_eat", self )
+  -- Кнопка рюкзака (мелочевка)
+  self:Register( xml:Init3tButton( "btn_eat", self ), "btn_eat" )
+  self:dshAddCallback(
+    "btn_eat", ui_events.BUTTON_CLICKED, self.btn_eat, self
+  )
+
+  self.sleep_bag_back = xml:InitStatic( "background_sleep", self )
+  self.sleep_bag_back:Show( false )
+  -- Кнопка спальника
+  self.sleep_bag_btn  = xml:Init3tButton( "btn_sleep", self )
+  self.sleep_bag_btn:Enable( false )
+  self:Register( self.sleep_bag_btn, "btn_sleep" )
+  self:dshAddCallback(
+    "btn_sleep", ui_events.BUTTON_CLICKED, self.btn_sleep, self
+  )
+
+  self.flaska_back = xml:InitStatic( "background_fl", self )
+  self.flaska_back:Show( false )
+  -- Кнопка фляжки
+  self.flaska_btn  = xml:Init3tButton( "btn_fl", self )
+  self.flaska_btn:Enable( false )
+  self:Register( self.flaska_btn, "btn_fl" )
+  self:dshAddCallback( "btn_fl", ui_events.BUTTON_CLICKED, self.btn_fl, self )
+end
+
+
+function rummaged:ReInitIcons()
+  -- определяю костюм и иконку 
+  local armor = db.actor:get_current_outfit()
+  local gg_icon
+  if armor then
+    -- костюм на ГГ есть
+    gg_icon = get_string(
+      armor:section(), "full_icon_name", "npc_icon_without_outfit"
+    )
+  else
+    --  костюма нет
+    gg_icon = "npc_icon_without_outfit"
+  end
+  self.body_icon:InitTexture( gg_icon )
+
+  -- ставлю иконку сидорка
+  local gg_rykzack
+  if armor then
+    gg_rykzack = get_string(
+      armor:section(), "backpack_type", "ui_icon_rykzack_1_brown"
+    )
+  else
+    gg_rykzack = "ui_icon_rykzack_1_brown"
+  end
+  self.rykzack_icon:InitTexture( gg_rykzack )
+
+  if amk_utils.inventory_search( "flaska", 1 ) then
+    self.flaska_back:Show(  true  )
+    self.flaska_btn:Enable( true  )
+  else
+    self.flaska_back:Show(  false )
+    self.flaska_btn:Enable( false )
+  end
+
+  if amk_utils.inventory_search( "matras", 1 ) then
+    self.sleep_bag_back:Show(  true  )
+    self.sleep_bag_btn:Enable( true  )
+  else
+    self.sleep_bag_back:Show(  false )
+    self.sleep_bag_btn:Enable( false )
+  end
+end
+
+
+function rummaged:OnKeyboard( dik, keyboard_action )
+  CUIScriptWnd.OnKeyboard( self, dik, keyboard_action )
+  if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
+    -- на выход повесим Esc
+    if dik == DIK_keys.DIK_ESCAPE then
+      self:on_quit()
+    end
+  end
+  return true
+end
+
+
+local podsumok_deselect = sound_object( "razgruzka\\podsumok_deselect" )
+
+function rummaged:on_quit()
+  podsumok_deselect:play( db.actor, 0, sound_object.s2d )
+  self:GetHolder():start_stop_menu( self, true )
+  db.actor:restore_weapon()
+end
+
+
+local rykzack_open_long = sound_object( "rykzack\\rykzack_open_long" )
+
+function rummaged:btn_ruk()
+  rykzack_open_long:play( db.actor, 0, sound_object.s2d )
+  dsh.timeout(
+    rykzack_open_long:length(),
     function()
       level.start_stop_menu( level.get_inventory_wnd(), true )
       db.actor:restore_weapon()
       level.enable_input()
-      open_t = nil
     end
   )
-  return true
+  level.disable_input()
+  self:GetHolder():start_stop_menu( self, true )
+  db.actor:iterate_inventory(
+    function( npc, obj )
+      set_item_inv_visible( obj )
+    end,
+    db.actor
+  )
+end
+
+
+function rummaged:show_inv_items( types )
+  local items = dsh_rukzak.get_actor_items( function() return true end )
+  for _, item in ipairs( items ) do
+    if types[ item.game_type]  then
+      for _, obj in ipairs( item.game_objs ) do
+        set_item_inv_visible( obj )
+      end
+    else
+      for _, obj in ipairs( item.game_objs ) do
+        set_item_inv_hidden( obj )
+      end
+    end
+  end
+  self:GetHolder():start_stop_menu( self, true )
+  level.start_stop_menu( level.get_inventory_wnd(), true )
+  db.actor:restore_weapon()
+end
+
+
+local wpn_types = {
+  [ "ammo"     ] = true,
+  [ "gl"       ] = true,
+  [ "grenade"  ] = true,
+  [ "knife"    ] = true,
+  [ "missile"  ] = true,
+  [ "scope"    ] = true,
+  [ "silencer" ] = true,
+  [ "weapon"   ] = true,
+}
+
+function rummaged:btn_wpn()
+  self:show_inv_items( wpn_types )
+end
+
+
+local belt_types = {
+  [ "artefact" ] = true,
+}
+
+function rummaged:btn_belt()
+  self:show_inv_items( belt_types )
+end
+
+
+local eat_types = {
+  [ "antirad"  ] = true,
+  [ "bottle"   ] = true,
+  [ "eatable"  ] = true,
+  [ "food"     ] = true,
+  [ "medkit"   ] = true,
+}
+
+function rummaged:btn_eat()
+  self:show_inv_items( eat_types )
+end
+
+
+function rummaged:btn_fl()
+  local found
+  db.actor:iterate_inventory(
+    function( npc, obj )
+      if obj:section() == "flaska" then
+        if ( not found ) or obj:condition() < found:condition() then
+          found = obj
+        end
+      end
+    end,
+    db.actor
+  )
+  ASSERT( found, "[%s]: flaska not found", script_name() )
+  self:GetHolder():start_stop_menu( self, true )
+  dsh_dirty_mask.on_use( found )
+  db.actor:restore_weapon()
+end
+
+
+function rummaged:btn_sleep()
+  self:GetHolder():start_stop_menu( self, true )
+  dsh_sleep.test_for_need_sleep_matras()
+  db.actor:restore_weapon()
 end
