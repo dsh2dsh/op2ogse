@@ -3,6 +3,10 @@
 function attach( sm ) -- для менеджера сигналов
   sm:subscribe({ signal = "on_first_update",   fun = this.on_first_update   })
   sm:subscribe({ signal = "on_mm_return_game", fun = this.on_mm_return_game })
+  sm:subscribe({
+    signal = "update_artefacts_on_belt", fun = this.update_artefacts_on_belt,
+    [ "script_name" ] = "ogse_actor_conditions_mgr.update_artefacts_on_belt"
+  })
 end
 
 
@@ -115,18 +119,7 @@ end
 
 has_overweight = false
 local cur_walk_accel = walk_accel - min_walk_accel
-local ext            = {
-  [ "alcohol_restore_speed"    ] = 0,
-  [ "bleeding_restore_speed"   ] = 0,
-  [ "health_restore_speed"     ] = 0,
-  [ "jump_speed_add"           ] = 0,
-  [ "power_restore_speed"      ] = 0,
-  [ "psy_health_restore_speed" ] = 0,
-  [ "radiation_restore_speed"  ] = 0,
-  [ "satiety_restore_speed"    ] = 0,
-  [ "sprint_koef_add"          ] = 0,
-  [ "walk_accel_add"           ] = 0,
-}
+local ext_walk_accel = 0
 local override_power = 1
 local use_overweight = true
 local overweight_k   = 0
@@ -136,163 +129,36 @@ function on_update()
   if not act.conditions.has_valid_time then return end
   local dt  = act.conditions:fdelta_time()
   if dt <= 0 then return end
-  for k, v in pairs( ext ) do
-    ext[ k ] = 0
-  end
-  ogse_signals.get_mgr():call( "on_before_actor_conditions_update", ext )
 
-  local aobj = get_actor_obj()
   -- учитываем здесь естественное оголодание, а также движковое (
   -- обнулять его нельзя, на нем основан показ свойств артефактов )
   local cur_satiety_v = satiety_v
     * ( 1 - math.min( act.health, override_power ) )
+  local aobj = get_actor_obj()
   if aobj:is_actor_sprinting() or aobj:is_actor_climbing() then
     cur_satiety_v = cur_satiety_v + satiety_v
   end
-  if act.health < 1 then
-    local belt_health_restore_speed = inventory.on_belt_restore_speed(
-      "health_restore_speed"
-    )
-    if belt_health_restore_speed > 0 then
-      cur_satiety_v = cur_satiety_v
-        + satiety_v * ( belt_health_restore_speed / satiety_health_v )
-    end
-  end
-  if act:get_bleeding() > 0 then
-    local belt_bleeding_restore_speed = inventory.on_belt_restore_speed(
-      "bleeding_restore_speed"
-    )
-    if belt_bleeding_restore_speed > 0 then
-      cur_satiety_v = cur_satiety_v
-        + satiety_v * ( belt_bleeding_restore_speed / wound_incarnation_v )
-    end
-  end
-  local cur_power_restore_speed = inventory.on_belt_restore_speed(
-    "power_restore_speed"
-  ) + ext.power_restore_speed
-  if cur_power_restore_speed > 0 then
-    cur_satiety_v = cur_satiety_v
-      + satiety_v * ( cur_power_restore_speed / satiety_power_v / 100 )
-  end
-  local summary_satiety_effect = cur_satiety_v
-    + inventory.on_belt_restore_speed( "satiety_restore_speed" )
-    + ext.satiety_restore_speed
-  local summary_health_effect            = ext.health_restore_speed
-  local summary_power_effect             = ext.power_restore_speed
-  local summary_bleeding_restore_effect  = ext.bleeding_restore_speed
-  local summary_psy_health_effect        = ext.psy_health_restore_speed
-  local summary_radiation_restore_effect = ext.radiation_restore_speed
-  local summary_alcohol_effect           = ext.alcohol_restore_speed
-  -- эффекты от брони
-  local armor = db.actor:get_current_outfit()
-  if armor then
-    local armor_ef = get_item_cond_effect( armor )
-    summary_satiety_effect = summary_satiety_effect + armor_ef.satiety_restore_speed
-    summary_health_effect  = summary_health_effect  + armor_ef.health_restore_speed
-    summary_power_effect   = summary_power_effect   + armor_ef.power_restore_speed
-    summary_bleeding_restore_effect = summary_bleeding_restore_effect
-      + armor_ef.bleeding_restore_speed
-  end
 
   -- эффекты, связанные c голодом
+  local summary_health_effect = 0
   if act.satiety < light_hunger_limit then
     local sadd = ( light_hunger_limit - act.satiety ) * satiety_k
     cur_stand_power = def_stand_power + sadd
+    if act.satiety < critical_hunger_limit then
+      local hadd = ( act.satiety - critical_hunger_limit )
+        * satiety_health_factor
+      summary_health_effect = summary_health_effect + hadd
+    end
   else
     cur_stand_power = def_stand_power
   end
 
-  if act.satiety < critical_hunger_limit then
-    local hadd = ( act.satiety - critical_hunger_limit )
-      * satiety_health_factor
-    summary_health_effect = summary_health_effect + hadd
-  end
-
   -- TODO: учесть потерю сил и здоровья от недосыпа
   --
-  --TODO: оптимизировать вычисление суммарного эффекта,
+  -- TODO: оптимизировать вычисление суммарного эффекта,
   -- сделать это только по факту изменения объектов на поясе
-  act.satiety = summary_satiety_effect * dt
-  act.health  = summary_health_effect  * dt
-  if not ogse_sleep_mgr.is_sleep_active() then
-    act.power = summary_power_effect * dt
-  end
-  if math.abs( summary_bleeding_restore_effect ) > 0 then
-    if act:get_bleeding() > 0 then
-      act:heal_wounds( summary_bleeding_restore_effect * dt )
-    end
-  end
-  act.radiation = summary_radiation_restore_effect * dt
-  if math.abs( summary_psy_health_effect ) > 0 then
-    act.psy_health = summary_psy_health_effect * dt
-  end
-  if math.abs( summary_alcohol_effect ) > 0 then
-    act.alcohol = summary_alcohol_effect * dt
-  end
-
-  cur_jump_speed  = override_jump_speed or (
-    jump_speed + ext.jump_speed_add
-  )
-  cur_sprint_koef = override_sprint_koef or (
-    sprint_koef + ext.sprint_koef_add
-  )
-
-  cur_walk_accel = walk_accel - min_walk_accel
-  if act.satiety < light_hunger_limit then
-    if not satiety_t then satiety_t = time_global() + 30000 end
-    if satiety_t < time_global() then
-      cur_walk_accel = cur_walk_accel * ( act.satiety / light_hunger_limit )
-    end
-  else
-    satiety_t = nil
-  end
-  if act.health < 0.9 then
-    if not health_t then health_t = time_global() + 30000 end
-    if health_t < time_global() then
-      cur_walk_accel = cur_walk_accel * ( act.health / 0.9 )
-    end
-  else
-    health_t = nil
-  end
-
-  if has_overweight and use_overweight then
-    local k2       = 1 - overweight_k
-    cur_walk_accel = cur_walk_accel * k2
-    new_cam_inert  = overweight_k
-    if k2 < 0.1 then
-      override_power = 0.1
-    else
-      override_power = k2
-    end
-  else
-    override_power = 1
-    new_cam_inert  = 0
-  end
-
-  if act.power < 0.8 then
-    local power_inert = 1 - act.power / 0.8
-    if power_inert > new_cam_inert then new_cam_inert = power_inert end
-    if act.power < 0.3 then
-      cur_walk_accel = cur_walk_accel * ( act.power / 0.3 )
-    end
-  end
-  cur_walk_accel = cur_walk_accel + ext.walk_accel_add
-
-  cur_jump_power = override_jump_power or def_jump_power
-  if act.satiety < light_hunger_limit and satiety_t < time_global() then
-    cur_jump_power = cur_jump_power + (
-      ( 0.4 - cur_jump_power ) * ( 1 - ( act.satiety / light_hunger_limit ) )
-    )
-  end
-  if act.health < 0.9 and health_t < time_global() then
-    cur_jump_power = cur_jump_power + (
-      ( 0.4 - cur_jump_power ) * ( 1 - ( act.health / 0.9 ) )
-    )
-    if act.health < 0.8 then
-      local health_inert = 0.8 - act.health
-      if health_inert > new_cam_inert then new_cam_inert = health_inert end
-    end
-  end
+  act.satiety = cur_satiety_v * dt
+  act.health  = summary_health_effect * dt
 end
 
 
@@ -336,11 +202,6 @@ end
 
 function apply_weight()
   ogse_signals.get_mgr():reschedule( 1000 )
-  local armor = db.actor:get_current_outfit()
-  local armor_ef
-  if armor then
-    armor_ef = get_item_cond_effect( armor )
-  end
   local inv_weight = db.actor:get_inventory_weight()
   local max_weight = db.actor:get_max_weight()
   if inv_weight > max_weight and use_overweight then
@@ -361,6 +222,65 @@ end
 
 function apply_conds()
   ogse_signals.get_mgr():reschedule( 1000 )
+
+  cur_walk_accel = walk_accel - min_walk_accel
+  local act = db.actor
+  if act.satiety < light_hunger_limit then
+    if not satiety_t then satiety_t = time_global() + 30000 end
+    if satiety_t < time_global() then
+      cur_walk_accel = cur_walk_accel * ( act.satiety / light_hunger_limit )
+    end
+  else
+    satiety_t = nil
+  end
+  if act.health < 0.9 then
+    if not health_t then health_t = time_global() + 30000 end
+    if health_t < time_global() then
+      cur_walk_accel = cur_walk_accel * ( act.health / 0.9 )
+    end
+  else
+    health_t = nil
+  end
+
+  if has_overweight and use_overweight then
+    local k2       = 1 - overweight_k
+    cur_walk_accel = cur_walk_accel * k2
+    new_cam_inert  = overweight_k
+    if k2 < 0.1 then
+      override_power = 0.1
+    else
+      override_power = k2
+    end
+  else
+    override_power = 1
+    new_cam_inert  = 0
+  end
+
+  if act.power < 0.8 then
+    local power_inert = 1 - act.power / 0.8
+    if power_inert > new_cam_inert then new_cam_inert = power_inert end
+    if act.power < 0.3 then
+      cur_walk_accel = cur_walk_accel * ( act.power / 0.3 )
+    end
+  end
+  cur_walk_accel = cur_walk_accel + ext_walk_accel
+
+  cur_jump_power = override_jump_power or def_jump_power
+  if act.satiety < light_hunger_limit and satiety_t < time_global() then
+    cur_jump_power = cur_jump_power + (
+      ( 0.4 - cur_jump_power ) * ( 1 - ( act.satiety / light_hunger_limit ) )
+    )
+  end
+  if act.health < 0.9 and health_t < time_global() then
+    cur_jump_power = cur_jump_power + (
+      ( 0.4 - cur_jump_power ) * ( 1 - ( act.health / 0.9 ) )
+    )
+    if act.health < 0.8 then
+      local health_inert = 0.8 - act.health
+      if health_inert > new_cam_inert then new_cam_inert = health_inert end
+    end
+  end
+
   set_sprint_factor( cur_sprint_koef )
   set_walk_accel(
     override_walk_accel or ( min_walk_accel + cur_walk_accel )
@@ -372,6 +292,7 @@ function apply_conds()
   end
   set_jump_power( cur_jump_power )
   set_stand_power( cur_stand_power )
+
   if new_cam_inert ~= cur_cam_inert then
     local cam_inert = dsh_cfg.get_data().cam_inert
     if new_cam_inert > 0 then
@@ -399,4 +320,106 @@ end
 
 function get_satiety_v()
   return satiety_v
+end
+
+
+local ext = {
+  [ "alcohol_restore_speed"    ] = 0,
+  [ "bleeding_restore_speed"   ] = 0,
+  [ "health_restore_speed"     ] = 0,
+  [ "jump_speed_add"           ] = 0,
+  [ "power_restore_speed"      ] = 0,
+  [ "psy_health_restore_speed" ] = 0,
+  [ "radiation_restore_speed"  ] = 0,
+  [ "satiety_restore_speed"    ] = 0,
+  [ "sprint_koef_add"          ] = 0,
+  [ "walk_accel_add"           ] = 0,
+}
+
+function update_artefacts_on_belt( dt )
+  for k, v in pairs( ext ) do
+    ext[ k ] = 0
+  end
+  ogse_signals.get_mgr():call( "on_before_actor_conditions_update", ext )
+
+  local act = db.actor
+  local cur_satiety_v = 0
+  if act.health < 1 then
+    local belt_health_restore_speed = inventory.on_belt_restore_speed(
+      "health_restore_speed"
+    )
+    if belt_health_restore_speed > 0 then
+      cur_satiety_v = cur_satiety_v
+        + satiety_v * ( belt_health_restore_speed / satiety_health_v )
+    end
+  end
+
+  if act:get_bleeding() > 0 then
+    local belt_bleeding_restore_speed = inventory.on_belt_restore_speed(
+      "bleeding_restore_speed"
+    )
+    if belt_bleeding_restore_speed > 0 then
+      cur_satiety_v = cur_satiety_v
+        + satiety_v * ( belt_bleeding_restore_speed / wound_incarnation_v )
+    end
+  end
+
+  local cur_power_restore_speed = inventory.on_belt_restore_speed(
+    "power_restore_speed"
+  ) + ext.power_restore_speed
+  if cur_power_restore_speed > 0 then
+    cur_satiety_v = cur_satiety_v
+      + satiety_v * ( cur_power_restore_speed / satiety_power_v / 100 )
+  end
+
+  local summary_satiety_effect = cur_satiety_v
+    + inventory.on_belt_restore_speed( "satiety_restore_speed" )
+    + ext.satiety_restore_speed
+  local summary_health_effect            = ext.health_restore_speed
+  local summary_power_effect             = ext.power_restore_speed
+  local summary_bleeding_restore_effect  = ext.bleeding_restore_speed
+  local summary_psy_health_effect        = ext.psy_health_restore_speed
+  local summary_radiation_restore_effect = ext.radiation_restore_speed
+  local summary_alcohol_effect           = ext.alcohol_restore_speed
+
+  -- эффекты от брони
+  local armor = db.actor:get_current_outfit()
+  if armor then
+    local armor_ef = get_item_cond_effect( armor )
+    summary_satiety_effect = summary_satiety_effect + armor_ef.satiety_restore_speed
+    summary_health_effect  = summary_health_effect  + armor_ef.health_restore_speed
+    summary_power_effect   = summary_power_effect   + armor_ef.power_restore_speed
+    summary_bleeding_restore_effect = summary_bleeding_restore_effect
+      + armor_ef.bleeding_restore_speed
+  end
+
+  act.health    = summary_health_effect * dt
+  act.radiation = summary_radiation_restore_effect * dt
+  act.satiety   = cur_satiety_v * dt
+
+  if not ogse_sleep_mgr.is_sleep_active() then
+    act.power = summary_power_effect * dt
+  end
+
+  if math.abs( summary_bleeding_restore_effect ) > 0 then
+    if act:get_bleeding() > 0 then
+      act:heal_wounds( summary_bleeding_restore_effect * dt )
+    end
+  end
+
+  if math.abs( summary_psy_health_effect ) > 0 then
+    act.psy_health = summary_psy_health_effect * dt
+  end
+
+  if math.abs( summary_alcohol_effect ) > 0 then
+    act.alcohol = summary_alcohol_effect * dt
+  end
+
+  cur_jump_speed  = override_jump_speed or (
+    jump_speed + ext.jump_speed_add
+  )
+  cur_sprint_koef = override_sprint_koef or (
+    sprint_koef + ext.sprint_koef_add
+  )
+  ext_walk_accel  = ext.walk_accel_add
 end
