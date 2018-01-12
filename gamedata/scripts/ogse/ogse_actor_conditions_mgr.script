@@ -86,10 +86,6 @@ function on_first_update()
   end
   local sm = ogse_signals.get_mgr()
   sm:subscribe({
-    signal = "on_update", fun = this.on_update,
-    [ "script_name" ] = "ogse_actor_conditions_mgr.on_update"
-  })
-  sm:subscribe({
     signal = "on_update", fun = this.apply_weight,
     [ "script_name" ] = "ogse_actor_conditions_mgr.apply_weight"
   })
@@ -124,14 +120,26 @@ local override_power = 1
 local use_overweight = true
 local overweight_k   = 0
 
-function on_update()
-  local act = db.actor
-  if not act.conditions.has_valid_time then return end
-  local dt  = act.conditions:fdelta_time()
-  if dt <= 0 then return end
+local ext = {
+  [ "alcohol_restore_speed"    ] = 0,
+  [ "bleeding_restore_speed"   ] = 0,
+  [ "health_restore_speed"     ] = 0,
+  [ "jump_speed_add"           ] = 0,
+  [ "power_restore_speed"      ] = 0,
+  [ "psy_health_restore_speed" ] = 0,
+  [ "radiation_restore_speed"  ] = 0,
+  [ "satiety_restore_speed"    ] = 0,
+  [ "sprint_koef_add"          ] = 0,
+  [ "walk_accel_add"           ] = 0,
+}
 
-  -- учитываем здесь естественное оголодание, а также движковое (
-  -- обнулять его нельзя, на нем основан показ свойств артефактов )
+function update_artefacts_on_belt( dt )
+  for k, v in pairs( ext ) do
+    ext[ k ] = 0
+  end
+  ogse_signals.get_mgr():call( "on_before_actor_conditions_update", ext )
+
+  local act = db.actor
   local cur_satiety_v = satiety_v
     * ( 1 - math.min( act.health, override_power ) )
   local aobj = get_actor_obj()
@@ -140,7 +148,7 @@ function on_update()
   end
 
   -- эффекты, связанные c голодом
-  local summary_health_effect = 0
+  local summary_health_effect = ext.health_restore_speed
   if act.satiety < light_hunger_limit then
     local sadd = ( light_hunger_limit - act.satiety ) * satiety_k
     cur_stand_power = def_stand_power + sadd
@@ -153,12 +161,70 @@ function on_update()
     cur_stand_power = def_stand_power
   end
 
-  -- TODO: учесть потерю сил и здоровья от недосыпа
-  --
-  -- TODO: оптимизировать вычисление суммарного эффекта,
-  -- сделать это только по факту изменения объектов на поясе
-  act.satiety = cur_satiety_v * dt
-  act.health  = summary_health_effect * dt
+  if act.health < 1 then
+    local belt_health_restore_speed = inventory.on_belt_restore_speed(
+      "health_restore_speed"
+    )
+    if belt_health_restore_speed > 0 then
+      cur_satiety_v = cur_satiety_v
+        + satiety_v * ( belt_health_restore_speed / satiety_health_v )
+    end
+  end
+
+  if act:get_bleeding() > 0 then
+    local belt_bleeding_restore_speed = inventory.on_belt_restore_speed(
+      "bleeding_restore_speed"
+    )
+    if belt_bleeding_restore_speed > 0 then
+      cur_satiety_v = cur_satiety_v
+        + satiety_v * ( belt_bleeding_restore_speed / wound_incarnation_v )
+    end
+  end
+
+  local cur_power_restore_speed = inventory.on_belt_restore_speed(
+    "power_restore_speed"
+  ) + ext.power_restore_speed
+  if cur_power_restore_speed > 0 then
+    cur_satiety_v = cur_satiety_v
+      + satiety_v * ( cur_power_restore_speed / satiety_power_v / 100 )
+  end
+
+  local summary_satiety_effect           = cur_satiety_v + ext.satiety_restore_speed
+  local summary_power_effect             = ext.power_restore_speed
+  local summary_bleeding_restore_effect  = ext.bleeding_restore_speed
+  local summary_psy_health_effect        = ext.psy_health_restore_speed
+  local summary_radiation_restore_effect = ext.radiation_restore_speed
+  local summary_alcohol_effect           = ext.alcohol_restore_speed
+
+  act.health    = summary_health_effect * dt
+  act.radiation = summary_radiation_restore_effect * dt
+  act.satiety   = summary_satiety_effect * dt
+
+  if not ogse_sleep_mgr.is_sleep_active() then
+    act.power = summary_power_effect * dt
+  end
+
+  if math.abs( summary_bleeding_restore_effect ) > 0 then
+    if act:get_bleeding() > 0 then
+      act:heal_wounds( summary_bleeding_restore_effect * dt )
+    end
+  end
+
+  if math.abs( summary_psy_health_effect ) > 0 then
+    act.psy_health = summary_psy_health_effect * dt
+  end
+
+  if math.abs( summary_alcohol_effect ) > 0 then
+    act.alcohol = summary_alcohol_effect * dt
+  end
+
+  cur_jump_speed  = override_jump_speed or (
+    jump_speed + ext.jump_speed_add
+  )
+  cur_sprint_koef = override_sprint_koef or (
+    sprint_koef + ext.sprint_koef_add
+  )
+  ext_walk_accel  = ext.walk_accel_add
 end
 
 
@@ -320,93 +386,4 @@ end
 
 function get_satiety_v()
   return satiety_v
-end
-
-
-local ext = {
-  [ "alcohol_restore_speed"    ] = 0,
-  [ "bleeding_restore_speed"   ] = 0,
-  [ "health_restore_speed"     ] = 0,
-  [ "jump_speed_add"           ] = 0,
-  [ "power_restore_speed"      ] = 0,
-  [ "psy_health_restore_speed" ] = 0,
-  [ "radiation_restore_speed"  ] = 0,
-  [ "satiety_restore_speed"    ] = 0,
-  [ "sprint_koef_add"          ] = 0,
-  [ "walk_accel_add"           ] = 0,
-}
-
-function update_artefacts_on_belt( dt )
-  for k, v in pairs( ext ) do
-    ext[ k ] = 0
-  end
-  ogse_signals.get_mgr():call( "on_before_actor_conditions_update", ext )
-
-  local act = db.actor
-  local cur_satiety_v = 0
-  if act.health < 1 then
-    local belt_health_restore_speed = inventory.on_belt_restore_speed(
-      "health_restore_speed"
-    )
-    if belt_health_restore_speed > 0 then
-      cur_satiety_v = cur_satiety_v
-        + satiety_v * ( belt_health_restore_speed / satiety_health_v )
-    end
-  end
-
-  if act:get_bleeding() > 0 then
-    local belt_bleeding_restore_speed = inventory.on_belt_restore_speed(
-      "bleeding_restore_speed"
-    )
-    if belt_bleeding_restore_speed > 0 then
-      cur_satiety_v = cur_satiety_v
-        + satiety_v * ( belt_bleeding_restore_speed / wound_incarnation_v )
-    end
-  end
-
-  local cur_power_restore_speed = inventory.on_belt_restore_speed(
-    "power_restore_speed"
-  ) + ext.power_restore_speed
-  if cur_power_restore_speed > 0 then
-    cur_satiety_v = cur_satiety_v
-      + satiety_v * ( cur_power_restore_speed / satiety_power_v / 100 )
-  end
-
-  local summary_satiety_effect           = cur_satiety_v + ext.satiety_restore_speed
-  local summary_health_effect            = ext.health_restore_speed
-  local summary_power_effect             = ext.power_restore_speed
-  local summary_bleeding_restore_effect  = ext.bleeding_restore_speed
-  local summary_psy_health_effect        = ext.psy_health_restore_speed
-  local summary_radiation_restore_effect = ext.radiation_restore_speed
-  local summary_alcohol_effect           = ext.alcohol_restore_speed
-
-  act.health    = summary_health_effect * dt
-  act.radiation = summary_radiation_restore_effect * dt
-  act.satiety   = cur_satiety_v * dt
-
-  if not ogse_sleep_mgr.is_sleep_active() then
-    act.power = summary_power_effect * dt
-  end
-
-  if math.abs( summary_bleeding_restore_effect ) > 0 then
-    if act:get_bleeding() > 0 then
-      act:heal_wounds( summary_bleeding_restore_effect * dt )
-    end
-  end
-
-  if math.abs( summary_psy_health_effect ) > 0 then
-    act.psy_health = summary_psy_health_effect * dt
-  end
-
-  if math.abs( summary_alcohol_effect ) > 0 then
-    act.alcohol = summary_alcohol_effect * dt
-  end
-
-  cur_jump_speed  = override_jump_speed or (
-    jump_speed + ext.jump_speed_add
-  )
-  cur_sprint_koef = override_sprint_koef or (
-    sprint_koef + ext.sprint_koef_add
-  )
-  ext_walk_accel  = ext.walk_accel_add
 end
