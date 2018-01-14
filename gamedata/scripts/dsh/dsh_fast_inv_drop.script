@@ -21,10 +21,10 @@ local mandatory_items = {
 
 
 function attach( sm )
-  sm:subscribe({ signal = "on_key_down",   fun = this.on_key_down   })
-  sm:subscribe({ signal = "on_rukzak_use", fun = this.on_rukzak_use })
+  sm:subscribe({ signal = "on_key_down",   fun = this.on_key_down })
   sm:subscribe({ signal = "on_mm_return_game", fun = this.on_mm_return_game })
-  sm:subscribe({ signal = "on_spawn",    fun = this.on_spawn        })
+  sm:subscribe({ signal = "on_take",       fun = this.on_take     })
+  sm:subscribe({ signal = "on_spawn",      fun = this.on_spawn    })
 end
 
 
@@ -66,13 +66,19 @@ function on_key_down( key, bind )
   local item = db.actor:object( "treasure_item" )
   if item then
     db.actor:hide_weapon()
+    db.eat = true
     local snd = sound_object( "rykzack\\drop_rykzak_" .. math.random( 4 ) )
     snd:play( db.actor, 0, sound_object.s2d )
     drop_t = dsh.timeout(
       snd:length(), function()
-        drop_inventory( item )
-        db.actor:restore_weapon()
-        drop_t = nil
+        drop_shadow_inventory(
+          item,
+          function()
+            db.eat = false
+            db.actor:restore_weapon()
+            drop_t = nil
+          end
+        )
       end
     )
   end
@@ -80,37 +86,30 @@ function on_key_down( key, bind )
 end
 
 
-function on_rukzak_use( obj )
-  if drop_t then return end
-  local id       = obj:id()
-  local prefix   = "dsh_rukzak." .. id
-  local inv_drop = ogse.load_var( prefix .. ".inv_drop", false, "bool" )
-  if inv_drop then
-    db.actor:hide_weapon()
-    local snd = sound_object( "rykzack\\give_rykzak_2" )
-    snd:play( db.actor, 0, sound_object.s2d )
-    ogse.remove_item( obj )
-    drop_t = dsh.timeout(
-      snd:length() * 1.15, function()
-        move_to_inventory( id )
-        db.actor:restore_weapon()
-        drop_t = nil
-      end
-    )
-    return true
-  end
+local dropping = false
+
+function drop_shadow_inventory( item, done_f )
+  local sobj = ogse.spawn_item_in_inv( "shadow_inventory" )
+  sobj = alife():object( sobj.id )
+  sobj:used_ai_locations( false )
+  alife():set_switch_online(  sobj.id, true  )
+  alife():set_switch_offline( sobj.id, false )
+  level.client_spawn_manager():add(
+    sobj.id, -1, function( id, obj )
+      fill_shadow_inventory( item, obj )
+      ogse.remove_item_from_inventory( item )
+      dropping = true
+      local pos = vector():mad( db.actor:position(), db.actor:direction(), -0.5 )
+      pos.y = pos.y + 1
+      db.actor:drop_item_and_teleport( obj, pos )
+      ogse.save_var( "dsh_fast_inv_drop.dropped", true )
+      done_f()
+    end
+  )
 end
 
 
-function drop_inventory( item )
-  local real = get_string( item:section(), "real_item_section" )
-  local pos  = db.actor:position()
-  local new  = alife():create(
-    real, pos, db.actor:level_vertex_id(), db.actor:game_vertex_id()
-  )
-  local sobj = alife():object( new.id )
-  sobj:used_ai_locations( false )
-  ogse.remove_item_from_inventory( item )
+function fill_shadow_inventory( item, box )
   local break_vodka  = (
     get_actor_obj():is_actor_running()
     or get_actor_obj():is_actor_sprinting()
@@ -125,8 +124,7 @@ function drop_inventory( item )
         if need_ammo[ obj:section() ] or ignore_items[ obj:id() ] then
           return false
         elseif obj:section() == "vodka" and break_vodka then
-          local k = ( 2 + level.get_game_difficulty() ) / 10
-          if math.random() < k then
+          if math.random() < 0.5 then
             table.insert( broken_vodka, obj )
             return false
           end
@@ -139,9 +137,6 @@ function drop_inventory( item )
     for _, obj in ipairs( broken_vodka ) do
       ogse.remove_item_from_inventory( obj )
     end
-    local snd = sound_object( "material\\bottle\\collide\\bottle_break_1" )
-    snd:play( db.actor, 0, sound_object.s2d )
-    dsh.timeout( snd:length() * 1.1, dsh.say_blin )
   end
   local has_metka = false
   local has_zamok = false
@@ -152,21 +147,67 @@ function drop_inventory( item )
       elseif obj:section() == "amk_metka" then
         has_metka = true
       end
-      ogse.remove_item_from_inventory( obj )
+      db.actor:transfer_item( obj, box )
     end
   end
+  if table.getn( broken_vodka ) > 0 then
+    local snd = sound_object( "material\\bottle\\collide\\bottle_break_1" )
+    snd:play( db.actor, 0, sound_object.s2d )
+    dsh.timeout( snd:length() * 1.1, dsh.say_blin )
+  end
   if has_metka then
-    level.map_add_object_spot_ser( new.id, "habar_location", "аўъчръ" )
-    ogse.save_var(
-      "dsh_rukzak." .. new.id .. ".metka", "аўъчръ"
-    )
+    level.map_add_object_spot_ser( box:id(), "habar_location", "аўъчръ" )
   end
-  ogse.save_var( "dsh_rukzak." .. new.id .. ".zamok", has_zamok )
   if has_zamok then
-    amk_offline_alife.protected.ids[ new.id ] = 1
+    amk_offline_alife.protected.ids[ box:id() ] = 1
   end
-  ogse.save_var( "dsh_rukzak." .. new.id .. ".inv_drop", true )
-  dsh_rukzak.save_rukzak( new.id, actor_items )
+end
+
+
+function on_take( obj )
+  if obj:section() ~= "shadow_inventory" then return end
+  if dropping then
+    dropping = false
+    return true
+  end
+  db.actor:hide_weapon()
+  db.eat = true
+  local snd = sound_object( "rykzack\\give_rykzak_2" )
+  snd:play( db.actor, 0, sound_object.s2d )
+  drop_t = dsh.timeout(
+    snd:length() * 1.15, function()
+      take_shadow_inventory(
+        obj,
+        function()
+          db.eat = false
+          db.actor:restore_weapon()
+          drop_t = nil
+        end
+      )
+    end
+  )
+  return true
+end
+
+
+function take_shadow_inventory( box, done_f )
+  local cnt = box:object_count()
+  if cnt > 0 then
+    local items = {}
+    for i = 0, box:object_count() - 1 do
+      table.insert( items, box:object( i ) )
+    end
+    for _, obj in ipairs( items ) do
+      box:transfer_item( obj, box:parent() )
+    end
+  end
+  amk_offline_alife.protected.ids[ box:id() ] = nil
+  ogse.remove_item( box )
+  ogse.delete_var( "dsh_fast_inv_drop.dropped" )
+  local sobj = dsh_rukzak.spawn_item_in_inv( "treasure_item" )
+  level.client_spawn_manager():add(
+    sobj.id, -1, function( id, obj ) done_f() end
+  )
 end
 
 
@@ -238,60 +279,4 @@ function mandatory_filter( items )
     end
   end
   return filtered
-end
-
-
-function move_to_inventory( rukzak )
-  local items = dsh_rukzak.load_rukzak( rukzak )
-  for _, item in ipairs( items ) do
-    while item.count > 0 do
-      local sobj
-      if item.game_type == "ammo" then
-        local box_size = dsh_rukzak.get_ammo_box_size( item.section )
-        if item.count > box_size then
-          sobj = dsh_rukzak.spawn_ammo_in_inv( item.section, box_size )
-          item.count = item.count - box_size
-        else
-          sobj = dsh_rukzak.spawn_ammo_in_inv( item.section, item.count )
-          item.count = 0
-        end
-      else
-        if item.game_type == "weapon" then
-          sobj = dsh_rukzak.spawn_weapon_in_inv( item.section, item.info )
-        else
-          sobj = dsh_rukzak.spawn_item_in_inv( item.section )
-        end
-        if
-          string.find( item.section, "arc_art_box_", 1, true )
-          or dsh.is_artefact( item.section )
-          or item.game_type == "outfit"
-        then
-          local pk = get_netpk( sobj, 1 )
-          ASSERT( ( pk and pk:isOk() ), "can't read netpacket of %s", sobj:name() )
-          local data  = pk:get()
-          if string.find( item.section, "arc_art_box_", 1, true ) then
-            data.custom_data:setStringRaw( item.info or "" )
-          else
-            data.custom_data:setString(    item.info or "" )
-          end
-          pk:set( data )
-        end
-        item.count = item.count - 1
-      end
-      if item.condition < 100 then
-        level.client_spawn_manager():add(
-          sobj.id, -1, function( id, obj )
-            dsh.set_condition( obj, item.condition / 100 )
-          end
-        )
-      end
-      if item.count == 0 then
-        if item.section == "zamok" then
-          amk_offline_alife.protected.ids[ rukzak ] = nil
-        end
-      end
-    end
-  end
-  dsh_rukzak.save_rukzak( rukzak, {} )
-  dsh_rukzak.spawn_item_in_inv( "treasure_item" )
 end
