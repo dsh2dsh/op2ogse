@@ -15,6 +15,7 @@ function attach( sm ) -- для менеджера сигналов
   })
   sm:subscribe({ signal = "on_key_down",       fun = this.on_key_down       })
   sm:subscribe({ signal = "on_mm_return_game", fun = this.on_mm_return_game })
+  sm:subscribe({ signal = "on_save",           fun = this.on_save           })
   sm:subscribe({ signal = "on_spawn",          fun = this.on_spawn          })
 end
 
@@ -41,33 +42,37 @@ local cfg = {
 
 local restore_speeds = {
   [ "alcohol_restore_speed"    ] = {
-    [ "apply" ] = false,
+    [ "ttl"   ] = 0,
     [ "value" ] = 0,
   },
   [ "health_restore_speed"     ] = {
-    [ "apply" ] = false,
+    [ "ttl"   ] = 0,
     [ "value" ] = 0,
   },
   [ "power_restore_speed"      ] = {
-    [ "apply" ] = false,
+    [ "ttl"   ] = 0,
     [ "value" ] = 0,
   },
   [ "psy_health_restore_speed" ] = {
-    [ "apply" ] = false,
+    [ "ttl"   ] = 0,
     [ "value" ] = 0,
   },
   [ "radiation_restore_speed"  ] = {
-    [ "apply" ] = false,
+    [ "ttl"   ] = 0,
     [ "value" ] = 0,
   },
 }
 
 
-function on_actor_conditions_update( ext )
+function on_actor_conditions_update( ext, dt )
   for k, v in pairs( restore_speeds ) do
-    if v.apply then
+    if v.ttl > 0 then
       ASSERT( ext[ k ], "%s not found", k )
       ext[ k ] = ext[ k ] + v.value
+      v.ttl = v.ttl - dt
+      if v.ttl <= 0 then
+        on_timer_end( k )
+      end
     end
   end
 end
@@ -77,10 +82,8 @@ local snd_in_use
 function on_spawn()
   for k, v in pairs( restore_speeds ) do
     local tname = "dsh_medkit." .. k
-    if ogse_st_mgr.timer_exists( tname ) then
-      restore_speeds[ k ].apply = true
-      restore_speeds[ k ].value = ogse.load_var( tname )
-    end
+    v.ttl   = ogse.load_var_safe( tname .. ".ttl" ) or 0
+    v.value = ogse.load_var_safe( tname ) or 0
   end
   local pp = ogse.load_var_safe( "dsh_medkit.pp" )
   if pp then
@@ -94,6 +97,19 @@ function on_spawn()
     )
   end
   rebind_use_medkit()
+end
+
+
+function on_save()
+  for k, v in pairs( restore_speeds ) do
+    if v.ttl > 0 then
+      ogse.save_var( "dsh_medkit." .. k .. ".ttl", v.ttl   )
+      ogse.save_var( "dsh_medkit." .. k,           v.value )
+    else
+      ogse.delete_var( "dsh_medkit." .. k )
+      ogse.delete_var( "dsh_medkit." .. k .. ".ttl" )
+    end
+  end
 end
 
 
@@ -170,37 +186,30 @@ end
 
 
 function process( sect, v, rs_name, use_negative )
+  local t  = restore_speeds[ rs_name ]
   local hl = get_float( sect, "dsh_medkit.how_long", how_long )
   local restore_speed = v / hl
-  local tname         = "dsh_medkit." .. rs_name
-  if ogse_st_mgr.timer_exists( tname ) then
-    local cur = ogse.load_var( tname )
+  if t.ttl > 0 then
     if
-      ( restore_speed < cur and not use_negative )
-      or ( restore_speed > cur  and use_negative )
+      ( restore_speed < t.value and not use_negative )
+      or ( restore_speed > t.value  and use_negative )
     then
       return false
     end
-    ogse_st_mgr.get_timer( tname ):stop()
   end
-  restore_speeds[ rs_name ].apply = true
-  restore_speeds[ rs_name ].value = restore_speed
-  ogse.save_var( tname, restore_speed, "float" )
-  ogse_st_mgr.delayed_fun_start( tname )
-    :set_gdelay( hl )
-    :init( "dsh_medkit.on_timer_end", rs_name )
-    :start( true )
+  t.ttl   = hl
+  t.value = restore_speed
   return true
 end
 
 
 function on_timer_end( rs_name )
-  restore_speeds[ rs_name ].apply = false
-  restore_speeds[ rs_name ].value = 0
-  ogse.delete_var( "dsh_medkit." .. rs_name )
+  local t = restore_speeds[ rs_name ]
+  t.ttl   = 0
+  t.value = 0
   local stop_pp, stop_snd = true, true
   for k, v in pairs( restore_speeds ) do
-    if v.apply then
+    if v.ttl > 0 then
       stop_pp, stop_snd = false, false
       break
     end
@@ -220,7 +229,7 @@ end
 
 
 function restoring( rs_name )
-  return restore_speeds[ rs_name ].apply
+  return restore_speeds[ rs_name ].ttl > 0
 end
 
 
