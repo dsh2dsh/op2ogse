@@ -17,7 +17,7 @@ local close_combat_distance     = 15 -- дистанция ближнего боя
 -- дистанция когда бой уже не считается ближним
 local distant_combat_distance   = 35
 -- максимальная адекватная дистанция огневого боя
-local maximum_firefight_dist    = ( level.get_game_difficulty() + 1 ) * 50
+local maximum_firefight_dist    = 200
 local sound_prob                = 0.1   -- вероятность сказать фразу
 local cooldown_time             = 20000 -- время запрета лута после боя
 -- интервал реприоретизации, мсек - нельзя делать слишком низким -
@@ -46,13 +46,6 @@ hit_timeout = {}
 -- локации где можно атаковать БТР и вертолеты
 local armor_allowed_locations = {}
 
-local game_difficulty_by_num = {
-  [ 0 ] = "gd_novice",
-  [ 1 ] = "gd_stalker",
-  [ 2 ] = "gd_veteran",
-  [ 3 ] = "gd_master",
-}
-
 -- состояния не готовности к огню, нужно заставить встать перед
 -- началом стрельбы
 local not_ready_states = {
@@ -64,9 +57,6 @@ local not_ready_states = {
   [ "guard"    ] = true,
   [ "patrol"   ] = true,
 }
-
-local game_difficulty = level.get_game_difficulty()
-local diff_level      = game_difficulty_by_num[ game_difficulty ]
 
 -- рестрикшены, которые нельзя восстанавливать если они были сняты,
 -- находятся в скриптe _g
@@ -155,127 +145,40 @@ end
 
 
 --- время входа в бой
-local intros_by_diff = {
-  [ "gd_novice" ] = {
-    [ "novice"      ] = 700,
-    [ "experienced" ] = 600,
-    [ "veteran"     ] = 500,
-    [ "master"      ] = 400,
-  },
-  [ "gd_stalker" ] = {
-    [ "novice"      ] = 600,
-    [ "experienced" ] = 500,
-    [ "veteran"     ] = 400,
-    [ "master"      ] = 300,
-  },
-  [ "gd_veteran" ] = {
-    [ "novice"      ] = 500,
-    [ "experienced" ] = 400,
-    [ "veteran"     ] = 300,
-    [ "master"      ] = 200,
-  },
-  [ "gd_master" ] = {
-    [ "novice"      ] = 400,
-    [ "experienced" ] = 300,
-    [ "veteran"     ] = 200,
-    [ "master"      ] = 100,
-  },
+local intros = {
+  [ "novice"      ] = 400,
+  [ "experienced" ] = 300,
+  [ "veteran"     ] = 200,
+  [ "master"      ] = 100,
 }
-local intros = intros_by_diff[ diff_level ]
 
 --- время на прицеливание
 --- для эффективной стрельбы из дробовика необходимо,
 --- чтобы выдерживался интервал между выстрелами,
 --- иначе подброс ствола испортит всю картину
 --- для новичков логично этот параметр сделать низким и увеличивать с опытом
-local times_to_aim_by_diff = {
-  [ "gd_novice" ] = {
-    ["novice"      ] = {
-      shotgun = 550, sniper = 2000, other = 550, rpg = 5500,
-    },
-    ["experienced" ] = {
-      shotgun = 500, sniper = 1500, other = 500, rpg = 5000,
-    },
-    ["veteran"     ] = {
-      shotgun = 450, sniper = 1100, other = 450, rpg = 4500,
-    },
-    ["master"      ] = {
-      shotgun = 400, sniper =  800, other = 400, rpg = 4000,
-    },
+local time_to_aim = {
+  [ "novice"      ] = {
+    shotgun = 350, sniper = 1500, other = 350, rpg = 3500,
   },
-  [ "gd_stalker" ] = {
-    [ "novice"      ] = {
-      shotgun = 500, sniper = 1800, other = 500, rpg = 4500,
-    },
-    [ "experienced" ] = {
-      shotgun = 450, sniper = 1200, other = 450, rpg = 4000,
-    },
-    [ "veteran"     ] = {
-      shotgun = 400, sniper = 1000, other = 400, rpg = 3500,
-    },
-    [ "master"      ] = {
-      shotgun = 350, sniper =  700, other = 350, rpg = 3000,
-    },
+  [ "experienced" ] = {
+    shotgun = 300, sniper = 1000, other = 300, rpg = 3000,
   },
-  [ "gd_veteran" ] = {
-    [ "novice"      ] = {
-      shotgun = 450, sniper = 1700, other = 450, rpg = 4000,
-    },
-    [ "experienced" ] = {
-      shotgun = 400, sniper = 1100, other = 400, rpg = 3500,
-    },
-    [ "veteran"     ] = {
-      shotgun = 350, sniper =  900, other = 350, rpg = 3000,
-    },
-    [ "master"      ] = {
-      shotgun = 300, sniper =  600, other = 300, rpg = 2500,
-    },
+  [ "veteran"     ] = {
+    shotgun = 250, sniper =  800, other = 250, rpg = 2500,
   },
-  [ "gd_master" ] = {
-    [ "novice"      ] = {
-      shotgun = 350, sniper = 1500, other = 350, rpg = 3500,
-    },
-    [ "experienced" ] = {
-      shotgun = 300, sniper = 1000, other = 300, rpg = 3000,
-    },
-    [ "veteran"     ] = {
-      shotgun = 250, sniper =  800, other = 250, rpg = 2500,
-    },
-    [ "master"      ] = {
-      shotgun = 200, sniper =  500, other = 200, rpg = 2000,
-    },
+  [ "master"      ] = {
+    shotgun = 200, sniper =  500, other = 200, rpg = 2000,
   },
 }
-local time_to_aim = times_to_aim_by_diff[ diff_level ]
 
 --- отклонение прицела
-local deviation_by_diff = {
-  [ "gd_novice"  ] = {
-    [ "novice"      ] = 0.5,
-    [ "experienced" ] = 0.45,
-    [ "veteran"     ] = 0.4,
-    [ "master"      ] = 0.35,
-  },
-  [ "gd_stalker" ] = {
-    [ "novice"      ] = 0.45,
-    [ "experienced" ] = 0.4,
-    [ "veteran"     ] = 0.35,
-    [ "master"      ] = 0.3,
-  },
-  [ "gd_veteran" ] = {
-    [ "novice"      ] = 0.4,
-    [ "experienced" ] = 0.35,
-    [ "veteran"     ] = 0.3,
-    [ "master"      ] = 0.25,
-  },
-  [ "gd_master"  ] = {
-    [ "novice"      ] = 0.35,
-    [ "experienced" ] = 0.3,
-    [ "veteran"     ] = 0.25,
-    [ "master"      ] = 0.2,
-  }
+local deviation_table = {
+  [ "novice"      ] = 0.35,
+  [ "experienced" ] = 0.3,
+  [ "veteran"     ] = 0.25,
+  [ "master"      ] = 0.2,
 }
-local deviation_table = deviation_by_diff[ diff_level ]
 
 --- коэффициент отклонения по коммунити
 local community_deviation_coeff = {
