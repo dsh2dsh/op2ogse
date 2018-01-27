@@ -1,0 +1,195 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+local excluded_npc = {
+  [ 29 ] = true,                -- учебная плоть блин
+  [ "peshera_plennyi" ] = true, -- Фима
+}
+
+local invisible_for_anoms = {
+  [ "peshera_plennyi"   ] = true,
+  [ "sim_stalker_fraer" ] = true,
+}
+
+local excluded_comms = {        -- запретные коммунити
+  [ "zombied" ] = true,
+}
+
+local excluded_locations = {
+}
+
+local monster_excluded_locations = {
+  [ "jupiter" ] = true,
+  [ "jupiter_underground" ] = true,
+  [ "labx8"   ] = true,
+  [ "pripyat" ] = true,
+  [ "zaton"   ] = true,
+}
+
+-- этих проверять периодически на зависание и приводить в чувство
+local monster_check_deadlock = {
+  -- только бюреры замечены в подвисаниях, т.ч. имеет смысл следить
+  -- только за ними
+  --[ clsid.burer_s ] = true,
+}
+
+
+function attach( sm )
+  sm:subscribe({ signal = "on_monster_death",       fun = this.on_death     })
+  sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_death     })
+  sm:subscribe({ signal = "on_monster_spawn",       fun = this.on_monster_spawn  })
+  sm:subscribe({ signal = "on_monster_update",      fun = this.on_monster_update })
+  sm:subscribe({ signal = "on_npc_death",           fun = this.on_death     })
+  sm:subscribe({ signal = "on_npc_net_destroy",     fun = this.on_death     })
+  sm:subscribe({ signal = "on_npc_spawn",           fun = this.on_npc_spawn })
+end
+
+
+local mobs = {}
+
+function on_monster_spawn( obj, binder )
+  if
+    ( not obj:alive() )
+    or get_bool( obj:section(), "ogse_anomaly_evader.disable", false )
+  then
+    return
+  end
+  local s
+  if monster_check_deadlock[ obj:clsid() ] then
+    s = {
+      [ "signal" ] = "on_update",
+      [ "self"   ] = obj,
+      [ "fun"    ] = this.check_deadlock,
+      [ "script_name" ] = "ogse_anomaly_evader.check_deadlock",
+    }
+  end
+  local all_anoms, process = false, true
+  if get_bool( obj:section(), "ogse_anomaly_evader.all_anoms", false ) then
+    all_anoms = true
+  end
+  if not all_anoms then
+    if
+      excluded_npc[ obj:story_id() ]
+      or excluded_locations[ level.name() ]
+      or monster_excluded_locations[ level.name() ]
+    then
+      process = false
+    end
+  end
+  if process and not battle.is_battle_spawned( obj ) then
+    local anomaly_detector = obj:get_custom_monster():anomaly_detector()
+    anomaly_detector.Anomaly_Detect_Probability = ( all_anoms and 1 or 0.9 )
+    anomaly_detector:activate( true )
+    mobs[ obj:id() ] = true
+  end
+  if s then
+    binder[ "ogse_anomaly_evader.subscribed" ] = s
+    ogse_signals.get_mgr():subscribe( s )
+  end
+end
+
+
+function on_npc_spawn( obj, binder )
+  if not obj:alive() then return end
+  local all_anoms = false
+  if
+    invisible_for_anoms[ obj:name() ]
+    and get_bool( obj:section(), "ogse_anomaly_evader.all_anoms", false )
+  then
+    all_anoms = true
+  end
+  if not all_anoms then
+    if
+      excluded_npc[ obj:profile_name() ]
+      or excluded_npc[ obj:name() ]
+      or excluded_npc[ obj:story_id() ]
+      or excluded_comms[ obj:character_community() ]
+      or excluded_locations[ level.name() ]
+    then
+      return
+    end
+  end
+  if all_anoms or obj:relation( db.actor ) ~= game_object.enemy then
+    set_anomaly_invisibility( obj, true )
+    binder[ "ogse_anomaly_evader.anomaly_invisibility" ] = true
+  end
+  local anomaly_detector = obj:get_custom_monster():anomaly_detector()
+  anomaly_detector:activate( true )
+  mobs[ obj:id() ] = true
+end
+
+
+function on_death( obj )
+  local binder     = obj:binded_object()
+  local subscribed = binder[ "ogse_anomaly_evader.subscribed" ]
+  if subscribed then
+    local sm = ogse_signals.get_mgr()
+    for _, sig in ipairs( subscribed ) do
+      sm:unsubscribe( sig )
+    end
+    binder[ "ogse_anomaly_evader.subscribed" ] = nil
+  end
+  if binder[ "ogse_anomaly_evader.anomaly_invisibility" ] then
+    set_anomaly_invisibility( obj, false )
+    binder[ "ogse_anomaly_evader.anomaly_invisibility" ] = nil
+  end
+  if mobs[ obj:id() ] then
+    local anomaly_detector = obj:get_custom_monster():anomaly_detector()
+    anomaly_detector:deactivate( true )
+    anomaly_detector:remove_all_restrictions()
+    mobs[ obj:id() ] = nil
+  end
+end
+
+
+function remove_restriction( npc, anomid )
+  for id, _ in pairs( mobs ) do
+    local obj = level.object_by_id( id )
+    if obj then
+      local anomaly_detector = obj:get_custom_monster():anomaly_detector()
+      anomaly_detector:remove_restriction( anomid )
+    end
+  end
+  local sobj = alife():object( anomid )
+  alife():release( sobj )
+end
+
+
+function on_monster_update( obj )
+  local binder = obj:binded_object()
+  binder[ "ogse_anomaly_evader.last_monster_update" ] = time_global() + 10000
+end
+
+
+function check_deadlock( obj )
+  ogse_signals.get_mgr():reschedule( 1000 )
+  local binder = obj:binded_object()
+  local t = binder[ "ogse_anomaly_evader.last_monster_update" ]
+  if not t then return end
+  local d = t - time_global()
+  if d > 0 then
+    if d > 1000 then
+      ogse_signals.get_mgr():reschedule( d )
+    end
+  else
+    log2(
+      "[%s]: bad mob '%s' detected: %s secs",
+      script_name(), obj:name(), d / 1000
+    )
+    on_death( obj )
+    amkii_equip.refit_npc( obj, obj:id() )
+  end
+end
+
+
+function pre_blow_off()
+  for id, _ in pairs( mobs ) do
+    local obj = level.object_by_id( id )
+    if obj then
+      local anomaly_detector = obj:get_custom_monster():anomaly_detector()
+      anomaly_detector:remove_all_restrictions()
+    end
+  end
+end
+
+
+function get_freq() return 1000 end
