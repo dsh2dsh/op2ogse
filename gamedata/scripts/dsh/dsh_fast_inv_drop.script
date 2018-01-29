@@ -24,6 +24,7 @@ function attach( sm )
   sm:subscribe({ signal = "on_key_down",   fun = this.on_key_down })
   sm:subscribe({ signal = "on_mm_return_game", fun = this.on_mm_return_game })
   sm:subscribe({ signal = "on_take",       fun = this.on_take     })
+  sm:subscribe({ signal = "on_rukzak_use", fun = this.on_rukzak_use })
   sm:subscribe({ signal = "on_spawn",      fun = this.on_spawn    })
 end
 
@@ -279,4 +280,84 @@ function mandatory_filter( items )
     end
   end
   return filtered
+end
+
+
+function on_rukzak_use( obj )
+  if drop_t then return end
+  local id       = obj:id()
+  local prefix   = "dsh_rukzak." .. id
+  local inv_drop = ogse.load_var( prefix .. ".inv_drop", false, "bool" )
+  if inv_drop then
+    db.actor:hide_weapon()
+    db.eat = true
+    local snd = sound_object( "rykzack\\give_rykzak_2" )
+    snd:play( db.actor, 0, sound_object.s2d )
+    ogse.remove_item( obj )
+    drop_t = dsh.timeout(
+      snd:length() * 1.15, function()
+        move_to_inventory( id )
+        db.eat = false
+        db.actor:restore_weapon()
+        drop_t = nil
+      end
+    )
+    return true
+  end
+end
+
+
+function move_to_inventory( rukzak )
+  local items = dsh_rukzak.load_rukzak( rukzak )
+  for _, item in ipairs( items ) do
+    while item.count > 0 do
+      local sobj
+      if item.game_type == "ammo" then
+        local box_size = dsh_rukzak.get_ammo_box_size( item.section )
+        if item.count > box_size then
+          sobj = dsh_rukzak.spawn_ammo_in_inv( item.section, box_size )
+          item.count = item.count - box_size
+        else
+          sobj = dsh_rukzak.spawn_ammo_in_inv( item.section, item.count )
+          item.count = 0
+        end
+      else
+        if item.game_type == "weapon" then
+          sobj = dsh_rukzak.spawn_weapon_in_inv( item.section, item.info )
+        else
+          sobj = dsh_rukzak.spawn_item_in_inv( item.section )
+        end
+        if
+          string.find( item.section, "arc_art_box_", 1, true )
+          or dsh.is_artefact( item.section )
+          or item.game_type == "outfit"
+        then
+          local pk = get_netpk( sobj, 1 )
+          ASSERT( ( pk and pk:isOk() ), "can't read netpacket of %s", sobj:name() )
+          local data  = pk:get()
+          if string.find( item.section, "arc_art_box_", 1, true ) then
+            data.custom_data:setStringRaw( item.info or "" )
+          else
+            data.custom_data:setString(    item.info or "" )
+          end
+          pk:set( data )
+        end
+        item.count = item.count - 1
+      end
+      if item.condition < 100 then
+        level.client_spawn_manager():add(
+          sobj.id, -1, function( id, obj )
+            dsh.set_condition( obj, item.condition / 100 )
+          end
+        )
+      end
+      if item.count == 0 then
+        if item.section == "zamok" then
+          amk_offline_alife.protected.ids[ rukzak ] = nil
+        end
+      end
+    end
+  end
+  dsh_rukzak.save_rukzak( rukzak, {} )
+  dsh_rukzak.spawn_item_in_inv( "treasure_item" )
 end
