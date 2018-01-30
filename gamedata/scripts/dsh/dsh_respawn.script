@@ -512,18 +512,45 @@ function get_respawner_by_npc_id( id )
 end
 
 
+local walk_timers = {}
+
 function on_monster_first_update( obj )
   if not obj:alive() then return end
   local resp = get_respawner_by_npc_id( obj:id() )
   if not resp then return end
   if resp.walk_on_location then
-    dsh_walking_stalkers.walk_on_location(
-      obj, "dsh.respawn." .. resp.name, resp.walk_together
-    )
+    local squad = "dsh.respawn." .. resp.name
+    dsh_walking_stalkers.walk_on_location( obj, squad, resp.walk_together )
+    if not walk_timers[ resp.name ] then
+      schedule_next_walk( resp, squad )
+    end
   elseif resp.home_radius then
     local mgr = dsh_battle_radius.create_radius(
       obj, resp.home_radius, resp.m_level_vertex_id
     )
     mgr.home_min_radius = resp.home_min_radius
   end
+end
+
+
+function schedule_next_walk( resp, squad )
+  local t = math.random( 30 ) * 60 * 1000 -- от 1 до 30 реальных минут
+  walk_timers[ resp.name ] = dsh.timeout(
+    t,
+    function()
+      dsh_walking_stalkers.reset_walking_vertexes( squad )
+      local cnt = 0
+      for _, id in ipairs( resp.spawned_obj ) do
+        local obj = level.object_by_id( id )
+        if obj and obj:alive() then
+          dsh_walking_stalkers.walk_on_location(
+            obj, squad, resp.walk_together
+          )
+          cnt = cnt + 1
+        end
+      end
+      walk_timers[ resp.name ] = cnt > 0
+        and schedule_next_walk( resp, squad ) or nil
+    end
+  )
 end
