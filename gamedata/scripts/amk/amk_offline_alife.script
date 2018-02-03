@@ -562,22 +562,23 @@ function process_trade( npc )
             table.insert( sell_list, v )
           end
         elseif
-          string.find( sect, "wpn_addon_scope", 1, true )
-          or string.find( sect, "wpn_addon_silencer", 1, true )
-          or string.find( sect, "wpn_addon_grenade_launcher", 1, true )
+          IsBinocular( v )
+          or IsGrenadeLauncher( v )
+          or IsScope( v )
+          or IsSilencer( v )
         then
           table.insert( sell_list, v )
-        elseif sect == "wpn_knife" then
+        elseif isKnife( v ) then
           cnt_knife = cnt_knife + 1
           if cnt_knife > 1 then
             table.insert( sell_list, v )
           end
-        elseif isWeapon( v ) then
+        elseif v:get_weapon() then
           local ac = get_string( sect, "ammo_class" )
           if ac and ac ~= "" then
             table.insert( weapons, {
-              obj         = v,
               ammo        = parse_names( ac ),
+              obj         = v,
               sorted_ammo = sort_ammo_classes( ac ),
             })
           else
@@ -718,23 +719,26 @@ function process_trade( npc )
         elseif modes.mode1 == "3" then
           t.prm = rx_wmgr.wm_modes.priors[ modes.priors ][ sect ] or 0
         end
-        local pk = get_netpk( t.obj, 1 )
+        t.s_iitem = t.obj:get_inventory_item()
         ASSERT(
-          pk:isOk(), "[%s]: can't parse netpk: %s",
+          t.s_iitem, "[%s]: can't get_inventory_item(): %s",
           script_name(), t.obj:name()
         )
-        local data = pk:get()
-        t.pk           = pk
-        t.pk_data      = data
-        t.cond         = data.condition
+        t.s_wpn = t.obj:get_weapon()
+        ASSERT(
+          t.s_wpn, "[%s]: can't get_weapon(): %s",
+          script_name(), t.obj:name()
+        )
+        t.cond = t.s_iitem.item_condition
+        local addon_flags = t.s_wpn.addon_flags:get()
         t.has_gl       = bit_and(
-          data.addon_flags, ogse_wpn_utils.addons_flags.gl
+          addon_flags, ogse_wpn_utils.addons_flags.gl
         ) ~= 0
         t.has_scope    = bit_and(
-          data.addon_flags, ogse_wpn_utils.addons_flags.scope
+          addon_flags, ogse_wpn_utils.addons_flags.scope
         ) ~= 0
         t.has_silencer = bit_and(
-          data.addon_flags, ogse_wpn_utils.addons_flags.silencer
+          addon_flags, ogse_wpn_utils.addons_flags.silencer
         ) ~= 0
         local pr = 0
         if t.has_gl then
@@ -807,12 +811,6 @@ function process_trade( npc )
       if weapon_repair_allowed then
         process_weapon_repair( our_weapons )
       end
-      for _, w in ipairs( our_weapons ) do
-        if w.commit then
-          w.pk:set( w.pk_data )
-          w.commit = nil
-        end
-      end
 
       if
         dsh_lc_fixes.has_level_changed()
@@ -884,15 +882,13 @@ end
 
 function process_ammo_trade( sell_list, ammo, npc, our_weapons )
   for _, w in ipairs( our_weapons ) do
-    local data = w.pk_data
-    if data.ammo_elapsed < w.ammo_mag_size then
+    if w.s_wpn.ammo_elapsed < w.ammo_mag_size then
       -- log2(
       --   "[%s]: %s has no enough ammo in mag for %s: %s < %s, fixed",
-      --   script_name(), npc:name(), w.obj:section_name(), data.ammo_elapsed,
+      --   script_name(), npc:name(), w.obj:section_name(), w.s_wpn.ammo_elapsed,
       --   w.ammo_mag_size
       -- )
-      data.ammo_elapsed = w.ammo_mag_size
-      w.commit          = true
+      w.s_wpn.ammo_elapsed = w.ammo_mag_size
     end
     local vac, sorted_ammo = w.ammo, w.sorted_ammo
     if vac and table.getn( vac ) > 0 then
@@ -914,12 +910,12 @@ function process_ammo_trade( sell_list, ammo, npc, our_weapons )
             end
           else
             ASSERT(
-              data.ammo_type < table.getn( vac ),
+              w.s_wpn.ammo_type < table.getn( vac ),
               "[%s]: wrong ammo_type = %s ( %s ) for %s owned by %s",
-              script_name(), data.ammo_type, table.getn( vac ),
+              script_name(), w.s_wpn.ammo_type, table.getn( vac ),
               w.obj:section_name(), npc:name()
             )
-            local loaded_sect = vac[ data.ammo_type + 1 ]
+            local loaded_sect = vac[ w.s_wpn.ammo_type + 1 ]
             if params[ loaded_sect ].hit < sorted_ammo[ i ].hit then
               -- log2(
               --   "[%s]: %s uses weak ammo for %s: %s(%s) < %s(%s), changed",
@@ -927,8 +923,7 @@ function process_ammo_trade( sell_list, ammo, npc, our_weapons )
               --   loaded_sect, params[ loaded_sect ].hit,
               --   sorted_ammo[ i ].sect, sorted_ammo[ i ].hit
               -- )
-              data.ammo_type = sorted_ammo[ i ].ammo_class - 1
-              w.commit       = true
+              w.s_wpn.ammo_type = sorted_ammo[ i ].ammo_class - 1
             end
             ammo[ sect ].inuse = true
             ammo[ sect ].sell  = false
@@ -937,7 +932,7 @@ function process_ammo_trade( sell_list, ammo, npc, our_weapons )
         end
       end
       if not has_ammo then
-        local ammo_class = data.ammo_type + 1
+        local ammo_class = w.s_wpn.ammo_type + 1
         local sect       = vac[ ammo_class ]
         -- log2(
         --   "[%s]: %s has no ammo in inv for %s, spawned %s",
@@ -993,14 +988,13 @@ end
 function process_weapon_repair( our_weapons )
   for _, w in ipairs( our_weapons ) do
     if w.cond < 1 and not is_broken_wpn( w ) then
-      local data = w.pk_data
-      if data.condition < 0.9 then
-        data.condition = data.condition + 0.1
+      local data = w.s_iitem
+      if data.item_condition < 0.9 then
+        data.item_condition = data.item_condition + 0.1
       else
-        data.condition = 1
+        data.item_condition = 1
       end
-      w.cond   = data.condition
-      w.commit = true
+      w.cond = data.item_condition
     end
   end
 end
