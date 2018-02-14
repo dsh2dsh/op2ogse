@@ -18,7 +18,6 @@ local close_combat_distance     = 15 -- дистанция ближнего боя
 local distant_combat_distance   = 35
 -- максимальная адекватная дистанция огневого боя
 local maximum_firefight_dist    = 200
-local sound_prob                = 0.1   -- вероятность сказать фразу
 local cooldown_time             = 20000 -- время запрета лута после боя
 -- интервал реприоретизации, мсек - нельзя делать слишком низким -
 -- будет судорожно метаться между целями
@@ -39,6 +38,11 @@ local time_mantain_manuever     = 20000
 -- время, мсек, сколько придерживаться выбранной тактики
 local time_mantain_tactics      = 30000
 local visibility_treshold_value = 0.45 -- трешхолд видимости
+
+-- вероятность сказать фразу
+local sound_prob_event = 0.5
+local sound_prob_hero  = 0.1
+local sound_prob_idle  = 0.1
 
 hit_timeout = {}
 
@@ -358,29 +362,13 @@ function evaluator_check_altcombat:evaluate()
     return false
   end
 
-  local lname = level.name()
-  local comm  = self.object:character_community()
-  local forbidden_by_comm = community_forbidden_locations[ comm ]
   if
     ( not self.object:alive() )
     or xr_wounded.is_wounded( self.object )
     or xr_companion.is_companion( self.object:id() )
-    or forbidden_comms[ self.object:character_community() ]
-    or ( forbidden_by_comm and forbidden_by_comm[ lname ] )
-    or forbidden_by_lname[ lname ]
     or (
       db.storage[ self.object:id() ].active_scheme
       and forbidden_schemes[ db.storage[ self.object:id() ].active_scheme ]
-    )
-    or forbidden_profiles[ self.object:name() ]
-    or forbidden_profiles[ self.object:profile_name() ]
-    or (
-      comm == "monolith"
-      and string.find( self.object:name(), "pri_" )
-      and (
-        string.find( self.object:name(), "sniper" )
-        or string.find( self.object:name(), "roof" )
-      )
     )
   then
     restore_restrictions( self.object )
@@ -663,7 +651,7 @@ function action_altcombat:execute()
   local anim = db.storage[ npc:id() ].state_mgr.animstate:state()
   if
     intro_time[ self.object:id() ]
-    and intro_time[ self.object:id() ] >  time_global()
+    and intro_time[ self.object:id() ] > time_global()
   then
     set_combat_sight( npc, be, bw )
     set_transfer_state( npc, be )
@@ -2489,8 +2477,9 @@ end
 -- "defence"
 -- "lost"
 
-function setup_sound_table(npc)
+function setup_sound_table( npc )
   sound_events[ npc:id() ] = {
+    events = {},
     idle   = "defence",
     start  = false,
     hero   = false,
@@ -2520,7 +2509,34 @@ function set_sound_event( npc, event )
   if not sound_events[ npc:id() ] then
     setup_sound_table( npc )
   end
-  sound_events[ npc:id() ][ event ] = true
+  -- Если недавно что-то уже говорил, то событие регистрировать не
+  -- будем.
+  if sounds_timeout[ npc:id() ] and sounds_timeout[ npc:id() ] > time_global() then
+    return
+  end
+  local t = sound_events[ npc:id() ]
+  -- Если это событие запрещено некоторе время озвучивать, то
+  -- регистрировать его не будем.
+  local e_timeout = t[ event .. "_timeout" ]
+  if e_timeout and e_timeout > time_global() then return end
+  if not t[ event ] then
+    if event == "hero" then
+      t.hero_timeout = time_global() + math.random( 10000, 30000 )
+      if math.random() > sound_prob_hero then return end
+    end
+    t[ event ] = true
+    table.insert( t.events, event );
+  end
+end
+
+
+function set_combat_sound_playing( npc )
+  sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
+end
+
+
+function set_combat_sound_timeout( npc )
+  sounds_timeout[ npc:id() ] = time_global() + math.random( 6000, 8000 )
 end
 
 
@@ -2535,134 +2551,101 @@ function process_combat_sound( npc )
     xr_sound.set_sound( npc, nil )
     return
   end
-  if not sounds_timeout[ npc:id() ] then
-    sounds_timeout[ npc:id() ] = 0
+  if
+    sounds_timeout[ npc:id() ]
+    and sounds_timeout[ npc:id() ] > time_global()
+  then
+    return
   end
-  local rand_chance = math.random()
-  local snd_flags   = sound_events[ npc:id() ]
-  if sounds_timeout[npc:id()] < time_global() then
-    if snd_flags.start == true then
-      snd_flags.start = false
-      xr_sound.set_sound( npc, "fight_enemy" )
-      sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-      sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
-      return
-    elseif snd_flags.dead == true then
-      snd_flags.dead = false
-      xr_sound.set_sound( npc, "fight_tolls" )
-      sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-      sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
-      return
-    elseif snd_flags.fr_hit == true then
-      snd_flags.fr_hit = false
-      xr_sound.set_sound( npc, "fight_friend_hitted" )
-      sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-      sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
-      return
-    elseif snd_flags.ff == true then
-      snd_flags.ff = false
-      xr_sound.set_sound( npc, "fight_friendly_fire" )
-      sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-      sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
-      return
-    elseif snd_flags.killed == true then
-      snd_flags.killed = false
-      xr_sound.set_sound( npc, "fight_enemy_down" )
-      sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-      sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
-      return
-    elseif snd_flags.hit == true then
-      snd_flags.hit = false
-      xr_sound.set_sound( npc, "fight_enemy_hit" )
-      sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-      sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
-      return
-    elseif snd_flags.hero == true then
-      snd_flags.hero = false
-      if rand_chance < sound_prob then
-        xr_sound.set_sound( npc, "fight_detour" )
-        sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-        sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
-        return
+
+  local snd_flags = sound_events[ npc:id() ]
+  if table.getn( snd_flags.events ) > 0 then
+    local e = snd_flags.events[ math.random( table.getn( snd_flags.events ) ) ]
+    for _, k in ipairs( snd_flags.events ) do
+      snd_flags[ k ] = false
+    end
+    snd_flags.events = {}
+    if math.random() < sound_prob_event then
+      local snd_theme
+      if e == "start" then
+        snd_theme = "fight_enemy"
+      elseif e == "dead" then
+        snd_theme = "fight_tolls"
+      elseif e == "fr_hit" then
+        snd_theme = "fight_friend_hitted"
+      elseif e == "ff" then
+        snd_theme = "fight_friendly_fire"
+      elseif e == "killed" then
+        snd_theme = "fight_enemy_down"
+      elseif e == "hit" then
+        snd_theme = "fight_enemy_hit"
+      elseif e == "hero" then
+        snd_theme = "fight_detour"
       end
+      xr_sound.set_sound( npc, snd_theme )
+      set_combat_sound_playing( npc )
+      set_combat_sound_timeout( npc )
+      return
     end
   end
+
   if
-    rand_chance < sound_prob and sounds_timeout[ npc:id() ] < time_global()
+    snd_flags.idle_timeout
+    and snd_flags.idle_timeout > time_global()
   then
-    if snd_flags.idle == "attack" then
-      xr_sound.set_sound( npc, "fight_attack" )
-      sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-      sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
-    elseif snd_flags.idle == "attack_notsee" then
-      local count = 0
-      for k, v in pairs( targets_list[ npc:id() ] ) do
-        if v.range < 50 then
-          count = count + 1
-        end
-        if count >= 2 then
-          break
-        end
+    return
+  end
+  snd_flags.idle_timeout = time_global() + math.random( 10000, 30000 )
+  if math.random() > sound_prob_idle then return end
+
+  set_combat_sound_playing( npc )
+  set_combat_sound_timeout( npc )
+  if snd_flags.idle == "attack" then
+    xr_sound.set_sound( npc, "fight_attack" )
+  elseif snd_flags.idle == "attack_notsee" then
+    local count = 0
+    for k, v in pairs( targets_list[ npc:id() ] ) do
+      if v.range < 50 then
+        count = count + 1
       end
-      if count == 1 then
-        xr_sound.set_sound( npc, "fight_attack_one" )
-        sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-        sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
-      elseif count > 1 then
-        xr_sound.set_sound( npc, "fight_attack_many" )
-        sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-        sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
+      if count >= 2 then
+        break
       end
-    elseif snd_flags.idle == "defence" then
-      xr_sound.set_sound( npc, "fight_backup" )
-      sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-      sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
-    elseif snd_flags.idle == "lost" then
-      local target = primary_target[ npc:id() ]
-      local target_info = targets_list[ npc:id() ][ target ]
-      if not target_info then return end
-      if target_info and not target_info.last_time_seen then
-        if rand_chance < 0.2 then
-          xr_sound.set_sound( npc, "fight_threat_close" )
-          sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-          sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
-        elseif rand_chance < 0.4 then
-          xr_sound.set_sound( npc, "fight_threat_distant" )
-          sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-          sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
-        elseif rand_chance < 0.6 then
-          xr_sound.set_sound( npc, "fight_search" )
-          sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-          sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
-        else
-          xr_sound.set_sound( npc, "fight_enemy_lost" )
-          sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-          sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
-        end
-        return
-      end
-      if time_global() - target_info.last_time_seen <= 5000 then
-        if target_info.range < distant_combat_distance then
-          xr_sound.set_sound( npc, "fight_threat_close" )
-          sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-          sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
-        else
-          xr_sound.set_sound( npc, "fight_threat_distant" )
-          sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-          sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
-        end
-      elseif time_global() - target_info.last_time_seen <= 12000 then
+    end
+    if count == 1 then
+      xr_sound.set_sound( npc, "fight_attack_one" )
+    elseif count > 1 then
+      xr_sound.set_sound( npc, "fight_attack_many" )
+    end
+  elseif snd_flags.idle == "defence" then
+    xr_sound.set_sound( npc, "fight_backup" )
+  elseif snd_flags.idle == "lost" then
+    local target = primary_target[ npc:id() ]
+    local target_info = targets_list[ npc:id() ][ target ]
+    if not target_info then return end
+    if target_info and not target_info.last_time_seen then
+      if math.random() < 0.2 then
+        xr_sound.set_sound( npc, "fight_threat_close" )
+      elseif math.random() < 0.4 then
+        xr_sound.set_sound( npc, "fight_threat_distant" )
+      elseif math.random() < 0.6 then
         xr_sound.set_sound( npc, "fight_search" )
-        sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )            
-        sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
       else
         xr_sound.set_sound( npc, "fight_enemy_lost" )
-        sound_are_playing[ npc:id() ] = time_global() + math.random( 1000, 2500 )
-        sounds_timeout[ npc:id()    ] = time_global() + math.random( 6000, 8000 )
       end
+      return
     end
-  else
-    xr_sound.set_sound( npc, nil )
+    if time_global() - target_info.last_time_seen <= 5000 then
+      if target_info.range < distant_combat_distance then
+        xr_sound.set_sound( npc, "fight_threat_close" )
+      else
+        xr_sound.set_sound( npc, "fight_threat_distant" )
+      end
+    elseif time_global() - target_info.last_time_seen <= 12000 then
+      xr_sound.set_sound( npc, "fight_search" )
+    else
+      xr_sound.set_sound( npc, "fight_enemy_lost" )
+    end
   end
 end
 
@@ -4046,6 +4029,31 @@ function add_to_binder( object, ini, scheme, section, storage )
   local property_wounded         = xr_evaluators_id.sidor_wounded_base
   local state_mgr_to_idle_combat = xr_actions_id.state_mgr + 1
   local state_mgr_to_idle_alife  = xr_actions_id.state_mgr + 2
+
+  local lname = level.name()
+  local comm  = object:character_community()
+  local forbidden_by_comm = community_forbidden_locations[ comm ]
+  if
+    ( not object:alive() )
+    or forbidden_comms[ comm ]
+    or ( forbidden_by_comm and forbidden_by_comm[ lname ] )
+    or forbidden_by_lname[ lname ]
+    or forbidden_profiles[ object:name() ]
+    or forbidden_profiles[ object:profile_name() ]
+    or (
+      comm == "monolith"
+      and string.find( object:name(), "pri_" )
+      and (
+        string.find( object:name(), "sniper" )
+        or string.find( object:name(), "roof" )
+      )
+    )
+  then
+    manager:add_evaluator(
+      properties.alt_combat_enabled, property_evaluator_const( false )
+    )
+    return
+  end
 
   manager:add_evaluator(
     properties.alt_combat_enabled,
