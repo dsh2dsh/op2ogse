@@ -206,29 +206,8 @@ local radio_comms = {
   [ "dolg"     ] = true,
 }
 
---- состояния стрельбы из укрытия, задел на будущее
-local hide_shoot_states = {
-  [ 1 ] = "hide_fire",
-  [ 2 ] = "hide_fire",
-  [ 3 ] = "hide_fire"
-}
-
---- состояния прятания
-local hide_states = {
-  [ 1 ] = "sneak_fire",
-  [ 2 ] = "sneak_fire",
-  [ 3 ] = "sneak_fire"
-}
-
-local postcombat_states = {
-  [ 1 ] = "hide_na",
-  [ 2 ] = "threat",
-}
-
-local postcombat_states_full_weapon = {
-  [ 1 ] = "hide_na",
-  [ 2 ] = "threat",
-}
+local postcombat_states = { "hide_na", "threat" }
+local postcombat_states_full_weapon = { "hide_na", "threat" }
 
 local needed_dangers = {
   [ danger_object.attack_sound    ] = true,
@@ -341,6 +320,17 @@ function get_obj_rank_name( obj )
 end
 
 
+function get_best_weapon( npc )
+  local sl = npc:active_slot()
+  if sl ~= NO_ACTIVE_SLOT and npc:item_in_slot( sl ) then
+    return npc:item_in_slot( sl )
+  else
+    local wm = rx_wmgr.get_wm( npc )
+    return ( wm and wm:get_weapon() ) or npc:best_weapon()
+  end
+end
+
+
 -- продолжаем вооруженное общение до умиротворения объекта
 class "evaluator_check_altcombat" ( property_evaluator )
 function evaluator_check_altcombat:__init( name, storage ) super( nil, name )
@@ -391,14 +381,7 @@ function evaluator_check_altcombat:evaluate()
     return false
   end
 
-  local bw
-  local wm = rx_wmgr and rx_wmgr.get_wm( self.object )
-  local sl = self.object:active_slot()
-  if sl ~= NO_ACTIVE_SLOT and self.object:item_in_slot( sl ) then
-    bw = self.object:item_in_slot( sl )
-  else
-    bw = ( wm and wm:get_weapon() ) or self.object:best_weapon()
-  end
+  local bw = get_best_weapon( self.object )
 
   if self.st.script_combat_type == "zombied"  then
     campers[ self.object:id() ] = nil
@@ -520,14 +503,7 @@ function action_altcombat:execute()
   end
 
   -- получим текущее оружие
-  local bw
-  local wm = rx_wmgr and rx_wmgr.get_wm( npc )
-  local sl = npc:active_slot()
-  if sl ~= NO_ACTIVE_SLOT and npc:item_in_slot( sl ) then
-    bw = npc:item_in_slot( sl )
-  else
-    bw = ( wm and wm:get_weapon() ) or npc:best_weapon()
-  end
+  local bw = get_best_weapon( npc )
 
   process_restrictions(npc)
   -- строим список врагов/друзей, проверяем линию огня - в своих и
@@ -580,11 +556,13 @@ function action_altcombat:execute()
       else
         if not postcombat[ npc:id() ] then
           if has_full_weapon( npc, bw ) then
-            postcombat[ npc:id() ] =
-              postcombat_states_full_weapon[ math.random( #postcombat_states_full_weapon ) ]
+            postcombat[ npc:id() ] = postcombat_states_full_weapon[
+              math.random( table.getn( postcombat_states_full_weapon ) )
+            ]
           else
-            postcombat[ npc:id() ] =
-              postcombat_states[ math.random( #postcombat_states ) ]
+            postcombat[ npc:id() ] = postcombat_states[
+              math.random( table.getn( postcombat_states ) )
+            ]
           end
         end
         local state_chk = state_mgr.get_state( npc )
@@ -620,7 +598,7 @@ function action_altcombat:execute()
   then
     last_enemy_id[ npc:id() ] = enemy:id()
     enable_object( self.object, enemy )
-    self.object:set_item( object.aim2, bw )
+    if bw then self.object:set_item( object.aim1, bw ) end
     notify_friends( self.object, enemy )
     local anim = db.storage[ npc:id() ].state_mgr.animstate:state()
     if
@@ -633,7 +611,7 @@ function action_altcombat:execute()
       )
     else
       state_mgr.set_state(
-        npc, "threat", nil, nil, { look_object = enemy },
+        npc, "threat_fire", nil, nil, { look_object = enemy },
         { animation = true, animation_nout = true }
       )
     end
@@ -851,8 +829,8 @@ function action_altcombat:execute()
         cur_situation  = 9
         last_algorythm = "find_cover_2"
         if can_fire[ npc:id() ] then
-          set_weapons_fire( npc, be, bw, true, npc_rank )
           set_combat_state( npc, be, bw )
+          set_weapons_fire( npc, be, bw, true, npc_rank )
         else
           set_transfer_state( npc, be )
         end
@@ -1039,11 +1017,11 @@ function action_altcombat:check_objects( bw, enemy )
     end
   end
 
-  local ammo_check = true
+  local ammo_check = false
   if bw and bw:is_weapon_magazined() then
     ammo_check = ( bw:get_ammo_in_magazine() ~= 0 )
   end
-
+  
   can_fire[ npc:id() ] = ammo_check
 end
 
@@ -1479,7 +1457,7 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
     if in_hideout( npc ) then
       if last_hideout[ npc:id() ] then
         locked_vertexes[ 0 ] = last_hideout[ npc:id() ].vtx
-        bad_hide[ last_hideout[ npc:id() ].vtx ] = time_global() + 15000
+        bad_hide[ last_hideout[ npc:id() ].vtx ] = time_global() + 30000
         last_hideout[ npc:id()     ] = nil
         -- last_time_send[ npc:id()   ] = nil
         last_sent_vertex[ npc:id() ] = nil
@@ -2329,15 +2307,13 @@ function get_last_enemy_lertex( npc )
 end
 
 
-function get_max_weapon_range( npc )
+function get_max_weapon_range( npc, bw )
   -- служебная для проверки достанет ли оружие
   if npc then
-    local a_sl = npc:active_slot()
-    if a_sl == NO_ACTIVE_SLOT then return 36 end
-    local act_item = npc:item_in_slot( a_sl )
+    if not bw then bw = get_best_weapon( npc ) end
     local ini = system_ini()
-    if act_item then
-      local sect = act_item:section()
+    if bw then
+      local sect = bw:section()
       if ini:section_exist( sect ) and ini:line_exist( sect, "max_radius" ) then
         return ini:r_float( sect, "max_radius" )
       elseif not ini:section_exist( sect ) then
@@ -2795,7 +2771,7 @@ function in_transit( npc )
     if
       npc_vert ~= last_sent_vertex[ npc:id() ] and distance_to_sent_pos > 1.5
     then
-      return true
+      return distance_to_sent_pos
     end
   end
   return false
@@ -2974,21 +2950,8 @@ function set_combat_state( npc, enemy, weapon )
     hit_timeout[ npc:id() ] = nil
   end
 
-  local npc_pos  = npc:position()
-  local be_pos   = enemy:position()
-  local distance = be_pos:distance_to( npc_pos )
-  local hide_set = choosen_hide_combat_state[ npc:id() ]
-  local anim     = db.storage[ npc:id() ].state_mgr.animstate:state()
-
-  if ( not hide_set ) or ( hide_set and hide_set.timeout < time_global() ) then
-    choosen_hide_combat_state[ npc:id() ] = {
-      state   = hide_shoot_states[ math.random( 1, 3 ) ],
-      timeout = time_global() + 2000,
-    }
-  end
-  hide_set = choosen_hide_combat_state[ npc:id() ]
-
   local emerg
+  local anim = db.storage[ npc:id() ].state_mgr.animstate:state()
   if not_ready_states[ anim ] then
     emerg = { animation = true, animation_nout = true }
   end
@@ -2997,37 +2960,20 @@ function set_combat_state( npc, enemy, weapon )
   if in_hideout( npc ) then
     local hide_val = last_hideout[ npc:id() ].value
     if hide_val <= 0.45 then
-      if IsSniperRifle( weapon ) then
-        state_name = "hide_sniper_fire"
-      else
-        state_name = "hide_fire"
-      end
+      state_name = "hide_fire"
     else
-      if IsSniperRifle( weapon ) then
-        state_name = "threat_sniper_fire"
-      else
-        state_name = "threat_fire"
-      end
+      state_name = "threat_fire"
     end
   elseif in_transit( npc ) then
-    if distance > close_combat_distance then
-      if IsSniperRifle( weapon ) then
-        state_name = "patrol_sniper_fire"
-      else
-        state_name = "raid_fire"
-      end
-    else
-      state_name = "raid_fire"
-    end
+    state_name = "raid_fire"
   else
+    local npc_pos  = npc:position()
+    local be_pos   = enemy:position()
+    local distance = be_pos:distance_to( npc_pos )
     if distance < close_combat_distance then
       state_name = "threat_fire"
     else
-      if IsSniperRifle( weapon ) then
-        state_name = "hide_sniper_fire"
-      else
-        state_name = "hide_fire"
-      end
+      state_name = "hide_fire"
     end
   end
 
@@ -3046,40 +2992,29 @@ function set_transfer_state( npc, enemy )
     hit_timeout[ npc:id() ] = nil
   end
 
-  local npc_pos  = npc:position()
-  local be_pos   = enemy:position()
-  local distance = be_pos:distance_to( npc_pos )
-  local anim     = db.storage[ npc:id() ].state_mgr.animstate:state()
-
   local emerg
+  local anim = db.storage[ npc:id() ].state_mgr.animstate:state()
   if not_ready_states[ anim ] then
     emerg = { animation = true, animation_nout = true }
   end
 
+  local state_name
   if in_hideout( npc ) then
     local hide_val = last_hideout[ npc:id() ].value
     if hide_val <= 0.45 then
-      state_mgr.set_state(
-        npc, "hide_na", nil, nil, { look_object = enemy }, emerg
-      )
+      state_name = "hide_na"
     else
-      state_mgr.set_state(
-        npc, "threat", nil, nil, { look_object = enemy }, emerg
-      )
+      state_name = "threat"
     end
   elseif in_transit( npc ) then
-    if distance < close_combat_distance then
-      state_mgr.set_state(
-        npc, "raid",    nil, nil, { look_object = enemy }, emerg
-      )
-    else
-      state_mgr.set_state(
-        npc, "assault", nil, nil, { look_object = enemy }, emerg
-      )
-    end
+    state_name = "assault"
   else
+    state_name = "threat"
+  end
+
+  if state_name then
     state_mgr.set_state(
-      npc, "threat", nil, nil, { look_object = enemy }, emerg
+      npc, state_name, nil, nil, { look_object = enemy }, emerg
     )
   end
 end
@@ -3467,17 +3402,9 @@ function select_position( npc, target, flag )
     set_sound_event( npc, "hero" )
   end
 
-  local a_sl = npc:active_slot()
-  local bw
-  if a_sl == NO_ACTIVE_SLOT or not npc:item_in_slot( a_sl ) then
-    local wm = rx_wmgr and rx_wmgr.get_wm( npc )
-    bw = ( wm and wm:get_weapon() ) or npc:best_weapon()
-  else
-    local act_item = npc:item_in_slot( a_sl )
-    bw = act_item
-  end
+  local bw = get_best_weapon( npc )
 
-  local max_wpn_range     = get_max_weapon_range( npc )
+  local max_wpn_range     = get_max_weapon_range( npc, bw )
   local random_offset_min = math.min(
     close_combat_distance, max_wpn_range / 2
   )
