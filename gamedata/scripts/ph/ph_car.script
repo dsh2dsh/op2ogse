@@ -6,8 +6,6 @@
 -- Доработка для БТР: Oleg Kreptul (Haron) haronk@ukr.net
 --' Сцена обстрела "Волны мунантов" lsclon for OP_2013 '--
 
-function printf() end
-
 local pi_2 = math.pi / 3        -- 60 degree
 
 local def_min_delta_per_sec    = 0.2
@@ -173,7 +171,6 @@ function action_car:reset_scheme( loading )
   self.state_shooting     = state_none
   self.target_fire_pt     = nil
   self.target_fire_pt_idx = 0
-  self.target_obj         = nil
   self.target_id          = nil
   self.on_target_vis      = nil
   self.on_target_nvis     = nil
@@ -185,16 +182,14 @@ function action_car:reset_scheme( loading )
       self.state_firetarget = state_firetarget_points
     else
       if self.st.fire_target == "actor" and db.actor:alive() then
-        self.target_obj       = db.actor
-        self.target_id        = db.actor:id()
+        self.target_id = db.actor:id()
         self.state_firetarget = state_firetarget_enemy
       else
         local n = tonumber( self.st.fire_target )
         if n then
           local obj = level_object_by_sid( n )
           if obj and obj:alive() then
-            self.target_obj       = obj
-            self.target_id        = obj:id()
+            self.target_id = obj:id()
             self.state_firetarget = state_firetarget_enemy
           end
         end
@@ -863,6 +858,15 @@ function action_car:destroy_car()
 end
 
 
+function action_car:get_target_obj()
+  if self.target_id then
+    local obj = level.object_by_id( self.target_id )
+    if obj then return obj end
+    self.target_id = nil
+  end
+end
+
+
 -- Вернуть true, если апдейты больше не нужны
 function action_car:fast_update()
   if self.car:GetfHealth() <= 0 then
@@ -974,6 +978,7 @@ function action_car:fast_update()
       end
     end
 
+    local target_obj = self:get_target_obj()
     if self.state_firetarget == state_firetarget_points then
       if self.fire_pt_count > 0 and self.state_cannon ~= state_cannon_stop then
         if self.state_cannon == state_cannon_delay then
@@ -988,19 +993,19 @@ function action_car:fast_update()
         end
       end
     elseif
-      self.target_obj and self.state_firetarget == state_firetarget_enemy
-      and alife():object( self.target_id )
+      target_obj and self.state_firetarget == state_firetarget_enemy
     then
       local target_dist = self.object:position()
-        :distance_to_sqr( self.target_obj:position() )
-      local has_friends_on_fire_line = self:check_friends_on_fire_line()
+        :distance_to_sqr( target_obj:position() )
+      local has_friends_on_fire_line =
+        self:check_friends_on_fire_line( target_obj )
       if
-        self.target_obj:alive()
+        target_obj:alive()
         and target_dist <= self.fire_range_sqr
-        and self.car:IsObjectVisible( self.target_obj )
+        and self.car:IsObjectVisible( target_obj )
         and not has_friends_on_fire_line
       then
-        self.target_fire_pt = self:extrapolate_pos( self.target_obj )
+        self.target_fire_pt = self:extrapolate_pos( target_obj )
         self:rot_to_firepoint( self.target_fire_pt )
 
         if self.car:CanHit() then
@@ -1021,7 +1026,7 @@ function action_car:fast_update()
           self:set_shooting( self.state_shooting )
         end
         if self.fire_track_target then
-          self.target_fire_pt = self:extrapolate_pos( self.target_obj )
+          self.target_fire_pt = self:extrapolate_pos( target_obj )
           self:rot_to_firepoint( self.target_fire_pt )
         end
       end
@@ -1070,7 +1075,7 @@ function action_car:net_destroy()
 end
 
 
-function action_car:check_friends_on_fire_line()
+function action_car:check_friends_on_fire_line( target_obj )
   if self.target_fire_pt then
     local pos     = self.object:bone_position( "mashine_gun_fire_point" )
     local dir_aim = vector():set(
@@ -1078,7 +1083,7 @@ function action_car:check_friends_on_fire_line()
       self.target_fire_pt.y - pos.y,
       self.target_fire_pt.z - pos.z
     )
-    local target_dist = pos:distance_to( self.target_obj:position() )
+    local target_dist = pos:distance_to( target_obj:position() )
     -- проверяем позиции солдат и текущего сектора обстрела
     for a, v in pairs( self.friends ) do
       local tmp = level.object_by_id( a )
@@ -1161,12 +1166,10 @@ function action_car:update_friends_and_target()
     end
 
     if target then
-      self.target_obj = target
-      self.target_id  = target:id()
+      self.target_id = target:id()
       self.state_firetarget = state_firetarget_enemy
     else
-      self.target_obj = nil
-      self.target_id  = nil
+      self.target_id = nil
       self.state_firetarget = state_none
     end
   end
