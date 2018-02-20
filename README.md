@@ -1,5 +1,5 @@
 # op2ogse
-dsh mod для ОП-2
+dsh mod
 
 Форум мода тут:
 
