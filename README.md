@@ -1,5 +1,4 @@
-# op2ogse
-dsh mod
+# dsh mod
 
 Форум мода тут:
 
