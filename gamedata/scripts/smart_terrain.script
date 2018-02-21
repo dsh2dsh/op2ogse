@@ -230,8 +230,8 @@ function se_smart_terrain:STATE_Read( packet, size )
   if not packet:r_eof() then
     -- если есть, загрузим из сохранённой строки
     self.s_storage = packet:r_stringZ()
-    self:read_params_late()
   end
+  self:read_params_late()
 end
 
 
@@ -396,9 +396,25 @@ end
 
 
 function se_smart_terrain:read_params_late()
-  local s_storage = create_ini_file( self.s_storage )
-  if s_storage:section_exist( "dsh" ) then
-    local xyzlg = get_string( "dsh", "xyzlg", nil, s_storage )
+  local ini = self:spawn_ini()
+  if self.s_storage and self.s_storage ~= "" then
+    local s_storage = create_ini_file( self.s_storage )
+    if s_storage:section_exist( "dsh" ) then
+      ini.readonly = false
+      for _, k in ipairs({ "active_profile", "xyzlg" }) do
+        local v = get_string( "dsh", k, nil, s_storage )
+        if v then
+          ini:w_string( "dsh", k, v )
+        else
+          ini:remove_line( "dsh", k )
+        end
+      end
+      self:save_spawn_ini()
+      self.s_storage = ""
+    end
+  end
+  if ini:section_exist( "dsh" ) then
+    local xyzlg = get_string( "dsh", "xyzlg", nil, ini )
     if xyzlg then
       self.xyzlg = parse_nums( xyzlg )
       local x, y, z, lvid, gvid = unpack( self.xyzlg )
@@ -411,7 +427,7 @@ function se_smart_terrain:read_params_late()
         self.xyzlg = nil
       end
     end
-    local profile = get_string( "dsh", "active_profile", nil, s_storage )
+    local profile = get_string( "dsh", "active_profile", nil, ini )
     if profile then
       self:set_active_profile( profile )
     end
@@ -425,12 +441,14 @@ function se_smart_terrain:set_active_profile( profile, persist )
     self:dsh_override_params()
   end
   if persist then
-    local s_storage = m_netpk.custom_data( self.s_storage )
-    local cd = s_storage:getTable()
-    if not cd.dsh then cd.dsh = {} end
-    cd.dsh.active_profile = profile
-    s_storage:setTable( cd )
-    self.s_storage = s_storage:getString()
+    local ini = self:spawn_ini()
+    ini.readonly = false
+    if profile then
+      ini:w_string( "dsh", "active_profile", profile )
+    else
+      ini:remove_line( "dsh", "active_profile" )
+    end
+    self:save_spawn_ini()
   end
 end
 
@@ -1418,16 +1436,14 @@ function se_smart_terrain:update_xyzlg( from_lvid )
   --       or "nil"
   --   )
   -- )
-  local s_storage = m_netpk.custom_data( self.s_storage )
-  local cd        = s_storage:getTable()
+  local ini = self:spawn_ini()
+  ini.readonly = false
   if self.xyzlg then
-    if not cd.dsh then cd.dsh = {} end
-    cd.dsh.xyzlg = table.concat( self.xyzlg, "," )
-  else
-    if cd.dsh and cd.dsh.xyzlg then cd.dsh.xyzlg = nil end
+    ini:w_string( "dsh", "xyzlg", table.concat( self.xyzlg, "," ) )
+  elseif ini:section_exist( "dsh" ) then
+    ini:remove_line( "dsh", "xyzlg" )
   end
-  s_storage:setTable( cd )
-  self.s_storage = s_storage:getString()
+  self:save_spawn_ini()
 end
 
 
