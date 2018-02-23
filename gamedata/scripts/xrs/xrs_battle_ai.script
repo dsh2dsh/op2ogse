@@ -28,10 +28,10 @@ local memory_timeout            = 80000
 -- предотвращения выхода из боя слишком рано), для неписей умножается
 -- на 2
 local remember_enemy            = 10000
-local inertion_time_grenade     = 3000 -- сколько бояться гранаты С какого
--- апдейта схема начинает работать. Нельзя чтобы схема стартовала
--- включенной сразу же, иначе будут глюки на переключении схем и
--- выборе оружия
+local inertion_time_grenade     = 3000 -- сколько бояться гранаты
+-- С какого апдейта схема начинает работать. Нельзя чтобы схема
+-- стартовала включенной сразу же, иначе будут глюки на переключении
+-- схем и выборе оружия
 local engage_after_update       = 3
 -- время, мсек, сколько придерживаться стратегии маневрирования
 local time_mantain_manuever     = 20000
@@ -1470,7 +1470,6 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
     local deadman = have_fresh_deadman( npc )
     if deadman ~= false then
       last_target[ npc:id() ][ deadman ] = nil
-      last_time_send[ npc:id()    ] = nil
       last_enemy[ npc:id()        ] = nil
       last_enemy_id[ npc:id()     ] = nil
       primary_target[ npc:id()    ] = nil
@@ -1681,6 +1680,20 @@ function we_are_under_attack( npc, enemy )
 end
 
 
+function is_enemy_see( enemy, npc )
+  if enemy:see( npc ) then
+    return true
+  elseif enemy:id() == db.actor:id() then
+    return true --actor_see( npc )
+  elseif IsStalker( enemy ) or IsMonster( enemy ) then
+    return
+      ( enemy:best_enemy() and enemy:best_enemy():id() == npc:id() )
+      and true or false
+  end
+  return false
+end
+
+
 function register_as_target_companions( npc )
   for id, comm in pairs( xr_companion.companions ) do
     local enemy = level.object_by_id( id )
@@ -1691,21 +1704,12 @@ function register_as_target_companions( npc )
         if npc and npc:alive() and not xr_wounded.is_wounded( npc ) then
           local dist = npc:position():distance_to( enemy:position() )
           local enemy_record = {
-            npc   = IsStalker( enemy ),
-            range = dist,
-            vis   = (
-              enemy:see( npc )
-              or ( enemy:id() == db.actor:id() and actor_see( npc ) )
-            ),
+            npc    = IsStalker( enemy ),
+            range  = dist,
+            vis    = is_enemy_see( enemy, npc ),
             weight = 1000,
           }
-          local sobj = alife():object( id )
-          if sobj and string.find( sobj:section_name(), "zombie_" ) then
-            if dist < close_combat_distance then
-              enemy_record.vis = true
-            end
-          end
-          if enemy_record.vis == true and enemy_record.npc == true then
+          if enemy_record.vis and enemy_record.npc then
             enemy_record.last_time_seen = time_global()
             enemy_record.vertex         = enemy:level_vertex_id()
           end
@@ -1731,21 +1735,12 @@ function register_as_target( npc, enemy )
     if npc and npc:alive() and not xr_wounded.is_wounded(npc) then
       local dist = npc:position():distance_to( enemy:position() )
       local enemy_record = {
-        npc   = IsStalker( enemy) ,
-        range = dist,
-        vis   = (
-          enemy:see( npc )
-          or ( enemy:id() == db.actor:id() and actor_see( npc ) )
-        ),
+        npc    = IsStalker( enemy) ,
+        range  = dist,
+        vis    = is_enemy_see( enemy, npc ),
         weight = 1000,
       }
-      local sobj = alife():object( id )
-      if sobj and string.find( sobj:section_name(), "zombie_" ) then
-        if dist < close_combat_distance then
-          enemy_record.vis = true
-        end
-      end
-      if enemy_record.vis == true and enemy_record.npc == true then
+      if enemy_record.vis and enemy_record.npc then
         enemy_record.last_time_seen = time_global()
         enemy_record.vertex         = enemy:level_vertex_id()
       end
@@ -1766,8 +1761,7 @@ function reprioritize_targets( npc )
   -- обновим предварительно реестр целей
   if
     last_reprioritize[ npc:id() ]
-    and time_global() < last_reprioritize[ npc:id() ] + reprioritize_timeout
-    and primary_target[ npc:id() ]
+    and last_reprioritize[ npc:id() ] > time_global()
   then
     return
   end
@@ -1791,13 +1785,12 @@ function reprioritize_targets( npc )
     )
   end
 
-  local last_weight     = 1000
   local enemy_by_engine = npc:best_enemy()
   for k, v in pairs( targets_list[ npc:id() ] ) do
-    if v.vis == true then       -- если цель видит нас
+    if v.vis then               -- если цель видит нас
       local close_combat, far_combat = combat_ranges( npc, v.npc )
       local mult = combat_multiplier( v.npc )
-      if v.npc == false then    -- если она монстр
+      if not v.npc then         -- если она монстр
         if v.armor then         -- если она пиздец едучий/летячий
           if v.range >= 100 and v.range < 150 then -- и цель далеко
             v.weight = v.range * mult
@@ -1827,12 +1820,12 @@ function reprioritize_targets( npc )
           v.weight = v.range * mult * 3
         end
       end
-    else -- если невидима
+    else -- если не видит
       if primary_target[ npc:id() ] == k then
-        last_target[ npc:id() ][ primary_target[ npc:id() ] ] = time_global()
+        last_target[ npc:id() ][ k ] = time_global()
         primary_target[ npc:id() ] = nil
       end
-      if v.npc == false then    -- если она монстр
+      if not v.npc then         -- если она монстр
         if v.armor then         -- если она пиздец едучий/летячий
           if v.range < 150 then
             v.weight = v.range * 2
@@ -1878,39 +1871,40 @@ function reprioritize_targets( npc )
   end
 
   local last_range
+  local last_weight = 1000
   for k, v in pairs( targets_list[ npc:id() ] ) do
     if v.weight < last_weight then
       last_range  = v.range
       last_weight = v.weight
       primary_target[ npc:id() ] = k
-      last_target[ npc:id()    ] = {}
     end
   end
 
-  if primary_target[ npc:id() ] == nil then
+  if not primary_target[ npc:id() ] then
     for k, v in pairs( targets_list[ npc:id() ] ) do
       if v.range < last_weight then
         last_weight = v.range
         if
-          v.npc == true
+          v.npc
           and v.range < close_combat_distance
           and v.last_time_seen
           and v.last_time_seen + memory_timeout < time_global()
         then
           last_range = v.range
           primary_target[ npc:id() ] = k
-          last_target[ npc:id()    ] = {}
         end
       end
     end
   end
+  if last_range then
+    last_target[ npc:id() ] = {}
+  end
 
-  if primary_target[ npc:id() ] ~= nil then
-    last_reprioritize[ npc:id() ] = time_global()
+  if primary_target[ npc:id() ] then
     if last_range and last_range > npc:range() then
       npc:set_range( last_range * 1.1 )
     end
-    return
+    last_reprioritize[ npc:id() ] = time_global() + reprioritize_timeout
   else
     local deadman = have_fresh_deadman( npc )
     if deadman == false then
@@ -1919,6 +1913,7 @@ function reprioritize_targets( npc )
       primary_target[ npc:id() ] = nil
       last_target[ npc:id()    ] = {}
     end
+    last_reprioritize[ npc:id() ] = time_global() + 500
   end
 end
 
@@ -1993,7 +1988,7 @@ function refresh_targets( npc )
       else
         disable_object( npc, enemy_by_engine )
         if primary_target[ npc:id() ] == enemy_by_engine:id() then
-          last_target[ npc:id() ][ primary_target[ npc:id() ] ] = time_global()
+          last_target[ npc:id() ][ enemy_by_engine:id() ] = time_global()
           primary_target[ npc:id() ] = nil
         end
         targets_list[ npc:id() ][ enemy_by_engine:id() ] = nil
@@ -2032,7 +2027,7 @@ function refresh_targets( npc )
               else
                 disable_object( npc, best_danger_object )
                 if primary_target[ npc:id() ] == best_danger_object:id() then
-                  last_target[ npc:id() ][ primary_target[ npc:id() ] ] = time_global()
+                  last_target[ npc:id() ][ best_danger_object:id() ] = time_global()
                   primary_target[ npc:id() ] = nil
                 end
                 targets_list[ npc:id() ][ best_danger_object:id() ] = nil
@@ -2061,21 +2056,18 @@ function refresh_targets( npc )
       if is_armor( check_target ) then
         v.vis = get_armor_vis( check_target, npc )
       else
-        v.vis = (
-          check_target:see( npc )
-          or ( check_target:id() == db.actor:id() and actor_see( npc ) )
-        )
+        v.vis = is_enemy_see( check_target, npc )
       end
       local dist = npc:position():distance_to( check_target:position() )
       v.range = dist
-      if v.vis == false then
-        if v.npc == false then
+      if not v.vis then
+        if not v.npc then
           if v.armor then
             v.vertex = check_target:level_vertex_id()
             if dist > 200 then
               disable_object( npc, check_target )
               if primary_target[ npc:id() ] == k then
-                last_target[ npc:id() ][ primary_target[ npc:id() ] ] = time_global()
+                last_target[ npc:id() ][ k ] = time_global()
                 primary_target[ npc:id() ] = nil
               end
               targets_list[ npc:id() ][ k ] = nil
@@ -2084,7 +2076,7 @@ function refresh_targets( npc )
             if dist > 100 then
               disable_object( npc, check_target )
               if primary_target[ npc:id() ] == k then
-                last_target[ npc:id() ][ primary_target[ npc:id() ] ] = time_global()
+                last_target[ npc:id() ][ k ] = time_global()
                 primary_target[ npc:id() ] = nil
               end
               targets_list[ npc:id() ][ k ] = nil
@@ -2095,7 +2087,7 @@ function refresh_targets( npc )
             if dist > 100 and k ~= db.actor:id() then
               disable_object( npc, check_target )
               if primary_target[ npc:id() ] == k then
-                last_target[ npc:id() ][ primary_target[ npc:id() ] ] = time_global()
+                last_target[ npc:id() ][ k ] = time_global()
                 primary_target[ npc:id() ] = nil
               end
               targets_list[ npc:id() ][ k ] = nil
@@ -2108,14 +2100,14 @@ function refresh_targets( npc )
           else
             disable_object( npc, check_target )
             if primary_target[ npc:id() ] == k then
-              last_target[ npc:id() ][ primary_target[ npc:id() ] ] = time_global()
+              last_target[ npc:id() ][ k ] = time_global()
               primary_target[ npc:id() ] = nil
             end
             targets_list[ npc:id() ][ k ] = nil
           end
         end
       else
-        if v.npc == true or v.armor then
+        if v.npc or v.armor then
           v.last_time_seen = time_global()
           v.vertex         = check_target:level_vertex_id()
         end
@@ -2130,7 +2122,7 @@ function refresh_targets( npc )
       end
       disable_object( npc, check_target )
       if primary_target[ npc:id() ] == k then
-        last_target[ npc:id() ][ primary_target[ npc:id() ] ] = time_global()
+        last_target[ npc:id() ][ k ] = time_global()
         primary_target[ npc:id() ] = nil
       end
       targets_list[ npc:id() ][ k ] = nil
@@ -2168,7 +2160,7 @@ function register_as_target_armor( npc, enemy )
     else
       enemy_record.vis = enemy:get_helicopter():isVisible( npc )
     end
-    if enemy_record.vis == true then
+    if enemy_record.vis then
       enemy_record.last_time_seen = time_global()
       enemy_record.vertex         = enemy:level_vertex_id()
     end
@@ -2357,34 +2349,26 @@ end
 
 
 function have_fresh_deadman( npc )
+  if not last_target[ npc:id() ] then return false end
   local target = false
-  if not last_target[ npc:id() ] then
-    return false
-  end
   for k, v in pairs( last_target[ npc:id() ] ) do
     local obj     = level.object_by_id( k )
     local timeout = remember_enemy
     if obj and IsStalker( obj ) then
       timeout = timeout * 2
     end
-    if obj and ( not IsStalker( obj ) ) and not IsMonster( obj )  then
+    if obj and not ( IsStalker( obj ) or IsMonster( obj ) )  then
       last_target[ npc:id() ][ k ] = nil
-      postcombat[ npc:id() ] = nil
-      return false
-    end
-    if not obj then
+    elseif not obj then
       last_target[ npc:id() ][ k ] = nil
-      postcombat[ npc:id() ] = nil
-      return false
-    end
-    local time_check = time_global() - timeout
-    if v and v > time_check then
+    elseif v and v + timeout > time_global() then
       target = k
     else
       last_target[ npc:id() ][ k ] = nil
-      postcombat[ npc:id() ] = nil
-      return false
     end
+  end
+  if not target then
+    postcombat[ npc:id() ] = nil
   end
   return target
 end
