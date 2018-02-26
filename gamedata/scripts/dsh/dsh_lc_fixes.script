@@ -28,6 +28,13 @@ local lc_fixes = {
     },
   },
   [ "l10_radar" ] = {
+    [ "l07_military" ] = {
+      [ "lc"] = {
+        [ story_ids.Mil_Exit_to_Radar ] = {
+          [ "give_info" ] = "info_way112a",
+        }
+      }
+    },
     [ "l11_pripyat" ] = {
       [ "set_actor_position"  ] =  { 381.313, -48.802, 69.007 },
     },
@@ -107,6 +114,7 @@ local lc_fixes = {
 
 
 function attach( sm )
+  sm:subscribe({ signal = "level_changer_action", fun = this.on_level_changer_action })
   sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
   sm:subscribe({ signal = "on_before_spawn", fun = this.on_before_spawn })
   sm:subscribe({ signal = "on_spawn",        fun = this.on_spawn })
@@ -124,9 +132,18 @@ function on_before_spawn()
   if prev_lname and prev_lname ~= lname then
     db.actor:give_info_portion( "seensak_" .. prev_lname )
     level_has_changed = prev_lname
+    local last_lc_id  = ogse.load_var_safe( "dsh_lc_fixes.last_lc_id" )
+    local lc_sobj
+    if last_lc_id then
+      lc_sobj = alife():object( last_lc_id )
+    end
     if not has_alife_info( "teleport_started" ) then
       if lc_fixes[ lname ] then
         local t = lc_fixes[ lname ][ prev_lname ]
+        if t and t.lc and lc_sobj then
+          local t2 = t.lc[ lc_sobj.m_story_id ]
+          if t2 then t = t2 end
+        end
         if t then
           need_actor_dir = t.set_actor_direction
           need_actor_pos = t.set_actor_position
@@ -138,8 +155,9 @@ function on_before_spawn()
     end
     backup_autosave( prev_lname )
     local sm = ogse_signals.get_mgr()
-    sm:call( "on_before_spawn_another_level", lname, prev_lname )
+    sm:call( "on_before_spawn_another_level", lname, prev_lname, lc_sobj )
   end
+  ogse.delete_var( "dsh_lc_fixes.last_lc_id" )
   ogse.save_var( "prev_level_name", lname )
 end
 
@@ -189,4 +207,18 @@ function backup_autosave( prev_lname )
     f:file_delete( lc_save )
   end
   f:file_copy( last_save, lc_save )
+end
+
+
+function on_level_changer_action( obj, wnd )
+  ogse.save_var( "dsh_lc_fixes.last_lc_id", obj:id() )
+  dsh.exec_periodic(
+    1000,
+    function( timer )
+      if not wnd:IsShown() then
+        ogse.delete_var( "dsh_lc_fixes.last_lc_id" )
+        timer:stop()
+      end
+    end
+  )
 end
