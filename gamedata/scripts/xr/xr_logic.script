@@ -1666,13 +1666,42 @@ function load_obj(obj, reader)
   st.loaded_section_logic  = section_logic
   st.loaded_active_section = active_section
   st.loaded_gulag_name     = gulag_name
-  -- printf( "load_obj: ini_filename='%s'",   utils.to_str( st.loaded_ini_filename   ) )
-  -- printf( "load_obj: section_logic='%s'",  utils.to_str( st.loaded_section_logic  ) )
-  -- printf( "load_obj: active_section='%s'", utils.to_str( st.loaded_active_section ) )
-  -- printf( "load_obj: active_scheme='%s'",  utils.to_str( st.loaded_active_scheme  ) )
-  -- printf( "load_obj: gulag_name='%s'",     utils.to_str( st.loaded_gulag_name     ) )
+  validate_loaded_logic( obj, st )
   load_logic( obj, reader )
   pstor_load_all( obj, reader )
+end
+
+
+function validate_loaded_logic( obj, st )
+  if not st.loaded_gulag_name then return end
+  local sobj    = alife():object( obj:id() )
+  local strn_id = sobj:smart_terrain_id()
+  local clean   = false
+  if strn_id == 65535 then
+    log2(
+      "[%s]: %s: invalid saved logic: smart_terrain_id() == %s",
+      script_name(), obj:name(), strn_id
+    )
+    clean = true
+  else
+    local strn = alife():object( strn_id )
+    if ( not strn ) or strn:name() ~= st.loaded_gulag_name then
+      log2(
+        "[%s]: %s: invalid saved logic: smart_terrain_id() == %s",
+        script_name(), obj:name(), ( strn and strn:name() or "nil" )
+      )
+      clean = true
+    end
+  end
+  if clean then
+    for _, k in ipairs({
+      "active_section", "gulag_name", "ini_filename", "section_logic"
+    }) do
+      local loaded_k = "loaded_" .. k
+      log2( "[%s]:   %s = %s", script_name(), k, st[ loaded_k ] )
+      st[ loaded_k ] = nil
+    end
+  end
 end
 
 
@@ -1770,4 +1799,73 @@ function logic_not_empty( npc, ini )
       and ini:r_string( "logic", "active" ) ~= "nil"
     )
   )
+end
+
+
+function save_logic_online( obj )
+  local npc_id = obj:id()
+  local st     = db.storage[ npc_id ]
+  if ( not st ) or xr_gulag.get_npc_gulag( obj ) then return end
+  local sobj = alife():object( npc_id )
+  if not sobj then return end
+  local ini = sobj:spawn_ini()
+  ini.readonly = false
+  local t = {
+    [ "act" ] = "active_section",
+    [ "ini" ] = "ini_filename",
+    [ "sec" ] = "section_logic",
+  }
+  for ini_k, st_k in pairs( t ) do
+    if st[ st_k ] then
+      ini:w_string( "xr_logic", ini_k, st[ st_k ] )
+    else
+      ini:remove_line( "xr_logic", ini_k )
+    end
+  end
+  if st.activation_time then
+    ini:w_string(
+      "xr_logic", "act_time", tostring( time_global() - st.activation_time )
+    )
+  else
+    ini:remove_line( "xr_logic", "act_time" )
+  end
+  if st.activation_game_time then
+    ini:w_string(
+      "xr_logic", "act_g_time", pack_time_to_string( st.activation_game_time )
+    )
+  else
+    ini:remove_line( "xr_logic", "act_g_time" )
+  end
+  sobj:save_spawn_ini()
+end
+
+
+function load_logic_online( obj )
+  local npc_id = obj:id()
+  local st     = db.storage[ npc_id ]
+  if ( not st ) or xr_gulag.get_npc_gulag( obj ) then return false end
+  local sobj = alife():object( npc_id )
+  if not sobj then return false end
+  local ini = sobj:spawn_ini()
+  if not ini:section_exist( "xr_logic" ) then return false end
+  local t = {
+    [ "act"        ] = "active_section",
+    [ "act_g_time" ] = "activation_game_time",
+    [ "act_time"   ] = "activation_time",
+    [ "ini"        ] = "ini_filename",
+    [ "sec"        ] = "section_logic",
+  }
+  for ini_k, st_k in pairs( t ) do
+    local v = get_string( "xr_logic", ini_k, nil, ini )
+    if v and v ~= "" then
+      st[ st_k ] = v
+    end
+  end
+  if st.activation_time then
+    st.activation_time = time_global() - tonumber( st.activation_time )
+  end
+  if st.activation_game_time then
+    st.activation_game_time = unpack_time_from_string( st.activation_game_time )
+  end
+  return true
 end
