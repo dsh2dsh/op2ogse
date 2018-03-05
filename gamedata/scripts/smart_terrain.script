@@ -6,6 +6,10 @@
 -- Чугай Александр
 -- !без симуляции не работает!
 
+smart_terrain_choose_interval = 5 * 60 * 1000
+smart_terrain_choose_freq     = 1000
+
+
 function attach(sm)
   sm:subscribe({ signal = "on_spawn", fun = this.on_spawn })
 end
@@ -1080,9 +1084,10 @@ function se_smart_terrain:remove_gulag( disable, ignore_on_empty )
   end
   self.gulag = xr_gulag.gulag( self, self.npc_info, self.gparams )
   self.gulag:load_jobs()
-  self.gulag_working = false
   self.gulag.capacity_non_exclusive =
     self.gulag.capacity_non_exclusive - self.exclusives
+  self.gulag_working     = false
+  self.population_locked = false
 end
 
 
@@ -1514,35 +1519,57 @@ end
 -- прочитать секцию [smart_terrains]
 -- вызывается объектами, которые могут ходить под smart terrain
 function read_smart_terrain_conditions( self )
-  local ini      = self.ini
-  local sect     = smart_section
+  local ini  = self.ini
+  local sect = smart_section
+  -- в all.spawn оказалось некоторое кол-во мобов, у которых имеется
+  -- секция [smart_terrain], вместо [smart_terrains], т.ч. будем ее
+  -- обрабатывать тоже.
+  for _, s in ipairs({ smart_section, "smart_terrain" }) do
+    if ini:section_exist( s ) then
+      sect = s
+      break
+    end
+  end
   local dsh_sect = "dsh.se_stalker." .. self:name() .. ".smart_terrains"
   if sys_ini:section_exist( dsh_sect ) then
     ini  = sys_ini
     sect = dsh_sect
   else
-    if
-      ini
-      and ( not ini:section_exist( sect ) )
-      and ini:section_exist( "logic" )
-    then
+    if ( not ini:section_exist( sect ) ) and ini:section_exist( "logic" ) then
       local cfg = get_string( "logic", "cfg", nil, ini )
       if cfg then
         ini = dsh.cached_ini_file( cfg )
       end
     end
   end
-  if ini and ini:section_exist( sect ) then
-    local conds = {}
-    local n     = ini:line_count( sect )
+  if ini:section_exist( sect ) then
+    local conds, str_conds = {}, {}
+    local n = ini:line_count( sect )
     if n > 0 then
       for i = 0, n - 1 do
         local result, field, str = ini:r_line( sect, i, "", "" )
         str = string.gsub( str, "{-aes_arrive_to}", "true" )
-        conds[ field ] = xr_logic.parse_condlist( self, sect, field, str )
+        str_conds[ field ] = str
+        conds[ field     ] = xr_logic.parse_condlist(
+          self, sect, field, str
+        )
       end
-      return conds
+      return conds, str_conds
     end
+  end
+  if ini:section_exist( "logic" ) then
+    -- опаньки, имеется [logic], но нет [smart_terrains], т.е. нет
+    -- никакого запрета на принятие в смарты. И как это понимать, как
+    -- это должно работать? Ладно, будем считать, что таким мобам в
+    -- смарты нельзя.
+    local str_conds = {
+      [ "none" ] = "true",
+    }
+    local conds = {}
+    for k, v in pairs( str_conds ) do
+      conds[ k ] = xr_logic.parse_condlist( self, sect, k, v )
+    end
+    return conds, str_conds
   end
 end
 
@@ -1640,4 +1667,92 @@ function on_spawn()
   if cnt > 0 then
     log2( "[%s]: %s patche(s) applied", script_name(), cnt )
   end
+  exclusive_update_brains()
+  dsh.timeout(
+    smart_terrain_choose_interval,
+    function()
+      dsh.exec_periodic(
+        smart_terrain_choose_interval, this.choose_alife_tasks
+      )
+    end
+  )
+end
+
+
+function exclusive_update_brains()
+  local pt = profile_timer()
+  pt:start()
+  cnt = 0
+  for _, t in pairs({ se_monster.monsters, se_stalker.stalkers }) do
+    for id, sobj in pairs( t ) do
+      if sobj.need_brain_update then
+        ASSERT(
+          sobj.smart_terrain_conditions_cnt == 1
+          and sobj:alive() and sobj:brain():can_choose_alife_tasks(),
+          "[%s]: %s is dead or can't choose alife tasks",
+          script_name(), sobj:name()
+        )
+        log2( "[%s]: update brain %s", script_name(), sobj:name() )
+        sobj:brain():update()
+        cnt = cnt + 1
+      end
+    end
+  end
+  pt:stop()
+  if cnt > 0 then
+    log2( "[%s]: %s brains updated: %s", script_name(), cnt, pt:time() )
+  end
+end
+
+
+local alife_task_t
+
+function choose_alife_tasks()
+  if alife_task_t then
+    log2( "[%s]: choose_alife_tasks() is already running", script_name() )
+    return
+  end
+  local queue = {}
+  for _, t in pairs({ se_monster.monsters, se_stalker.stalkers }) do
+    for id, sobj in pairs( t ) do
+      if
+        sobj:smart_terrain_id() == 65535
+        and sobj:alive() and sobj:brain():can_choose_alife_tasks()
+      then
+        table.insert( queue, id )
+      end
+    end
+  end
+  if table.getn( queue ) == 0 then
+    log2( "[%s]: choose_alife_tasks() nothing to do", script_name() )
+    return
+  end
+  log2(
+    "[%s]: choose_alife_tasks() begin: %s in the queue",
+    script_name(), table.getn( queue )
+  )
+  local cnt    = 0
+  alife_task_t = dsh.exec_periodic(
+    smart_terrain_choose_freq,
+    function( timer )
+      while table.getn( queue ) > 0 do
+        local id   = table.remove( queue )
+        local sobj = se_monster.monsters[ id ] or se_stalker.stalkers[ id ]
+        if sobj and sobj:alive() and sobj:brain():can_choose_alife_tasks() then
+          -- log2( "[%s]: update brain %s", script_name(), sobj:name() )
+          sobj:brain():update()
+          cnt = cnt + 1
+          break
+        end
+      end
+      if table.getn( queue ) == 0 then
+        timer:stop()
+        alife_task_t = nil
+        log2(
+          "[%s]: choose_alife_tasks() done: %s brains updated",
+          script_name(), cnt
+        )
+      end
+    end
+  )
 end
