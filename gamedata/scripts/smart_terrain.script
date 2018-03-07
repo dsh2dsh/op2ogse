@@ -89,7 +89,7 @@ local disagreed, agreed, agreed_exclusive = 0, 1, 2
 local smart_section = "smart_terrains"
 local smart_terrains = {}
 local smart_terrains_by_name = {}
-exclusives = {}
+local exclusives = {}
 
 -- список всех серверных объектов смартов, которые зарегистрированы в симуляторе
 -- Формат:
@@ -144,8 +144,8 @@ end
 class "se_smart_terrain"( cse_alife_smart_zone )
 function se_smart_terrain:__init( section ) super( section )
   self.initialized = false
-  self.s_storage   = "" -- хранилище данных
   self.registred   = false
+  self.s_storage   = "" -- хранилище данных
 end
 
 
@@ -776,19 +776,8 @@ function se_smart_terrain:enabled( obj )
       -- и непись подходит смарту
       return self:smart_terrain_accepts_obj( obj, b )
     end
-  else
-    local conds = obj.smart_terrain_conditions
-    if conds then
-      if
-        conds[ self:name() ]
-        and obj.smart_terrain_conditions_cnt == 1
-        and object_level_name( obj ) ~= level.name()
-      then
-        obj:brain():can_choose_alife_tasks( false )
-      end
-    end
-    return false
   end
+  return false
 end
 
 
@@ -1080,7 +1069,7 @@ function se_smart_terrain:remove_gulag( disable, ignore_on_empty )
     -- если смарт закрылся, попытаемся всех распределить по другим смартам,
     -- как можно быстрее. Что бы не бродили неприкаянные и получили свою
     -- логику.
-    npc_info.se_obj:brain():update()
+    smart_brain_update( npc_info.se_obj )
   end
   self.gulag = xr_gulag.gulag( self, self.npc_info, self.gparams )
   self.gulag:load_jobs()
@@ -1255,6 +1244,10 @@ function se_smart_terrain:update()
     return
   end
   if self:is_gulag_available() then
+    if self.has_waiting_exclusive then
+      self.has_waiting_exclusive = false
+      self:register_waiting_exclusives()
+    end
     if self.check_time <= time_global() then
       self.check_time = time_global() + check_period
       -- проверять, не собрался ли кто-то к этому времени уже уходить
@@ -1278,7 +1271,7 @@ function se_smart_terrain:update()
           -- если выгнали кого-то потому, что у него переключился
           -- смарт, сразу же обновим ему мозги, что бы его подхватил
           -- новый смарт и дал ему логику.
-          sobj:brain():update()
+          smart_brain_update( sobj )
         elseif
           dsh.is_free_logic_mob( sobj )
           and object_level_name( sobj ) ~= this_smart_lname
@@ -1805,4 +1798,111 @@ function choose_alife_tasks()
       end
     end
   )
+end
+
+
+function fill_exclusives( sobj )
+  local conds, str_conds = read_smart_terrain_conditions( sobj )
+  if conds then
+    sobj.smart_terrain_conditions = conds
+    local cnt = 0
+    for name, condlist in pairs( conds ) do
+      cnt = cnt + 1
+      exclusives[ name ] = ( exclusives[ name ] or 0 ) + 1
+    end
+    sobj.smart_terrain_conditions_cnt = cnt
+    if sobj:brain():can_choose_alife_tasks() then
+      if cnt == 1 and str_conds[ "none" ] == "true" then
+        sobj:brain():can_choose_alife_tasks( false )
+      elseif sobj:smart_terrain_id() == 65535 and sobj:alive() then
+        ASSERT(
+          conds.none == nil,
+          "[%s]: %s has none = %s", script_name(), sobj:name(), conds.none
+        )
+        for k, v in pairs( conds ) do
+          if k ~= "any" then
+            local strn = alife():object( k )
+            if strn:is_gulag_available() then
+              if xr_logic.pick_section_from_condlist( db.actor_proxy, sobj, v ) then
+                log2(
+                  "[%s]: register %s in %s",
+                  script_name(), sobj:name(), strn:name()
+                )
+                sobj.need_brain_update = true
+                break
+              end
+            elseif cnt == 1 then
+              -- моб хочет идти исключительно в этот смарт, но смарт
+              -- еще закрыт. В этом случае, пусть смарт сам подберет
+              -- своих, когда откроется.
+              strn.has_waiting_exclusive = true
+              sobj.waiting_smart_terrain = strn.id
+              sobj:brain():can_choose_alife_tasks( false )
+            end
+          end
+        end
+      end
+    end
+  elseif sobj.cached_spawner then
+    if not sobj:can_be_spawned() then
+      -- У моба нет экслюзивного смарта и ему запрещено спауниться. В этом
+      -- случае его все равно ни один смарт не примет, так не будем и пытаться.
+      -- А вот когда разрешение на спаун сработает, тогда смарты и начнут его
+      -- принимать, после ближайшей загрузки. Я не могу представить себе
+      -- ситуацию, когда таких мобов нужно прямо вот срочно-срочно принять в
+      -- смарт, притом в неважно какой, но срочно.
+      sobj:brain():can_choose_alife_tasks( false )
+    end
+  end
+  if not sobj:alive() then
+    -- смарты только живых принимают
+    sobj:brain():can_choose_alife_tasks( false )
+  end
+end
+
+
+-- Смарт только что открылся и нужно найти мобов, которые хотят идти
+-- исключительно сюда, принять их или разрешить им поиск смарта, если
+-- они еще не готовы.
+function se_smart_terrain:register_waiting_exclusives()
+  log2(
+    "[%s]: %s is available and is looking for exclusives",
+    script_name(), self:name()
+  )
+  for _, t in pairs({ se_monster.monsters, se_stalker.stalkers }) do
+    for id, sobj in pairs( t ) do
+      if
+        sobj.waiting_smart_terrain and sobj.waiting_smart_terrain == self.id
+        and sobj:alive()
+      then
+        local conds = sobj.smart_terrain_conditions
+        ASSERT(
+          (
+            conds and conds[ self:name() ]
+            and sobj.smart_terrain_conditions_cnt == 1
+            and sobj:smart_terrain_id() == 65535
+            and not sobj:brain():can_choose_alife_tasks()
+          ),
+          "[%s]: %s is not suitable for %s",
+          script_name(), sobj:name(), self:name()
+        )
+        log2(
+          "[%s]: %s has found waiting exclusive %s",
+          script_name(), self:name(), sobj:name()
+        )
+        sobj:brain():can_choose_alife_tasks( true )
+        if
+          xr_logic.pick_section_from_condlist(
+            db.actor_proxy, sobj, conds[ self:name() ]
+          )
+        then
+          log2(
+            "[%s]: register %s in %s",
+            script_name(), sobj:name(), self:name()
+          )
+          smart_brain_update( sobj )
+        end
+      end
+    end
+  end
 end
