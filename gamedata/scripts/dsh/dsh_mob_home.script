@@ -1,0 +1,148 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+function attach( sm )
+  sm:subscribe({ signal = "on_monster_death",  fun = this.on_monster_death })
+  sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_monster_death })
+end
+
+
+function create_home( obj, home_vertex, min_radius, max_radius, aggressive, onetime )
+  local binder = obj:binded_object()
+  local mgr    = binder.dsh_mob_home
+  if mgr then
+    mgr:reset_home()
+    ogse_signals.get_mgr():unsubscribe( mgr.subscribed )
+  end
+  mgr = mob_home( obj, home_vertex, min_radius, max_radius, aggressive, onetime )
+  binder.dsh_mob_home = mgr
+  local subscribed = {
+    [ "signal" ] = "on_monster_update." .. obj:id(),
+    [ "self"   ] = mgr,
+    [ "fun"    ] = mgr.update,
+  }
+  ogse_signals.get_mgr():subscribe( subscribed )
+  mgr.subscribed = subscribed
+  return mgr
+end
+
+
+function on_monster_death( obj )
+  local binder = obj:binded_object()
+  local mgr    = binder.dsh_mob_home
+  if not mgr then return end
+  mgr:reset_home()
+  ogse_signals.get_mgr():unsubscribe( mgr.subscribed )
+  binder.dsh_mob_home = nil
+end
+
+
+local STATE_ALIFE = 1
+local STATE_HOME  = 2
+
+
+class "mob_home"
+function mob_home:__init( obj, home_vertex, min_radius, max_radius, aggressive, onetime )
+  self.aggressive   = aggressive
+  self.home_changed = false
+  self.home_vertex  = home_vertex
+  self.initialized  = false
+  self.max_radius   = max_radius
+  self.min_radius   = min_radius
+  self.object       = obj
+  self.onetime      = onetime
+end
+
+
+function mob_home:reset_home()
+  self.state_current = STATE_ALIFE
+  self.state_prev    = self.state_current
+  self.object:remove_home();
+  if self.onetime then
+    self.startup_time = time_global() + math.random( 1000, 2000 )
+  end
+end
+
+
+function mob_home:update()
+  if not self.initialized then
+    self:reset_home()
+    self.initialized = true
+  end
+  if self.startup_time and self.startup_time > time_global() then
+    return
+  end
+  self:select_state()
+  self:execute_state()
+end
+
+
+function mob_home:select_state()
+  self.state_prev = self.state_current
+
+  if self.home_path then
+    if not self.home_vertex then
+      local pos = level.vertex_position( db.actor:level_vertex_id() )
+      local pp  = self.home_path:point( 0 )
+      if pp.m_position:distance_to( pos ) > 10 then
+        self.home_changed = true
+        self.home_path    = CPatrolPath()
+        self.home_path:add_point( pos )
+      end
+    end
+  else
+    self.home_changed = true
+    self.home_path    = CPatrolPath()
+    self.home_path:add_point(
+      level.vertex_position( self.home_vertex or db.actor:level_vertex_id() )
+    )
+  end
+
+  if self.home_changed then
+    self.home_changed = false
+    self.state_prev   = STATE_HOME
+    self.object:set_home(
+      self.home_path, self.min_radius, self.max_radius, self.aggressive
+    )
+  end
+
+  local enemy = self.object:best_enemy()
+  if
+    (
+      enemy
+      and ( IsStalker( enemy ) or ( self.onetime and IsMonster( enemy ) ) )
+      and enemy:alive()
+    )
+    or ( self.onetime and self.object:at_home() )
+  then
+    self.state_current = STATE_ALIFE
+  else
+    self.state_current = STATE_HOME
+  end
+end
+
+
+function mob_home:execute_state()
+  if self.state_current == self.state_prev then return end
+
+  if self.state_current == STATE_ALIFE then
+    self.object:remove_home()
+    if self.onetime then
+      on_monster_death( self.object )
+      local sobj = alife():object( self.object:id() )
+      if sobj then
+        sobj.force_online = false
+      end
+    end
+
+  elseif self.state_current == STATE_HOME then
+    self.object:set_home(
+      self.home_path, self.min_radius, self.max_radius, self.aggressive
+    )
+    if self.onetime then
+      local sobj = self.object:get_alife_object()
+      if sobj then
+        sobj.force_online = true
+      end
+    end
+  end
+end
