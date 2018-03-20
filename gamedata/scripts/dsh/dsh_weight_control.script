@@ -7,6 +7,12 @@ local overweight_time  = 12
 -- power_loss для случая отсутствия энергии
 local empty_power_loss = 2
 
+-- через сколько часов перегруза бонус к переносимому весу
+-- увеличивается на 1 кг.
+local weight_upgrade_time = 12
+-- максимальный бонус
+local weight_upgrade_max  = 40
+
 
 function attach( sm )
   sm:subscribe({ signal = "on_drop",  fun = this.remove_outfit })
@@ -15,10 +21,12 @@ function attach( sm )
 end
 
 
-local overweight_time
+local weight_upgrade
+local weight_upgrade_cur
 
-function set_overweight_time( v )
-  overweight_time = v
+function set_weight_upgrade( v )
+  weight_upgrade     = v
+  weight_upgrade_cur = math.floor( weight_upgrade )
 end
 
 
@@ -33,14 +41,16 @@ function on_spawn()
   )
   sm:subscribe({ signal = "on_update", fun = this.on_update })
   sm:subscribe({ signal = "on_update", fun = this.use_power })
-  overweight_time = ogse.load_var_safe(
-    "dsh_weight_control.overweight_time"
-  ) or 0
+  set_weight_upgrade(
+    ogse.load_var_safe( "dsh_weight_control.weight_upgrade" ) or 0
+  )
+  log2( "[%s]: weight_upgrade = %s", script_name(), weight_upgrade )
 end
 
 
 function on_save()
-  ogse.save_var( "dsh_weight_control.overweight_time", overweight_time )
+  log2( "[%s]: weight_upgrade = %s", script_name(), weight_upgrade )
+  ogse.save_var( "dsh_weight_control.weight_upgrade", weight_upgrade )
 end
 
 
@@ -58,19 +68,21 @@ function remove_outfit( obj )
 end
 
 
-local time_factor = get_float( "alife", "time_factor" )
-local weight_upgrade
+local tf = get_float( "alife", "time_factor" )
+local weight_upgrade_inc = 1 / ( weight_upgrade_time * 3600 / tf )
 
 function on_update()
   ogse_signals.get_mgr():reschedule( 1000 )
   if not db.actor:alive() then return end
-  if ogse_actor_conditions_mgr.get_overweight_power() < 1 then
+  if
+    weight_upgrade < weight_upgrade_max
+    and ogse_actor_conditions_mgr.get_overweight_power() < 1
+  then
     local aobj = get_actor_obj()
     if aobj:is_actor_moving() then
-      overweight_time = overweight_time + time_factor * 2
+      set_weight_upgrade( weight_upgrade + weight_upgrade_inc )
     end
   end
-  weight_upgrade = math.min( 40, math.floor( overweight_time / 86400 ) )
   recalc_outfit()
 end
 
@@ -96,8 +108,8 @@ local on_power_mode = false
 function set_weight_parameters()
   on_power_mode = false
   local ext = {
-    [ "actor_max_walk_weight"  ] = weight_upgrade,
-    [ "actor_max_weight"       ] = weight_upgrade,
+    [ "actor_max_walk_weight"  ] = weight_upgrade_cur,
+    [ "actor_max_weight"       ] = weight_upgrade_cur,
     [ "outfit_max_walk_weight" ] = 0,
     [ "outfit_max_weight"      ] = 0,
   }
