@@ -1023,9 +1023,14 @@ function init()
   then
     return
   end
-  pre_blow_off()
+  local keep  = db.actor:has_info( "testsak_" .. level.name() )
+  local anoms = pre_blow_off( keep )
   randomize_arts()
-  generate_anoms()
+  if keep then
+    randomize_anoms( anoms )
+  else
+    generate_anoms()
+  end
   generate_new_arts()
   forbidden_pos = {}
 end
@@ -1102,7 +1107,7 @@ function get_all_mobs( lname )
 end
 
 
-function pre_blow_off()
+function pre_blow_off( keep )
   forbidden_lvids = {
     [ db.actor:level_vertex_id() ] = true,
   }
@@ -1120,10 +1125,15 @@ function pre_blow_off()
       end
     end
   )
+  local anoms = {}
   dsh_alife.iterate_items(
     function( sobj )
       if is_generated_anomaly( sobj ) then
-        dsh_alife.release( sobj )
+        if keep then
+          table.insert( anoms, sobj )
+        else
+          dsh_alife.release( sobj )
+        end
       elseif object_level_name( sobj ) == level.name() then
         forbidden_lvids[ sobj.m_level_vertex_id ] = true
         table.insert( forbidden_pos, sobj.position )
@@ -1131,6 +1141,7 @@ function pre_blow_off()
     end,
     65535 -- на земле
   )
+  return anoms
 end
 
 
@@ -1183,31 +1194,30 @@ end
 function generate_anoms()
   local lname = level.name()
   local v     = level_anoms[ lname ]
-  if v then
-    local cnt = 0
-    local mxx = math.random( v[ 1 ], v[ 2 ] )
-    local pt  = profile_timer()
-    pt:start()
-    while cnt < mxx do
-      local res = generate_anomaly()
-      if res then
-        cnt = cnt + 1
-        add_anomaly( res.id, res.position, 5, res )
-        dsh_alife.add_item( alife():object( res.id ) )
-      elseif res == false then
-        log2(
-          "[%s]: I give up here: %s, %s / %s anomalies generated",
-          script_name(), lname, cnt, mxx
-        )
-        break
-      end
+  if not v then return end
+  local cnt   = 0
+  local mxx   = math.random( v[ 1 ], v[ 2 ] )
+  local pt    = profile_timer()
+  pt:start()
+  while cnt < mxx do
+    local res = generate_anomaly()
+    if res then
+      cnt = cnt + 1
+      add_anomaly( res.id, res.position, 5, res )
+      dsh_alife.add_item( alife():object( res.id ) )
+    elseif res == false then
+      log2(
+        "[%s]: I give up here: %s, %s / %s anomalies generated",
+        script_name(), lname, cnt, mxx
+      )
+      break
     end
-    pt:stop()
-    log2(
-      "[%s]: %s anomalies generated, time spent = %s",
-      script_name(), cnt, pt:time()
-    )
   end
+  pt:stop()
+  log2(
+    "[%s]: %s anomalies generated, time spent = %s",
+    script_name(), cnt, pt:time()
+  )
 end
 
 
@@ -1386,8 +1396,8 @@ function randomize_arts()
         break
       elseif pos == false then
         log2(
-          "[%s]: stop relocation process here: %s, current art is %s",
-          script_name(), lname, sobj:name()
+          "[%s]: stop relocation process here: %s/%s, current art is %s",
+          script_name(), cnt, table.getn( found_arts ), sobj:name()
         )
         return false
       end
@@ -1803,4 +1813,33 @@ function make_dyn_art_sect( sect, min, bio )
     if prop.af_bio_sect then sect = prop.af_bio_sect end
   end
   return sect
+end
+
+
+function randomize_anoms( anoms )
+  local pt, cnt = profile_timer(), 0
+  pt:start()
+  for _, sobj in ipairs( anoms ) do
+    for i = 1, 100 do
+      local pos, new_gv, new_lv = calc_new_free_pos( level.name() )
+      if pos then
+        alife():teleport_object( sobj.id, pos, new_lv, new_gv )
+        forbidden_lvids[ new_lv ] = true
+        table.insert( forbidden_pos, pos )
+        cnt = cnt + 1
+        break
+      elseif pos == false then
+        log2(
+          "[%s]: stop relocation process here: %s/%s, current anomaly is %s",
+          script_name(), cnt, table.getn( anoms ), sobj:name()
+        )
+        return false
+      end
+    end
+  end
+  pt:stop()
+  log2(
+    "[%s]: %s anomalies randomized, time spent = %s",
+    script_name(), cnt, pt:time()
+  )
 end
