@@ -5,73 +5,23 @@
 -- скрипта, способен поглотить определенное кол-во энергии, после
 -- чего, он преобразуется в булыжник.
 
-local our_hits = {              -- какие типы хита будут обрабатываться
-  [ hit.explosion ] = {
-    [ "max"     ] = 10,           -- порог поглощения
-    [ "new_hit" ] = { "bleeding", "health" },
-    [ "sect"    ] = "explosion_immunity",
-  },
-  [ hit.fire_wound ] = {
-    [ "max"     ] = 10,
-    [ "new_hit" ] = { "bleeding", "health" },
-    [ "sect"    ] = "fire_wound_immunity",
-  },
-  [ hit.strike ] = {
-    [ "max"     ] = 10,
-    [ "new_hit" ] = { "bleeding", "health" },
-    [ "sect"    ] = "strike_immunity",
-  },
-  [ hit.wound ] = {
-    [ "max"     ] = 10,
-    [ "new_hit" ] = { "bleeding", "health" },
-    [ "sect"    ] = "wound_immunity",
-  },
-  [ hit.burn ] = {
-    [ "max"  ] = 10,
-    [ "sect" ] = "burn_immunity",
-  },
-  [ hit.chemical_burn ] = {
-    [ "max"     ] = 10,
-    [ "new_hit" ] = { "bleeding" },
-    [ "sect"    ] = "chemical_burn_immunity",
-  },
-  [ hit.shock ] = {
-    [ "max"  ] = 10,
-    [ "sect" ] = "shock_immunity",
-  },
-  [ hit.radiation ] = {
-    [ "max"     ] = 100,
-    [ "new_hit" ] = { "radiation" },
-    [ "sect"    ] = "radiation_immunity",
-  },
-  [ hit.telepatic ] = {
-    [ "max"  ] = 10,
-    [ "sect" ] = "telepatic_immunity",
-  },
-  [ "bleeding" ] = {
-    [ "max"  ] = 10,
-    [ "sect" ] = "bleeding_restore_speed",
-  },
-  [ "health" ] = {
-    [ "max"  ] = 10,
-    [ "sect" ] = "health_restore_speed",
-  },
-  [ "power" ] = {
-    [ "max"  ] = 250,
-    [ "sect" ] = "power_restore_speed",
-  },
-  [ "radiation" ] = {
-    [ "max"  ] = 250,
-    [ "sect" ] = "radiation_restore_speed",
-  },
-  [ "satiety" ] = {
-    [ "max"  ] = 10,
-    [ "sect" ] = "satiety_restore_speed",
-  },
-  [ "weight2" ] = {
-    [ "max"  ] = 950400, -- 24 часа для Булыжника (11 кг.)
-    [ "sect" ] = "additional_inventory_weight2",
-  },
+-- какие типы хита будут обрабатываться и их классы
+local our_hits = {
+  [ hit.explosion     ] = "explosion_immunity",
+  [ hit.fire_wound    ] = "fire_wound_immunity",
+  [ hit.strike        ] = "strike_immunity",
+  [ hit.wound         ] = "wound_immunity",
+  [ hit.burn          ] = "burn_immunity",
+  [ hit.chemical_burn ] = "chemical_burn_immunity",
+  [ hit.shock         ] = "shock_immunity",
+  [ hit.radiation     ] = "radiation_immunity",
+  [ hit.telepatic     ] = "telepatic_immunity",
+  [ "bleeding"        ] = "bleeding_restore_speed",
+  [ "health"          ] = "health_restore_speed",
+  [ "power"           ] = "power_restore_speed",
+  [ "radiation"       ] = "radiation_restore_speed",
+  [ "satiety"         ] = "satiety_restore_speed",
+  [ "weight2"         ] = "additional_inventory_weight2",
 }
 
 
@@ -83,6 +33,9 @@ end
 
 
 function on_first_update()
+  for k, v in pairs( our_hits ) do
+    our_hits[ k ] = this[ v ]()
+  end
   local sm = ogse_signals.get_mgr()
   sm:subscribe({
     signal = "on_update", fun = this.process_hits,
@@ -116,7 +69,8 @@ function before_hit( hit_data )
         new_hit[ k ] = true
       end
     end
-    if hit_data.hit_type == hit.telepatic
+    if
+      hit_data.hit_type == hit.telepatic
       and psy_block_t and time_global() < psy_block_t
     then
       hit_data.power = 0
@@ -134,6 +88,7 @@ local need_addl_keys = {
   [ "radiation_restore_speed"      ] = -1,
   [ "satiety_restore_speed"        ] =  1,
 }
+
 function get_absorbations( af )
   local af_sect = af:section()
   if not absorbations[ af_sect ] then
@@ -174,7 +129,6 @@ function process_hits()
   if dt <= 0 then return end
 
   got_hits.satiety = ( got_hits.satiety or 0 ) + dt
-  got_hits.weight2 = ( got_hits.weight2 or 0 ) + dt
 
   if act:get_bleeding() > 0 or new_hit.bleeding then
     got_hits.bleeding = ( got_hits.bleeding or 0 ) + dt
@@ -189,13 +143,13 @@ function process_hits()
   end
 
   local aobj = get_actor_obj()
-  if
-    act.power < 0.99
-    or aobj:is_actor_running()
-    or aobj:is_actor_sprinting()
-    or aobj:is_actor_climbing()
-  then
+  if act.power < 1 or aobj:is_actor_moving() then
     got_hits.power = ( got_hits.power or 0 ) + dt
+    has_hit = true
+  end
+
+  if aobj:is_actor_moving() then
+    got_hits.weight2 = ( got_hits.weight2 or 0 ) + dt
     has_hit = true
   end
 
@@ -217,7 +171,6 @@ function process_arts()
     not (
       has_hit
       or inventory.on_belt_restore_speed_pos( "satiety_restore_speed" )
-      or inventory.on_belt_restore_speed_pos( "additional_inventory_weight2" )
     )
   then
     return
@@ -234,7 +187,7 @@ function process_arts()
         for hit_type, hit_power in pairs( got_hits ) do
           local our_hit = our_hits[ hit_type ]
           if absorbs[ our_hit.sect ] then
-            local absorb_val = absorbs[ our_hit.sect ] * hit_power
+            local absorb_val = our_hit:absorbation( absorbs ) * hit_power
             cond_diff = cond_diff + ( absorb_val / our_hit.max )
           end
         end
@@ -274,4 +227,140 @@ function degrade_artefact( af )
   zero_all_af_effects( af )
   dsh.set_condition( af, 0 )
   inventory.rescan_belt()
+end
+
+
+class "hit_immunity"
+function hit_immunity:__init() end
+function hit_immunity:absorbation()
+  return inventory.on_belt_hit_immunity( self.sect )
+end
+
+class "restore_speed_neg"
+function restore_speed_neg:__init() end
+function restore_speed_neg:absorbation()
+  return inventory.on_belt_restore_speed_neg( self.sect )
+end
+
+class "restore_speed_pos"
+function restore_speed_pos:__init() end
+function restore_speed_pos:absorbation()
+  return inventory.on_belt_restore_speed_pos( self.sect )
+end
+
+class "self_absorbation"
+function self_absorbation:__init() end
+function self_absorbation:absorbation( t )
+  return t[ self.sect ]
+end
+
+
+class "explosion_immunity" ( hit_immunity )
+function explosion_immunity:__init() super()
+  self.max     = 10             -- порог поглощения
+  self.new_hit = { "bleeding", "health" }
+  self.sect    = "explosion_immunity"
+end
+
+
+class "fire_wound_immunity" ( hit_immunity )
+function fire_wound_immunity:__init() super()
+  self.max     = 10
+  self.new_hit = { "bleeding", "health" }
+  self.sect    = "fire_wound_immunity"
+end
+
+
+class "strike_immunity" ( hit_immunity )
+function strike_immunity:__init() super()
+  self.max     = 10
+  self.new_hit = { "bleeding", "health" }
+  self.sect    = "strike_immunity"
+end
+
+
+class "wound_immunity" ( hit_immunity )
+function wound_immunity:__init() super()
+  self.max     = 10
+  self.new_hit = { "bleeding", "health" }
+  self.sect    = "wound_immunity"
+end
+
+
+class "burn_immunity" ( hit_immunity )
+function burn_immunity:__init() super()
+  self.max     = 10
+  self.sect    = "burn_immunity"
+end
+
+
+class "chemical_burn_immunity" ( hit_immunity )
+function chemical_burn_immunity:__init() super()
+  self.max     = 10
+  self.new_hit = { "bleeding" }
+  self.sect    = "chemical_burn_immunity"
+end
+
+
+class "shock_immunity" ( hit_immunity )
+function shock_immunity:__init() super()
+  self.max     = 10
+  self.sect    = "shock_immunity"
+end
+
+
+class "radiation_immunity" ( hit_immunity )
+function radiation_immunity:__init() super()
+  self.max     = 100
+  self.new_hit = { "radiation" }
+  self.sect    = "radiation_immunity"
+end
+
+
+class "telepatic_immunity" ( hit_immunity )
+function telepatic_immunity:__init() super()
+  self.max     = 10
+  self.sect    = "telepatic_immunity"
+end
+
+
+class "bleeding_restore_speed" ( restore_speed_pos )
+function bleeding_restore_speed:__init() super()
+  self.max     = 10
+  self.sect    = "bleeding_restore_speed"
+end
+
+
+class "health_restore_speed" ( restore_speed_pos )
+function health_restore_speed:__init() super()
+  self.max     = 10
+  self.sect    = "health_restore_speed"
+end
+
+
+class "power_restore_speed" ( restore_speed_pos )
+function power_restore_speed:__init() super()
+  self.max     = 250
+  self.sect    = "power_restore_speed"
+end
+
+
+class "radiation_restore_speed" ( restore_speed_neg )
+function radiation_restore_speed:__init() super()
+  self.max     = 250
+  self.sect    = "radiation_restore_speed"
+end
+
+
+class "satiety_restore_speed" ( restore_speed_pos )
+function satiety_restore_speed:__init() super()
+  self.max     = 10
+  self.sect    = "satiety_restore_speed"
+end
+
+
+class "additional_inventory_weight2" ( self_absorbation )
+function additional_inventory_weight2:__init()
+  self.max     = 950400         -- 24 часа для Булыжника (11 кг.)
+  self.sect    = "additional_inventory_weight2"
 end
