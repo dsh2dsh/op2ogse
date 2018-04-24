@@ -307,6 +307,7 @@ class "savable_timer"
 function savable_timer:__init( timer_id )
   self.class  = "error: it is forbidden to create instances of a base savable timer class!"
   self.loaded = false
+  self.signal = "on_update"
   if timer_id then
     ASSERT(
       tostring( timer_id ),
@@ -461,7 +462,7 @@ function savable_timer:start()
   self._start_time     = self._start_time or game.get_game_time()
   self._high_priority  = false
   self._cond_slot_desc = {
-    signal = "on_update", self = self, fun = self._aux_cond,
+    signal = self.signal, self = self, fun = self._aux_cond,
     script_name = ( self.script_name or self.class ),
   }
   self.sm:subscribe( self._cond_slot_desc )
@@ -478,24 +479,24 @@ end
 
 
 -- метод для внутреннего использования таймером
-function savable_timer:_aux_cond()
+function savable_timer:_aux_cond( ... )
   if self._game_termination_time then
     -- если сработал таймаут по игровому времени
     if self._game_termination_time <= game.get_game_time() then
       self:stop()           -- останавливаем проверки
-      self:taction()        -- выполняем действие по таймауту
+      self:taction( ... )   -- выполняем действие по таймауту
     end
   elseif self._residual_time then -- у нас таймаут в реальном времени
     local time_from_loading = 1.0e-3 * ( time_global() - self._loading_time )
     if self._residual_time <= time_from_loading then -- и он сработал
       self:stop()               -- останавливаем проверки
-      self:taction()            -- выполняем действие по таймауту
+      self:taction( ... )       -- выполняем действие по таймауту
     else                        -- иначе засыпаем на оставшееся время
       self.sm:reschedule( ( self._residual_time - time_from_loading ) * 1000 )
     end
-  elseif self:condition() then -- если сработало условие
+  elseif self:condition( ... ) then -- если сработало условие
     self:stop()
-    self:action() -- выполняем действие по условия
+    self:action( ... )          -- выполняем действие по условия
   end
 end
 
@@ -598,5 +599,64 @@ function start_gtimer( name, delay, fname, ... )
   return delayed_fun_start( name )
     :set_gdelay( delay )
     :init( fname, ... )
+    :start()
+end
+
+
+class "delayed_on_signal" ( savable_timer )
+function delayed_on_signal:__init( name ) super( name )
+  self.class = "ogse_st_mgr.delayed_on_signal"
+end
+
+function delayed_on_signal:init( signal, action_name, ... )
+  self.signal      = signal
+  self.action_name = action_name
+  self.user_action = loadstring( "return " .. self.action_name .. "( ... )" )
+  ASSERT(
+    self.user_action,
+    "delayed_fun_start:init: can not compile function with the name '%s'",
+    tostring( self.action_name )
+  )
+  self.fun_params = { ... }
+  return self
+end
+
+function delayed_on_signal:load( t )
+  self.signal, self.action_name, self.fun_params = unpack( t )
+  self.user_action = loadstring( "return " .. self.action_name .. "( ... )" )
+  ASSERT(
+    self.user_action,
+    "delayed_fun_start:load: can not compile function with the name '%s'",
+    tostring( self.action_name )
+  )
+end
+
+function delayed_on_signal:save( t, template )
+  for _, typ in ipairs({ "string", "string", { "array" } }) do
+    table.insert( template, typ )
+  end
+  table.insert( t, self.signal      )
+  table.insert( t, self.action_name )
+  table.insert( t, self.fun_params  )
+  return template
+end
+
+function delayed_on_signal:start()
+  self.script_name = self.action_name
+  return savable_timer.start( self )
+end
+
+function delayed_on_signal:condition()
+  return true
+end
+
+function delayed_fun_start:action( ... )
+  self.user_action( ..., unpack( self.fun_params ) )
+end
+
+
+function start_on_signal( name, signal, fname, ... )
+  return delayed_on_signal( name )
+    :init( signal, fname, ... )
     :start()
 end
