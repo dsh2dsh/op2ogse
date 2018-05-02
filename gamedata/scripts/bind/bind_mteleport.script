@@ -38,6 +38,7 @@ end
 class "restrictor_teleport" ( object_binder )
 function restrictor_teleport:__init( obj ) super( obj )
   self.sm = ogse_signals.get_mgr()
+  self.teleproting = false
 end
 
 
@@ -92,90 +93,129 @@ function restrictor_teleport:net_spawn( data )
   if cond then
     t.cond = xr_logic.parse_condlist( self.object, sect, "cond", cond )
   end
-  self.subscribed = {
-    [ "signal" ] = "on_update",
-    [ "fun"    ] = self.actor_update,
-    [ "self"   ] = self,
-    [ "script_name" ] = "bind_mteleport.actor_update",
-  }
-  self.sm:subscribe( self.subscribed )
+  self.object:set_callback( callback.zone_enter, self.on_enter, self )
+  if self.object:get_shape_radius() <= 1 then
+    self.subscribed = {
+      [ "signal" ] = "on_update",
+      [ "fun"    ] = self.actor_update,
+      [ "self"   ] = self,
+      [ "script_name" ] = "bind_mteleport.actor_update",
+    }
+    self.sm:subscribe( self.subscribed )
+  end
   return true
 end
 
 
 function restrictor_teleport:net_destroy()
-  -- Удаляем наш телепорт
+  self.object:set_callback( callback.zone_enter, nil )
   if self.subscribed then
     self.sm:unsubscribe( self.subscribed )
     self.subscribed = nil
   end
-  self.parametrs = nil
   object_binder.net_destroy( self )
 end
 
 
-function restrictor_teleport:actor_update()
+function restrictor_teleport:on_enter( zone, obj )
+  if not obj:is_actor() then return end
   local s = self.parametrs
-  if s.teleporte then
-    -- Телепорт запущен
-    local pos = db.actor:position()
-    ogse.save_var(
-      "bind_mteleport.orig_pos", { pos.x, pos.y, pos.z }, "vector"
+  if
+    s.cond
+    and xr_logic.pick_section_from_condlist(
+      db.actor, self.object, s.cond
+    ) == nil
+  then
+    return
+  end
+  if s.pos_rnd_radius then
+    local pos = dsh.get_random_pos_in_radius( s.pos_rnd_radius, 25 )
+    if pos then
+      s.poz_x, s.poz_y, s.poz_z = pos.x, pos.y, pos.z
+    else
+      return
+    end
+  end
+  -- Актер в зоне действия телепорта, запустим телепорт
+  self:actor_pre_teleport()
+end
+
+
+function restrictor_teleport:actor_pre_teleport()
+  self.teleproting = true
+  level.disable_input()
+  -- Запускаем спецэфекты телепортации
+  level.add_pp_effector( "teleport.ppe", 2006, false )
+  dsh.timeout( 1000, self.actor_teleport, self )
+end
+
+
+function restrictor_teleport:actor_teleport()
+  local s = self.parametrs
+  -- Телепорт запущен
+  local pos = db.actor:position()
+  ogse.save_var(
+    "bind_mteleport.orig_pos", { pos.x, pos.y, pos.z }, "vector"
+  )
+  db.actor:set_actor_position( vector():set( s.poz_x, s.poz_y, s.poz_z ) )
+  if s.rotate then
+    db.actor:set_actor_direction( s.rotate )
+  end
+  -- выполняем функции рестриктора
+  if s.info then
+    -- выдаем поршень
+    db.actor:give_info_portion( s.info )
+  end
+  if s.func then
+    -- выполняем функцию
+    local f, err = loadstring( s.func )
+    ASSERT( f, err )
+    f()
+  end
+  -- Звуковое сопровождение
+  local snd_obj = xr_sound.get_safe_sound_object( "anomaly\\teleport_work_1" )
+  snd_obj:play_no_feedback(
+    db.actor, sound_object.s2d, 0, vector():set( 0, 0, 0 ), 1.0
+  )
+  level.enable_input()
+  self.teleproting = false
+end
+
+
+function restrictor_teleport:actor_is_inside()
+  local acter_poz = db.actor:position()
+  local s = self.parametrs
+  return
+    abs_comp( s.x, acter_poz.x ) < s.x_radius
+    and abs_comp( s.z, acter_poz.z ) < s.y_radius
+    and abs_comp( s.y, acter_poz.y ) < s.z_radius
+    and (
+      ( not s.cond )
+      or xr_logic.pick_section_from_condlist(
+        db.actor, self.object, s.cond
+      ) ~= nil
     )
-    db.actor:set_actor_position( vector():set( s.poz_x, s.poz_y, s.poz_z ) )
-    if s.rotate then
-      db.actor:set_actor_direction( s.rotate )
-    end
-    -- выполняем функции рестриктора
-    if s.info then
-      -- выдаем поршень
-      db.actor:give_info_portion( s.info )
-    end
-    if s.func then
-      -- выполняем функцию
-      local f, err = loadstring( s.func )
-      ASSERT( f, err )
-      f()
-    end
-    s.teleporte = false
-    db.actor:give_info_portion( "teleport_finished" )
-    -- Звуковое сопровождение
-    local snd_obj = xr_sound.get_safe_sound_object(
-      "anomaly\\teleport_work_1"
-    )
-    snd_obj:play_no_feedback( db.actor, sound_object.s2d, 0, vector():set( 0, 0, 0 ), 1.0 )
-  else
+end
+
+
+function restrictor_teleport:actor_update()
+  if ( not self.teleporting ) and self:actor_is_inside() then
     -- Проверим не забрел ли актор в наш телепорт
-    local acter_poz = db.actor:position()
-    if
-      abs_comp( s.x, acter_poz.x ) < s.x_radius
-      and abs_comp( s.z, acter_poz.z ) < s.y_radius
-      and abs_comp( s.y, acter_poz.y ) < s.z_radius
-      and (
-        ( not s.cond )
-        or xr_logic.pick_section_from_condlist(
-          db.actor, self.object, s.cond
-        ) ~= nil
-      )
-    then
-      local can_teleport = true
-      if s.pos_rnd_radius then
-        local pos = dsh.get_random_pos_in_radius( s.pos_rnd_radius, 25 )
-        if pos then
-          s.poz_x, s.poz_y, s.poz_z = pos.x, pos.y, pos.z
-        else
-          can_teleport = false
-        end
+    local can_teleport = true
+    local s = self.parametrs
+    if s.pos_rnd_radius then
+      local pos = dsh.get_random_pos_in_radius( s.pos_rnd_radius, 25 )
+      if pos then
+        s.poz_x, s.poz_y, s.poz_z = pos.x, pos.y, pos.z
+      else
+        can_teleport = false
       end
-      if can_teleport then
-        -- Актер в зоне действия телепорта, запустим телепорт
-        db.actor:give_info_portion( "teleport_started" )
-        s.teleporte = true
-        self.sm:reschedule( 1000 )
-        -- Запускаем спецэфекты телепортации
-        level.add_pp_effector( "teleport.ppe", 2006, false )
-        return
-      end
+    end
+    if can_teleport then
+      -- Актер в зоне действия телепорта, запустим телепорт
+      self:actor_pre_teleport()
+      self.sm:reschedule( 1000 )
+      return
     end
   end
   local dist = self.object:position():distance_to( db.actor:position() )
