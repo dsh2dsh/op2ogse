@@ -665,7 +665,7 @@
 Основная часть:
 - https://yadi.sk/d/6xuKVU1w3Q9jf2
 
-Последнее обновление 20180505.1932:
+Последнее обновление 20180519.1716:
 - https://drive.google.com/open?id=1kex-J7Yp55e0QX3xVHXRD2AKso7f6W_7
 
 Сборка текстур:
