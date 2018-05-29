@@ -2014,39 +2014,78 @@ end
 
 
 -- новости о времени до выброса
+local day_parts = {
+  { hour =  4, text = "ночью"          },
+  { hour = 12, text = "утром"          },
+  { hour = 14, text = "днем"           },
+  { hour = 18, text = "после обеда"    },
+  { hour = 22, text = "вечером"        },
+  { hour = 24, text = "поздно вечером" },
+}
+
+function time_to_day_part( t )
+  local y, m, d, h = t:get()
+  for _, t in ipairs( day_parts ) do
+    if h < t.hour then return t.text end
+  end
+end
+
+
+function days_between( diff )
+  local days = 0
+  diff = diff - ( 24 - level:get_time_hours() )
+  while diff >= 0 do
+    days = days + 1
+    diff = diff - 24
+  end
+  return days
+end
+
+
 function do_blow_news()
-  if timer_next_blow == 0 then return end
   if
     amk.load_variable( "blowout", -1 ) > -1
     and amk.load_variable( "blowout",-1 ) < 5
   then
     return
   end
-  local m_time = amk.game_minutes()
-  local diff   = ( timer_next_blow - m_time ) / 60 -- Разница в игровых часах
-  if diff < 1 then return end
+  local diff, surge_gt = ogse_weather_mgr.get_surge_time()
+  diff = math.floor( diff )
+  if diff < 1 or diff >= 48 then return end
   local item = news_data.blowout_templates[
     math.random( table.getn( news_data.blowout_templates ) )
   ]
   local alive = tonumber( item.alive )
   if alive and not isAlive( alive ) then return end
   local when
-  if diff < 2 then
+  if     diff < 2 then
     when = "через час-другой"
-  elseif diff >= 2 and diff <= 4 then
+  elseif diff < 5 then
     when = "через пару часов"
-  elseif diff > 4 and diff <= 8 then
+  elseif diff < 8 then
     when = "часов через 6-7"
-  elseif diff > 8 then
-    local d = math.floor( diff / 24 )
-    if d > 1 then return end
-    local h = ( level:get_time_hours() + diff ) % 24
-    if     h <  4 then when = "ночью"
-    elseif h < 12 then when = "утром"
-    elseif h < 14 then when = "днем"
-    elseif h < 18 then when = "после обеда"
-    else               when = "ночью" end
-    if     d == 1 then when = "завтра " .. when end
+  else
+    local text = time_to_day_part( surge_gt )
+    local days = days_between( diff )
+    if     days == 0 then
+      when = text
+    elseif days == 1 then
+      local now = time_to_day_part( game.get_game_time() )
+      if
+        ( text == "ночью" and now ~= "ночью" )
+        or (
+          text == "утром" and ( now == "вечером" or now == "поздно вечером" )
+        )
+      then
+        when = text
+      else
+        when = "завтра " .. text
+      end
+    elseif days == 2 then
+      when = "послезавтра " .. text
+    else
+      ASSERT( false, "[%s]: unexpected days: %s", script_name(), days )
+    end
   end
   local stext = string.gsub( item.text, "%$when", when )
   local name, sname = amk_names_lists.get_strings()
