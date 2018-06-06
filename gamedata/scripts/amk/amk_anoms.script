@@ -1274,7 +1274,7 @@ function generate_arts( need_cnt )
       cnt, mxx = 0, math.random( min_cnt, max_cnt )
     end
     while cnt < mxx do
-      local res = generate_art( lname )
+      local res = generate_art()
       if res then
         cnt = cnt + 1
         if not need_cnt then
@@ -1292,7 +1292,8 @@ function generate_arts( need_cnt )
 end
 
 
-function find_gvid( lname, pos )
+function find_gvid( pos )
+  local lname = level.name()
   local gvn, gvx =
     game_vertexes[ lname ][ 1 ],
     game_vertexes[ lname ][ 2 ]
@@ -1311,9 +1312,8 @@ function find_gvid( lname, pos )
 end
 
 
-function calc_new_free_pos( lname, pre_check_coords_func )
-  if not lname then lname = level.name() end
-  local lvx    = level_vertexes[ lname ] - 1
+function calc_new_free_pos( pre_check_coords_func )
+  local lvx    = level.vertex_count() - 1
   local new_lv = math.random( lvx )
   if forbidden_lvids[ new_lv ] then
     local found
@@ -1336,7 +1336,7 @@ function calc_new_free_pos( lname, pre_check_coords_func )
     if not found then
       log2(
         "[%s]: can't find any free level vertex for %s",
-        script_name(), lname
+        script_name(), level.name()
       )
       return false
     end
@@ -1345,13 +1345,13 @@ function calc_new_free_pos( lname, pre_check_coords_func )
   forbidden_lvids[ new_lv ] = true
   local pos = level.vertex_position( new_lv )
   if
-    check_coordinates( pos, lname )
+    check_coordinates( pos )
     and (
       ( not pre_check_coords_func )
       or pre_check_coords_func( pos )
     )
   then
-    local new_gv = find_gvid( lname, pos )
+    local new_gv = find_gvid( pos )
     if new_gv then
       return pos, new_gv, new_lv
     end
@@ -1360,7 +1360,7 @@ end
 
 
 function generate_anomaly()
-  local pos, new_gv, new_lv = calc_new_free_pos( level.name() )
+  local pos, new_gv, new_lv = calc_new_free_pos()
   if pos then
     table.insert( forbidden_pos, { pos, 5 } )
     return spawn_rand_anom( pos, new_gv, new_lv )
@@ -1419,7 +1419,6 @@ function randomize_arts()
     local sobj = t.sobj
     for i = 1, 100 do
       local pos, new_gv, new_lv = calc_new_free_pos(
-        level.name(),
         function( np )
           return
             np:distance_to( db.actor:position() ) > t.dist
@@ -1449,8 +1448,8 @@ function randomize_arts()
 end
 
 
-function generate_art( lname, section, pre_check_coords_func )
-  local pos, new_gv, new_lv = calc_new_free_pos( lname, pre_check_coords_func )
+function generate_art( section, pre_check_coords_func )
+  local pos, new_gv, new_lv = calc_new_free_pos( pre_check_coords_func )
   if pos then
     local sobj
     if section then
@@ -1462,7 +1461,7 @@ function generate_art( lname, section, pre_check_coords_func )
       if prop.af_bio_sect then section = prop.af_bio_sect end
       sobj = spawn_art( section, pos, new_gv, new_lv )
     else
-      sobj = spawn_rand_arts( pos, new_gv, new_lv, lname )
+      sobj = spawn_rand_arts( pos, new_gv, new_lv )
     end
     table.insert( forbidden_pos, { pos, 5 } )
     return sobj
@@ -1471,9 +1470,9 @@ end
 
 
 function spawn_rand_anom( pos, gv, lv )
-  local section, shape = get_random_anomaly_sect( level.name() )
+  local section, shape = get_random_anomaly_sect()
   ASSERT(
-    section, "got nil from get_random_anomaly_sect( %s )", level.name()
+    section, "got nil from get_random_anomaly_sect() on %s", level.name()
   )
   return spawn_anomaly( section, pos, gv, lv, shape, "on" )
 end
@@ -1485,6 +1484,7 @@ end
 
 
 function get_random_anomaly_sect( lname )
+  if not lname then lname = level.name() end
   local rnd_max   = 0
   local anomalies = {}
   for k, w in pairs( level_anoms[ lname ][ 4 ] ) do
@@ -1564,8 +1564,8 @@ function get_random_art_sect( lname )
 end
 
 
-function spawn_rand_arts( pos, gv, lv, lname )
-  local sect = get_random_art_sect( lname )
+function spawn_rand_arts( pos, gv, lv )
+  local sect = get_random_art_sect()
   local prop = amk_utils.get_item_props( sect )
   if prop.has_af_dyn then
     sect = make_dyn_art_sect( sect )
@@ -1664,9 +1664,8 @@ function check_anti_spawn_zones( pos )
 end
 
 
-function check_hideouts( pos, lname )
-  if not lname then lname = level.name() end
-  local hides = amk_hideouts.hide[ lname ]
+function check_hideouts( pos )
+  local hides = amk_hideouts.hide[ level.name() ]
   if hides then
     for i, o in ipairs( hides ) do
       if o.zone then
@@ -1695,14 +1694,13 @@ function check_hideouts( pos, lname )
 end
 
 
-function check_coordinates( pos, lname )
-  if not lname then lname = level.name() end
+function check_coordinates( pos )
   if not check_anti_spawn_zones( pos ) then return false end
   for _, t in ipairs( forbidden_pos ) do
     local fp, radius = unpack( t )
     if pos:distance_to( fp ) <= radius + 5 then return false end
   end
-  if not check_hideouts( pos, lname ) then return false end
+  if not check_hideouts( pos, level.name() ) then return false end
   for _, lc in ipairs( bind_lc.get_all_lc_objs() ) do
     local binder = lc:binded_object()
     if binder.geom then
@@ -1863,7 +1861,7 @@ function randomize_anoms( anoms )
   pt:start()
   for _, sobj in ipairs( anoms ) do
     for i = 1, 100 do
-      local pos, new_gv, new_lv = calc_new_free_pos( level.name() )
+      local pos, new_gv, new_lv = calc_new_free_pos()
       if pos then
         alife():teleport_object( sobj.id, pos, new_lv, new_gv )
         forbidden_lvids[ new_lv ] = true
