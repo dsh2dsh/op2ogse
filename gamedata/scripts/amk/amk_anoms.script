@@ -190,7 +190,7 @@ local arts_sections = {
 -- Здесь перечислены все интервалы game_vertex для каждого
 -- уровня. Можно не запуская игру смотреть, на каком уровне спавнится
 -- объект
-game_vertexes = {
+local game_vertexes = {
   l01_escape            = {    0, 251  },
   l02_garbage           = {  252, 415  },
   l03_agroprom          = {  416, 702  },
@@ -1009,7 +1009,7 @@ local level_arts = {
 --[[-------------------------- function for spawn --------------------------]]
 
 
-local forbidden_lvids, forbidden_pos
+local restrictions
 
 function init()
   local blow  = amk.load_variable( "blowout", 0 )
@@ -1047,7 +1047,7 @@ function init()
       end
     end
   end
-  forbidden_pos = {}
+  restrictions = restricted_areas()
   if blow > 0 and blow < 4 then return end
   -- Не менять аномалии в Госпитале, пока не сварен Камень Удачи и не оживлена
   -- Муха. Иначе удаляются те аномалии, которые нужны для этого дела и все,
@@ -1068,7 +1068,7 @@ function init()
     generate_anoms()
   end
   generate_new_arts()
-  forbidden_pos = {}
+  restrictions = restricted_areas()
 end
 
 
@@ -1083,13 +1083,11 @@ function generate_new_arts()
 end
 
 
-function after_blow_on()
-  sak.off_testobj()
-  local lname = level.name()
-  forbidden_lvids = {
-    [ db.actor:level_vertex_id() ] = true,
-  }
-  forbidden_pos   = { { db.actor:position(), db.actor:radius() } }
+function configure_restrictions( check_func )
+  local lname  = level.name()
+  restrictions = restricted_areas()
+  restrictions:add_level_vertex_id( db.actor:level_vertex_id() )
+  restrictions:add_position( db.actor:position(), db.actor:radius() )
   dsh_respawn.iterate_respawners(
     function( resp )
       local pos, lv, gv = unpack( resp.xyzlg )
@@ -1097,8 +1095,8 @@ function after_blow_on()
       if lid then
         local resp_lname = level_system_name_by_lid( lid )
         if resp_lname == lname then
-          forbidden_lvids[ lv ] = true
-          table.insert( forbidden_pos, { pos, 5 } )
+          restrictions:add_level_vertex_id( lv )
+          restrictions:add_position( pos, 5 )
         end
       end
     end
@@ -1106,18 +1104,26 @@ function after_blow_on()
   dsh_alife.iterate_items(
     function( sobj )
       if object_level_name( sobj ) == lname then
-        forbidden_lvids[ sobj.m_level_vertex_id ] = true
-        table.insert( forbidden_pos, { sobj.position, 5 } )
+        if ( not check_func ) or check_func( sobj ) then
+          restrictions:add_level_vertex_id( sobj.m_level_vertex_id )
+          restrictions:add_position( sobj.position, 5 )
+        end
       end
     end,
     65535 -- на земле
   )
-  if level_anoms[ lname ] then
+end
+
+
+function after_blow_on()
+  sak.off_testobj()
+  configure_restrictions()
+  if level_anoms[ level.name() ] then
     generate_anoms()
     move_mgr.invalidate_pp_accessibility()
   end
   generate_new_arts()
-  forbidden_pos = {}
+  restrictions = restricted_areas()
 end
 
 
@@ -1144,40 +1150,19 @@ end
 
 
 function pre_blow_off( keep )
-  forbidden_lvids = {
-    [ db.actor:level_vertex_id() ] = true,
-  }
-  forbidden_pos   = { { db.actor:position(), db.actor:radius() } }
-  dsh_respawn.iterate_respawners(
-    function( resp )
-      local pos, lv, gv = unpack( resp.xyzlg )
-      local lid = location_id_by_gvid( gv )
-      if lid then
-        local resp_lname = level_system_name_by_lid( lid )
-        if resp_lname == level.name() then
-          forbidden_lvids[ lv ] = true
-          table.insert( forbidden_pos, { pos, 5 } )
-        end
-      end
-    end
-  )
   local anoms = {}
-  dsh_alife.iterate_items(
+  configure_restrictions(
     function( sobj )
       if is_generated_anomaly( sobj ) then
-        if sobj.level_name == level.name() then
-          if keep then
-            table.insert( anoms, sobj )
-          else
-            dsh_alife.release( sobj )
-          end
+        if keep then
+          table.insert( anoms, sobj )
+        else
+          dsh_alife.release( sobj )
         end
-      elseif object_level_name( sobj ) == level.name() then
-        forbidden_lvids[ sobj.m_level_vertex_id ] = true
-        table.insert( forbidden_pos, { sobj.position, 5 } )
+        return false
       end
-    end,
-    65535 -- на земле
+      return true
+    end
   )
   return anoms
 end
@@ -1292,42 +1277,22 @@ function generate_arts( need_cnt )
 end
 
 
-function find_gvid( pos )
-  local lname = level.name()
-  local gvn, gvx =
-    game_vertexes[ lname ][ 1 ],
-    game_vertexes[ lname ][ 2 ]
-  local new_gv   = 0
-  local min_dist = 100000
-  for a = gvn, gvx do
-    local tmp = game_graph():vertex( a ):level_point()
-    if tmp:distance_to( pos ) < min_dist then
-      min_dist = tmp:distance_to( pos )
-      new_gv   = a
-    end
-  end
-  if game_graph():valid_vertex_id( new_gv ) then
-    return new_gv
-  end
-end
-
-
 function calc_new_free_pos( pre_check_coords_func )
   local lvx    = level.vertex_count() - 1
-  local new_lv = math.random( lvx )
-  if forbidden_lvids[ new_lv ] then
+  local new_lv = math.random( 0, lvx )
+  if restrictions:check_level_vertex_id( new_lv ) then
     local found
     if new_lv < lvx then
       for i = new_lv + 1, lvx do
-        if not forbidden_lvids[ i ] then
+        if not restrictions:check_level_vertex_id( i ) then
           found = i
           break
         end
       end
     end
-    if not found and new_lv > 1 then
-      for i = 1, new_lv - 1 do
-        if not forbidden_lvids[ i ] then
+    if not found and new_lv > 0 then
+      for i = new_lv - 1, 0, -1 do
+        if not restrictions:check_level_vertex_id( i ) then
           found = i
           break
         end
@@ -1342,7 +1307,7 @@ function calc_new_free_pos( pre_check_coords_func )
     end
     new_lv = found
   end
-  forbidden_lvids[ new_lv ] = true
+  restrictions:add_level_vertex_id( new_lv )
   local pos = level.vertex_position( new_lv )
   if
     check_coordinates( pos )
@@ -1351,10 +1316,8 @@ function calc_new_free_pos( pre_check_coords_func )
       or pre_check_coords_func( pos )
     )
   then
-    local new_gv = find_gvid( pos )
-    if new_gv then
-      return pos, new_gv, new_lv
-    end
+    local new_gv = cross_table():vertex( new_lv ):game_vertex_id()
+    return pos, new_gv, new_lv
   end
 end
 
@@ -1362,7 +1325,7 @@ end
 function generate_anomaly()
   local pos, new_gv, new_lv = calc_new_free_pos()
   if pos then
-    table.insert( forbidden_pos, { pos, 5 } )
+    restrictions:add_position( pos, 5 )
     return spawn_rand_anom( pos, new_gv, new_lv )
   elseif pos == false then
     return false
@@ -1427,8 +1390,8 @@ function randomize_arts()
       )
       if pos then
         alife():teleport_object( sobj.id, pos, new_lv, new_gv )
-        forbidden_lvids[ new_lv ] = true
-        table.insert( forbidden_pos, { pos, 5 } )
+        restrictions:add_level_vertex_id( new_lv )
+        restrictions:add_position( pos, 5 )
         cnt = cnt + 1
         break
       elseif pos == false then
@@ -1463,7 +1426,7 @@ function generate_art( section, pre_check_coords_func )
     else
       sobj = spawn_rand_arts( pos, new_gv, new_lv )
     end
-    table.insert( forbidden_pos, { pos, 5 } )
+    restrictions:add_position( pos, 5 )
     return sobj
   end
 end
@@ -1696,11 +1659,9 @@ end
 
 function check_coordinates( pos )
   if not check_anti_spawn_zones( pos ) then return false end
-  for _, t in ipairs( forbidden_pos ) do
-    local fp, radius = unpack( t )
-    if pos:distance_to( fp ) <= radius + 5 then return false end
-  end
-  if not check_hideouts( pos, level.name() ) then return false end
+  if restrictions:check_position( pos, 5 ) then return false end
+  if not check_hideouts( pos ) then return false end
+--[=[
   for _, lc in ipairs( bind_lc.get_all_lc_objs() ) do
     local binder = lc:binded_object()
     if binder.geom then
@@ -1710,6 +1671,7 @@ function check_coordinates( pos )
       end
     end
   end
+--]=]
   return true
 end
 
@@ -1864,8 +1826,8 @@ function randomize_anoms( anoms )
       local pos, new_gv, new_lv = calc_new_free_pos()
       if pos then
         alife():teleport_object( sobj.id, pos, new_lv, new_gv )
-        forbidden_lvids[ new_lv ] = true
-        table.insert( forbidden_pos, { pos, 5 } )
+        restrictions:add_level_vertex_id( new_lv )
+        restrictions:add_position( pos, 5 )
         cnt = cnt + 1
         break
       elseif pos == false then
@@ -1893,3 +1855,34 @@ function randomize_anoms( anoms )
 end
 
 function randomize_anoms_unpaused() end
+
+
+class "restricted_areas"
+function restricted_areas:__init()
+  self.vertexes  = {}
+  self.positions = {}
+end
+
+
+function restricted_areas:add_level_vertex_id( lvid )
+  self.vertexes[ lvid ] = true
+end
+
+
+function restricted_areas:add_position( pos, radius )
+  table.insert( self.positions, { pos, radius } )
+end
+
+
+function restricted_areas:check_level_vertex_id( lvid )
+  return self.vertexes[ lvid ]
+end
+
+
+function restricted_areas:check_position( pos, radius )
+  for _, t in ipairs( self.positions ) do
+    local p, r = unpack( t )
+    if pos:distance_to( p ) <= r + radius then return true end
+  end
+  return false
+end
