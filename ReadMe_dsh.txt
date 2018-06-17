@@ -723,6 +723,8 @@ nlc7_icons.xdb: иконки еды и частей мутантов из NLC7
 
 nlc7_icons_alt1.xdb: альтернативные иконки еды
 
+nlc7_icons_ammo.xdb: иконки патронов из NLC7
+
 nlc7_icons_arts.xdb: иконки артефактов из NLC7
 
 op2_actor_step: звук шагов ГГ из ОП-2

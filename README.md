@@ -657,7 +657,7 @@
 Основная часть:
 - https://yadi.sk/d/6xuKVU1w3Q9jf2
 
-Последнее обновление 20180610. 006:
+Последнее обновление 20180616.2333:
 - https://drive.google.com/open?id=1kex-J7Yp55e0QX3xVHXRD2AKso7f6W_7
 
 Сборка текстур:
@@ -722,6 +722,8 @@ NLC7 Переосмысление
 nlc7_icons.xdb: иконки еды и частей мутантов из NLC7
 
 nlc7_icons_alt1.xdb: альтернативные иконки еды
+
+nlc7_icons_ammo.xdb: иконки патронов из NLC7
 
 nlc7_icons_arts.xdb: иконки артефактов из NLC7
 
