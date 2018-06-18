@@ -660,11 +660,21 @@
 Последнее обновление 20180616.2333:
 - https://drive.google.com/open?id=1kex-J7Yp55e0QX3xVHXRD2AKso7f6W_7
 
-Сборка текстур:
+Текстурный пак 1:
 - https://drive.google.com/open?id=1vMvDyoLHCalcavgLcO0ylmWYLt3s-kKy
 или
 - https://yadi.sk/d/RQse9VW23GzhVM
 Здесь собраны текстуры из паков от V92, adm-ral и что-то из Misery.
+
+Текстурный пак 2:
+- https://drive.google.com/open?id=11eUV3YSrdNCQWai40i8MQYi8QWNjpEjI
+Если был установлен текстурный пак 1, то перед установкой этого пака нужно
+удалить из папки mods следующие файлы
+- adm-ral_aa2_030_textures_spring.xdb
+- adm-ral_aa2_035_textures_spring_lowres.xdb
+- misery.xdb
+Этот текстурный пак сделан из сборки NLC7 Холодная пустошь от Кота:
+- http://nlc-zone.ru/forum/topic/160-sborki-dopolneniya-i-pravki/?p=177837
 
 
 Установка:
