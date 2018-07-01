@@ -7,12 +7,29 @@
 function attach( sm )
   sm:subscribe({ signal = "on_monster_death", fun = this.on_death })
   sm:subscribe({ signal = "on_npc_death",     fun = this.on_death })
+  sm:subscribe({ signal = "on_spawn",         fun = this.on_spawn })
 end
 
 
 local last_death_t
 function on_death( obj, who )
   last_death_t = time_global()
+end
+
+
+function on_spawn()
+  load_stories()
+end
+
+
+local known_stories = {}
+function load_stories()
+  local sect = "stories.known_info"
+  local n    = sys_ini:line_count( sect )
+    for i = 0, n - 1 do
+      local res, id, value = sys_ini:r_line( sect, i, "", "" )
+      table.insert( known_stories, id )
+    end
 end
 
 
@@ -267,8 +284,8 @@ function CKampManager:proceedState( npc )
   local max_rnd = 0
   for k, v in pairs( self.trans_kamp[ self.kamp_state ] ) do
     -- ќпредел€ютс€ допустимые состо€ни€ дл€ лагер€.
-    if self.kamp_states[ k ] == true then
-      table.insert( temp, { state = k, weight = v } )
+    if self.kamp_states[ k ] then
+      table.insert( temp, { [ "st" ] = k, [ "weight" ] = v } )
       max_rnd = max_rnd + v
     end
   end
@@ -276,15 +293,15 @@ function CKampManager:proceedState( npc )
     table.sort( temp, function( a, b ) return a.weight > b.weight end )
   else
     -- ≈сли переходить некуда - переходим в айдл
-    table.insert( temp, { state = "idle", weight = 100 } )
+    table.insert( temp, { [ "st" ] = "idle", [ "weight" ] = 100 } )
     max_rnd = 100
   end
   -- ќсуществл€етс€ рандомный взвешенный переход.
   local p = math.random( max_rnd )
-  for _, t in ipairs( temp ) do
-    p = p - t.weight
+  for _, v in ipairs( temp ) do
+    p = p - v.weight
     if p <= 0 then
-      if t.state == "idle" then
+      if v.st == "idle" then
         self.director = nil
         if self.kamp_state ~= "idle" then
           t.begin = nil
@@ -294,10 +311,10 @@ function CKampManager:proceedState( npc )
         self.director = npc_id
         self.censor   = nil
       end
-      self.kamp_state = t.state
+      self.kamp_state = v.st
       self.begin      = time_global()
       -- ћен€ем таймаут дл€ истории
-      if t.state == "post_story" then
+      if v.st == "post_story" then
         local dep = sound_theme_data.theme[ self.selected_story ].depence[ self.story_last ]
         if dep and dep.min and dep.max then
           self.timeout[ "post_story" ].min = math.random( dep.min, dep.max ) * 1000
@@ -309,6 +326,9 @@ function CKampManager:proceedState( npc )
       return
     end
   end
+  ASSERT(
+    false, "[%s]: %s: unexpected state", script_name(), npc:name()
+  )
 end
 
 
@@ -341,14 +361,8 @@ function CKampManager:proceedRole( npc, director )
     end
 
     -- ≈сли мы решили говорить историю, надо выбрать какую именно говорить.
-    if
-      sound == "play_story" and self.selected_story == nil
-      and db.story_by_id[ npc_id ] ~= nil
-    then
-      local story_num = table.getn( db.story_by_id[ npc_id ] )
-      if story_num > 0 then
-        self.selected_story = db.story_by_id[ npc_id ][ math.random( story_num ) ]
-      end
+    if sound == "play_story" and not self.selected_story then
+      self:select_story( npc )
     end
     if table.getn( temp ) > 0 then
       state = temp[ math.random( table.getn( temp ) ) ]
@@ -534,231 +548,217 @@ end
 
 
 function CKampManager:checkNpcAbility( npc )
-  local npc_id = npc:id()
-  if not self.npc[ npc_id ] then return end
   if
-    npc:character_community() ~= "monolith"
-    and npc:character_community() ~= "zombied"
+    npc:character_community() == "monolith"
+    or npc:character_community() == "zombied"
   then
-    local states = self.npc[ npc_id ].states
-    states[ "trans" ] = false
-    local has_listeners = self.population_comed > 1
-    if self.npc[ npc_id ].can_eat then
-      -- есть колбасу
-      if npc:object( "kolbasa" ) and math.random( 99 ) > 20 then
-        -- веро€тность 80%
-        states[ "eat_kolbasa" ] = true
-      else
-        states[ "eat_kolbasa" ] = false
-      end
-      -- пить водку
-      if npc:object( "vodka" ) and math.random( 99 ) > 60 then
-        -- веро€тность 40%
-        states[ "eat_vodka" ] = true
-      else
-        states[ "eat_vodka" ] = false
-      end
-      -- пить енергитический напиток
-      if npc:object( "energy_drink" ) and math.random( 99 ) > 40 then
-        -- веро€тность 60%
-        states[ "eat_energy" ] = true
-      else
-        states[ "eat_energy" ] = false
-      end
-      -- есть хлеб
-      if npc:object( "bread" ) and math.random( 99 ) > 20 then
-        -- веро€тность 80%
-        states[ "eat_bread" ] = true
-      else
-        states[ "eat_bread" ] = false
-      end
-      -- курит
-      if npc:object( "sigaret" ) and math.random( 99 ) > 20 then
-        -- веро€тность 80%
-        states[ "kurit" ] = true
-      else
-        states[ "kurit" ] = false
-      end
-      -- пить из фл€жки
-      if npc:object( "flaska" ) and math.random( 99 ) > 20 then
-        -- веро€тность 80%
-        states[ "flaska" ] = true
-      else
-        states[ "flaska" ] = false
-      end
-      -- пить пиво
-      if npc:object( "beer_a" ) and math.random( 99 ) > 20 then
-        -- веро€тность 80%
-        states[ "beer_a" ] = true
-      else
-        states[ "beer_a" ] = false
-      end
-      -- курит сигару
-      if npc:object( "cigara" ) and math.random( 99 ) > 20 then
-        -- веро€тность 80%
-        states[ "kurit_cigara" ] = true
-      else
-        states[ "kurit_cigara" ] = false
-      end
-      -- есть бутерброд
-      if npc:object( "sandwich" ) and math.random( 99 ) > 20 then
-        -- веро€тность 80%
-        states[ "eat_sandwich" ] = true
-      else
-        states[ "eat_sandwich" ] = false
-      end
-      -- играть на гармошке
-      if has_listeners and npc:object( "harmonica_a" ) then
-        states[ "play_harmonica" ] = true
-        states[ "wait_harmonica" ] = true
-        self.kamp_states[ "pre_harmonica"  ] = true
-        self.kamp_states[ "harmonica"      ] = true
-        self.kamp_states[ "post_harmonica" ] = true
-      else
-        states[ "play_harmonica" ] = false
-        states[ "wait_harmonica" ] = false
-        self.kamp_states[ "pre_harmonica"  ] = false
-        self.kamp_states[ "harmonica"      ] = false
-        self.kamp_states[ "post_harmonica" ] = false
-      end
-    else
-        states[ "eat_kolbasa"    ] = false
-        states[ "eat_vodka"      ] = false
-        states[ "eat_energy"     ] = false
-        states[ "eat_bread"      ] = false
-        states[ "kurit"          ] = false
-        states[ "flaska"         ] = false
-        states[ "beer_a"         ] = false
-        states[ "kurit_cigara"   ] = false
-        states[ "eat_sandwich"   ] = false
-        states[ "play_harmonica" ] = false
-        states[ "wait_harmonica" ] = false
-        self.kamp_states[ "pre_harmonica"  ] = false
-        self.kamp_states[ "harmonica"      ] = false
-        self.kamp_states[ "post_harmonica" ] = false
-    end
-
-    -- втыкать в интернеты
-    if npc:object( "device_pda" ) and math.random( 99 ) > 50 then
-      -- веро€тность 50%
-      states[ "use_pda" ] = true
-    else
-      states[ "use_pda" ] = false
-    end
-    -- играть на гитаре
-    if has_listeners and npc:object( "guitar_a" ) then
-      states[ "play_guitar" ] = true
-      states[ "wait_guitar" ] = true
-      self.kamp_states[ "pre_guitar"  ] = true
-      self.kamp_states[ "guitar"      ] = true
-      self.kamp_states[ "post_guitar" ] = true
-    else
-      states[ "play_guitar" ] = false
-      states[ "wait_guitar" ] = false
-      self.kamp_states[ "pre_guitar"  ] = false
-      self.kamp_states[ "guitar"      ] = false
-      self.kamp_states[ "post_guitar" ] = false
-    end
-    -- играть на балалайке
-    if has_listeners and npc:object( "balalaika_a" ) then
-      states[ "play_balalaika" ] = true
-      states[ "wait_balalaika" ] = true
-      self.kamp_states[ "pre_balalaika"  ] = true
-      self.kamp_states[ "balalaika"      ] = true
-      self.kamp_states[ "post_balalaika" ] = true
-    else
-      states[ "play_balalaika" ] = false
-      states[ "wait_balalaika" ] = false
-      self.kamp_states[ "pre_balalaika"  ] = false
-      self.kamp_states[ "balalaika"      ] = false
-      self.kamp_states[ "post_balalaika" ] = false
-    end
-    -- анекдоты
-    self.kamp_states[ "pre_joke"  ] = has_listeners
-    self.kamp_states[ "joke"      ] = has_listeners
-    self.kamp_states[ "post_joke" ] = has_listeners
+    return
   end
+  local npc_id = npc:id()
+  local states = self.npc[ npc_id ].states
+  if not states then return end
+  states[ "trans" ] = false
+  local has_listeners = self.population_comed > 1
+  if self.npc[ npc_id ].can_eat then
+    -- есть колбасу
+    if npc:object( "kolbasa" ) and math.random( 100 ) > 20 then
+      -- веро€тность 80%
+      states[ "eat_kolbasa" ] = true
+    else
+      states[ "eat_kolbasa" ] = false
+    end
+    -- пить водку
+    if npc:object( "vodka" ) and math.random( 100 ) > 60 then
+      -- веро€тность 40%
+      states[ "eat_vodka" ] = true
+    else
+      states[ "eat_vodka" ] = false
+    end
+    -- пить енергитический напиток
+    if npc:object( "energy_drink" ) and math.random( 100 ) > 40 then
+      -- веро€тность 60%
+      states[ "eat_energy" ] = true
+    else
+      states[ "eat_energy" ] = false
+    end
+    -- есть хлеб
+    if npc:object( "bread" ) and math.random( 100 ) > 20 then
+      -- веро€тность 80%
+      states[ "eat_bread" ] = true
+    else
+      states[ "eat_bread" ] = false
+    end
+    -- курит
+    if npc:object( "sigaret" ) and math.random( 100 ) > 20 then
+      -- веро€тность 80%
+      states[ "kurit" ] = true
+    else
+      states[ "kurit" ] = false
+    end
+    -- пить из фл€жки
+    if npc:object( "flaska" ) and math.random( 100 ) > 20 then
+      -- веро€тность 80%
+      states[ "flaska" ] = true
+    else
+      states[ "flaska" ] = false
+    end
+    -- пить пиво
+    if npc:object( "beer_a" ) and math.random( 100 ) > 20 then
+      -- веро€тность 80%
+      states[ "beer_a" ] = true
+    else
+      states[ "beer_a" ] = false
+    end
+    -- курит сигару
+    if npc:object( "cigara" ) and math.random( 100 ) > 20 then
+      -- веро€тность 80%
+      states[ "kurit_cigara" ] = true
+    else
+      states[ "kurit_cigara" ] = false
+    end
+    -- есть бутерброд
+    if npc:object( "sandwich" ) and math.random( 100 ) > 20 then
+      -- веро€тность 80%
+      states[ "eat_sandwich" ] = true
+    else
+      states[ "eat_sandwich" ] = false
+    end
+    -- играть на гармошке
+    if has_listeners and npc:object( "harmonica_a" ) then
+      states[ "play_harmonica" ] = true
+      states[ "wait_harmonica" ] = true
+      self.kamp_states[ "pre_harmonica"  ] = true
+      self.kamp_states[ "harmonica"      ] = true
+      self.kamp_states[ "post_harmonica" ] = true
+    else
+      states[ "play_harmonica" ] = false
+      states[ "wait_harmonica" ] = false
+      self.kamp_states[ "pre_harmonica"  ] = false
+      self.kamp_states[ "harmonica"      ] = false
+      self.kamp_states[ "post_harmonica" ] = false
+    end
+  else
+    states[ "eat_kolbasa"    ] = false
+    states[ "eat_vodka"      ] = false
+    states[ "eat_energy"     ] = false
+    states[ "eat_bread"      ] = false
+    states[ "kurit"          ] = false
+    states[ "flaska"         ] = false
+    states[ "beer_a"         ] = false
+    states[ "kurit_cigara"   ] = false
+    states[ "eat_sandwich"   ] = false
+    states[ "play_harmonica" ] = false
+    states[ "wait_harmonica" ] = false
+    self.kamp_states[ "pre_harmonica"  ] = false
+    self.kamp_states[ "harmonica"      ] = false
+    self.kamp_states[ "post_harmonica" ] = false
+  end
+
+  -- втыкать в интернеты
+  if npc:object( "device_pda" ) and math.random( 100 ) > 50 then
+    -- веро€тность 50%
+    states[ "use_pda" ] = true
+  else
+    states[ "use_pda" ] = false
+  end
+  -- играть на гитаре
+  if has_listeners and npc:object( "guitar_a" ) then
+    states[ "play_guitar" ] = true
+    states[ "wait_guitar" ] = true
+    self.kamp_states[ "pre_guitar"  ] = true
+    self.kamp_states[ "guitar"      ] = true
+    self.kamp_states[ "post_guitar" ] = true
+  else
+    states[ "play_guitar" ] = false
+    states[ "wait_guitar" ] = false
+    self.kamp_states[ "pre_guitar"  ] = false
+    self.kamp_states[ "guitar"      ] = false
+    self.kamp_states[ "post_guitar" ] = false
+  end
+  -- играть на балалайке
+  if has_listeners and npc:object( "balalaika_a" ) then
+    states[ "play_balalaika" ] = true
+    states[ "wait_balalaika" ] = true
+    self.kamp_states[ "pre_balalaika"  ] = true
+    self.kamp_states[ "balalaika"      ] = true
+    self.kamp_states[ "post_balalaika" ] = true
+  else
+    states[ "play_balalaika" ] = false
+    states[ "wait_balalaika" ] = false
+    self.kamp_states[ "pre_balalaika"  ] = false
+    self.kamp_states[ "balalaika"      ] = false
+    self.kamp_states[ "post_balalaika" ] = false
+  end
+
+  -- анекдоты
+  self.kamp_states[ "pre_joke"   ] = has_listeners
+  self.kamp_states[ "joke"       ] = has_listeners
+  self.kamp_states[ "post_joke"  ] = has_listeners
 
   -- ≈сли чувак знает истории, надо добавить их к лагерю
-  if self.population_comed > 1 and db.story_by_id[ npc:id() ] ~= nil then
-    self.kamp_states[ "story"      ] = true
-    self.kamp_states[ "post_story" ] = true
-  else
-    self.kamp_states[ "story"      ] = false
-    self.kamp_states[ "post_story" ] = false
-  end
+  self.kamp_states[ "story"      ] = has_listeners
+  self.kamp_states[ "post_story" ] = has_listeners
 end
 
 
 function CKampManager:addNpc( npc )
   if self.npc[ npc:id() ] ~= nil then return end
+  self.npc[ npc:id() ] = {
+    name    = npc:name(),
+    can_eat = ogse_kamp_eating.can_eat( npc ),
+    speak   = 0,
+  }
   if
     npc:character_community() == "monolith"
     or npc:character_community() == "zombied"
   then
-    self.npc[ npc:id() ] = {
-      name     = npc:name(),
-      can_eat  = ogse_kamp_eating.can_eat( npc ),
-      current  = nil,
-      speak    = 0,
-      states   = {
-        beer_a         = false,
-        declarate      = true,
-        eat_bread      = false,
-        eat_energy     = false,
-        eat_kolbasa    = false,
-        eat_sandwich   = false,
-        eat_vodka      = false,
-        flaska         = false,
-        kurit          = false,
-        kurit_cigara   = false,
-        play_balalaika = false,
-        play_guitar    = false,
-        play_harmonica = false,
-        play_joke      = false,
-        play_story     = false,
-        sit            = false,
-        sit_ass        = false,
-        sit_knee       = false,
-        sweetness      = false,
-        trans          = true,
-        use_pda        = false,
-      },
+    self.npc[ npc:id() ].states = {
+      beer_a         = false,
+      declarate      = true,
+      eat_bread      = false,
+      eat_energy     = false,
+      eat_kolbasa    = false,
+      eat_sandwich   = false,
+      eat_vodka      = false,
+      flaska         = false,
+      kurit          = false,
+      kurit_cigara   = false,
+      play_balalaika = false,
+      play_guitar    = false,
+      play_harmonica = false,
+      play_joke      = false,
+      play_story     = false,
+      sit            = false,
+      sit_ass        = false,
+      sit_knee       = false,
+      sweetness      = false,
+      trans          = true,
+      use_pda        = false,
     }
   else
-    self.npc[ npc:id() ] = {
-      name     = npc:name(),
-      can_eat  = ogse_kamp_eating.can_eat( npc ),
-      current  = nil,
-      speak    = 0,
-      states   = {
-        beer_a         = false,
-        declarate      = true,
-        eat_bread      = false,
-        eat_energy     = false,
-        eat_kolbasa    = false,
-        eat_sandwich   = false,
-        eat_vodka      = false,
-        flaska         = false,
-        kurit          = false,
-        kurit_cigara   = false,
-        play_balalaika = false,
-        play_guitar    = false,
-        play_harmonica = false,
-        play_joke      = false,
-        play_story     = false,
-        sit            = true,
-        sit_ass        = true,
-        sit_knee       = true,
-        sweetness      = false,
-        trans          = false,
-        use_pda        = false,
-      },
+    self.npc[ npc:id() ].states = {
+      beer_a         = false,
+      declarate      = true,
+      eat_bread      = false,
+      eat_energy     = false,
+      eat_kolbasa    = false,
+      eat_sandwich   = false,
+      eat_vodka      = false,
+      flaska         = false,
+      kurit          = false,
+      kurit_cigara   = false,
+      play_balalaika = false,
+      play_guitar    = false,
+      play_harmonica = false,
+      play_joke      = false,
+      play_story     = false,
+      sit            = true,
+      sit_ass        = true,
+      sit_knee       = true,
+      sweetness      = false,
+      trans          = false,
+      use_pda        = false,
     }
-  end
-  if db.story_by_id[ npc:id() ] == nil then
-    local char_ini1 = ini_file( "scripts\\stories.ltx" )
-    xr_info.loadInfo( npc, char_ini1 )
   end
   self.population     = self.population + 1
   self.seats_assigned = false
@@ -1011,6 +1011,23 @@ function CKampManager:free_seat( npc )
     seat.npc = nil
     st.seat  = nil
   end
+end
+
+
+function CKampManager:select_story( npc )
+  local t = known_stories
+  local story_by_id = db.story_by_id[ npc:id() ]
+  if story_by_id and table.getn( story_by_id ) > 0 then
+    t = {}
+    for _, v in ipairs( known_stories ) do
+      table.insert( t, v )
+    end
+    for _, v in ipairs( story_by_id ) do
+      table.insert( t, v )
+    end
+  end
+  self.selected_story = t[ math.random( table.getn( t ) ) ]
+  npc:give_info_portion( self.selected_story )
 end
 
 
