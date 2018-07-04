@@ -724,7 +724,9 @@ end
 -- вызывается симулятором при поиске задания для объекта/группы.
 -- если объект - группа, то вернёт true только если все объекты в
 -- группе вернут true
+local last_obj_accepts
 local reject_timers = {}
+
 function se_smart_terrain:enabled( obj )
   -- enabled(), suitable() и register_npc() вызываются из движка одним
   -- непрерывным циклом и можно быть уверенным, что к моменту
@@ -760,9 +762,9 @@ function se_smart_terrain:enabled( obj )
   -- заблокировано добавление персонажей
   if self:is_gulag_available() then
     -- если смарт подходит неписю
-    local b = self:obj_accepts_smart_terrain( obj )
+    last_obj_accepts = self:obj_accepts_smart_terrain( obj )
     if
-      b == agreed_exclusive
+      last_obj_accepts == agreed_exclusive
       or not (
         self.population_locked
         or ( self.idle_end and self.idle_end > game.get_game_time() )
@@ -772,7 +774,7 @@ function se_smart_terrain:enabled( obj )
       )
     then
       -- и непись подходит смарту
-      return self:smart_terrain_accepts_obj( obj, b )
+      return self:smart_terrain_accepts_obj( obj, last_obj_accepts )
     end
   end
   return false
@@ -783,53 +785,29 @@ end
 --
 -- вызывается для всех смарттерейнов, которые вернули true из enabled
 --
--- для того, чтобы выбрать тот единственный, в который персонаж
--- всё-таки пойдёт.  критерии:
---
---   1) если объект уже бывал в других смартах, то чем больше
---   свободных работ на уровне этого смарта, тем лучше
---
---   2) иначе ближе - лучше
---
--- TODO Оптимизировать
---
 -- на основе это функции принимается решение для непися (не смарта),
--- т.е. здесь непись выбирает себе смарт для какого смарта число
+-- т.е. здесь непись выбирает себе смарт. Для какого смарта число
 -- больше, туда и пойдёт
 function se_smart_terrain:suitable( obj )
   -- Повысить подходящесть эксклюзивного смарттеррейна
-  if self:obj_accepts_smart_terrain( obj ) == agreed_exclusive then
-    -- некрасиво, уже ведь проверяли, а фунция некислая
-    -- TODO: оптимизировать
-    -- v = 100000 --'Так чтобы все эксклюзивные были заведомо лучше
-    -- сразу возвращаем, зачем ещё что-то проверять, если это заведомо
-    -- больше всех
+  if last_obj_accepts == agreed_exclusive then
+    -- Так чтобы все эксклюзивные были заведомо лучше сразу возвращаем, зачем
+    -- ещё что-то проверять, если это заведомо больше всех
     return 100000
   end
 
-  local k = 1                  -- коэффициент привлекательности смарта
-  local self_lname = object_level_name( self )
-  if object_level_name( obj ) ~= self_lname then
-    -- смарт на другой локации будет привлекательнее смарта на текущей
-    -- локации непися. Полагаю, это приведет к большей движухе.
-    k = 10 + math.random( 0, 10 )
-  end
-
-  local v = 0        -- посчитаем доступное на уровне количество работ
-  -- перебираем все гулаги на одном уровне с этим
-  for id, strn in pairs( smart_terrains[ self_lname ] ) do
-    if strn:is_gulag_available() then -- если они доступны
-      -- то суммируем их вакансии
-      v = v + strn.gulag.capacity - strn.gulag:get_population()
+  if obj.level_name ~= self.level_name then
+    -- смарт на другой локации будет привлекательнее смарта на локации непися.
+    -- Полагаю, это приведет к большей движухе.
+    if self.level_name == level.name() then
+      -- пусть с других локаций первым делом идут к актору
+      return math.random( 201, 300 )
+    else
+      return math.random( 101, 200 )
     end
   end
-  -- непонятен критерий! Получается, неэксклюзивный непись почти
-  -- всегда пойдёт на уровень с тупо большим числом смартов, а уровни
-  -- с небольшим количеством смартов заселятся в последнюю очередь.
-  -- надо подумать над критерием.  Кроме того, непонятно, где
-  -- прописывается ограничение по рангу/силе монстров. Может это
-  -- сделать здесь?
-  return v * k -- возвращаем фактически число вакансий на уровне
+
+  return math.random( 100 )
 end
 
 
