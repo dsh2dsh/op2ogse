@@ -17,4 +17,5 @@
 #define ZDOF_INTENSITY float(0.600)
 #define RDOF_INTENSITY float(0.050)
 #define PUDDLES_GROW_SPEED float(0.200)
+#define USE_CONTRAST_FILTER
 #endif
