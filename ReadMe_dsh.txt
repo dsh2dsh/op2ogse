@@ -667,7 +667,7 @@
 Здесь собраны текстуры из паков от V92, adm-ral и что-то из Misery.
 
 Текстурный пак 2:
-- https://drive.google.com/open?id=11eUV3YSrdNCQWai40i8MQYi8QWNjpEjI
+- https://drive.google.com/open?id=1cvzyX5wbZmHiCqnrc6-6MkKz2NG4kUYu
 Если был установлен текстурный пак 1, то перед установкой этого пака нужно
 удалить из папки mods следующие файлы
 - adm-ral_aa2_030_textures_spring.xdb
