@@ -230,19 +230,6 @@ function on_throw_grenade( obj )
 end
 
 
-function check_hidden_ammo( cur_wpn )
-  if
-    not (
-      cur_wpn.has_gl and cur_wpn.binded and cur_wpn.binded.has_gl.loaded
-    )
-  then
-    return
-  end
-  cur_wpn.binded:check_hidden_ammo()
-  cur_wpn.binded.has_gl.loaded = false
-end
-
-
 function on_inventory_hide()
   cur_wpn.has_gl       = nil
   cur_wpn.has_silencer = nil
@@ -250,18 +237,27 @@ end
 
 
 function on_actor_weapon_reload( wpn )
-  local aobj = get_actor_obj()
-  if not ( aobj:is_actor_sprinting() or aobj:is_actor_climbing() ) then
-    return
-  end
   local active_slot = db.actor:active_slot()
   local drop        = 0.6
   if dsh.small_wpn_slots[ active_slot ] then
     drop = drop * 0.5
   end
   if math.random() < drop then
-    db.actor:drop_item( wpn )
-    dsh.say_blin()
+    local wpn_id = wpn:id()
+    dsh.timeout(
+      math.random( 500, 1500 ),
+      function()
+        local aobj = get_actor_obj()
+        if not ( aobj:is_actor_sprinting() or aobj:is_actor_climbing() ) then
+          return
+        end
+        local aitem = db.actor:active_item()
+        if aitem and aitem:id() == wpn_id then
+          db.actor:drop_item( aitem )
+          dsh.say_blin()
+        end
+      end
+    )
   end
 end
 
@@ -401,125 +397,8 @@ end
 function on_actor_weapon_switch_gl( obj, gl_mode )
   local t = get_wpn_info( obj )
   t.gl_mode = gl_mode
-  check_hidden_ammo( t )
   if not zoom_mode() then return end
   local slot = db.actor:active_slot()
   db.actor:activate_slot( NO_ACTIVE_SLOT )
   db.actor:activate_slot( slot )
-end
-
-
-function bind( obj )
-  obj:bind_object( wpn_binder( obj ) )
-end
-
-
-class "wpn_binder"( object_binder )
-function wpn_binder:__init( obj ) super( obj )
-  self.has_gl = {}
-  self.has_gl.loaded = false
-end
-
-
-function wpn_binder:net_save_relevant()
-  return true
-end
-
-
-function wpn_binder:reinit()
-  self.object:set_callback(
-    callback.on_addon_init, self.init_addons, self
-  )
-  self.object:set_callback(
-    callback.update_addons_visibility, self.update_addons_visibility, self
-  )
-end
-
-
-function wpn_binder:net_destroy()
-  self.object:set_callback( callback.on_addon_init, nil )
-  self.object:set_callback( callback.update_addons_visibility, nil )
-end
-
-
-function wpn_binder:init_addons( a )
-  if a == 1 and self.object:is_weapon_gl() then return end
-  ogse_wpn_utils.activate_visibility_updates( self.object, true )
-end
-
-
-function wpn_binder:update_addons_visibility()
-  if not self.has_gl.loaded then return end
-  if has_wpn_gl( self.object ) then return end
-  -- подствольник сняли
-  if self.has_gl.gl_mode then
-    self:check_hidden_ammo()
-  end
-  self.has_gl.loaded = false
-end
-
-
-function wpn_binder:check_hidden_ammo()
-  local cur_t    = ogse_wpn_utils.get_active_ammo_type( self.object )
-  local hidden_t = self.has_gl.hidden_t
-  if cur_t == hidden_t then return false end
-  local ammo_class = parse_names(
-    get_string(
-      self.object:section(),
-      ( self.has_gl.gl_mode and "ammo_class" or "grenade_class" )
-    )
-  )
-  local ammo     = ammo_class[ hidden_t + 1 ]
-  local hidden_n = self.has_gl.hidden_n
-  log2(
-    "[%s]: wrong hidden ammo detected for %s, returning %s (%s)",
-    script_name(), self.object:name(), ammo, hidden_n
-  )
-  self.object:set_ammo_elapsed( 0 )
-  se_respawn.create_ammo(
-    ammo, vector():set( 0, 0, 0 ), 1, 1, db.actor:id(), hidden_n
-  )
-  return true
-end
-
-
-function wpn_binder:load( packet )
-  object_binder.load( self, packet )
-  if packet:r_eof() then return end
-  local has_gl = packet:r_bool()
-  if has_gl then
-    self.has_gl.gl_mode  = packet:r_bool()
-    self.has_gl.hidden_t = packet:r_u8()
-    self.has_gl.hidden_n = packet:r_u8()
-    self.has_gl.loaded   = true
-  end
-end
-
-
-function wpn_binder:save( packet )
-  ASSERT(
-    not db.saving_obj,
-    "found saving_obj = %s",
-    tostring( db.saving_obj and db.saving_obj:name() or nil )
-  )
-  db.saving_obj = self.object
-  object_binder.save( self, packet )
-  local has_gl = has_wpn_gl( self.object )
-  packet:w_bool( has_gl )
-  if has_gl then
-    local gl_mode, hidden_t, hidden_n
-    if self.has_gl.loaded then
-      gl_mode  = self.has_gl.gl_mode
-      hidden_t = self.has_gl.hidden_t
-      hidden_n = self.has_gl.hidden_n
-    else
-      gl_mode  = ogse_wpn_utils.get_gl_mode( self.object )
-      hidden_t = ogse_wpn_utils.get_hidden_ammo_type( self.object )
-      hidden_n = ogse_wpn_utils.get_ammo_elapsed2( self.object )
-    end
-    packet:w_bool( gl_mode  )
-    packet:w_u8(   hidden_t )
-    packet:w_u8(   hidden_n )
-  end
-  db.saving_obj = false
 end
