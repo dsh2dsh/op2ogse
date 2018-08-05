@@ -1,6 +1,7 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
+  sm:subscribe({ signal = "on_inventory_hide", fun = this.on_inventory_hide })
   sm:subscribe({ signal = "on_destroy",  fun = this.on_destroy  })
   sm:subscribe({ signal = "on_key_down", fun = this.on_key_down })
   sm:subscribe({ signal = "on_mm_return_game", fun = this.on_mm_return_game })
@@ -145,6 +146,13 @@ function rummaged:InitControls()
   self.flaska_btn:Enable( false )
   self:Register( self.flaska_btn, "btn_fl" )
   self:dshAddCallback( "btn_fl", ui_events.BUTTON_CLICKED, self.btn_fl, self )
+
+  xml:InitStatic( "background_raz", self )
+  -- Кнопка разгрузки
+  self:Register( xml:Init3tButton( "btn_raz", self ), "btn_raz" )
+  self:dshAddCallback(
+    "btn_raz", ui_events.BUTTON_CLICKED, self.btn_raz, self
+  )
 end
 
 
@@ -227,21 +235,17 @@ function rummaged:btn_ruk()
   )
   level.disable_input()
   self:GetHolder():start_stop_menu( self, true )
-  db.actor:iterate_inventory(
-    function( npc, obj )
-      set_item_inv_visible( obj )
-    end,
-    db.actor
-  )
 end
 
 
-function rummaged:show_inv_items( types, f )
+function rummaged:show_inv_items( types, f, hide_only )
   local items = dsh_rukzak.get_actor_items( function() return true end )
   for _, item in ipairs( items ) do
     if types[ item.game_type ] or ( f and f( item ) ) then
-      for _, obj in ipairs( item.game_objs ) do
-        set_item_inv_visible( obj )
+      if not hide_only then
+        for _, obj in ipairs( item.game_objs ) do
+          set_item_inv_visible( obj )
+        end
       end
     else
       for _, obj in ipairs( item.game_objs ) do
@@ -326,4 +330,71 @@ function rummaged:btn_sleep()
   self:GetHolder():start_stop_menu( self, true )
   dsh_sleep.test_for_need_sleep_matras()
   db.actor:restore_weapon()
+end
+
+
+local unsubscribe_later = false
+function rummaged:btn_raz()
+  self:show_inv_items(
+    {},
+    function( t )
+      if t.game_type == "ammo" then
+        for _, obj in ipairs( t.game_objs ) do
+          if obj:get_current_ammo() < obj:get_ammo_box_size() then
+            set_item_inv_visible( obj )
+            set_item_ungroupable( obj )
+          else
+            set_item_inv_hidden( obj )
+          end
+        end
+        t.game_objs = {}
+        return true
+      end
+      return false
+    end, true
+  )
+  unsubscribe_later = ogse_signals.get_mgr():subscribe(
+    { signal = "inv_drag_drop", fun = this.inv_drag_drop }
+  )
+end
+
+
+function on_inventory_hide()
+  local items = dsh_rukzak.get_actor_items( function() return true end )
+  for _, item in ipairs( items ) do
+    for _, obj in ipairs( item.game_objs ) do
+      set_item_default_grouping( obj )
+      set_item_inv_visible( obj )
+    end
+  end
+  if unsubscribe_later then
+    ogse_signals.get_mgr():unsubscribe( unsubscribe_later )
+    unsubscribe_later = false
+  end
+end
+
+
+function inv_drag_drop( obj, me )
+  if not ( me:is_ammo() and obj:is_ammo() ) then return end
+  if me:id() == obj:id() or me:section() ~= obj:section() then return end
+  if
+    me:get_current_ammo() == me:get_ammo_box_size()
+    and obj:get_current_ammo() == obj:get_ammo_box_size()
+  then
+    return
+  end
+  local need_ammo = me:get_ammo_box_size() - me:get_current_ammo()
+  if need_ammo < obj:get_current_ammo() then
+    me:set_ammo_box_curr( me:get_ammo_box_size() )
+    obj:set_ammo_box_curr( obj:get_current_ammo() - need_ammo )
+  else
+    me:set_ammo_box_curr( me:get_current_ammo() + obj:get_current_ammo() )
+    ogse.remove_item_from_inventory( obj )
+  end
+  if me:get_current_ammo() == me:get_ammo_box_size() then
+    set_item_default_grouping( me )
+    set_item_inv_hidden( me )
+  end
+  db.actor:invalidate_inventory()
+  update_inventory_window()
 end
