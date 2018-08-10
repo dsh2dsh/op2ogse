@@ -29,7 +29,14 @@ class "restrictor_binder" ( object_binder )
 function restrictor_binder:__init( obj, char_ini ) super( obj )
   self.initialized = false
   self.loaded      = false
+  self.sig_update  = {
+    [ "signal" ] = "on_update",
+    [ "fun"    ] = self.actor_update,
+    [ "self"   ] = self,
+    [ "script_name" ] = "bind_restrictor.actor_update." .. self.object:name(),
+  }
   self.sm          = ogse_signals.get_mgr()
+  self.subscribed  = false
 end
 
 
@@ -78,13 +85,7 @@ function restrictor_binder:net_spawn( data )
     self.object:set_callback( callback.zone_enter, self.on_enter, self )
     self.object:set_callback( callback.zone_exit,  self.on_exit,  self )
     self.object:get_space_restrictor():schedule_register()
-    self.subscribed = {
-      [ "signal" ] = "on_update",
-      [ "fun"    ] = self.actor_update,
-      [ "self"   ] = self,
-      [ "script_name" ] = "bind_restrictor.actor_update." .. self.object:name(),
-    }
-    self.sm:subscribe( self.subscribed )
+    self.subscribed = self.sm:subscribe( self.sig_update )
   end
   db.net_spawning_obj = false
   return true
@@ -100,8 +101,10 @@ function restrictor_binder:net_destroy()
   if self.subscribed then
     self.object:set_callback( callback.zone_enter, nil )
     self.object:set_callback( callback.zone_exit,  nil )
-    self.sm:unsubscribe( self.subscribed )
-    self.subscribed = nil
+    if type( self.subscribed ) == "table" then
+      self.sm:unsubscribe( self.subscribed )
+    end
+    self.subscribed = false
   end
   db.storage[ self.object:id() ] = nil
   object_binder.net_destroy( self )
@@ -156,8 +159,10 @@ function restrictor_binder:update_logic( delta )
     self.object:get_space_restrictor():schedule_unregister()
     self.object:set_callback( callback.zone_enter, nil )
     self.object:set_callback( callback.zone_exit,  nil )
-    self.sm:unsubscribe( self.subscribed )
-    self.subscribed = nil
+    if type( self.subscribed ) == "table" then
+      self.sm:unsubscribe( self.subscribed )
+    end
+    self.subscribed = false
     if
       self.object:section() == "space_restrictor"
       and self.object:name() == self.object:section() .. self.object:id()
@@ -169,7 +174,38 @@ function restrictor_binder:update_logic( delta )
     end
     return false
   end
-  return true
+
+  -- Если у нас произошло переключение секции логики (на первом
+  -- апдейте это произойдет всегда, т.к. last_active_section еще равен
+  -- nil), то проверим, нужно-ли для новой логики висеть на апдейте
+  -- или достаточно коллбеков. Ну и произвести соотв. действия:
+  -- подписаться на апдейт или отписаться от него.
+  if self.st.active_section ~= self.last_active_section then
+    self.last_active_section = self.st.active_section
+    if xr_logic.logic_needs_update( self.object ) then
+      if self.subscribed == true then
+        log2(
+          "[%s]: %s: resubscribe %s to update",
+          script_name(), self.object:name(), self.st.active_section
+        )
+        self.subscribed = self.sm:subscribe( self.sig_update )
+        return false
+      end
+      return true
+    else
+      if type( self.subscribed ) == "table" then
+        log2(
+          "[%s]: %s: unsubscribe %s from update",
+          script_name(), self.object:name(), self.st.active_section
+        )
+        self.sm:unsubscribe( self.subscribed )
+        self.subscribed = true
+      end
+      return false
+    end
+  end
+
+  return type( self.subscribed ) == "table"
 end
 
 
