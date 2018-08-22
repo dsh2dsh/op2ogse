@@ -6,7 +6,9 @@
 
 
 function attach( sm )
+  sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_destroy    })
   sm:subscribe({ signal = "on_npc_enemy_callback", fun = this.enemy_callback })
+  sm:subscribe({ signal = "on_npc_net_destroy",     fun = this.on_destroy    })
 end
 
 
@@ -43,6 +45,14 @@ function get_cache_rec( obj, enemy, action )
   return is_enemy
 end
 
+function expire_cache_rec( obj, enemy )
+  local binder = obj:binded_object()
+  local cached = binder[ "xr_combat_ignore.cached" ]
+  if cached and cached[ enemy:id() ] then
+    cached[ enemy:id() ][ 2 ] = 0
+  end
+end
+
 
 function enemy_callback( obj, enemy, result )
   local st = db.storage[ obj:id() ].combat_ignore
@@ -53,6 +63,46 @@ function enemy_callback( obj, enemy, result )
       return true
     end
   end
+end
+
+
+local hits = {}
+function register_hit( to, from )
+  if not hits[ to:id()   ] then
+    hits[ to:id()   ] = { from = {}, to = {} }
+  end
+  if not hits[ from:id() ] then
+    hits[ from:id() ] = { from = {}, to = {} }
+  end
+  hits[ to:id()   ].from[ from:id() ] = true
+  hits[ from:id() ].to[     to:id() ] = true
+  expire_cache_rec( to, from )
+end
+
+
+function unregister_hits( npc )
+  local t = hits[ npc:id() ]
+  if t then
+    for id, _ in pairs( t.from ) do
+      hits[ id ].to[   npc:id() ] = nil
+    end
+    for id, _ in pairs( t.to   ) do
+      hits[ id ].from[ npc:id() ] = nil
+    end
+  end
+end
+
+
+function got_hit_from( npc, from )
+  if hits[ npc:id() ] and hits[ npc:id() ].from[ from:id() ] then
+    return true
+  end
+  return false
+end
+
+
+function on_destroy( obj )
+  unregister_hits( obj )
 end
 
 
@@ -70,12 +120,21 @@ function is_enemy( obj, enemy, st )
   if not st.enabled then return true end
 
   local overrides = xr_logic.generic_scheme_overrides( obj )
-  if overrides and overrides.combat_ignore and db.actor then
+  if overrides and overrides.combat_ignore then
     if enemy then
       db.storage[ obj:id() ].enemy = enemy
-      return xr_logic.pick_section_from_condlist(
+      local res = xr_logic.pick_section_from_condlist(
         db.actor, obj, overrides.combat_ignore.condlist
       ) == nil
+      if not res then
+        if
+          got_hit_from( obj, enemy )
+          and not overrides.combat_ignore_keep_when_attacked
+        then
+          return true
+        end
+      end
+      return res
     else
       return overrides.combat_ignore.cached_condlist
         :pick_section_from_condlist( db.actor, obj ) == nil
@@ -99,16 +158,8 @@ end
 
 
 function action_process_enemy:hit_callback( obj, amount, local_direction, who, bone_index )
-  if not who then return end
-  if amount == 0 then
-    -- Кто-то стрельнул в воздух
-    return
-  end
-  if who:id() == db.actor:id() then
-    local overrides = xr_logic.generic_scheme_overrides( obj )
-    if not overrides or not overrides.combat_ignore_keep_when_attacked then
-      self.st.enabled = false
-    end
+  if who and who:id() ~= obj:id() and amount > 0 then
+    register_hit( obj, who )
   end
 end
 
