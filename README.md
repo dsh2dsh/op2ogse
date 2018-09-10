@@ -676,6 +676,11 @@
 Этот текстурный пак сделан из сборки NLC7 Холодная пустошь от Кота:
 - http://nlc-zone.ru/forum/topic/160-sborki-dopolneniya-i-pravki/?p=177837
 
+Текстурный пак 3 из темы Народная Солянка-2016 в UHD
+https://www.amk-team.ru/forum/topic/13716-narodnaya-solyanka-2016-v-uhd/
+Скачать тут: https://yadi.sk/d/uVzuO_Af3anpP9
+Этот текстурный пак можно комбинировать с двумя предыдущими.
+
 
 Установка:
 
