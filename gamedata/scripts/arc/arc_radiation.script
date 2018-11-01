@@ -1,46 +1,114 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
-local inv_arts_radiation  = 0
-local inv_arts_psy_health = 0
+function attach( sm )
+  sm:subscribe({ signal = "on_drop_before_all", fun = this.lose_item })
+  sm:subscribe({ signal = "on_item_to_ruck",    fun = this.get_item  })
+  sm:subscribe({ signal = "on_spawn",           fun = this.on_spawn  })
+end
 
 
+function on_spawn()
+  dsh.exec_on_update(
+    function()
+      local sm = ogse_signals.get_mgr()
+      sm:subscribe({ signal = "on_item_to_belt", fun = this.lose_item })
+    end
+  )
+end
+
+
+local changed = false
+local items   = {}
+
+function register_item( id, rrs )
+  if rrs > 0 then
+    items[ id ] = rrs
+  else
+    items[ id ] = nil
+  end
+  changed = true
+end
+
+
+local inv_arts_radiation = 0
 local radiation_v = get_float( "actor_condition", "radiation_v" )
 
-function change_inv_arts_radiation( delta, cont_id )
-  inv_arts_radiation = inv_arts_radiation + delta
-  if inv_arts_radiation < radiation_v then
+function get_inv_arts_radiation()
+  if changed then
     inv_arts_radiation = 0
+    for id, rrs in pairs( items ) do
+      inv_arts_radiation = inv_arts_radiation + rrs
+    end
+    changed = false
   end
-  if cont_id then
-    local obj = level.object_by_id( cont_id )
-    ASSERT( obj, "[%s]: container %s not found", script_name(), cont_id )
-    if obj then
-      local iitem = obj:get_inventory_item()
-      ASSERT( iitem, "[%s]: %s not an inventory_item", script_name(), obj:name() )
-      local sp = iitem.radiation_restore_speed + delta
-      if sp < radiation_v then sp = 0 end
-      iitem.radiation_restore_speed = sp
+  local belt_rrs = inventory.on_belt_restore_speed( "radiation_restore_speed" )
+  if belt_rrs < radiation_v then belt_rrs = 0 end
+  return inv_arts_radiation + belt_rrs
+end
+
+
+function lose_item( obj )
+  local sect = obj:section()
+  if
+    sect == "arc_art_box_basic"
+    or sect == "arc_art_box_8basic"
+    or sect == "arc_art_box_1basic"
+  then
+    register_item( obj:id(), 0 )
+  else
+    local rrs = get_float( sect, "radiation_restore_speed", 0 )
+    if rrs > 0 then
+      register_item( obj:id(), 0 )
     end
   end
 end
 
 
-function reset_item_radiation( id )
-  local obj = level.object_by_id( id )
-  ASSERT( obj, "[%s]: item %s not found", script_name(), id )
-  if obj then
-    local iitem = obj:get_inventory_item()
-    ASSERT( iitem, "[%s]: %s not an inventory_item", script_name(), obj:name() )
-    iitem.radiation_restore_speed = 0
+local radiation_v = get_float( "actor_condition", "radiation_v" )
+
+function get_item( obj )
+  local sect = obj:section()
+  if
+    sect == "arc_art_box_basic"
+    or sect == "arc_art_box_8basic"
+    or sect == "arc_art_box_1basic"
+  then
+    local protection = get_u32( sect, "container_protection", 0 )
+    if protection > 0 then
+      protection = ( protection + 0.1 ) * radiation_v
+      local sobj = alife():object( obj:id() )
+      local artefacts = arc_ui_8container_menu.decode_custom_data(
+        sobj.custom_data, sobj:section_name()
+      )
+      local rad    = 0
+      local weight = get_float( sect, "inv_weight" )
+      for i, t in ipairs( artefacts ) do
+        if t.section then
+          weight = weight + get_float( t.section, "inv_weight" )
+          if t.condition > 0 then
+            local rrs = get_float( t.section, "radiation_restore_speed", 0 )
+            if rrs > protection then rad = rad + ( rrs - protection ) end
+          end
+        end
+      end
+      register_item( obj:id(), rad )
+      if rad > 0 then
+        local iitem = obj:get_inventory_item()
+        ASSERT(
+          iitem,
+          "[%s]: %s not an inventory_item", script_name(), obj:name()
+        )
+        iitem.radiation_restore_speed = rad
+      end
+      dsh.set_inv_item_weight( obj, weight )
+    end
+  else
+    local is_artefact = ( obj:is_artefact() and dsh.is_artefact( sect ) )
+    if ( is_artefact and obj:condition() > 0 ) or not is_artefact then
+      local rrs = get_float( sect, "radiation_restore_speed", 0 )
+      if rrs > 0 then
+        register_item( obj:id(), rrs )
+      end
+    end
   end
-end
-
-
-function get_inv_arts_radiation()
-  return inv_arts_radiation
-end
-
-
-function change_inv_arts_psy_health( delta )
-  inv_arts_psy_health = inv_arts_psy_health + delta
 end

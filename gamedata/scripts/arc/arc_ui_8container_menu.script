@@ -1,7 +1,7 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
-  sm:subscribe({ signal = "on_use", fun = this.on_use  })
+  sm:subscribe({ signal = "on_use", fun = this.on_use })
 end
 
 
@@ -18,49 +18,102 @@ function on_use( obj, sobj )
 end
 
 
+local active_menu = false
+
 function show_menu( obj )
-  arc_8containers.set_menu_showed( true )
-  local spwn = arc_8container_menu( obj )
-  arc_main.set_cur_container_menu( spwn )
+  local spwn  = arc_8container_menu( obj )
+  active_menu = spwn
   level.start_stop_menu( spwn, true )
 end
 
 
-local _menu
-function get_menu()
-  return _menu
+function possible_inv_change()
+  if active_menu then
+    active_menu.changed = true
+  end
+end
+
+
+function decode_custom_data( custom_data, sect, slots )
+  if not slots then slots = get_u32( sect, "container_slots" ) end
+  local artefacts = {}
+  if custom_data and custom_data ~= "" then
+    local cd = parse_names( custom_data )
+    ASSERT(
+      table.getn( cd ) <= slots * 3,
+      "[%s]: unexpected arts: %s > %s", script_name(), table.getn( cd ),
+      slots * 3
+    )
+    for i = 1, slots do
+      local t = {}
+      local sect = cd[ i ]
+      if sect ~= "_" then
+        t.section   = sect
+        t.condition = tonumber( cd[ slots + i ] )
+        local custom_data = cd[ slots * 2 + i ]
+        if custom_data ~= "_" then
+          t.custom_data = custom_data
+        end
+      end
+      table.insert( artefacts, t )
+    end
+  end
+  return artefacts
+end
+
+
+function encode_custom_data( artefacts, sect, slots )
+  if not slots then slots = get_u32( sect, "container_slots" ) end
+  local arts = 0
+  for _, t in ipairs( artefacts ) do
+    if t.section then arts = arts + 1 end
+  end
+  local cd = {}
+  if table.getn( artefacts ) > 0 and arts > 0 then
+    for _, k in ipairs({ "section", "condition", "custom_data" }) do
+      for i = 1, slots do
+        if i > table.getn( artefacts ) then
+          table.insert( cd, "_" )
+        else
+          local t = artefacts[ i ]
+          if t.section then
+            table.insert( cd, ( t[ k ] or "_" ) )
+          else
+            table.insert( cd, "_" )
+          end
+        end
+      end
+    end
+  end
+  return table.concat( cd, "," )
 end
 
 
 class "arc_8container_menu" ( dsh_ui.dshCUIScriptWnd )
 function arc_8container_menu:__init( obj ) super()
-  _menu = self
-
-  self.obj = obj
+  self.object = obj
   self:read_params()
+  self:load_artefacts()
+  self:load_inventory()
+  self:load_containers()
 
   self.xml = CScriptXmlInit()
   self.xml:ParseFile( self.xml_name )
   self:DrawBackground()
-
-  local n = arc_8containers.get_inv_index( obj:id() )
-  local t = arc_8containers.get_inv_container( n )
-  self.cfg_container  = arc_8containers.get_cfg_container( t.type )
-  self.container_type = t.type
-  self.cur_cont_index = n
-  self:get_container_arts()
-  self:get_inventory_arts()
-  self.take_buttons   = {}
-  self.put_buttons    = {}
-  self:UpdateMenu()
+  self:draw_weight()
+  self:draw_artefacts()
+  self:draw_inventory()
+  self:subscribe_signals()
 end
 
 function arc_8container_menu:__finalize() end
 
 
+local radiation_v = get_float( "actor_condition", "radiation_v" )
+
 function arc_8container_menu:read_params()
   local prefix = "arc_ui_8container_menu."
-  local sect   = self.obj:section()
+  local sect   = self.object:section()
   self.xml_name = get_string( sect, prefix .. "xml" )
   self.menu_cfg = {}
   for _, k1 in ipairs({ "put", "take" }) do
@@ -71,43 +124,135 @@ function arc_8container_menu:read_params()
       t[ k2 ] = get_u32( sect, prefix2 .. k2 );
     end
   end
-end
-
-
-function arc_8container_menu:get_container_arts()
-  self.container_arts  = arc_8containers.get_inv_container_arts(
-    self.cur_cont_index
-  )
-  self.container_conds = arc_8containers.get_inv_container_conds(
-    self.cur_cont_index
-  )
-  self.container_cds   = arc_8containers.get_inv_container_cds(
-    self.cur_cont_index
-  )
-  self.arts_cont = 0
-  table.foreachi(
-    self.container_arts,
-    function( i, v)
-      if v > 0 then self.arts_cont = self.arts_cont + 1 end
-    end
-  )
-end
-
-
-function arc_8container_menu:get_inventory_arts()
-  self.arts_inv       = 0
-  self.inventory_arts = {}
-  for i = 1, arc_arts.get_cfg_arts_number() do
-    local t = arc_arts.get_inv_arts_number( i )
-    table.insert( self.inventory_arts, t )
-    if t > 0 then self.arts_inv = self.arts_inv + 1 end
+  self.protection = get_u32( sect, "container_protection", 0 )
+  if self.protection > 0 then
+    self.protection = ( self.protection + 0.1 ) * radiation_v
   end
+  self.slots  = get_u32( sect, "container_slots" )
+  self.weight = get_float( sect, "inv_weight" )
 end
 
 
-function arc_8container_menu:UpdateMenu()
-  self:DrawButtons()
-  self:DrawWeight()
+function arc_8container_menu:load_artefacts()
+  local sobj = alife():object( self.object:id() )
+  self.artefacts = decode_custom_data(
+    sobj.custom_data, sobj:section_name(), self.slots
+  )
+end
+
+
+function arc_8container_menu:update_radiation()
+  local rad = 0
+  if self.protection > 0 then
+    for i, t in ipairs( self.artefacts ) do
+      if t.section and t.condition > 0 then
+        local rrs = get_float( t.section, "radiation_restore_speed", 0 )
+        if rrs > self.protection then rad = rad + ( rrs - self.protection ) end
+      end
+    end
+    local iitem = self.object:get_inventory_item()
+    ASSERT(
+      iitem, "[%s]: %s not an inventory_item", script_name(), self.object:name()
+    )
+    iitem.radiation_restore_speed = rad
+    arc_radiation.register_item( self.object:id(), rad )
+  end
+  return rad
+end
+
+
+function arc_8container_menu:save_artefacts()
+  local sobj = alife():object( self.object:id() )
+  sobj.custom_data = encode_custom_data(
+    self.artefacts, sobj:section_name(), self.slots
+  )
+  dsh.set_inv_item_weight( self.object, self.weight + self:draw_weight() )
+  self:update_radiation()
+end
+
+
+function arc_8container_menu:detach_button( s )
+  s.button   = nil
+  s.progress = nil
+  self:DetachChild( s )
+end
+
+
+function arc_8container_menu:load_inventory()
+  local idx = {}
+  if self.inventory then
+    for _, t in ipairs( self.inventory ) do
+      idx[ t.id ] = t
+    end
+  end
+  self.inventory = {}
+  local changed = false
+  db.actor:iterate_ruck(
+    function( npc, obj )
+      if
+        alife():object( obj:id() )
+        and ( not db.actor:marked_dropped( obj ) )
+        and obj:is_artefact() and dsh.is_artefact( obj:section() )
+        and dsh_rukzak.can_include_into_actor_items( obj )
+      then
+        local t = {}
+        t.object    = obj
+        t.id        = obj:id()
+        t.section   = obj:section()
+        t.condition = obj:condition()
+        local sobj = alife():object( obj:id() )
+        if sobj.custom_data and sobj.custom_data ~= "" then
+          t.custom_data = sobj.custom_data
+        end
+        table.insert( self.inventory, t )
+        if idx[ obj:id() ] then
+          t.button = idx[ obj:id() ].button
+          idx[ obj:id() ] = nil
+        else
+          changed = true
+        end
+      end
+    end,
+    db.actor
+  )
+  for id, t in pairs( idx ) do
+    local s = t.button
+    self:detach_button( s )
+    changed = true
+  end
+  return changed
+end
+
+
+function arc_8container_menu:load_containers()
+  self.containers = {}
+  db.actor:iterate_ruck(
+    function( npc, obj )
+      if
+        obj:section() == self.object:section()
+        and alife():object( obj:id() )
+        and ( not db.actor:marked_dropped( obj ) )
+      then
+        table.insert( self.containers, obj )
+      end
+    end,
+    db.actor
+  )
+  for i, obj in ipairs( self.containers ) do
+    if obj:id() == self.object:id() then
+      if i == table.getn( self.containers ) then
+        self.next_n = false
+      else
+        self.next_n = i + 1
+      end
+      if i == 1 then
+        self.prev_n = false
+      else
+        self.prev_n = i - 1
+      end
+      break
+    end
+  end
 end
 
 
@@ -115,200 +260,236 @@ function arc_8container_menu:DrawBackground()
   self.xml:InitWindow( "main", 0, self )
   self.xml:InitStatic( "background", self )
   self.xml:InitStatic( "art_box", self )
+  self.arts_weight = self.xml:InitStatic( "arts_weight", self )
+
+  self.btn_quit = self.xml:InitButton( "btn_quit", self )
+  self:dshAddCallback(
+    self.btn_quit:WindowName(), ui_events.BUTTON_CLICKED,
+    self.on_quit, self
+  )
+
+  self.btn_prev = self.xml:InitButton( "btn_prev", self )
+  self:dshAddCallback(
+    self.btn_prev:WindowName(), ui_events.BUTTON_CLICKED,
+    self.prev_container, self
+  )
+  self.btn_prev:Show( self.prev_n and true or false )
+
+  self.btn_next = self.xml:InitButton( "btn_next", self )
+  self:dshAddCallback(
+    self.btn_next:WindowName(), ui_events.BUTTON_CLICKED,
+    self.next_container, self
+  )
+  self.btn_next:Show( self.next_n and true or false )
 end
 
 
-function arc_8container_menu:DrawButtons()
-  self.all_arts_weight = 0
-  for i = 1, self.cfg_container.slots do
-    self:DrawArtButton( self.container_arts[ i ], i )
-    if self.container_arts[ i ] > 0 then
-      self.all_arts_weight = self.all_arts_weight
-        + arc_arts.get_art_weight( self.container_arts[ i ] )
+function arc_8container_menu:draw_weight()
+  local sum_weight = 0
+  for i, t in ipairs( self.artefacts ) do
+    if t.section then
+      sum_weight = sum_weight + get_float( t.section, "inv_weight" )
     end
   end
-
-  local btn_pos = 0
-  for i = 1, arc_arts.get_cfg_arts_number() do
-      if self.inventory_arts[ i ] > 0 then
-        btn_pos = btn_pos + 1
-      end
-      self:DrawArtButton( i, i, self.inventory_arts[ i ], btn_pos )
-  end
-
-  local q = self.btn_quit
-  if not q then
-    self.btn_quit = CUIButton()
-    q = self.btn_quit
-    q:SetWindowName( "btn_quit" )
-    q:SetAutoDelete( true )
-    q:SetText( "Закрыть" )
-    q:SetTextColor( 255, 238, 153, 26 )
-    q:SetFont( GetFontGraffiti19Russian() )
-    q:Init( 130, 50, 100, 30 )
-    self:AttachChild( q )
-    self:dshAddCallback(
-      "btn_quit", ui_events.BUTTON_CLICKED, self.on_quit, self
-    )
-  end
-
-  local p = self.btn_prev
-  if not p then
-    self.btn_prev = CUIButton()
-    p = self.btn_prev
-    p:SetWindowName( "btn_prev" )
-    p:SetAutoDelete( true )
-    p:SetText( "<<" )
-    p:SetTextColor( 255, 238, 153, 26 )
-    p:SetFont( GetFontGraffiti19Russian() )
-    p:Init( 50, 50, 50, 30 )
-    self:AttachChild( p )
-    self:dshAddCallback(
-      "btn_prev", ui_events.BUTTON_CLICKED, self.prev_container, self
-    )
-  end
-
-  local n = self.btn_next
-  if not n then
-    self.btn_next = CUIButton()
-    n = self.btn_next
-    n:SetWindowName( "btn_next" )
-    n:SetAutoDelete( true )
-    n:SetText( ">>" )
-    n:SetTextColor( 255, 238, 153, 26 )
-    n:SetFont( GetFontGraffiti19Russian() )
-    n:Init( 250, 50, 50, 30 )
-    self:AttachChild( n )
-    self:dshAddCallback(
-      "btn_next", ui_events.BUTTON_CLICKED, self.next_container, self
-    )
-  end
-
-  self.next_cont_idx = 0
-  if
-    arc_8containers.get_inv_containers_number() > 1
-    and self.cur_cont_index < arc_8containers.get_inv_containers_number()
-  then
-    self.next_cont_idx = arc_8containers.get_inv_index_by_type(
-      self.container_type, self.cur_cont_index + 1
-    )
-  end
-  n:Show( self.next_cont_idx > 0 )
-
-  self.prev_cont_idx = 0
-  if
-    arc_8containers.get_inv_containers_number() > 1
-    and self.cur_cont_index > 1
-  then
-    self.prev_cont_idx = arc_8containers.get_inv_index_by_type(
-      self.container_type, self.cur_cont_index - 1, 1
-    )
-  end
-  p:Show( self.prev_cont_idx > 0 )
+  self.arts_weight:SetText(
+    string.format( "Вес артефактов: %.2f кг.", sum_weight )
+  )
+  return sum_weight
 end
 
 
-local radiation_v = get_float( "actor_condition", "radiation_v" )
+function arc_8container_menu:make_art_button( t )
+  local s = self.xml:InitStatic( "art", self )
 
-function arc_8container_menu:DrawArtButton( art_index, button_number, multi, btn_pos )
-  local btns, bp, s, n, tx, ty, texture_name
-  if multi then
-    btns = self.put_buttons
-    s    = "put"
-    n    = art_index
-    bp   = btn_pos
-  else
-    btns = self.take_buttons
-    s    = "take"
-    n    = button_number
-    bp   = n
+  local b = self.xml:InitButton( "art_button", s )
+  s.button = b
+  b:InitTexture( dsh.get_ui_icon_equipment_name( t.section ) )
+  local tx = get_u32( t.section, "inv_grid_x"      ) * 50
+  local ty = get_u32( t.section, "inv_grid_y"      ) * 50
+  local tw = get_u32( t.section, "inv_grid_width"  ) * 50
+  local th = get_u32( t.section, "inv_grid_height" ) * 50
+  b:SetOriginalRect( tx, ty, tw, th )
+  local rad = get_float( t.section, "radiation_restore_speed", 0 )
+  if rad > 0 then
+    b:SetText( string.format( "+%.0f", rad / radiation_v ) )
   end
 
-  local m = self.menu_cfg[ s ]
-  local x = m.x_start + ( m.space * math.fmod( bp - 1, m.row_size ) )
-  local y = m.y_start + ( m.space * math.floor( ( bp - 1 ) / m.row_size ) )
+  local p = self.xml:InitProgressBar( "condition_progess_bar", s )
+  s.progress = p
+  p:SetProgressPos( t.condition * 100 )
 
-  local b = btns[ button_number ]
-  local t, tx, ty, texture_name
-  if ( ( not b ) or ( not multi ) ) and art_index > 0 then
-    t = "+" .. arc.round( arc_arts.get_art_inv_rad( art_index ) / radiation_v )
-    tx, ty = arc_arts.get_art_texture( art_index )
-    tx, ty = 50 * tx, 50 * ty
-    texture_name = arc_arts.get_art_texture_name( art_index )
-  end
+  return s
+end
 
-  if not b then                 -- if first time
-    btns[ button_number ] = CUIButton()
-    b = btns[ button_number ]
-    b:SetWindowName( "btn_" .. s .. "_" .. button_number )
-    b:SetAutoDelete( true )
-    if texture_name then b:InitTexture( texture_name ) end
-    b:SetOriginalRect( tx, ty, 50, 50 )
-    b:SetText( t )
-    b:SetTextColor( 255, 238, 153, 26 )
-    b:SetFont( GetFontGraffiti22Russian() )
-    b:Init( x, y, 50, 50 )
-    self:AttachChild( b )
+
+function arc_8container_menu:get_target_xy( k, pos )
+  local m = self.menu_cfg[ k ]
+  local x = m.x_start + ( m.space * math.fmod( pos - 1, m.row_size ) )
+  local y = m.y_start + ( m.space * math.floor( ( pos - 1 ) / m.row_size ) )
+  return x, y
+end
+
+
+function arc_8container_menu:draw_artefacts()
+  for i, t in ipairs( self.artefacts ) do
+    local btn_name = "art_button_take_" .. i
+    if t.section then
+      local s = self:make_art_button( t )
+      s:SetWndPos( self:get_target_xy( "take", i ) )
+      self:Register( s.button, btn_name )
+      t.button = s
+    end
     self:dshAddCallback(
-      b:WindowName(), ui_events.BUTTON_CLICKED,
-      loadstring( "arc_ui_8container_menu.btn_" .. s .. "_art( " .. n .. " )" ),
-      self
+      btn_name, ui_events.BUTTON_CLICKED,
+      function( wnd ) wnd:take_artefact( i ) end
     )
+  end
+end
 
-    if multi then
-      b.multi = CUIStatic()
-      m = b.multi
-      m:SetAutoDelete( true )
-      m:SetText( "x" .. multi )
-      m:Init( 0, 0, 30, 16 )
-      b:AttachChild( m )
-      m:Show( multi > 1 )
-      b:Show( multi > 0 )
+
+function arc_8container_menu:take_artefact( n )
+  local src = self.artefacts[ n ]
+
+  self.artefacts[ n ] = {}
+  self:save_artefacts()
+  local s = src.button
+  self:detach_button( s )
+
+  local sobj = alife():create(
+    src.section,
+    db.actor:position(), db.actor:level_vertex_id(), db.actor:game_vertex_id(),
+    db.actor:id()
+  )
+  sobj = alife():object( sobj.id )
+  if src.custom_data then
+    sobj.custom_data = base64.dec( src.custom_data )
+  end
+  local iitem = sobj:get_inventory_item()
+  iitem.item_condition = src.condition
+end
+
+
+function arc_8container_menu:draw_inventory()
+  for i, t in ipairs( self.inventory ) do
+    local s = self:make_art_button( t )
+    s:SetWndPos( self:get_target_xy( "put", i ) )
+    self:Register( s.button, "art_button_put_" .. i )
+    self:dshAddCallback(
+      s.button:WindowName(), ui_events.BUTTON_CLICKED,
+      function( wnd ) wnd:put_artefact( i ) end
+    )
+    t.button = s
+  end
+  self.added_callbacks = table.getn( self.inventory )
+end
+
+
+function arc_8container_menu:put_artefact( n )
+  local src = self.inventory[ n ]
+
+  local dst, pos
+  for i, t in ipairs( self.artefacts ) do
+    if not t.section then
+      dst = t
+      pos = i
+      break
+    end
+  end
+  if not dst then
+    if table.getn( self.artefacts ) == self.slots then return end
+    dst = {}
+    table.insert( self.artefacts, dst )
+    pos = table.getn( self.artefacts )
+  end
+
+  for _, k in ipairs({ "section", "condition", "custom_data" }) do
+    dst[ k ] = src[ k ]
+  end
+  if dst.custom_data then
+    dst.custom_data = base64.enc( dst.custom_data )
+  end
+  self:save_artefacts()
+
+  src.button:Show( false )
+  local s = self:make_art_button( dst )
+  s:SetWndPos( self:get_target_xy( "take", pos ) )
+  self:Register( s.button, "art_button_take_" .. pos )
+  dst.button = s
+
+  ogse.remove_item_from_inventory( src.object )
+end
+
+
+function arc_8container_menu:subscribe_signals()
+  self.signals = {
+    { signal = "on_drop_before_all", fun = self.on_drop, self = self },
+    { signal = "on_take", fun = self.on_take, self = self },
+  }
+  local sm = ogse_signals.get_mgr()
+  for _, s in ipairs( self.signals ) do
+    sm:subscribe( s )
+  end
+end
+
+
+function arc_8container_menu:unsubscribe_signals()
+  local sm = ogse_signals.get_mgr()
+  for _, s in ipairs( self.signals ) do
+    sm:unsubscribe( s )
+  end
+  self.signals = nil
+end
+
+
+function arc_8container_menu:on_drop( obj )
+  self.changed = true
+end
+
+
+function arc_8container_menu:on_take( obj )
+  self.changed = true
+end
+
+
+function arc_8container_menu:reload_inventory()
+  if not self:load_inventory() then return end
+  for i, t in ipairs( self.inventory ) do
+    if t.button then
+      local s = t.button
+      s.button:SetWindowName( "art_button_put_" .. i )
     else
-      b:Show( art_index > 0 )
+      local s = self:make_art_button( t )
+      self:Register( s.button, "art_button_put_" .. i )
+      t.button = s
+      if i > self.added_callbacks then
+        self:dshAddCallback(
+          s.button:WindowName(), ui_events.BUTTON_CLICKED,
+          function( wnd ) wnd:put_artefact( i ) end
+        )
+        self.added_callbacks = self.added_callbacks + 1
+      end
     end
-
-  elseif multi ~= nil then      -- if updating put_buttons
-    b:SetWndPos( x, y )
-    b:Show( multi > 0 )
-    m = b.multi
-    m:SetText( "x" .. multi )
-    m:Show( multi > 1 )
-
-  elseif not multi then         -- if updating take_buttons
-    if art_index > 0 then
-      b:InitTexture( arc_arts.get_art_texture_name( art_index ) )
-      b:SetOriginalRect( tx, ty, 50, 50 )
-      b:SetText( t )
-    end
-    b:Show( art_index > 0 )
+    local s = t.button
+    s:SetWndPos( self:get_target_xy( "put", i ) )
+    s.progress:SetProgressPos( t.condition * 100 )
   end
 end
 
 
-function arc_8container_menu:DrawWeight()
-  local w = self.arts_weight
-  if not w then
-    self.arts_weight = CUIStatic()
-    w = self.arts_weight
-    w:SetWindowName( "arts_weight" )
-    w:SetAutoDelete( true )
-    w:SetTextColor( 255, 238, 153, 26 )
-    w:SetFont( GetFontLetterica18Russian() )
-    w:Init( 100, 90, 320, 20 )
-    self:AttachChild( w )
+function arc_8container_menu:Update()
+  CUIScriptWnd.Update( self )
+  if self.changed then
+    self:reload_inventory()
+    self.changed = false
   end
-  w:SetText( string.format( "Вес артефактов: %.2f кг.", self.all_arts_weight ) )
 end
 
 
 function arc_8container_menu:on_quit()
-  arc_8containers.respawn_container( self.cur_cont_index )
+  self:unsubscribe_signals()
   self:GetHolder():start_stop_menu( self, true )
-  arc_8containers.set_menu_showed( false )
-  _menu = nil
   self:dsh_unregister_self()
-  arc_main.set_cur_container_menu( false )
+  active_menu = false
 end
 
 
@@ -324,107 +505,48 @@ function arc_8container_menu:OnKeyboard( dik, keyboard_action )
 end
 
 
-function arc_8container_menu:btn_put_art( art_index )
-  if
-    self.arts_cont < self.cfg_container.slots
-    and self.inventory_arts[ art_index ] > 0
-  then
-    for i = 1, self.cfg_container.slots do
-      if self.container_arts[ i ] == 0 then
-        self.container_arts[ i ] = art_index
-        self.arts_cont = self.arts_cont + 1
-        local cond, cd = arc.remove_item(
-          arc_arts.get_art_section( art_index )
-        )
-        self.container_conds[ i ] = cond
-        self.container_cds[   i ] = cd
-        local cont_id = arc_8containers.get_inv_container_id(
-          self.cur_cont_index
-        )
-        arc_arts.register_artefact(
-          arc_arts.get_art_section( art_index ), 1, cont_id, cond
-        )
-        local protection = self.cfg_container.protection
-        if protection > 0 then
-          local art_section = arc_arts.get_art_section( art_index )
-          local belt_rad    = get_float(
-            art_section, "radiation_restore_speed", 0
-          )
-          if cond > 0 and belt_rad > protection then
-            arc_radiation.change_inv_arts_radiation(
-              belt_rad - protection, cont_id
-            )
-          end
-        end
-        self.inventory_arts[ art_index ] = self.inventory_arts[ art_index ] - 1
-        if self.inventory_arts[ art_index ] == 0 then
-          self.arts_inv = self.arts_inv - 1
-        end
-        self:UpdateMenu()
-        return
-      end
+function arc_8container_menu:reload_artefacts()
+  for _, t in ipairs( self.artefacts ) do
+    if t.button then
+      self:detach_button( t.button )
     end
   end
-end
-
-
-function arc_8container_menu:btn_take_art( slot )
-  local a    = self.container_arts[  slot ]
-  local cond = self.container_conds[ slot ]
-  local cd   = self.container_cds[   slot ]
-  if cond and cond == "_" then cond = nil end
-  if cd   and cd   == "_" then cd   = nil end
-  if a > 0 then
-    if self.inventory_arts[ a ] == 0 then
-      self.arts_inv = self.arts_inv + 1
-    end
-    self.inventory_arts[ a ] = self.inventory_arts[ a ] + 1
-    self.container_arts[  slot ] = 0
-    self.container_conds[ slot ] = nil
-    self.container_cds[   slot ] = nil
-    self.arts_cont = self.arts_cont - 1
-    self:UpdateMenu()
-    -- спавн арта
-    arc.give_item( arc_arts.get_art_section( a ), cond, cd )
-    local cont_id = arc_8containers.get_inv_container_id( self.cur_cont_index )
-    arc_arts.register_artefact(
-      arc_arts.get_art_section( a ), -1, cont_id, cond
-    )
-    local protection = self.cfg_container.protection
-    if protection > 0 then
-      local art_section = arc_arts.get_art_section( a )
-      local belt_rad    = get_float( art_section, "radiation_restore_speed", 0 )
-      if cond > 0 and belt_rad > protection then
-        arc_radiation.change_inv_arts_radiation(
-          -( belt_rad - protection ), cont_id
-        )
-      end
+  self:load_artefacts()
+  self:draw_weight()
+  for i, t in ipairs( self.artefacts ) do
+    if t.section then
+      local s = self:make_art_button( t )
+      s:SetWndPos( self:get_target_xy( "take", i ) )
+      self:Register( s.button, "art_button_take_" .. i )
+      t.button = s
     end
   end
 end
 
 
 function arc_8container_menu:next_container()
-  arc_8containers.respawn_container( self.cur_cont_index )
-  self.cur_cont_index = self.next_cont_idx
-  self:get_container_arts()
-  self:UpdateMenu()
+  self.object = self.containers[ self.next_n ]
+  self.prev_n = self.next_n - 1
+  if self.next_n == table.getn( self.containers ) then
+    self.next_n = false
+  else
+    self.next_n = self.next_n + 1
+  end
+  self.btn_prev:Show( true )
+  self.btn_next:Show( self.next_n and true or false )
+  self:reload_artefacts()
 end
 
 
 function arc_8container_menu:prev_container()
-  arc_8containers.respawn_container( self.cur_cont_index )
-  self.cur_cont_index = self.prev_cont_idx
-  self:get_container_arts()
-  self:UpdateMenu()
-end
-
-
-function btn_put_art( ... )
-  _menu:btn_put_art( ... )
-end
-
-
-function btn_take_art( ... )
-  _menu:btn_take_art( ... )
+  self.object = self.containers[ self.prev_n ]
+  self.next_n = self.prev_n + 1
+  if self.prev_n == 1 then
+    self.prev_n = false
+  else
+    self.prev_n = self.prev_n - 1
+  end
+  self.btn_prev:Show( self.prev_n and true or false )
+  self.btn_next:Show( true )
+  self:reload_artefacts()
 end
