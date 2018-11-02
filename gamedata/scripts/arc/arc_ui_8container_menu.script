@@ -1,5 +1,8 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
+local fly_speed = 1
+
+
 function attach( sm )
   sm:subscribe({ signal = "on_use", fun = this.on_use })
 end
@@ -104,6 +107,9 @@ function arc_8container_menu:__init( obj ) super()
   self:draw_artefacts()
   self:draw_inventory()
   self:subscribe_signals()
+
+  self.flying = {}
+  self.fly_it = {}
 end
 
 function arc_8container_menu:__finalize() end
@@ -164,11 +170,11 @@ end
 function arc_8container_menu:update_grouping()
   for i, t in ipairs( self.artefacts ) do
     if t.section then
-      set_item_ungroupable( self.object )
+      set_item_always_ungroupable( self.object, true )
       return
     end
   end
-  set_item_default_grouping( self.object )
+  set_item_always_ungroupable( self.object, false )
 end
 
 
@@ -186,6 +192,19 @@ end
 function arc_8container_menu:detach_button( s )
   s.button   = nil
   s.progress = nil
+  if s.flying then
+    for i, t in ipairs( self.flying ) do
+      if s == t then
+        table.remove( self.flying, i )
+        s.flying = nil
+        break
+      end
+    end
+    ASSERT(
+      s.flying == nil,
+      "[%s]: %s not found in self.flying", script_name(), s:WindowName()
+    )
+  end
   self:DetachChild( s )
 end
 
@@ -197,6 +216,7 @@ function arc_8container_menu:load_inventory()
       idx[ t.id ] = t
     end
   end
+
   self.inventory = {}
   local changed = false
   db.actor:iterate_ruck(
@@ -218,6 +238,9 @@ function arc_8container_menu:load_inventory()
         end
         table.insert( self.inventory, t )
         if idx[ obj:id() ] then
+          if t.condition < idx[ obj:id() ].condition then
+            changed = true
+          end
           t.button = idx[ obj:id() ].button
           idx[ obj:id() ] = nil
         else
@@ -227,11 +250,24 @@ function arc_8container_menu:load_inventory()
     end,
     db.actor
   )
+
   for id, t in pairs( idx ) do
     local s = t.button
     self:detach_button( s )
     changed = true
   end
+
+  table.sort(
+    self.inventory,
+    function( a, b )
+      if a.section == b.section then
+        return a.condition > b.condition
+      else
+        return a.section < b.section
+      end
+    end
+  )
+
   return changed
 end
 
@@ -364,10 +400,14 @@ end
 
 function arc_8container_menu:take_artefact( n )
   local src = self.artefacts[ n ]
+  local s   = src.button
+  if s.flying then return end
 
   self.artefacts[ n ] = {}
   self:save_artefacts()
-  local s = src.button
+
+  local r = Frect()
+  s:GetWndRect( r )
   self:detach_button( s )
 
   local sobj = alife():create(
@@ -381,6 +421,8 @@ function arc_8container_menu:take_artefact( n )
   end
   local iitem = sobj:get_inventory_item()
   iitem.item_condition = src.condition
+
+  self.fly_it[ sobj.id ] = vector():set( r.x1, r.y1, 0 )
 end
 
 
@@ -401,6 +443,7 @@ end
 
 function arc_8container_menu:put_artefact( n )
   local src = self.inventory[ n ]
+  if src.button.flying then return end
 
   local dst, pos
   for i, t in ipairs( self.artefacts ) do
@@ -425,9 +468,19 @@ function arc_8container_menu:put_artefact( n )
   end
   self:save_artefacts()
 
+  local r = Frect()
+  src.button:GetWndRect( r )
   src.button:Show( false )
-  local s = self:make_art_button( dst )
-  s:SetWndPos( self:get_target_xy( "take", pos ) )
+  local s    = self:make_art_button( dst )
+  local x, y = self:get_target_xy( "take", pos )
+  s.flying = {
+    progress    = 0.1,
+    start_pos   = vector():set( r.x1, r.y1, 0 ),
+    start_time  = time_global(),
+    target_pos  = vector():set( x, y, 0 ),
+  }
+  table.insert( self.flying, s )
+  s:SetWndPos( r.x1, r.y1 )
   self:Register( s.button, "art_button_take_" .. pos )
   dst.button = s
 
@@ -469,24 +522,40 @@ end
 function arc_8container_menu:reload_inventory()
   if not self:load_inventory() then return end
   for i, t in ipairs( self.inventory ) do
-    if t.button then
-      local s = t.button
+    local s = t.button
+    if s then
       s.button:SetWindowName( "art_button_put_" .. i )
     else
-      local s = self:make_art_button( t )
+      s = self:make_art_button( t )
       self:Register( s.button, "art_button_put_" .. i )
       t.button = s
-      if i > self.added_callbacks then
-        self:dshAddCallback(
-          s.button:WindowName(), ui_events.BUTTON_CLICKED,
-          function( wnd ) wnd:put_artefact( i ) end
-        )
-        self.added_callbacks = self.added_callbacks + 1
-      end
     end
-    local s = t.button
-    s:SetWndPos( self:get_target_xy( "put", i ) )
+    if i > self.added_callbacks then
+      self:dshAddCallback(
+        s.button:WindowName(), ui_events.BUTTON_CLICKED,
+        function( wnd ) wnd:put_artefact( i ) end
+      )
+      self.added_callbacks = self.added_callbacks + 1
+    end
     s.progress:SetProgressPos( t.condition * 100 )
+    local fly_pos = self.fly_it[ t.id ]
+    if fly_pos then
+      local x, y = self:get_target_xy( "put", i )
+      s.flying = {
+        progress    = 0.1,
+        start_pos   = fly_pos,
+        start_time  = time_global(),
+        target_pos  = vector():set( x, y, 0 ),
+      }
+      s:SetWndPos( fly_pos.x, fly_pos.y )
+      self.fly_it[ t.id ] = nil
+      table.insert( self.flying, s )
+    elseif s.flying then
+      local x, y = self:get_target_xy( "put", i )
+      s.flying.target_pos = vector():set( x, y, 0 )
+    else
+      s:SetWndPos( self:get_target_xy( "put", i ) )
+    end
   end
 end
 
@@ -497,6 +566,39 @@ function arc_8container_menu:Update()
     self:reload_inventory()
     self.changed = false
   end
+  if table.getn( self.flying ) then
+    self:update_flying()
+  end
+end
+
+
+function arc_8container_menu:update_flying()
+  for _, s in ipairs( self.flying ) do
+    local t  = s.flying
+    local dt = ( time_global() - t.start_time ) / 1000
+    t.progress = t.progress + dt * fly_speed
+    if t.progress > 1 then t.progress = 1 end
+    local p = vector():sub( t.target_pos, t.start_pos )
+    p:mul( t.progress  )
+    p:add( t.start_pos )
+    s:SetWndPos( math.floor( p.x ), math.floor( p.y ) )
+  end
+  for i = table.getn( self.flying ), 1, -1 do
+    local s = self.flying[ i ]
+    if s.flying.progress == 1 then
+      table.remove( self.flying, i )
+      s.flying = nil
+    end
+  end
+end
+
+
+function arc_8container_menu:stop_flying()
+  for _, s in ipairs( self.flying ) do
+    local t = s.flying
+    s:SetWndPos( t.target_pos.x, t.target_pos.y )
+  end
+  self.flying = {}
 end
 
 
@@ -521,6 +623,7 @@ end
 
 
 function arc_8container_menu:reload_artefacts()
+  self:stop_flying()
   for _, t in ipairs( self.artefacts ) do
     if t.button then
       self:detach_button( t.button )
