@@ -205,7 +205,7 @@ function arc_8container_menu:detach_button( s )
       "[%s]: %s not found in self.flying", script_name(), s:WindowName()
     )
   end
-  self:DetachChild( s )
+  self.scrolled:DetachChild( s )
 end
 
 
@@ -307,8 +307,11 @@ end
 function arc_8container_menu:DrawBackground()
   self.xml:InitWindow( "main", 0, self )
   self.xml:InitStatic( "background", self )
-  local art_box = self.xml:InitStatic( "art_box", self )
   self.arts_weight = self.xml:InitStatic( "arts_weight", self )
+
+  local scroll  = self.xml:InitScrollView( "scroll", self )
+  self.scrolled = self.xml:InitStatic( "scrolled", scroll )
+  local art_box = self.xml:InitStatic( "art_box", self.scrolled )
 
   self.btn_quit = self.xml:InitButton( "btn_quit", art_box )
   self:Register( self.btn_quit, self.btn_quit:WindowName() )
@@ -350,7 +353,7 @@ end
 
 
 function arc_8container_menu:make_art_button( t )
-  local s = self.xml:InitStatic( "art", self )
+  local s = self.xml:InitStatic( "art", self.scrolled )
 
   local b = self.xml:InitButton( "art_button", s )
   s.button = b
@@ -383,15 +386,17 @@ end
 
 function arc_8container_menu:draw_artefacts()
   for i, t in ipairs( self.artefacts ) do
-    local btn_name = "art_button_take_" .. i
     if t.section then
-      local s = self:make_art_button( t )
-      s:SetWndPos( self:get_target_xy( "take", i ) )
-      self:Register( s.button, btn_name )
+      local s    = self:make_art_button( t )
+      local x, y = self:get_target_xy( "take", i )
+      s:SetWndPos( x, y )
+      self:Register( s.button, "art_button_take_" .. i )
       t.button = s
     end
+  end
+  for i = 1, self.slots do
     self:dshAddCallback(
-      btn_name, ui_events.BUTTON_CLICKED,
+      "art_button_take_" .. i, ui_events.BUTTON_CLICKED,
       function( wnd ) wnd:take_artefact( i ) end
     )
   end
@@ -406,8 +411,7 @@ function arc_8container_menu:take_artefact( n )
   self.artefacts[ n ] = {}
   self:save_artefacts()
 
-  local r = Frect()
-  s:GetWndRect( r )
+  local wpos = s:GetWndPos()
   self:detach_button( s )
 
   local sobj = alife():create(
@@ -422,21 +426,32 @@ function arc_8container_menu:take_artefact( n )
   local iitem = sobj:get_inventory_item()
   iitem.item_condition = src.condition
 
-  self.fly_it[ sobj.id ] = vector():set( r.x1, r.y1, 0 )
+  self.fly_it[ sobj.id ] = vector():set( wpos.x, wpos.y, 0 )
+end
+
+
+function arc_8container_menu:min_scrolled_height()
+  local x, y = self:get_target_xy( "put", 1 )
+  return y
 end
 
 
 function arc_8container_menu:draw_inventory()
+  local scrolled_h = self:min_scrolled_height()
   for i, t in ipairs( self.inventory ) do
-    local s = self:make_art_button( t )
-    s:SetWndPos( self:get_target_xy( "put", i ) )
+    local s    = self:make_art_button( t )
+    local x, y = self:get_target_xy( "put", i )
+    s:SetWndPos( x, y )
     self:Register( s.button, "art_button_put_" .. i )
     self:dshAddCallback(
       s.button:WindowName(), ui_events.BUTTON_CLICKED,
       function( wnd ) wnd:put_artefact( i ) end
     )
     t.button = s
+    local max_y = s:GetPosTop() + s:GetHeight()
+    if max_y > scrolled_h then scrolled_h = max_y end
   end
+  self.scrolled:SetHeight( scrolled_h )
   self.added_callbacks = table.getn( self.inventory )
 end
 
@@ -468,19 +483,18 @@ function arc_8container_menu:put_artefact( n )
   end
   self:save_artefacts()
 
-  local r = Frect()
-  src.button:GetWndRect( r )
+  local wpos = src.button:GetWndPos()
   src.button:Show( false )
   local s    = self:make_art_button( dst )
   local x, y = self:get_target_xy( "take", pos )
   s.flying = {
     progress    = 0.1,
-    start_pos   = vector():set( r.x1, r.y1, 0 ),
+    start_pos   = vector():set( wpos.x, wpos.y, 0 ),
     start_time  = time_global(),
     target_pos  = vector():set( x, y, 0 ),
   }
   table.insert( self.flying, s )
-  s:SetWndPos( r.x1, r.y1 )
+  s:SetWndPos( wpos.x, wpos.y )
   self:Register( s.button, "art_button_take_" .. pos )
   dst.button = s
 
@@ -521,6 +535,7 @@ end
 
 function arc_8container_menu:reload_inventory()
   if not self:load_inventory() then return end
+  local scrolled_h = self:min_scrolled_height()
   for i, t in ipairs( self.inventory ) do
     local s = t.button
     if s then
@@ -538,9 +553,10 @@ function arc_8container_menu:reload_inventory()
       self.added_callbacks = self.added_callbacks + 1
     end
     s.progress:SetProgressPos( t.condition * 100 )
+    local max_y
+    local x, y = self:get_target_xy( "put", i )
     local fly_pos = self.fly_it[ t.id ]
     if fly_pos then
-      local x, y = self:get_target_xy( "put", i )
       s.flying = {
         progress    = 0.1,
         start_pos   = fly_pos,
@@ -551,12 +567,14 @@ function arc_8container_menu:reload_inventory()
       self.fly_it[ t.id ] = nil
       table.insert( self.flying, s )
     elseif s.flying then
-      local x, y = self:get_target_xy( "put", i )
       s.flying.target_pos = vector():set( x, y, 0 )
     else
-      s:SetWndPos( self:get_target_xy( "put", i ) )
+      s:SetWndPos( x, y )
     end
+    max_y = y + s:GetHeight()
+    if max_y > scrolled_h then scrolled_h = max_y end
   end
+  self.scrolled:SetHeight( scrolled_h )
 end
 
 
