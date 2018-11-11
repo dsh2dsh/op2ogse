@@ -729,10 +729,9 @@ bigfont.xdb: увеличивает шрифт в игре
 
 coc_actor_step.xdb: звук шагов ГГ и CoC
 
-inv_green.xdb: "зеленый" инвентарь
+haarhus_inv.xdb: темный инвентарь от Haarhus
 
-nlc7_bolt.xdb, nlc7_bolt2.xdb и nlc7_bolt3.xdb: болты разных версий из
-NLC7 Переосмысление
+nlc7_bolt.xdb, nlc7_bolt2.xdb: болты разных версий из NLC7 Переосмысление
 
 nlc7_icons.xdb: иконки еды и частей мутантов из NLC7
 
