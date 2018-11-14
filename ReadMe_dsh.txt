@@ -666,26 +666,16 @@
 Последнее обновление:
 - https://drive.google.com/open?id=1kex-J7Yp55e0QX3xVHXRD2AKso7f6W_7
 
-Текстурный пак 1:
-- https://drive.google.com/open?id=1vMvDyoLHCalcavgLcO0ylmWYLt3s-kKy
-или
-- https://yadi.sk/d/RQse9VW23GzhVM
-Здесь собраны текстуры из паков от V92, adm-ral и что-то из Misery.
+Текстурные сборки:
+- https://drive.google.com/open?id=1jmmkNPtQbCtMcBHv6B-3UiHUX9lywT1A
 
-Текстурный пак 2:
-- https://drive.google.com/open?id=1cvzyX5wbZmHiCqnrc6-6MkKz2NG4kUYu
-Если был установлен текстурный пак 1, то перед установкой этого пака нужно
-удалить из папки mods следующие файлы
-- adm-ral_aa2_030_textures_spring.xdb
-- adm-ral_aa2_035_textures_spring_lowres.xdb
-- misery.xdb
-Этот текстурный пак сделан из сборки NLC7 Холодная пустошь от Кота:
-- http://nlc-zone.ru/forum/topic/160-sborki-dopolneniya-i-pravki/?p=177837
+* nlc7_cold_wasterland.7z: Холодная пустошь от Кота из этой темы
+  http://nlc-zone.ru/forum/topic/160-sborki-dopolneniya-i-pravki/?p=177837
 
-Текстурный пак 3 из темы Народная Солянка-2016 в UHD
-https://www.amk-team.ru/forum/topic/13716-narodnaya-solyanka-2016-v-uhd/
-Скачать тут: https://yadi.sk/d/uVzuO_Af3anpP9
-Этот текстурный пак можно комбинировать с двумя предыдущими.
+* ogse_sky_high.7z: тестуры неба с бОльшим разрешением
+
+* sgc_v92_v1.7z: тестуры от V92 c доработками adm-ral
+
 
 Установка:
 
