@@ -40,8 +40,8 @@ end
 
 
 local flames, flames_no_light, flames_no_palki = {}, {}, {}
-local lights, lights_no_flame = {}, {}
-local palki,  palki_no_flame  = {}, {}
+local lights_no_flame = {}
+local palki_no_flame  = {}
 
 local looking_into_flame = false
 local nearest_campfire
@@ -148,16 +148,13 @@ function unknown_light_binder:net_spawn( data )
     tostring( db.net_spawning_obj and db.net_spawning_obj:name() or nil )
   )
   db.net_spawning_obj = self.object
-  lights[ self.object:level_vertex_id() ] = self.object:id()
-  lights_no_flame[ self.object:id()     ] = true
+  lights_no_flame[ self.object:id() ] = true
   for id, campfire in pairs( flames_no_light ) do
     local dist = self.object:position()
       :distance_to( campfire.object:position() )
     if dist < 1 then
-      flames_no_light[ id ] = nil
-      lights[ campfire.object:level_vertex_id() ] = self.object:id()
-      lights_no_flame[ self.object:id()         ] = nil
-      campfire:on_light_spawn()
+      self.campfire = campfire
+      self.campfire:on_light_spawn( self )
       break
     end
   end
@@ -167,8 +164,10 @@ end
 
 
 function unknown_light_binder:net_destroy()
-  lights[ self.object:level_vertex_id() ] = nil
-  lights_no_flame[ self.object:id()     ] = nil
+  if self.campfire then
+    self.campfire:find_light( false )
+  end
+  lights_no_flame[ self.object:id() ] = nil
   object_binder.net_destroy( self )
 end
 
@@ -325,16 +324,39 @@ function campfire_binder:check_npc( npc )
 end
 
 
-function campfire_binder:find_light()
-  local id = lights[ self.object:level_vertex_id() ]
-  if id then
-    return level.object_by_id( id )
+function campfire_binder:find_light( light_binder )
+  if light_binder then
+    self.light = light_binder
+    self.light.campfire = self
+    flames_no_light[ self.object:id() ] = nil
+    lights_no_flame[ self.light.object:id() ] = nil
+  elseif light_binder == false then
+    if self.light then
+      self.light.campfire = false
+      lights_no_flame[ self.light.object:id() ] = true
+    end
+    self.light = false
+    flames_no_light[ self.object:id() ] = self
   end
+  return self.light
 end
 
 
-function campfire_binder:find_palki()
-  return palki[ self.object:level_vertex_id() ]
+function campfire_binder:find_palki( palki_binder )
+  if palki_binder then
+    self.palki = palki_binder
+    self.palki.campfire = self
+    flames_no_palki[ self.object:id() ] = nil
+    palki_no_flame[ self.palki.object:id() ] = nil
+  elseif palki_binder == false then
+    if self.palki then
+      self.palki.campfire = false
+      palki_no_flame[ self.palki.object:id() ] = true
+    end
+    self.palki = false
+    flames_no_palki[ self.object:id() ] = self
+  end
+  return self.palki
 end
 
 
@@ -414,8 +436,6 @@ function campfire_binder:get_actor_check_delay()
 end
 
 
-local found_flame_here = {}
-
 function campfire_binder:net_spawn( data )
   if not object_binder.net_spawn( self, data ) then
     return false
@@ -432,7 +452,6 @@ function campfire_binder:net_spawn( data )
       :distance_to( campfire.object:position() )
     if dist < 1 then
       found = campfire
-      found_flame_here[ self.object:level_vertex_id() ] = campfire
       break
     end
   end
@@ -444,7 +463,6 @@ function campfire_binder:net_spawn( data )
     )
     self.shutdown = true
   else
-    found_flame_here[ self.object:level_vertex_id() ] = self
     self:register_campfire()
   end
   db.net_spawning_obj = false
@@ -456,27 +474,26 @@ function campfire_binder:register_campfire()
   flames[ self.object:id() ] = self
   if self.has_light then
     -- ищем лампочку
-    local light = self:find_light()
-    if light then
-      lights_no_flame[ light:id() ] = nil
+    local found_light = self:find_light()
+    if found_light then
+      lights_no_flame[ found_light:id() ] = nil
     else
       for id, _ in pairs( lights_no_flame ) do
         local obj = level.object_by_id( id )
         if obj then
           local dist = self.object:position():distance_to( obj:position() )
           if dist < 1 then
-            light = obj
-            lights[ self.object:level_vertex_id() ] = id
-            lights_no_flame[ id ] = nil
+            found_light = obj:binded_object()
+            self:find_light( found_light )
             break
           end
         end
       end
-      if not light then
-        flames_no_light[ self.object:id() ] = self
+      if not found_light then
+        self:find_light( false )
       end
     end
-    if light then self:switch_light( false ) end
+    if found_light then self:switch_light( false ) end
   end
   -- ищем кострище
   local found_palki = self:find_palki()
@@ -489,14 +506,13 @@ function campfire_binder:register_campfire()
         local dist = self.object:position():distance_to( obj:position() )
         if dist < 1 then
           found_palki = obj:binded_object()
-          palki[ self.object:level_vertex_id() ] = found_palki
-          palki_no_flame[ id ] = nil
+          self:find_palki( found_palki )
           break
         end
       end
     end
     if not found_palki then
-      flames_no_palki[ self.object:id() ] = self
+      self:find_palki( false )
     end
   end
   -- self:create_restrictor()
@@ -519,8 +535,11 @@ function campfire_binder:net_destroy()
     xr_logic.issue_event( self.object, st[ st.active_scheme ], "net_destroy" )
   end
   self:stop_idle()
+  self:find_light( false )
+  self:find_palki( false )
   flames[ self.object:id()          ] = nil
   flames_no_light[ self.object:id() ] = nil
+  flames_no_palki[ self.object:id() ] = nil
   object_binder.net_destroy( self )
 end
 
@@ -560,7 +579,7 @@ function campfire_binder:switch_light( ena )
   if not self.has_light then return end
   local light = self:find_light()
   if not light then return end
-  local lamp = light:get_hanging_lamp()
+  local lamp = light.object:get_hanging_lamp()
   if not lamp then return end
   if ena then
     lamp:turn_on()
@@ -610,12 +629,14 @@ function campfire_binder:play_particle_near_light( particle )
 end
 
 
-function campfire_binder:on_light_spawn()
+function campfire_binder:on_light_spawn( light_binder )
+  self:find_light( light_binder )
   self.switch_light_on_update = true
 end
 
 
-function campfire_binder:on_palki_spawn()
+function campfire_binder:on_palki_spawn( palki_binder )
+  self:find_palki( palki_binder )
   if self.state.usable then
     self:enable_palki_on_use( self )
   end
@@ -626,7 +647,7 @@ function campfire_binder:enable_palki_on_use()
   self.usable = true
   local found_palki = self:find_palki()
   if found_palki then
-    found_palki:enable_on_use( self )
+    found_palki:enable_on_use()
   end
 end
 
@@ -807,16 +828,13 @@ function koster_palki_binder:net_spawn( data )
     tostring( db.net_spawning_obj and db.net_spawning_obj:name() or nil )
   )
   db.net_spawning_obj = self.object
-  palki[ self.object:level_vertex_id() ] = self
-  palki_no_flame[ self.object:id()     ] = true
+  palki_no_flame[ self.object:id() ] = true
   for id, campfire in pairs( flames_no_palki ) do
     local dist = self.object:position()
       :distance_to( campfire.object:position() )
     if dist < 1 then
-      flames_no_palki[ id ] = nil
-      palki[ campfire.object:level_vertex_id() ] = self
-      palki_no_flame[ self.object:id()         ] = nil
-      campfire:on_palki_spawn()
+      self.campfire = campfire
+      self.campfire:on_palki_spawn( self )
       break
     end
   end
@@ -826,8 +844,10 @@ end
 
 
 function koster_palki_binder:net_destroy()
-  palki[ self.object:level_vertex_id() ] = nil
-  palki_no_flame[ self.object:id()     ] = nil
+  if self.campfire then
+    self.campfire:find_palki( false )
+  end
+  palki_no_flame[ self.object:id() ] = nil
   self:disable_on_use()
   object_binder.net_destroy( self )
 end
@@ -878,9 +898,8 @@ function koster_palki_binder:update( delta )
 end
 
 
-function koster_palki_binder:enable_on_use( campfire )
+function koster_palki_binder:enable_on_use()
   if self.on_use_configured then return end
-  self.campfire = campfire
   self.object:set_callback( callback.use_object, self.use_callback, self )
   self[ "dsh_busy_hands.cfg" ] = {
     [ "need_hands"   ] = "dsh_busy_hands",
