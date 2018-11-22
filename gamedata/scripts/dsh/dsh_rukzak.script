@@ -54,12 +54,21 @@ function spawn_magic_rukzak( sect )
 end
 
 
+local active_ui_rukzak = false
+
 function on_rukzak_use( obj )
   db.actor:hide_weapon()
   local snd = sound_object( "interface\\inv_open" )
   snd:play( db.actor, 0, sound_object.s2d )
-  local rukzak = ui_rukzak( obj:id() )
-  level.start_stop_menu( rukzak, true )
+  active_ui_rukzak = ui_rukzak( obj:id() )
+  level.start_stop_menu( active_ui_rukzak, true )
+end
+
+
+function possible_inv_change()
+  if active_ui_rukzak then
+    active_ui_rukzak:full_reload()
+  end
 end
 
 
@@ -478,6 +487,7 @@ function blowout_modif_arts()
       save_rukzak( id, items )
     end
   end
+  possible_inv_change()
 end
 
 
@@ -900,6 +910,7 @@ function rukzak_item:__init( name, cond, cnt ) super()
   local cr = 216
   local cg = 186
   local cb = 140
+  self:SetAutoDelete( false )
 
   self.item_cnt = CUIStatic()
   self.item_cnt:SetAutoDelete( true )
@@ -968,6 +979,7 @@ function ui_rukzak:__init( owner_id ) super()
   self.changed   = false
   self.index_other = {}
   self.index_our   = {}
+  self.moved     = false
   self.owner_id  = owner_id
   self.xml_fname = "ui_dsh_rukzak.xml"
   self:InitControls()
@@ -1091,6 +1103,12 @@ end
 function ui_rukzak:OnTabChange()
   self.dlg_other:Show( false )
   self.dlg_our:Show( false )
+  if self.moved then
+    self.filtered_other = nil
+    self.filtered_our   = nil
+    self:show_filtered_items( true )
+    self.moved = false
+  end
   local i = self.tab:GetActiveIndex()
   if     i == 0 then
     self.dlg_other:Show( true )
@@ -1122,6 +1140,7 @@ function ui_rukzak:move_items( amount )
   local ui_item = self:get_selected_item()
   if not ui_item then return end
   self.changed = true
+  self.moved   = true
   if ui_item.data.game_objs then
     self:move_by_amount(
       function()
@@ -1166,7 +1185,7 @@ end
 
 
 function ui_rukzak:move_from_other( ui_item )
-  local item = ui_item.data
+  local item   = ui_item.data
   local ui_our = self.index_our[ item.key ]
   local our
   if ui_our then
@@ -1181,9 +1200,10 @@ function ui_rukzak:move_from_other( ui_item )
       [ "key"       ] = item.key,
       [ "name"      ] = item.name,
     }
+    table.insert( self.items_our, our )
   end
   local size, sobj
-  if our.game_type == "ammo" then
+  if item.game_type == "ammo" then
     if not our.count then our.count = 0 end
     local box_size = get_ammo_box_size( item.section )
     if item.count > box_size then
@@ -1194,11 +1214,11 @@ function ui_rukzak:move_from_other( ui_item )
     else
       sobj = spawn_ammo_in_inv( item.section, item.count )
       size       = item.count
-      our.count  = our.count  + item.count
       item.count = 0
+      our.count  = our.count  + item.count
     end
   else
-    if our.game_type == "weapon" then
+    if item.game_type == "weapon" then
       sobj = spawn_weapon_in_inv( item.section, item.info )
     else
       sobj = spawn_item_in_inv( item.section )
@@ -1224,19 +1244,20 @@ function ui_rukzak:move_from_other( ui_item )
     )
     ui_our.data = our
     self.index_our[ our.key ] = ui_our
-    self.ui_list_our:AddItem( ui_our )
   end
   level.client_spawn_manager():add(
     sobj.id, -1, function( id, obj )
-      if our.condition < 100 then
-        dsh.set_condition( obj, our.condition / 100 )
-      end
       table.insert( our.game_objs, obj )
       ui_our.item_cnt:SetText(
         our.count or table.getn( our.game_objs )
       )
     end
   )
+  if item.condition < 100 then
+    sobj = alife():object( sobj.id )
+    local iitem = sobj:get_inventory_item()
+    iitem.item_condition = item.condition / 100
+  end
   if item.count > 0 then
     ui_item.item_cnt:SetText( item.count )
   else
@@ -1259,8 +1280,8 @@ end
 
 
 function ui_rukzak:move_from_our( ui_item )
-  local item = ui_item.data
-  local obj  = table.remove( item.game_objs, 1 )
+  local item     = ui_item.data
+  local obj      = table.remove( item.game_objs, 1 )
   local ui_other = self.index_other[ item.key ]
   local other
   if ui_other then
@@ -1294,7 +1315,6 @@ function ui_rukzak:move_from_our( ui_item )
       )
       ui_other.data = other
       self.index_other[ other.key ] = ui_other
-      self.ui_list_other:AddItem( ui_other )
     end
   end
   if table.getn( item.game_objs ) > 0 then
@@ -1309,7 +1329,7 @@ function ui_rukzak:move_from_our( ui_item )
   end
   ogse.remove_item_from_inventory( obj )
   if other.count == 1 then
-    if     other.section == "amk_metka" then
+    if     item.section == "amk_metka" then
       local last_metka = ogse.load_var(
         ( "dsh_rukzak." .. self.owner_id .. ".metka" ), "аўъчръ"
       )
@@ -1324,7 +1344,7 @@ function ui_rukzak:move_from_our( ui_item )
         end
       )
       level.start_stop_menu( spwn, true )
-    elseif other.section == "zamok" then
+    elseif item.section == "zamok" then
       ogse.save_var( ( "dsh_rukzak." .. self.owner_id .. ".zamok" ), true )
       amk_offline_alife.protected.ids[ self.owner_id ] = 1
       local lname    = level.name()
@@ -1380,6 +1400,7 @@ function ui_rukzak:on_quit()
   self.index_other = nil
   self.index_our   = nil
   self:dsh_unregister_self()
+  active_ui_rukzak = false
   db.actor:restore_weapon()
 end
 
@@ -1410,8 +1431,7 @@ function ui_rukzak:FillList( items, ui_list, index )
   for _, item in ipairs( items ) do
     if
       ( item.count and item.count > 0 )
-      or
-      ( item.game_objs and table.getn( item.game_objs ) > 0 )
+      or ( item.game_objs and table.getn( item.game_objs ) > 0 )
     then
       if not item.name then
         local sect = item.section
@@ -1420,12 +1440,14 @@ function ui_rukzak:FillList( items, ui_list, index )
         )
         item.name = dsh.strip_quotes( game.translate_string( name ) )
       end
-      local ui_item = rukzak_item(
-        item.name, item.condition, ( item.count or table.getn( item.game_objs ) )
-      )
-      ui_item.data      = item
-      index[ item.key ] = ui_item
-      ui_list:AddItem( ui_item )
+      if not index[ item.key ] then
+        local ui_item = rukzak_item(
+          item.name, item.condition, ( item.count or table.getn( item.game_objs ) )
+        )
+        ui_item.data      = item
+        index[ item.key ] = ui_item
+      end
+      ui_list:AddItem( index[ item.key ] )
     end
   end
 end
@@ -1483,8 +1505,6 @@ end
 
 
 function ui_rukzak:clear_all_lists()
-  self.index_other = {}
-  self.index_our   = {}
   self.ui_list_other:RemoveAll()
   self.ui_list_our:RemoveAll()
 end
@@ -1814,4 +1834,15 @@ function ui_rukzak:process_items_ttl()
     "dsh_rukzak." .. self.owner_id .. ".access_time",
     { game.get_game_time():get() }, "time"
   )
+end
+
+
+function ui_rukzak:full_reload()
+  self.changed     = false
+  self.index_other = {}
+  self.index_our   = {}
+  self.items_other = load_rukzak( self.owner_id )
+  self.items_our   = get_actor_items()
+  self.moved       = true
+  self:OnTabChange()
 end
