@@ -48,6 +48,7 @@ end
 class "generic_physics_binder" ( object_binder )
 function generic_physics_binder:__init( obj ) super( obj )
   self.am          = ogse_signals.get_mgr()
+  self.callbacks_set = false
   self.initialized = false
   self.loaded      = false
 end
@@ -100,25 +101,28 @@ function generic_physics_binder:update( delta )
   end
 
   if
-    self.st.active_section ~= nil
+    self.st.active_section
     or (
-      self.object:spawn_ini() ~= nil
-      and self.object:spawn_ini():section_exist( "drop_box" ) == true
+      self.object:spawn_ini()
+      and self.object:spawn_ini():section_exist( "drop_box" )
     )
     or IsInventoryBox( self.object )
   then
     xr_logic.issue_event(
-      self.object, self.st[self.st.active_scheme], "update", delta
+      self.object, self.st[ self.st.active_scheme ], "update", delta
     )
-    self.object:set_callback(
-      callback.hit, generic_physics_binder.hit_callback, self
-    )
-    self.object:set_callback(
-      callback.death, generic_physics_binder.death_callback, self
-    )
-    self.object:set_callback(
-      callback.use_object, generic_physics_binder.use_callback, self
-    )
+    if not self.callbacks_set then
+      self.object:set_callback(
+        callback.hit, generic_physics_binder.hit_callback, self
+      )
+      self.object:set_callback(
+        callback.death, generic_physics_binder.death_callback, self
+      )
+      self.object:set_callback(
+        callback.use_object, generic_physics_binder.use_callback, self
+      )
+      self.callbacks_set = true
+    end
     -- для бтра hit_callback и death_callback не вызывается. заткнём эти дырки.
     if db.btr[ self.object:id() ] and self.health and not self.nofixonhit then
       local health = self.object:get_car()
@@ -136,12 +140,22 @@ function generic_physics_binder:update( delta )
         end
       end
     end
+  elseif self.callbacks_set then
+    self:clear_callbacks()
+    self.callbacks_set = false
   end
 
   self.am:call( "on_physic_obj_update", self.object, delta )
   self.am:call(
     "on_ph_update." .. self.object:id(), self.object, delta
   )
+end
+
+
+function generic_physics_binder:clear_callbacks()
+  self.object:set_callback( callback.hit, nil )
+  self.object:set_callback( callback.death, nil )
+  self.object:set_callback( callback.use_object, nil )
 end
 
 
@@ -186,9 +200,7 @@ function generic_physics_binder:net_destroy()
   db.del_sl( self.object )
   db.storage[ self.object:id() ] = nil
   db.del_btr( self.object )
-  self.object:set_callback( callback.hit, nil )
-  self.object:set_callback( callback.death, nil )
-  self.object:set_callback( callback.use_object, nil )
+  self:clear_callbacks()
   self.am:call( "on_ph_net_destroy", self.object, self )
   self.am:cleanup_signal_subs( "on_ph_update." .. self.object:id() )
   object_binder.net_destroy( self )
