@@ -50,6 +50,7 @@ local disable_vertexes_by_name = {
 
 class "action_door"
 function action_door:__init( obj, storage )
+  self.feel_touch_inside = {}
   self.object  = obj
   self.st      = storage
   self.snd_obj = nil
@@ -80,7 +81,7 @@ function action_door:reset_scheme( loading )
     self.st.script_used_more_than_once = true
   end
 
-  self:update_vertexes()
+  self:init_vertexes()
   if self.st.closed then
     -- ≈сли дверь уже закрыта - то нужно закрыть без звука
     if self:is_closed() then
@@ -118,6 +119,7 @@ function action_door:update( delta )
     "object '%s': door failed to initialize", self.object:name()
   )
 
+  self:update_vertexes()
   xr_logic.try_switch_to_another_section( self.object, self.st, db.actor )
 end
 
@@ -254,10 +256,17 @@ end
 
 function action_door:deactivate()
   self.object:set_tip_text( "" )
+  if self.has_feel_touch then
+    self.object:remove_feel_touch(
+      self, self.feel_touch_new_delete, self.feel_touch_contact
+    )
+    self.has_feel_touch = false
+    -- log2( "[%s]: %s: remove_feel_touch", script_name(), self.object:name() )
+  end
 end
 
 
-function action_door:update_vertexes()
+function action_door:init_vertexes()
   local t = self.st.disable_vertexes
   if not t then
     t = {}
@@ -270,9 +279,22 @@ function action_door:update_vertexes()
         self.object:position(), radius
       )
     end
-    if not t.disabled then
+    if table.getn( t.vertexes ) > 0 and not t.disabled then
+      self.disable_vertexes = true
+      self.vertexes         = {}
       for _, lvid in ipairs( t.vertexes ) do
-        level.disable_vertex( lvid )
+        self.vertexes[ lvid ] = true
+      end
+      if not self.has_feel_touch then
+        self.object:add_feel_touch(
+          radius + 1, self,
+          self.feel_touch_new_delete, self.feel_touch_contact
+        )
+        self.has_feel_touch = true
+        -- log2(
+        --   "[%s]: %s: add_feel_touch: radius[%s]",
+        --   script_name(), self.object:name(), radius + 1
+        -- )
       end
       t.disabled = true
     end
@@ -280,8 +302,74 @@ function action_door:update_vertexes()
     for _, lvid in ipairs( t.vertexes ) do
       level.enable_vertex( lvid )
     end
+    -- log2(
+    --   "[%s]: %s: enable vertexes: %s",
+    --   script_name(), self.object:name(), table.concat( t.vertexes, ", " )
+    -- )
     t.disabled = false
   end
+end
+
+
+function action_door:feel_touch_contact( obj )
+  return obj:is_custom_monster()
+end
+
+
+function action_door:feel_touch_new_delete( obj, is_new )
+  if not obj:alive() then return end
+  if is_new then
+    self.feel_touch_inside[ obj:id() ] = obj
+    if ( not self.disable_vertexes ) and self:is_anybody_inside() then
+      -- log2(
+      --   "[%s]: %s: feel_touch_new: %s",
+      --   script_name(), self.object:name(), obj:name()
+      -- )
+      local vertexes = {}
+      for lvid, _ in pairs ( self.vertexes ) do
+        level.enable_vertex( lvid )
+        table.insert( vertexes, lvid )
+      end
+      -- log2(
+      --   "[%s]: %s: enable vertexes: %s",
+      --   script_name(), self.object:name(), table.concat( vertexes, ", " )
+      -- )
+      self.disable_vertexes = true
+    end
+  else
+    self.feel_touch_inside[ obj:id() ] = nil
+    -- log2(
+    --   "[%s]: %s: feel_touch_delete: %s",
+    --   script_name(), self.object:name(), obj:name()
+    -- )
+    self:update_vertexes()
+  end
+end
+
+
+function action_door:is_anybody_inside()
+  for id, obj in pairs( self.feel_touch_inside ) do
+    if self.vertexes[ obj:level_vertex_id() ] and obj:alive() then
+      return true
+    end
+  end
+  return false
+end
+
+
+function action_door:update_vertexes()
+  if not self.disable_vertexes then return end
+  if self:is_anybody_inside()  then return end
+  local vertexes = {}
+  for lvid, _ in pairs ( self.vertexes ) do
+    level.disable_vertex( lvid )
+    table.insert( vertexes, lvid )
+  end
+  -- log2(
+  --   "[%s]: %s: disable vertexes: %s",
+  --   script_name(), self.object:name(), table.concat( vertexes, ", " )
+  -- )
+  self.disable_vertexes = false
 end
 
 
