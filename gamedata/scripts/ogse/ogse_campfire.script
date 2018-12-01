@@ -276,6 +276,7 @@ states = {
 
 class "campfire_binder" ( object_binder )
 function campfire_binder:__init( obj ) super( obj )
+  self.feel_touch_inside = {}
   self.flame_enabled = true
   self.has_light     = get_bool(
     obj:section(), "ogse_campfire.has_light", true
@@ -370,6 +371,7 @@ function campfire_binder:update( delta )
     self.shutdowned = true
     return
   end
+  self:update_vertexes()
   if ( not self.initialized ) and db.actor then
     self.initialized = true
     xr_logic.initialize_obj(
@@ -515,21 +517,104 @@ function campfire_binder:register_campfire()
       self:find_palki( false )
     end
   end
-  -- self:create_restrictor()
+  self:init_vertexes()
 end
 
 
-function campfire_binder:create_restrictor()
+function campfire_binder:init_vertexes()
   local vertexes = dsh.find_all_vertexes_in_radius(
     self.object:position(), flame_radius
   )
-  for _, vertex_id in ipairs( vertexes ) do
-    level.disable_vertex( vertex_id )
+  if table.getn( vertexes ) > 0 then
+    self.vertexes = {}
+    for _, lvid in ipairs( vertexes ) do
+      self.vertexes[ lvid ] = true
+    end
+    self.disable_vertexes = true
+    self.object:add_feel_touch(
+      flame_radius + 1, self,
+      self.feel_touch_new_delete, self.feel_touch_contact
+    )
+    self.has_feel_touch = true
+    -- log2(
+    --   "[%s]: %s: add_feel_touch: radius[%s]",
+    --   script_name(), self.object:name(), flame_radius + 1
+    -- )
+    self:update_vertexes()
   end
 end
 
 
+function campfire_binder:feel_touch_contact( obj )
+  return obj:is_custom_monster()
+end
+
+
+function campfire_binder:feel_touch_new_delete( obj, is_new )
+  if not obj:alive() then return end
+  if is_new then
+    self.feel_touch_inside[ obj:id() ] = obj
+    if ( not self.disable_vertexes ) and self:is_anybody_inside() then
+      -- log2(
+      --   "[%s]: %s: feel_touch_new: %s",
+      --   script_name(), self.object:name(), obj:name()
+      -- )
+      local vertexes = {}
+      for lvid, _ in pairs( self.vertexes ) do
+        level.enable_vertex( lvid )
+        table.insert( vertexes, lvid )
+      end
+      -- log2(
+      --   "[%s]: %s: enable vertexes: %s",
+      --   script_name(), self.object:name(), table.concat( vertexes, ", " )
+      -- )
+      self.disable_vertexes = true
+    end
+  else
+    self.feel_touch_inside[ obj:id() ] = nil
+    -- log2(
+    --   "[%s]: %s: feel_touch_delete: %s",
+    --   script_name(), self.object:name(), obj:name()
+    -- )
+    self:update_vertexes()
+  end
+end
+
+
+function campfire_binder:is_anybody_inside()
+  for id, obj in pairs( self.feel_touch_inside ) do
+    if self.vertexes[ obj:level_vertex_id() ] and obj:alive() then
+      return true
+    end
+  end
+  return false
+end
+
+
+function campfire_binder:update_vertexes()
+  if not self.disable_vertexes then return end
+  if self:is_anybody_inside()  then return end
+  local vertexes = {}
+  for lvid, _ in pairs( self.vertexes ) do
+    level.disable_vertex( lvid )
+    table.insert( vertexes, lvid )
+  end
+  -- log2(
+  --   "[%s]: %s: disable vertexes: %s",
+  --   script_name(), self.object:name(), table.concat( vertexes, ", " )
+  -- )
+  self.disable_vertexes = false
+end
+
+
 function campfire_binder:net_destroy()
+  if self.has_feel_touch then
+    self.object:remove_feel_touch(
+      self, self.feel_touch_new_delete, self.feel_touch_contact
+    )
+    self.has_feel_touch = false
+    -- log2( "[%s]: %s: remove_feel_touch", script_name(), self.object:name() )
+  end
   local st = db.storage[ self.object:id() ]
   if st.active_scheme then
     xr_logic.issue_event( self.object, st[ st.active_scheme ], "net_destroy" )
@@ -592,13 +677,13 @@ end
 function campfire_binder:switch_flame( ena )
   local flame = self.object
   if ena then
-    self:stop_idle()
+    -- self:stop_idle()
     flame:enable_anomaly()
     self.flame_enabled = true
   else
-    flame:disable_anomaly()
+    flame:disable_anomaly( true )
     self.flame_enabled = false
-    self:start_idle()
+    -- self:start_idle()
   end
 end
 
@@ -855,6 +940,7 @@ end
 
 function koster_palki_binder:update( delta )
   if self.updated then return end
+  local respawned = false
   local sobj = alife():object( self.object:id() )
   if sobj then
     local dist = sobj.position:distance_to( self.object:position() )
@@ -892,6 +978,13 @@ function koster_palki_binder:update( delta )
         end,
         sobj.id
       )
+      respawned = true
+    end
+  end
+  if not respawned then
+    local ps = self.object:get_physics_shell()
+    if ps then
+      ps:set_ignore_dynamic()
     end
   end
   self.updated = true
