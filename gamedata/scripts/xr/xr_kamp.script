@@ -37,7 +37,6 @@ kamps           = {}
 kamp_stalkers   = {}    -- могут ли сталкеры в лагере юзаться игроком.
 -- Объявления итераторов
 deadmansids     = {}          -- кто какой труп оттаскивает
-deadmansidsuses = {}          -- сколько попыток оттащить было сделано
 
 local body_grab_bones = {
   [ clsid.snork_s    ] = "bip01_spine2",
@@ -861,7 +860,7 @@ function CKampManager:init_drop_points()
   self.drop_points = {}
   for _, vertex in ipairs( found ) do
     local pos = level.vertex_position( vertex )
-    if pos:distance_to( point0 ) > 10 then
+    if pos:distance_to( point0 ) > 15 then
       table.insert( self.drop_points, vertex )
     end
   end
@@ -1117,24 +1116,33 @@ function evaluator_see_deadman:evaluate()
   then
     if self.a.choosed_deadman then
       deadmansids[ self.a.choosed_deadman ] = nil
-      self.a.choosed_deadman = nil
-      self.a.reached         = nil
     end
+    self.a.captures        = nil
+    self.a.choosed_deadman = nil
+    self.a.failed          = nil
+    self.a.reached         = nil
     return false
   end
 
   -- Труп себе уже выбрали, не спускаем с него глаз...
   local point0 = level.vertex_position( self.a.kamp.center )
   if self.a.choosed_deadman then
-    local obj = level.object_by_id( self.a.choosed_deadman )
+    local obj
+    if alife():object( self.a.choosed_deadman ) then
+      obj = level.object_by_id( self.a.choosed_deadman )
+    end
     if obj and obj:position():distance_to( point0 ) < 10 then
       ogse_debug.add_active_eval( self.object, script_name(), "see_deadman" )
       return true
     end
     -- если утащен далеко, то ну его нафиг...
     deadmansids[ self.a.choosed_deadman ] = nil
+    self.a.captures        = nil
     self.a.choosed_deadman = nil
+    self.a.failed          = true
     self.a.reached         = nil
+    return false
+  elseif self.a.failed then
     return false
   end
 
@@ -1146,16 +1154,44 @@ function evaluator_see_deadman:evaluate()
       )
     )
   then
+    local clean = true
     for o in npc:memory_visible_objects() do
-      if self:check_item( o:object(), point0 ) then return true end
+      local res = self:check_item( o:object(), point0 )
+      if res then return true end
+      if res == false then clean = false end
     end
-    -- for o in npc:memory_sound_objects() do
-    --   self:check_item( o:object(), point0 )
-    -- end
-    -- for o in npc:not_yet_visible_objects() do
-    --   self:check_item( o:object(), point0 )
-    -- end
-    self.a.see_deadman_t = time_global()
+    if clean then self.a.see_deadman_t = time_global() end
+  end
+  return false
+end
+
+
+function evaluator_see_deadman:choosed_by_somebody( id )
+  local npc_id = deadmansids[ id ]
+  if not npc_id then return false end
+  if alife():object( npc_id ) then
+    local obj = level.object_by_id( npc_id )
+    if obj and obj:alive() and self.a.kamp.npc[ npc_id ] then
+      return true
+    end
+  end
+  return false
+end
+
+
+function tried_too_much( obj, inc )
+  if not obj then return end
+  local binder = obj:binded_object()
+  local t = binder[ script_name() ]
+  if not t then
+    t = {}
+    binder[ script_name() ] = t
+  end
+  if inc then
+    t.tried_too_much = ( t.tried_too_much or 0 ) + 1
+  end
+  if t.tried_too_much and t.tried_too_much >= 5 then
+    return true
   end
   return false
 end
@@ -1166,34 +1202,22 @@ function evaluator_see_deadman:check_item( obj, point0 )
   -- если есть рядом с костром труп сталкера или монстра, его еще
   -- никто не прихватил себе и трупец нигде не застрял, то забираем
   -- его...
-  obj = obj and level.object_by_id( obj:id() )
+  if not ( obj and alife():object( obj:id() ) ) then return end
+  obj = level.object_by_id( obj:id() )
   if
-    obj and obj:is_custom_monster()
-    and ( not obj:alive() )
-    and (
-      not (
-        deadmansids[ obj:id() ]
-        and level.object_by_id( deadmansids[ obj:id() ] )
-        and level.object_by_id( deadmansids[ obj:id() ] ):alive()
-      )
+    not (
+      obj and obj:is_custom_monster()
+      and ( not obj:alive() )
+      and obj:position():distance_to( point0 ) < 10
+      and not tried_too_much( obj )
     )
-    and obj:position():distance_to( point0 ) < 10
-    and npc:accessible( obj:level_vertex_id() )
   then
-    if
-      not ( deadmansidsuses[ obj:id() ] and deadmansidsuses[ obj:id() ] == 3 )
-    then
-      self.a.choosed_deadman = obj:id()
-      self.a.drop_lvid       = self.a.kamp:get_nearest_drop_point( obj )
-      deadmansids[ obj:id() ]     = npc:id()
-      deadmansidsuses[ obj:id() ] = ( deadmansidsuses[ obj:id() ] or 0 ) + 1
-      ogse_debug.add_active_eval(
-        self.object, script_name(), "see_deadman_2"
-      )
-      return true
-    end
+    return
   end
-  return false
+  if self:choosed_by_somebody( obj:id() ) then return false end
+  self.a.pre_choosed_deadman = obj:id()
+  ogse_debug.add_active_eval( self.object, script_name(), "see_deadman_2" )
+  return true
 end
 
 
@@ -1204,10 +1228,19 @@ function evaluator_can_move_deadman:__init( name, storage ) super( nil, name )
 end
 
 function evaluator_can_move_deadman:evaluate()
-  if self.a.reached ~= 1 then return false end
+  if not self.a.choosed_deadman then return false end
+  if not self.a.reached then return false end
+  if not alife():object( self.a.choosed_deadman ) then return false end
   local obj = level.object_by_id( self.a.choosed_deadman )
+  if not obj then return false end
   -- если труп застрял (расстояние увеличилось), то возвращаемся к нему
-  return obj and obj:center():distance_to( self.object:position() ) < 2.1
+  local dist = obj:position():distance_to( self.object:position() )
+    - obj:radius() - self.object:radius()
+  if dist < 1 then
+    return true
+  end
+  self.a.reached = nil
+  return false
 end
 
 
@@ -1370,43 +1403,51 @@ end
 function action_go_to_deadman:initialize()
   action_base.initialize( self )
   local npc = self.object
+  local id  = self.a.pre_choosed_deadman
+  local gi
+  if alife():object( id ) then
+    gi = level.object_by_id( id )
+  end
+  if gi then
+    self.a.choosed_deadman  = gi:id()
+    self.a.drop_lvid        = self.a.kamp:get_nearest_drop_point( gi )
+    deadmansids[ gi:id() ] = npc:id()
+  end
+
   npc:set_desired_position()
   npc:set_desired_direction()
   npc:set_path_type( game_object.level_path )
-  local gi = level.object_by_id( self.a.choosed_deadman )
-  if gi then
-    if not npc:accessible( gi:level_vertex_id() ) then
-      deadmansids[ self.a.choosed_deadman ] = nil
-      self.a.choosed_deadman = nil
-      self.a.reached         = nil
-      return
-    end
-    -- попремся в сторону головы - за шкирятник тащить бум
-    self.a.dest_lvid = gi:level_vertex_id()
-    local bone = body_grab_bones[ gi:clsid() ] == "bip01_l_calf"
-      and "bip01_l_calf" or "bip01_head"
-    local diff = gi:bone_position( bone ):sub(
-      level.vertex_position( self.a.dest_lvid )
-    )
-    local len  = diff:magnitude() * 1.4
-    self.a.dest_lvid = npc:vertex_in_direction( self.a.dest_lvid, diff, len )
-    if not npc:accessible( self.a.dest_lvid ) then
-      self.a.dest_lvid = npc:accessible_nearest(
-        level.vertex_position( self.a.dest_lvid ), vector():set( 0, 0, 0 )
-      )
-    end
-  else
-    self.a.dest_lvid = npc:level_vertex_id()
+
+  -- попремся в сторону головы - за шкирятник тащить бум
+  local bone = body_grab_bones[ gi:clsid() ] == "bip01_l_calf"
+    and "bip01_l_calf" or "bip01_head"
+  local diff = gi:bone_position( bone ):sub( gi:position() )
+  local len  = diff:magnitude() * 1.4
+  local pos  = vector():mad( gi:position(), diff, len )
+  local lvid = level.vertex_id_by_pos( pos )
+  if lvid == INVALID_STORY_ID then
+    lvid = level.vertex_id_by_pos( gi:level_vertex_id(), pos )
   end
-  self.target_id       = self.a.choosed_deadman
-  self.a.reached       = 0
-  self.a.cur_dead_lvid = gi and gi:level_vertex_id()
-  -- пойдем не спеша...
-  state_mgr.set_state( self.object, self.a.def_state_moving )
+  if lvid == INVALID_STORY_ID then
+    lvid = gi:level_vertex_id()
+  end
+  self.target_lvid = lvid
+  self.dest_lvid   = lvid
+  if not npc:accessible( self.dest_lvid ) then
+    self.dest_lvid = npc:accessible_nearest(
+      level.vertex_position( self.target_lvid ), vector():set( 0, 0, 0 )
+    )
+  end
+
+  self.a.failed      = nil
+  self.a.no_loot     = true
+  self.a.reached     = nil
+  self.cur_dead_lvid = gi:level_vertex_id()
   -- на все гулянки в сторону трупа дается 30 секунд, если не успел, то
   -- да ну нафиг заморачиваться :)
-  self.a.go_time_end = time_global() + 30000
-  self.a.captures    = ( self.a.captures or 0 ) + 1
+  self.go_time_end   = time_global() + 30000
+  -- пойдем не спеша...
+  state_mgr.set_state( npc, self.a.def_state_moving )
   xr_sound.set_sound( npc, nil )
   stop_play_sound( npc )
 end
@@ -1414,54 +1455,79 @@ end
 
 function action_go_to_deadman:execute()
   action_base.execute ( self )
-  if self.target_id ~= self.a.choosed_deadman then
-    self:initialize()
-    return
-  end
-  -- вероятно choosed_deadman был сброшен в initialize() из-за того, что его
-  -- level_vertex_id() стал не доступен для этого сталкера
+  -- если initialize() не смог назначить choosed_deadman
   if not self.a.choosed_deadman then return end
   local npc = self.object
-  local gi  = level.object_by_id( self.a.choosed_deadman )
+  local gi
+  if alife():object( self.a.choosed_deadman ) then
+     gi = level.object_by_id( self.a.choosed_deadman )
+  end
+
   -- если уже задолбало дергать труп, а он застрял (дергаем 3 раза),
   -- то нафиг его. так же если какой то мимопроходящий товарищ труп с
   -- места сдвинул - то туда ему и дорога (трупу), а нам он больше не
   -- интересен.
   if
-    self.a.captures == 5 or self.a.go_time_end < time_global()
-    or gi == nil or gi:level_vertex_id() ~= self.a.cur_dead_lvid
+    self.go_time_end < time_global()
+    or ( self.a.captures and self.a.captures == 5 )
+    or (
+      self.timeout and self.timeout < time_global()
+      and self.timeout_lvid == npc:level_vertex_id()
+    )
+    or ( not gi )
+    or gi:level_vertex_id() ~= self.cur_dead_lvid
   then
-    if self.a.choosed_deadman then
-      deadmansids[ self.a.choosed_deadman ] = nil
-      self.a.choosed_deadman = nil
-      self.a.reached         = nil
-    end
-    self.a.captures = nil
-  else
-    npc:set_dest_level_vertex_id( self.a.dest_lvid )
-    -- долгое путешествие до трупа успешно завершилось, ура, товарищи
-    local dist = npc:position():distance_to( gi:center() )
-    if
-      (
-        self.a.dest_lvid and self.a.dest_lvid == npc:level_vertex_id()
-        and dist < 1.7
-      )
-      or dist < 1
-    then
-      self.a.reached = 1
-      npc:set_dest_level_vertex_id( npc:level_vertex_id() )
-    elseif npc:path_completed() then
-      deadmansids[ self.a.choosed_deadman ] = nil
-      self.a.choosed_deadman = nil
-      self.a.reached         = nil
-      self.a.captures        = nil
-    end
+    deadmansids[ self.a.choosed_deadman ] = nil
+    self.a.captures        = nil
+    self.a.choosed_deadman = nil
+    self.a.failed          = true
+    self.a.reached         = nil
+    tried_too_much( gi, true )
+    return
+  end
+
+  if not npc:accessible( self.dest_lvid ) then
+    self.dest_lvid = npc:accessible_nearest(
+      level.vertex_position( self.target_lvid ), vector():set( 0, 0, 0 )
+    )
+  end
+  npc:set_dest_level_vertex_id( self.dest_lvid )
+  -- долгое путешествие до трупа успешно завершилось, ура, товарищи
+  if self.dest_lvid == npc:level_vertex_id() then
+    self.a.reached = true
+--[=[
+  elseif npc:path_completed() then
+    deadmansids[ self.a.choosed_deadman ] = nil
+    self.a.captures        = nil
+    self.a.choosed_deadman = nil
+    self.a.failed          = true
+    self.a.reached         = nil
+    tried_too_much( gi, true )
+--]=]
+  elseif
+    ( not self.timeout )
+    or self.timeout_lvid ~= npc:level_vertex_id()
+  then
+    self.timeout      = time_global() + 5000
+    self.timeout_lvid = npc:level_vertex_id()
   end
 end
 
 
 function action_go_to_deadman:finalize()
   action_base.finalize( self )
+  self.a.failed  = nil
+  self.a.no_loot = nil
+  if self.a.reached then
+    self.a.captures = ( self.a.captures or 0 ) + 1
+  else
+    if self.a.choosed_deadman then
+      deadmansids[ self.a.choosed_deadman ] = nil
+    end
+    self.a.captures        = nil
+    self.a.choosed_deadman = nil
+    self.a.reached         = nil
+  end
 end
 
 
@@ -1475,8 +1541,21 @@ end
 
 function action_moving_deadman:initialize()
   action_base.initialize( self )
-  local npc = self.object
+  local gi
+  if alife():object( self.a.choosed_deadman ) then
+    gi = level.object_by_id( self.a.choosed_deadman )
+  end
+  local ps = gi and gi:get_physics_shell()
+  if not ps then
+    deadmansids[ self.a.choosed_deadman ] = nil
+    self.a.captures        = nil
+    self.a.choosed_deadman = nil
+    self.a.failed          = true
+    self.a.reached         = nil
+    return
+  end
 
+  local npc = self.object
   -- если пушка в руках - прячем, а то тащить неудобно
   if npc:weapon_unstrapped() then
     npc:set_item( object.idle, nil )
@@ -1487,35 +1566,18 @@ function action_moving_deadman:initialize()
   npc:set_mental_state( anim.danger )
   npc:set_body_state( move.crouch )
   npc:movement_enabled( true )
-
-  -- на таскание трупа в грязи даем 30 секунд
-  self.a.time_end  = time_global() + 40000
-  self.force       = vector():set( 0, 0, 0 )
-  -- на приседание рядом с трупом и разворот лицом дадим секунду
-  self.time_drag = time_global() +    1000
-
-  local gi = level.object_by_id( self.a.choosed_deadman )
-  local ps = gi and gi:get_physics_shell()
-  if not ps then
-      deadmansids[ self.a.choosed_deadman ] = nil
-      self.a.choosed_deadman = nil
-      self.a.reached         = nil
-      return
-  end
-
   -- смотри мне в глаза!
   npc:set_sight( gi, false, false, true )
-  -- нужно выбрать косточку для тяги
-  self.bone = body_grab_bones[ gi:clsid() ] or "bip01_spine1"
-  if not ps:get_element_by_bone_name( self.bone ) then
-    self.bone = nil
-  end
-  if not self.bone then
-      deadmansids[ self.a.choosed_deadman ] = nil
-      self.a.choosed_deadman = nil
-      self.a.reached         = nil
-      return
-  end
+
+  -- на таскание трупа в грязи даем 30 секунд
+  self.time_end  = time_global() + 30000
+  -- на приседание рядом с трупом и разворот лицом дадим секунду
+  self.time_drag = time_global() +   500
+
+  self.drop_lvid   = self.a.drop_lvid
+  self.target_lvid = self.a.drop_lvid
+  self.a.failed    = nil
+  self.a.no_loot   = true
 end
 
 
@@ -1523,18 +1585,30 @@ function action_moving_deadman:execute()
   action_base.execute( self )
   if not self.a.choosed_deadman then return end
   local npc = self.object
-  local gi  = level.object_by_id( self.a.choosed_deadman )
+  local gi
+  if alife():object( self.a.choosed_deadman ) then
+    gi = level.object_by_id( self.a.choosed_deadman )
+  end
+
   -- хватит таскать труп - время истекло, пусть другие этим занимаются
-  if self.a.time_end < time_global() then
-    if self.a.choosed_deadman then
-      deadmansids[ self.a.choosed_deadman ] = nil
-      self.a.choosed_deadman = nil
-      self.a.reached         = nil
-    end
+  if
+    self.time_end < time_global()
+    or (
+      self.timeout and self.timeout < time_global()
+      and self.timeout_lvid == npc:level_vertex_id()
+    )
+    or not gi
+  then
+    deadmansids[ self.a.choosed_deadman ] = nil
+    self.a.captures        = nil
+    self.a.choosed_deadman = nil
+    self.a.failed          = true
+    self.a.reached         = nil
+    tried_too_much( gi, true )
     return
   end
-	
-  local dir=gi:position():sub( npc:position() )
+
+  local dir = gi:position():sub( npc:position() )
   dir.y = 0
   npc:set_sight( look.direction, dir, true )
   npc:set_movement_type( move.walk )
@@ -1544,74 +1618,65 @@ function action_moving_deadman:execute()
 
   if self.time_drag > time_global() then return end
 
-  npc:set_dest_level_vertex_id( self.a.drop_lvid )
-  if not self.call then
-    self.call = true
-    npc:set_fastcall( self.move_body, self )
+  if not npc:accessible( self.drop_lvid ) then
+    self.drop_lvid = npc:accessible_nearest(
+      level.vertex_position( self.target_lvid ), vector():set( 0, 0, 0 )
+    )
+  end
+  npc:set_dest_level_vertex_id( self.drop_lvid )
+  if not npc:ph_capture() then
+    npc:ph_capture_object( gi, "bip01_l_hand" )
+    local cap  = self.object:ph_capture()
+    local dist = npc:position():distance_to( gi:position() )
+    if dist > cap.pull_distance then
+      cap.pull_distance = dist
+    end
   end
 
   -- уф! дотащили... всем спасибо, все свободны...
-  if self.a.drop_lvid == npc:level_vertex_id() then
-    if self.a.choosed_deadman then
-      deadmansids[ self.a.choosed_deadman ] = nil
-      self.a.choosed_deadman = nil
-      self.a.reached         = nil
-    end
-  end
-end
-
-
-function action_moving_deadman:move_body()
-  if not ( self.call and self.a.choosed_deadman ) then
-    return true
-  end
-  local gi = level.object_by_id( self.a.choosed_deadman )
-  local ps = gi and gi:get_physics_shell()
-  if not ps then
+  if self.drop_lvid == npc:level_vertex_id() then
     deadmansids[ self.a.choosed_deadman ] = nil
+    self.a.captures        = nil
     self.a.choosed_deadman = nil
+    self.a.failed          = true
     self.a.reached         = nil
-    return true
+  elseif
+    ( not self.timeout )
+    or self.timeout_lvid ~= npc:level_vertex_id()
+  then
+    self.timeout      = time_global() + 5000
+    self.timeout_lvid = npc:level_vertex_id()
   end
-  -- непись сильный - тащит левой рукой за туловище трупа
-  local el = ps:get_element_by_bone_name( self.bone )
-  if not el then
-    deadmansids[ self.a.choosed_deadman ] = nil
-    self.a.choosed_deadman = nil
-    self.a.reached         = nil
-    return true
-  end
-  local dir = self.object:bone_position( "bip01_l_hand" )
-    :sub( gi:bone_position( self.bone ) )
-  local d = vector():set( dir )
-  d.y = 0
-  d = d:magnitude() + 0.45
-  dir:mul( 40 * gi:mass() )
-  dir.y = ( dir.y > 0 and dir.y or 0 ) + 8 * gi:mass() * d + 50
-  self.force:mul( 0.5 )
-  dir:mul( 0.5 )
-  self.force:add( dir )
-  ps:apply_force( 0, gi:mass() * 10, 0 )
-  el:apply_force( self.force.x, self.force.y, self.force.z )
-  return false
 end
 
 
 function action_moving_deadman:finalize()
   action_base.finalize( self )
+  self.a.failed  = nil
+  self.a.no_loot = nil
+  if self.object:ph_capture() then
+    self.object:ph_release_object()
+  end
+  if self.a.reached then
+    if self.a.choosed_deadman then
+      deadmansids[ self.a.choosed_deadman ] = nil
+    end
+    self.a.captures        = nil
+    self.a.choosed_deadman = nil
+    self.a.reached         = nil
+  end
   state_mgr.set_state( self.object, self.a.def_state_moving )
-  self.anim     = nil
-  self.call     = nil
-  self.bone     = nil
 end
 
+
+evid_see_deadman = xr_evaluators_id.stohe_kamp_base + 3
 
 -- Kamp binder
 function add_to_binder( object, ini, scheme, section, storage )
   local properties = {
     [ "kamp_end"         ] = xr_evaluators_id.stohe_kamp_base + 1,
     [ "on_position"      ] = xr_evaluators_id.stohe_kamp_base + 2,
-    [ "see_deadman"      ] = xr_evaluators_id.stohe_kamp_base + 3,
+    [ "see_deadman"      ] = evid_see_deadman,
     [ "can_move_deadman" ] = xr_evaluators_id.stohe_kamp_base + 5,
     [ "contact"          ] = xr_evaluators_id.stohe_meet_base + 1,
     [ "state_mgr_off"    ] = xr_evaluators_id.state_mgr + 3,
