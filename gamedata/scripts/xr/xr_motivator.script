@@ -7,31 +7,22 @@
 -- load
 -- net_spawn
 
-local warn_check_timer = {}
-local snd_check_timer  = {}
-
-
 function look_to_shot( object, who )
-  if object and who then
-    if
-      IsStalker( object )
-      and ( object:alive() and who:alive() )
-      and ( not xr_wounded.is_wounded( object ) )
-      and (
-        ( IsStalker( who ) and object:relation( who ) ~= game_object.friend )
-          or IsMonster( who )
-      )
-    then
-      if object:best_enemy() then
-        local be         = object:best_enemy()
-        local enemy_dist = object:position():distance_to_sqr( be:position() )
-        local who_dist   = object:position():distance_to_sqr( who:position() )
-        if who_dist < enemy_dist then
-          object:set_sight( look.danger, who:bone_position( "bip01_head" ) )
-        end
-      else
+  if not who then return end
+  if
+    ( who:is_actor() or who:is_custom_monster() )
+    and ( object:alive() and who:alive() )
+    and ( not xr_wounded.is_wounded( object ) )
+  then
+    if object:best_enemy() then
+      local be         = object:best_enemy()
+      local enemy_dist = object:position():distance_to( be:position() )
+      local who_dist   = object:position():distance_to( who:position() )
+      if who_dist < enemy_dist then
         object:set_sight( look.danger, who:bone_position( "bip01_head" ) )
       end
+    else
+      object:set_sight( look.danger, who:bone_position( "bip01_head" ) )
     end
   end
 end
@@ -39,7 +30,7 @@ end
 
 function recognize_sound( sound_type )
   -- Выясняем тип звука
-  local sn_t = "NIL"
+  local sn_t
   if bit_and( sound_type, snd_type.weapon ) == snd_type.weapon then
     sn_t = "WPN"
     if bit_and( sound_type, snd_type.weapon_shoot ) == snd_type.weapon_shoot then
@@ -145,194 +136,6 @@ function silent_level()
     return true
   else
     return false
-  end
-end
-
-
-function check_sound( self, who, sound_type, sound_position, sound_power )
-  -- secure and optimize
-  if
-    not (
-      self
-      and who and alife():object( who:id() )
-      and sound_type
-      and sound_position
-      and sound_power
-    )
-  then
-    return
-  end
-
-  local actsch
-  if
-    db.storage[ self:id() ] and db.storage[ self:id() ].active_scheme
-  then
-    actsch = db.storage[ self:id() ].active_scheme
-  end
-
-  if
-    actsch and (
-      actsch == "remark" or actsch == "wounded" or actsch == "actor_dialogs"
-    )
-  then
-    return
-  end
-
-  -- Реакция на звуки --
-  -- Расстояния проверки
-  local who_dist   = 1000
-  local check_dist = 25 * sound_power
-  local who_dist   = self:position():distance_to( who:position() )
-
-  if who_dist > 100 then
-    return
-  end
-
-  -- Отсеиваем свои звуки и звуки друзей
-  if
-    ( who:is_monster() or who:is_stalker() or who:id() == db.actor:id() )
-    and ( who:alive() and self:alive() )
-  then
-    if
-      who:id() == self:id()
-      or ( who:is_car() and self:relation( db.actor ) ~= game_object.enemy )
-      or xr_wounded.is_wounded( self )
-    then
-      return
-    end
-  else
-    return
-  end
-
-  local snd_t = recognize_sound( sound_type )
-  local blow  = hit()
-  blow.power     = 0.001
-  blow.impulse   = 1
-  blow.draftsman = who
-  blow.type      = hit.wound
-  blow.direction = utils.vector_copy_by_val(
-    self:position()
-  ):sub( who:position() )
-
-  -- Если тип задан проверим реакцию на него
-  if snd_t and snd_t ~= "NIL" and not self:best_enemy() then
-    if
-      IsStalker( who ) and self:relation( who ) == game_object.enemy
-      and self:binded_object():enemy_callback( self, who )
-    then
-      if
-        snd_t == "WPN_empty"
-        or snd_t == "WPN_reload"
-        or snd_t == "ITM_drop"
-        or snd_t == "ITM_use"
-      then
-        check_dist = 8 * sound_power
-        who_dist   = self:position():distance_to( who:position() )
-        if who_dist > check_dist then
-          if not silent_level() then
-            if
-              ( not warn_check_timer[ self:id() ] )
-              or warn_check_timer[ self:id() ] < time_global()
-            then
-              local snd_name = nothing_there[
-                math.random( table.getn( nothing_there ) )
-              ]
-              if snd_name and self:character_community() ~= "zombied" then
-                local snd_obj = xr_sound.get_safe_sound_object( snd_name )
-                if snd_obj and not snd_obj:playing() then
-                  self:set_sight( look.point, sound_position )
-                  snd_obj:play_no_feedback(
-                    self, sound_object.s3d, 0, self:position(), 1.0
-                  )
-                  warn_check_timer[ self:id() ] = time_global()
-                    + math.random( 15000, 25000 )
-                end
-              end
-            end
-          end
-          return
-        else                    -- if who_dist > check_dist
-          if not silent_level() then
-            if
-              ( not warn_check_timer[ self:id() ] )
-              or warn_check_timer[ self:id() ] < time_global()
-            then
-              local snd_name = hear_something[
-                math.random( table.getn( hear_something ) )
-              ]
-              if snd_name and self:character_community() ~= "zombied" then
-                local snd_obj = xr_sound.get_safe_sound_object( snd_name )
-                if snd_obj and not snd_obj:playing() then
-                  self:set_sight( look.point, sound_position )
-                  snd_obj:play_no_feedback(
-                    self, sound_object.s3d, 0, self:position(), 1.0
-                  )
-                  warn_check_timer[ self:id() ] = time_global()
-                    + math.random( 5000, 10000 )
-                end
-              end
-            end
-          end
-          self:set_sight( look.point, sound_position )
-          self:set_mental_state( anim.danger )
-          -- self:make_object_visible_somewhen( who )
-        end
-      elseif snd_t == "WPN_shoot" then
-        stop_play_sound( self )
-        self:set_mental_state( anim.danger )
-        self:set_sight( look.point, sound_position )
-        -- self:make_object_visible_somewhen( who )
-      end
-    elseif IsStalker( who ) and self:relation( who ) ~= game_object.enemy then
-      if
-        snd_t == "ATTCK"
-        or snd_t == "BULLET"
-        or snd_t == "DIE"
-        or snd_t == "INJURE"
-      then
-        self:set_sight( look.point, sound_position )
-        self:set_mental_state( anim.danger )
-      end
-    elseif
-      IsMonster( who ) and self:relation( who ) == game_object.enemy
-      and self:binded_object():enemy_callback( self, who )
-    then
-      if who_dist > check_dist then
-        if not silent_level() then
-          if
-            ( not warn_check_timer[ self:id() ] )
-            or warn_check_timer[ self:id() ] < time_global()
-          then
-            local snd_name = nothing_there[
-              math.random( table.getn( nothing_there ) )
-            ]
-            if snd_name and self:character_community() ~= "zombied" then
-              local snd_obj = xr_sound.get_safe_sound_object( snd_name )
-              if snd_obj and not snd_obj:playing() then
-                self:set_sight( look.point, sound_position )
-                snd_obj:play_no_feedback(
-                  self, sound_object.s3d, 0, self:position(), 1.0
-                )
-                warn_check_timer[ self:id() ] = time_global()
-                  + math.random( 15000, 25000 )
-              end
-            end
-          end
-        end
-        return
-      end
-      if snd_t == "MST_step" or snd_t == "MST_talk" then
-        self:set_sight( look.point, sound_position )
-        self:set_mental_state( anim.danger )
-        -- self:make_object_visible_somewhen( who )
-      elseif snd_t == "MST_attack" then
-        self:hit( blow )
-        stop_play_sound( self )
-        self:set_sight( look.point, sound_position )
-        self:set_mental_state( anim.danger )
-        -- self:make_object_visible_somewhen( who )
-      end
-    end
   end
 end
 
@@ -721,33 +524,18 @@ function motivator_binder:hit_callback( obj, amount, local_direction, who, bone_
       self.object, "hit_callback", obj, amount, local_direction, who, bone_index
     )
     if self.object then
-      local drop, err_msg = pcall( xr_wounded.hit_callback, self.object:id() )
-      if not drop then
-        log1( "ERROR: XR_M xr_wounded.hit_call_back pcall 1 FAIL "..self.object:id().." reason: "..tostring( err_msg ) )
-        db.actor:give_game_news( "ВНИМАНИЕ! Произошёл сбой при обработке коолбэка хита по раненому! В лог поступило диагностическое сообщение - сохранитесь, выйдите из игры и скиньте лог KamikaZze!", "ui\\ui_iconsTotal", Frect():set(498,47,83,47),7000, 20000 )
-      end
+      xr_wounded.hit_callback( self.object:id() )
     else
-      local drop, err_msg = pcall( xr_wounded.hit_callback, obj:id() )
-      if not drop then
-        log1( "ERROR: XR_M xr_wounded.hit_call_back pcall 2 FAIL "..obj:id().." reason: "..tostring(err_msg) )
-        db.actor:give_game_news( "ВНИМАНИЕ! Произошёл сбой при обработке коолбэка хита по раненому! В лог поступило диагностическое сообщение - сохранитесь, выйдите из игры и скиньте лог KamikaZze!", "ui\\ui_iconsTotal", Frect():set(498,47,83,47),7000, 20000 )
-      end
+      xr_wounded.hit_callback( obj:id() )
     end
   end
 
-  local warn_timer = time_global()
   if not ogse.is_quest_npc( obj ) then
-    if not warn_check_timer[ obj:id() ] then
-      warn_check_timer[ obj:id() ] = warn_timer + math.random( 1000, 2000 )
-    else
-      if warn_check_timer[ obj:id() ] < warn_timer then
-        drop, err_msg = pcall( look_to_shot, obj, who )
-        if not drop then
-          log1( "ERROR: XR_M look_to_shot pcall FAIL "..obj:id().." reason: "..tostring(err_msg) )
-          db.actor:give_game_news( "ВНИМАНИЕ! Произошёл сбой при обработке звука стрельбы! В лог поступило диагностическое сообщение - сохранитесь, выйдите из игры и скиньте лог KamikaZze!", "ui\\ui_iconsTotal", Frect():set(498,47,83,47),7000, 20000 )
-        end
-        warn_check_timer[ obj:id() ] = warn_timer + math.random( 1000, 2000 )
-      end
+    if
+      ( not self.look_to_shot_t ) or self.look_to_shot_t < time_global()
+    then
+      look_to_shot( self.object, who )
+      self.look_to_shot_t = time_global() + math.random( 1000, 2000 )
     end
   end
 
@@ -879,6 +667,10 @@ function motivator_binder:update( delta )
   end
   self.am:call( "on_npc_update", self.object, delta )
   self.am:call( "on_npc_update." .. self.object:id(), self.object, delta )
+
+  if not self.snd_check_timer then  
+    self.snd_check_timer = time_global() + math.random( 1000, 2000 )
+  end
 end
 
 
@@ -940,20 +732,165 @@ function motivator_binder:load( reader )
 end
 
 
-function motivator_binder:hear_callback( self, who, sound_type, sound_position, sound_power )
-  local snd_timer = time_global()
-  if not snd_check_timer[ self:id() ] then
-    snd_check_timer[ self:id() ] = snd_timer + math.random( 1000, 2000 )
-  else
-    if snd_check_timer[ self:id() ] < snd_timer then
-      local result, err = pcall(
-        check_sound, self, who, sound_type, sound_position, sound_power
-      )
-      if not result then
-        log1( "ERROR: XR_M hear_callback pcall FAIL "..self:id().." reason: "..tostring(err) )
-        db.actor:give_game_news( "ВНИМАНИЕ! Произошёл сбой при обработке коллбэка звука! В лог поступило диагностическое сообщение - сохранитесь, выйдите из игры и скиньте лог KamikaZze!", "ui\\ui_iconsTotal", Frect():set(498,47,83,47),7000, 20000 )
+function motivator_binder:hear_callback( obj, who, sound_type, sound_position, sound_power )
+  if self.snd_check_timer and self.snd_check_timer > time_global() then
+    return
+  end
+  self:check_sound( who, sound_type, sound_position, sound_power )
+  self.snd_check_timer = nil
+end
+
+
+function motivator_binder:check_sound( who, sound_type, sound_position, sound_power )
+  local npc = self.object
+  if
+    not (
+      who and alife():object( who:id() )
+      and who:id() ~= npc:id()
+      and ( who:is_actor() or who:is_custom_monster() ) and who:alive()
+      and ( not npc:best_enemy() )
+      and ( not xr_wounded.is_wounded( npc ) )
+      and sound_type and sound_position and sound_power
+    )
+  then
+    return
+  end
+
+  local who_dist = npc:position():distance_to( who:position() )
+  if who_dist > 100 then
+    return
+  end
+
+  local actsch
+  if db.storage[ npc:id() ] then
+    actsch = db.storage[ npc:id() ].active_scheme
+  end
+
+  if
+    actsch and (
+      actsch == "remark" or actsch == "wounded" or actsch == "actor_dialogs"
+    )
+  then
+    return
+  end
+
+  local snd_t = recognize_sound( sound_type )
+  if not snd_t then return end
+
+  -- Если тип задан проверим реакцию на него
+  if
+    ( who:is_actor() or who:is_stalker() )
+    and xrs_battle_ai.check_is_enemy( npc, who )
+  then
+    if
+      snd_t == "WPN_empty" or snd_t == "WPN_reload"
+      or snd_t == "ITM_drop" or snd_t == "ITM_use"
+    then
+      local check_dist = 8 * sound_power
+      if who_dist > check_dist and not silent_level() then
+        if
+          npc:character_community() ~= "zombied"
+          and (
+            ( not self.warn_check_timer )
+            or self.warn_check_timer < time_global()
+          )
+        then
+          local snd_name = nothing_there[
+            math.random( table.getn( nothing_there ) )
+          ]
+          local snd_obj = xr_sound.get_safe_sound_object( snd_name )
+          if snd_obj and not snd_obj:playing() then
+            npc:set_sight( look.point, sound_position )
+            snd_obj:play_no_feedback(
+              npc, sound_object.s3d, 0, npc:position(), 1.0
+            )
+            self.warn_check_timer = time_global()
+              + math.random( 15000, 25000 )
+          end
+        end
+      else                      -- if who_dist > check_dist
+        if npc:character_community() ~= "zombied" and not silent_level() then
+          if
+            ( not self.warn_check_timer )
+            or self.warn_check_timer < time_global()
+          then
+            local snd_name = hear_something[
+              math.random( table.getn( hear_something ) )
+            ]
+            local snd_obj = xr_sound.get_safe_sound_object( snd_name )
+            if snd_obj and not snd_obj:playing() then
+              npc:set_sight( look.point, sound_position )
+              snd_obj:play_no_feedback(
+                npc, sound_object.s3d, 0, npc:position(), 1.0
+              )
+              self.warn_check_timer = time_global()
+                + math.random( 5000, 10000 )
+            end
+          end
+        end
+        npc:set_sight( look.point, sound_position )
+        npc:set_mental_state( anim.danger )
       end
-      snd_check_timer[ self:id() ] = snd_timer + math.random( 1000, 2000 )
+    elseif snd_t == "WPN_shoot" then
+      stop_play_sound( npc )
+      npc:set_mental_state( anim.danger )
+      npc:set_sight( look.point, sound_position )
+    end
+    return
+  end
+
+  if who:is_actor() or who:is_stalker() then
+    if
+      snd_t == "ATTCK" or snd_t == "BULLET" or snd_t == "DIE" or snd_t == "INJURE"
+    then
+      npc:set_sight( look.point, sound_position )
+      npc:set_mental_state( anim.danger )
+    end
+    return
+  end
+
+  if who:is_monster() and xrs_battle_ai.check_is_enemy( npc, who ) then
+    local check_dist = 25 * sound_power
+    if who_dist > check_dist then
+      if
+        npc:character_community() ~= "zombied"
+        and ( not silent_level() )
+        and (
+          ( not self.warn_check_timer )
+          or self.warn_check_timer < time_global()
+        )
+      then
+        local snd_name = nothing_there[
+          math.random( table.getn( nothing_there ) )
+        ]
+        local snd_obj = xr_sound.get_safe_sound_object( snd_name )
+        if snd_obj and not snd_obj:playing() then
+          npc:set_sight( look.point, sound_position )
+          snd_obj:play_no_feedback(
+            npc, sound_object.s3d, 0, npc:position(), 1.0
+          )
+          self.warn_check_timer = time_global()
+            + math.random( 15000, 25000 )
+        end
+      end
+    else
+      if snd_t == "MST_step" or snd_t == "MST_talk" then
+        npc:set_sight( look.point, sound_position )
+        npc:set_mental_state( anim.danger )
+      elseif snd_t == "MST_attack" then
+        local blow  = hit()
+        blow.power     = 0.001
+        blow.impulse   = 1
+        blow.draftsman = who
+        blow.type      = hit.wound
+        blow.direction = utils.vector_copy_by_val(
+          npc:position()
+        ):sub( who:position() )
+        npc:hit( blow )
+        stop_play_sound( npc )
+        npc:set_sight( look.point, sound_position )
+        self:set_mental_state( anim.danger )
+      end
     end
   end
 end
