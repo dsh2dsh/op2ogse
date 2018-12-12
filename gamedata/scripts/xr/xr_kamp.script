@@ -122,61 +122,14 @@ function get_my_kamp( npc, path, scheme, radius )
 end
 
 
-function get_pos( center, dist, allow_sector )
-  local ai_step      = 0.7 -- шаг AI сетки
-  local math_pi_180  = 180 / math.pi
-  local pi2          = math.pi * 2
-
-  local anomalies    = amk_anoms.get_anomaly_list_for_pos(
-    level.vertex_position( center ), dist
-  )
-  local dir          = vector():set( 1, 0, 0 ):normalize()
-
-  -- итератор вращения направления
-  local rotate_angle = math.asin( ai_step / dist )
-  local cur_angle    = 0
-  local found, seen  = {}, {}
-  while cur_angle < pi2 do
-    local good_angle
-    if allow_sector then
-      good_angle = false
-      for i = 1, table.getn( allow_sector ), 2 do
-        if
-          cur_angle >= allow_sector[ i ]
-          and cur_angle <= allow_sector[ i + 1 ]
-        then
-          good_angle = true
-          break
-        end
-      end
-    else
-      good_angle = true
+function near_anomaly( anomalies, pos )
+  for _, anom in ipairs( anomalies ) do
+    local dist = pos:distance_to( anom.pos ) - anom.radius
+    if dist < 5 then
+      return true
     end
-    local vertex = level.vertex_in_direction( center, dir, dist )
-    if
-      good_angle and vertex ~= center
-      and level.is_accessible_vertex_id( vertex )
-      and not seen[ vertex ]
-    then
-      local pos       = level.vertex_position( vertex )
-      local near_anom = false
-      for _, anom in ipairs( anomalies ) do
-        local dist = pos:distance_to( anom.pos ) - anom.radius
-        if dist < 5 then
-          near_anom = true
-          break
-        end
-      end
-      if not near_anom then
-        table.insert( found, vertex )
-        seen[ vertex ] = true
-      end
-    end
-    -- поворачиваем направление поиска
-    cur_angle = cur_angle + rotate_angle
-    dir       = vector_rotate_y( dir, rotate_angle * math_pi_180 )
   end
-  return found
+  return false
 end
 
 
@@ -186,6 +139,7 @@ function CKampManager:__init( name, level_vertex_id, scheme, min_radius, src_kam
   self.scheme      = scheme
   self.kamp_name   = name
   self.center      = level_vertex_id
+  self.center_point = level.vertex_position( level_vertex_id )
   self.min_radius  = math.max( ( min_radius or 2 ), 2 )
   self.npc         = {}
   self.population  = 0
@@ -196,12 +150,15 @@ function CKampManager:__init( name, level_vertex_id, scheme, min_radius, src_kam
   self.timeout     = table.clone( xr_kamp_data.timeout )
   self.kamp_states = table.clone( xr_kamp_data.kamp_states )
   self.trans_kamp  = xr_kamp_data.trans_kamp
+  self.drop_dist_min = 10
+  self.drop_dist_mid = 15
+  self.drop_dist_max = 20
+  self.drop_height_max = 1.5
   -- Хранилище для режиссера лагеря. Режиссерем является сталкер,
   -- затеявший необычное поведение.
   self.director    = nil
   self:find_campfire()
   self:init_sectors()
-  self:init_drop_points()
   self:init_seats()
   self.seats_assigned = false
   if src_kamp then
@@ -229,17 +186,106 @@ function CKampManager:find_campfire()
     level.vertex_position( self.center ), 4
   )
   if self.campfire then
+    self.center_point = self.campfire.object:position()
     local vert_ok = level.vertex_id_by_pos( self.campfire.object:position() )
-    if vert_ok == INVALID_STORY_ID then
+    if not level.valid_vertex_id( vert_ok ) then
       vert_ok = level.vertex_id_by_pos(
         self.campfire.object:level_vertex_id(),
         self.campfire.object:position()
       )
     end
-    if vert_ok ~= INVALID_STORY_ID then
+    if level.valid_vertex_id( vert_ok ) then
       self.center = vert_ok
     end
   end
+end
+
+
+function CKampManager:get_pos( dist, allow_sector, min_dist )
+  local ai_step      = 0.7 -- шаг AI сетки
+  local math_pi_180  = 180 / math.pi
+  local pi2          = math.pi * 2
+
+  local center       = level.vertex_position( self.center )
+  local anomalies    = amk_anoms.get_anomaly_list_for_pos( center, dist )
+  local dir          = vector():set( 1, 0, 0 ):normalize()
+
+  -- итератор вращения направления
+  local rotate_angle = math.asin( ai_step / dist )
+  local cur_angle    = 0
+  local found, seen  = {}, {}
+  while cur_angle < pi2 do
+    local good_angle
+    if allow_sector then
+      good_angle = false
+      for i = 1, table.getn( allow_sector ), 2 do
+        if
+          cur_angle >= allow_sector[ i ]
+          and cur_angle <= allow_sector[ i + 1 ]
+        then
+          good_angle = true
+          break
+        end
+      end
+    else
+      good_angle = true
+    end
+    local vertex
+    if min_dist then
+      local d = dist
+      while d > min_dist do
+        local lvid = level.vertex_id_by_pos( vector():mad( center, dir, d ) )
+        if level.is_accessible_vertex_id( lvid ) then
+          if seen[ lvid ] ~= nil then
+            break
+          elseif near_anomaly( anomalies, level.vertex_position( lvid ) ) then
+            seen[ lvid ] = false
+          else
+            vertex = lvid
+            break
+          end
+        end
+        d = d - ai_step
+      end
+    elseif good_angle then
+      local start_dist = 1
+      local stop_dist  = math.min( self.min_radius, dist )
+      local start_lvid
+      while start_dist < stop_dist do
+        start_lvid = level.vertex_id_by_pos(
+          vector():mad( self.center_point, dir, start_dist )
+        )
+        if level.valid_vertex_id( start_lvid ) then
+          break
+        end
+        start_dist = start_dist + ai_step
+      end
+      if start_lvid and level.valid_vertex_id( start_lvid ) then
+        local start_pos   = level.vertex_position( start_lvid )
+        local center_dist = start_pos:distance_to( self.center_point )
+        local lvid = level.vertex_in_direction(
+          start_lvid, dir, dist - center_dist
+        )
+        if lvid ~= start_lvid and level.is_accessible_vertex_id( lvid ) then
+          if seen[ lvid ] == nil then
+            if near_anomaly( anomalies, level.vertex_position( lvid ) ) then
+              seen[ lvid ] = false
+            else
+              vertex = lvid
+            end
+          end
+        end
+      end
+    end
+    if vertex then
+      table.insert( found, vertex )
+      seen[ vertex ] = true
+    end
+    -- поворачиваем направление поиска
+    cur_angle = cur_angle + rotate_angle
+    dir       = vector_rotate_y( dir, rotate_angle * math_pi_180 )
+  end
+  return found
 end
 
 
@@ -854,23 +900,16 @@ function CKampManager:decreasePops( npc )
 end
 
 
-function CKampManager:init_drop_points()
-  local found  = get_pos( self.center, 20 )
-  local point0 = level.vertex_position( self.center )
-  self.drop_points = {}
-  for _, vertex in ipairs( found ) do
-    local pos = level.vertex_position( vertex )
-    if pos:distance_to( point0 ) > 15 then
-      table.insert( self.drop_points, vertex )
-    end
-  end
-  if table.getn( self.drop_points ) == 0 and table.getn( found ) > 0 then
-    self.drop_points = found
-  end
-end
-
-
 function CKampManager:get_nearest_drop_point( obj )
+  if not self.drop_points then
+    self.drop_points = self:get_pos(
+      self.drop_dist_max, false, self.drop_dist_mid
+    )
+    ASSERT(
+      table.getn( self.drop_points ) > 0,
+      "[%s]: %s: empty drop_points", script_name(), self.kamp_name
+    )
+  end
   local obj_pos = obj:position()
   table.sort(
     self.drop_points,
@@ -903,8 +942,8 @@ function CKampManager:init_seats()
   self.seats = {}
   local ai_step = 0.7 -- шаг AI сетки
   local dist    = self.min_radius
-  while dist < 15 do
-    local found = get_pos( self.center, dist, self.allow_sector )
+  while dist < self.drop_dist_mid do
+    local found = self:get_pos( dist, self.allow_sector )
     local seats = {}
     for _, vertex in ipairs( found ) do
       table.insert( seats, {
@@ -1078,14 +1117,17 @@ function evaluator_on_position:evaluate()
   elseif self.a.updates_passed < 20 then
     self.a.updates_passed = self.a.updates_passed + 1
   end
+  if not self.a.pos_vertex then return false end
   if
     self.object:level_vertex_id() == self.a.pos_vertex
+--[=[
     or (
       self.a.pos_vertex and self.object:path_completed()
       and level.vertex_position( self.a.pos_vertex ):distance_to_sqr(
         self.object:position()
       ) < 8
     )
+--]=]
   then
     if self.a.updates_passed < 10 then
       return false
@@ -1108,12 +1150,7 @@ end
 function evaluator_see_deadman:evaluate()
   local npc = self.object
   -- Есть дела поважнее, чем трупы складировать...
-  if
-    not (
-      xr_logic.is_active( self.object, self.a )
-      and table.getn( self.a.kamp.drop_points ) > 0
-    )
-  then
+  if not xr_logic.is_active( self.object, self.a ) then
     if self.a.choosed_deadman then
       deadmansids[ self.a.choosed_deadman ] = nil
     end
@@ -1135,7 +1172,11 @@ function evaluator_see_deadman:evaluate()
     if alife():object( self.a.choosed_deadman ) then
       obj = level.object_by_id( self.a.choosed_deadman )
     end
-    if obj and obj:position():distance_to( point0 ) < 10 then
+    if
+      obj
+      and obj:position():distance_to( point0 ) < self.a.kamp.drop_dist_min
+      and math.abs( point0.y - obj:position().y ) < self.a.kamp.drop_height_max
+    then
       ogse_debug.add_active_eval( self.object, script_name(), "see_deadman" )
       return true
     end
@@ -1240,7 +1281,8 @@ function evaluator_see_deadman:check_item( obj, point0 )
     not (
       obj and obj:is_custom_monster()
       and ( not obj:alive() )
-      and obj:position():distance_to( point0 ) < 10
+      and obj:position():distance_to( point0 ) < self.a.kamp.drop_dist_min
+      and math.abs( point0.y - obj:position().y ) < self.a.kamp.drop_height_max
       and not tried_too_much( obj )
     )
   then
@@ -1265,9 +1307,14 @@ function evaluator_can_move_deadman:evaluate()
   if not alife():object( self.a.choosed_deadman ) then return false end
   local obj = level.object_by_id( self.a.choosed_deadman )
   if not obj then return false end
+  local npc = self.object
+  if not npc:ph_capture() then return true end
+  if npc:ph_capture().e_state == ph_capture.pulling then
+    return true
+  end
   -- если труп застрял (расстояние увеличилось), то возвращаемся к нему
-  local dist = obj:position():distance_to( self.object:position() )
-    - obj:radius() - self.object:radius()
+  local dist = obj:position():distance_to( npc:position() )
+    - obj:radius() - npc:radius()
   if dist < 1 then
     return true
   end
@@ -1289,6 +1336,9 @@ function action_go_position:initialize()
   action_base.initialize( self )
   self.object:set_desired_position()
   self.object:set_desired_direction()
+  self.object:set_detail_path_type( move.curve )
+  self.object:set_path_type( game_object.level_path )
+  state_mgr.set_state( self.object, self.a.def_state_moving )
   self.a.pos_vertex = nil
 end
 
@@ -1304,25 +1354,8 @@ function action_go_position:execute()
   if not ( self.a.updates_passed and self.a.updates_passed >= 10 ) then
     return
   end
-  local target_vertex = self.a.kamp:getDestVertex( self.object )
-  if target_vertex and self.a.pos_vertex ~= target_vertex then
-    self.a.pos_vertex = target_vertex
-    self.object:set_dest_level_vertex_id( self.a.pos_vertex )
-    local pp  = level.vertex_position( self.a.kamp.center ):add(
-      vector():set(
-        math.random( -12, 12 ) / 10,
-        0,
-        math.random( -12, 12 ) / 10
-      )
-    )
-    local dir = vector():sub(
-      pp, level.vertex_position( self.a.pos_vertex )
-    )
-    self.object:set_desired_direction( dir )
-    self.object:set_detail_path_type( move.curve )
-    self.object:set_path_type( game_object.level_path )
-    state_mgr.set_state( self.object, self.a.def_state_moving )
-  end
+  self.a.pos_vertex = self.a.kamp:getDestVertex( self.object )
+  self.object:set_dest_level_vertex_id( self.a.pos_vertex )
 end
 
 
@@ -1331,7 +1364,7 @@ function action_go_position:finalize()
 end
 
 
---' Просто сидит и втыкает
+-- Просто сидит и втыкает
 class "action_wait" ( action_base )
 function action_wait:__init( npc_name, action_name, storage)
   super( nil, action_name )
@@ -1365,29 +1398,21 @@ function action_wait:execute()
   if state == nil then
     state = "wait"
   end
-  --' повернуть его лицом к центру
+  -- повернуть его лицом к центру
+  local t = {}
+  if self.a.kamp.campfire then
+    t.look_object   = self.a.kamp.campfire.object
+  else
+    t.look_position = level.vertex_position( self.a.kamp.center )
+  end
   state_mgr.set_state(
-    self.object, state, nil, nil,
-    { look_position = level.vertex_position( self.a.kamp.center ) },
-    nil, nil, { subanim = substate }
+    self.object, state, nil, nil, t, nil, nil, { subanim = substate }
   )
   xr_sound.set_sound( self.object, sound )
 end
 
 
 function action_wait:finalize()
---[=[
-  -- убираем сразу звук гитары
-  local stop_sound
-  for _, s in ipairs({ "guitar_a", "harmonica_a", "balalaika_a" }) do
-    local obj = self.object:object( s )
-    if obj and obj:attachable_item_enabled() then
-      stop_sound = true
-      break
-    end
-  end
-  xr_sound.set_sound( self.object, nil, stop_sound )
---]=]
   if self.a.kamp_user then
     self.a.kamp:decreasePops( self.object )
     self.a.kamp_user = false
@@ -1457,10 +1482,10 @@ function action_go_to_deadman:initialize()
   local len  = diff:magnitude() * 1.4
   local pos  = vector():mad( gi:position(), diff, len )
   local lvid = level.vertex_id_by_pos( pos )
-  if lvid == INVALID_STORY_ID then
+  if not level.valid_vertex_id( lvid ) then
     lvid = level.vertex_id_by_pos( gi:level_vertex_id(), pos )
   end
-  if lvid == INVALID_STORY_ID then
+  if not level.valid_vertex_id( lvid ) then
     lvid = gi:level_vertex_id()
   end
   self.target_lvid = lvid
@@ -1528,7 +1553,7 @@ function action_go_to_deadman:execute()
   end
   npc:set_dest_level_vertex_id( self.dest_lvid )
   -- долгое путешествие до трупа успешно завершилось, ура, товарищи
-  if self.dest_lvid == npc:level_vertex_id() then
+  if npc:path_completed() or self.dest_lvid == npc:level_vertex_id() then
     self.a.reached = true
 --[=[
   elseif npc:path_completed() then
@@ -1659,7 +1684,6 @@ function action_moving_deadman:execute()
       level.vertex_position( self.target_lvid ), vector():set( 0, 0, 0 )
     )
   end
-  npc:set_dest_level_vertex_id( self.drop_lvid )
   if not npc:ph_capture() then
     npc:ph_capture_object( gi, "bip01_l_hand" )
     local cap  = self.object:ph_capture()
@@ -1667,10 +1691,16 @@ function action_moving_deadman:execute()
     if dist > cap.pull_distance then
       cap.pull_distance = dist
     end
+    cap.hard_mode = true
+    -- cap.capture_force = 100000
+    -- cap.pull_force    = 100000
+  elseif npc:ph_capture().e_state == ph_capture.pulling then
+    return
   end
 
+  npc:set_dest_level_vertex_id( self.drop_lvid )
   -- уф! дотащили... всем спасибо, все свободны...
-  if self.drop_lvid == npc:level_vertex_id() then
+  if npc:path_completed() or self.drop_lvid == npc:level_vertex_id() then
     -- log2(
     --   "[%s]: %s: reset 2 in action_moving_deadman:execute(): gi[%s]",
     --   script_name(), self.object:name(),
