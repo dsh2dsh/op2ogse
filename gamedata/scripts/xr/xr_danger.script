@@ -27,7 +27,7 @@ local engage_after_update = 5
 local count_update        = {}  -- Счетчик апдейтов
 
 local always_ignore_danger_from = {
-  m_car = true
+  [ "m_car" ] = true
 }
 
 
@@ -46,6 +46,18 @@ function evaluator_danger:__init( name, storage, npc ) super( nil, name )
 end
 
 
+local bd_types = {
+  [ danger_object.attack_sound    ] = "att_snd",
+  [ danger_object.attacked        ] = "attckd",
+  [ danger_object.bullet_ricochet ] = "bul_ric",
+  [ danger_object.enemy_sound     ] = "en_snd",
+  [ danger_object.entity_attacked ] = "ent_att",
+  [ danger_object.entity_corpse   ] = "ent_crps",
+  [ danger_object.entity_death    ] = "ent_dth",
+  [ danger_object.grenade         ] = "gren",
+}
+
+
 function evaluator_danger:evaluate()
   write_log( "!!XR_DANGER_1 [%s]", self.object:name() )
   if
@@ -60,8 +72,11 @@ function evaluator_danger:evaluate()
   end
   if not self.object:alive() then return false end
 
-  if self.mgr == nil then
-    self.mgr = self.object:motivation_action_manager()
+  write_log( "!!XR_DANGER_21 [%s]", self.object:name() )
+  -- Отсеиваем тяжелораненых
+  if xr_wounded.is_heavy_wounded_by_id( self.object:id() ) then
+    write_log( "!!XR_DANGER_WOUNDED [%s]", self.object:name() )
+    return false
   end
 
   write_log( "!!XR_DANGER_2 [%s]", self.object:name() )
@@ -75,34 +90,15 @@ function evaluator_danger:evaluate()
   local best_danger = self.object:best_danger()
   write_log( "!!XR_DANGER_3 [%s]", self.object:name() )
   -- проверка на денжер.
-  if best_danger == nil then
+  if not best_danger then
     self.danger_time = nil
     write_log( "!!XR_DANGER_NOBD [%s]", self.object:name() )
     return false
   end
 
   write_log( "!!XR_DANGER_4 [%s]", self.object:name() )
-  local active_scheme      = db.storage[ self.object:id() ].active_scheme
   local best_danger_object = best_danger:object()
   local bd_type            = best_danger:type()
-  local type_to_show       = ""
-  if bd_type == danger_object.attack_sound then
-    type_to_show = "att_snd"
-  elseif bd_type == danger_object.bullet_ricochet then
-    type_to_show = "bul_ric"
-  elseif bd_type == danger_object.grenade then
-    type_to_show = "gren"
-  elseif bd_type == danger_object.entity_corpse then
-    type_to_show = "ent_crps"
-  elseif bd_type == danger_object.entity_attacked then
-    type_to_show = "ent_att"
-  elseif bd_type == danger_object.attacked then
-    type_to_show = "attckd"
-  elseif bd_type == danger_object.enemy_sound then
-    type_to_show = "en_snd"
-  elseif bd_type == danger_object.entity_death then
-    type_to_show = "ent_dth"
-  end
 
   write_log( "!!XR_DANGER_5 [%s]", self.object:name() )
   if
@@ -125,13 +121,14 @@ function evaluator_danger:evaluate()
 
   write_log( "!!XR_DANGER_8 [%s]", self.object:name() )
 
-  local is_monster_obj = IsMonster( best_danger_object )
-  local is_stalker_obj = IsStalker( best_danger_object )
+  local is_monster_obj = best_danger_object:is_monster()
+  local is_stalker_obj = best_danger_object:is_stalker()
+    or best_danger_object:is_actor()
   local is_still_alive = best_danger_object:alive()
 
   write_log( "!!XR_DANGER_9 [%s]", self.object:name() )
   if is_monster_obj or is_stalker_obj then
-    if is_still_alive == false and bd_type ~= danger_object.entity_corpse then
+    if ( not is_still_alive ) and bd_type ~= danger_object.entity_corpse then
       return false
     end
   else
@@ -179,20 +176,16 @@ function evaluator_danger:evaluate()
   write_log( "!!XR_DANGER_12" )
   -- Проверка на запрещенный денжер от актера
   if
-    best_danger_object ~= nil
-    and ( db.actor and best_danger_object:id() == db.actor:id() )
+    best_danger_object:is_actor()
     and (
       bd_type == danger_object.attack_sound
       or bd_type == danger_object.bullet_ricochet
     )
+    and ( not self.object:best_enemy() )
+    and not xrs_battle_ai.check_is_enemy( self.object, best_danger_object )
   then
-    if
-      db.actor and self.object:best_enemy() == nil
-      and self.object:relation( db.actor ) ~= game_object.enemy
-    then
-      write_log( "!!XR_DANGER_ACTOR [%s]", self.object:name() )
-      return false
-    end
+    write_log( "!!XR_DANGER_ACTOR [%s]", self.object:name() )
+    return false
   end
 
   -- если тип опасности = звук атаки тогда
@@ -208,13 +201,7 @@ function evaluator_danger:evaluate()
   then
     if
       is_stalker_obj
-      and (
-        best_danger_object:character_community() == self.object:character_community() 
-        or (
-          self.object:relation( best_danger_object ) ~= game_object.enemy
-          and best_danger_object:relation( self.object ) ~= game_object.enemy
-        )
-      )
+      and not xrs_battle_ai.check_is_enemy( self.object, best_danger_object )
     then
       if
         ( not best_danger_object:best_enemy() )
@@ -246,8 +233,8 @@ function evaluator_danger:evaluate()
         elseif
           best_danger_object_test
           and (
-            IsStalker( best_danger_object_test )
-              or IsMonster( best_danger_object_test )
+            best_danger_object_test:is_actor()
+            or best_danger_object_test:is_custom_monster()
           )
           and not best_danger_object_test:alive()
         then
@@ -272,12 +259,9 @@ function evaluator_danger:evaluate()
     end
     if
       is_stalker_obj
-      and best_danger_object:id() ~= db.actor:id()
-      and (
-        best_danger_object:character_community() == self.object:character_community()
-        or self.object:relation( best_danger_object ) ~= game_object.enemy
-      )
+      and ( not best_danger_object:is_actor() )
       and self.object:see( best_danger_object )
+      and not xrs_battle_ai.check_is_enemy( self.object, best_danger_object )
     then
       local killer = dsh_deadmans.is_fresh_deadman(
         best_danger_object:id()
@@ -296,10 +280,8 @@ function evaluator_danger:evaluate()
             )
           )
           and enemy and enemy:alive()
-          and ( IsStalker( enemy ) or IsMonster( enemy ) )
-          and (
-            not ( IsStalker( enemy ) and xr_wounded.is_wounded( enemy ) )
-          )
+          and ( enemy:is_actor() or enemy:is_custom_monster() )
+          and ( not ( enemy:is_stalker() and xr_wounded.is_wounded( enemy ) ) )
           and xrs_battle_ai.check_is_enemy( self.object, enemy )
         then
           if not already_noticed[ self.object:id() ] then
@@ -342,12 +324,10 @@ function evaluator_danger:evaluate()
   --' Игнорим денжеры от своих.
   if
     is_stalker_obj
-    and best_danger_object:character_community() == self.object:character_community()
+    and not xrs_battle_ai.check_is_enemy( self.object, best_danger_object )
   then
-    if self.object:relation( best_danger_object ) ~= game_object.enemy then
-      write_log( "!!XR_DANGER_FRIENDS [%s]", self.object:name() )
-      return false
-    end
+    write_log( "!!XR_DANGER_FRIENDS [%s]", self.object:name() )
+    return false
   end
 
   write_log( "!!XR_DANGER_14 [%s]", self.object:name() )
@@ -360,10 +340,7 @@ function evaluator_danger:evaluate()
       write_log( "!!XR_DANGER_ZOM_G [%s]", self.object:name() )
       return false
     end
-    if
-      self.a and self.a.ignore_types
-      and self.a.ignore_types[ "grenade" ] == true
-    then
+    if self.a and self.a.ignore_types and self.a.ignore_types.grenade then
       write_log( "!!XR_DANGER_IGNORE_GREN [%s]", self.object:name() )
       return false
     end
@@ -372,9 +349,7 @@ function evaluator_danger:evaluate()
     or bd_type == danger_object.attacked
   then
     if
-      (
-        self.a and self.a.ignore_types and self.a.ignore_types[ "hit" ] == true
-      )
+      ( self.a and self.a.ignore_types and self.a.ignore_types.hit )
       or (
         is_stalker_obj
         and self.object:relation( best_danger_object ) == game_object.friend
@@ -396,7 +371,7 @@ function evaluator_danger:evaluate()
       return false
     end
     if
-      self.a and self.a.ignore_types and self.a.ignore_types[ "sound" ] == true
+      self.a and self.a.ignore_types and self.a.ignore_types.sound
     then
       write_log( "!!XR_DANGER_IGNORE_SOUND [%s]", self.object:name() )
       return false
@@ -405,30 +380,31 @@ function evaluator_danger:evaluate()
 
   write_log( "!!XR_DANGER_16 [%s]", self.object:name() )
   -- отсеиваем по настройке combat_ignore/danger
-  local bd_obj = best_danger:object()
-  if bd_obj and ( IsMonster( bd_obj ) or IsStalker( bd_obj ) ) then
-    if not xrs_battle_ai.check_is_enemy( self.object, bd_obj ) then
+  if is_monster_obj then
+    if not xrs_battle_ai.check_is_enemy( self.object, best_danger_object ) then
       write_log( "!!XR_DANGER_IGNORE [%s]", self.object:name() )
       return false
     end
   end
 
+--[=[
   write_log( "!!XR_DANGER_17 [%s]", self.object:name() )
   -- Отсеиваем дружественные туррели.
   if
     bd_type == danger_object.attack_sound
-    and self.object:best_enemy() == nil
+    and ( not self.object:best_enemy() )
     and turret_mgun.is_friendly_turret(
       self.object, best_danger_object, best_danger:position()
-                                      )
+    )
   then
     write_log( "!!XR_DANGER_TURRET [%s]", self.object:name() )
     return false
   end
+--]=]
 
   write_log( "!!XR_DANGER_18 [%s]", self.object:name() )
   -- Отсеиваем по дистанции
-  if check_danger_distance( self.object, best_danger ) == false then
+  if not check_danger_distance( self.object, best_danger ) then
     return false
   end
 
@@ -448,15 +424,9 @@ function evaluator_danger:evaluate()
     return false
   end
 
-  write_log( "!!XR_DANGER_21 [%s]", self.object:name() )
-  -- Отсеиваем тяжелораненых
-  if xr_wounded.is_heavy_wounded_by_id( self.object:id() ) then
-    write_log( "!!XR_DANGER_WOUNDED [%s]", self.object:name() )
-    return false
-  end
-
   write_log( "!!XR_DANGER_22 [%s]", self.object:name() )
   -- Денжер для снайпера
+  local active_scheme = db.storage[ self.object:id() ].active_scheme
   if active_scheme == "camper" then
     if best_danger:type() == danger_object.grenade then
       self.danger_time = best_danger:time()
@@ -478,12 +448,13 @@ function evaluator_danger:evaluate()
       if
         check_danger_inertion_time(
           self.object, best_danger, passed_time
-        ) == true
+        )
       then
         write_log( "!!XR_DANGER_INERTION_1 [%s]", self.object:name() )
+        local type_to_show = bd_types[ bd_type ] or ""
         ogse_debug.add_active_danger(
           self.object, script_name(),
-          "dan_time_(" .. type_to_show .. ")[" .. passed_time .. "]"
+          string.format( "dan_time_(%s)[%s]", type_to_show, passed_time )
         )
         return true
       else
@@ -598,7 +569,7 @@ function check_danger_inertion_time( npc, danger, passed_time )
   local bd_type         = danger:type()
   if not bd_type then return false end
 
-  if danger_settings ~= nil then
+  if danger_settings then
     if bd_type == danger_object.grenade then
       if danger_settings.danger_inertion_time_grenade then
         if danger_settings.danger_inertion_time_grenade <= passed_time then
@@ -743,13 +714,7 @@ function check_danger_distance( npc, danger )
   if not bd_type then return false end
 
   local danger_distance_sqr = danger:position():distance_to_sqr( npc:position() )
-  if
-    ( not danger_distance_sqr ) or type( danger_distance_sqr ) ~= "number"
-  then
-    return false
-  end
-
-  if danger_settings ~= nil then
+  if danger_settings then
     if danger_distance_sqr and danger_settings.ignore_distance then
       if danger_distance_sqr >= danger_settings.ignore_distance then
         return false
