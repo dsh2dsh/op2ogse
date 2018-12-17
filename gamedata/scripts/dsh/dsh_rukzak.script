@@ -910,7 +910,7 @@ function rukzak_item:__init( name, cond, cnt ) super()
   local cr = 216
   local cg = 186
   local cb = 140
-  self:SetAutoDelete( false )
+  self:SetAutoDelete( true )
 
   self.item_cnt = CUIStatic()
   self.item_cnt:SetAutoDelete( true )
@@ -942,7 +942,6 @@ end
 
 class "ui_rukzak_other" ( CUIWindow )
 function ui_rukzak_other:__init() super() end
-function ui_rukzak_other:__finalize()     end
 
 
 function ui_rukzak_other:InitControls( x, y, xml, handler )
@@ -959,7 +958,6 @@ end
 
 class "ui_rukzak_our" ( CUIWindow )
 function ui_rukzak_our:__init() super() end
-function ui_rukzak_our:__finalize()     end
 
 
 function ui_rukzak_our:InitControls( x, y, xml, handler )
@@ -991,7 +989,6 @@ function ui_rukzak:__init( owner_id ) super()
     self:FillOurList()
   end
 end
-function ui_rukzak:__finalize() end
 
 
 function ui_rukzak:InitControls()
@@ -1262,8 +1259,8 @@ function ui_rukzak:move_from_other( ui_item )
     ui_item.item_cnt:SetText( item.count )
   else
     local pos = self.ui_list_other:GetItemPos( ui_item )
-    self.ui_list_other:RemoveItem( pos )
     self.index_other[ item.key ] = nil
+    self.ui_list_other:RemoveItem( pos )
     if     item.section == "amk_metka" then
       if level.map_has_object_spot( self.owner_id, "habar_location" ) == 1 then
         level.map_remove_object_spot( self.owner_id, "habar_location" )
@@ -1323,8 +1320,8 @@ function ui_rukzak:move_from_our( ui_item )
     )
   else
     local pos = self.ui_list_our:GetItemPos( ui_item )
-    self.ui_list_our:RemoveItem( pos )
     self.index_our[ item.key ] = nil
+    self.ui_list_our:RemoveItem( pos )
     size = 0
   end
   ogse.remove_item_from_inventory( obj )
@@ -1390,18 +1387,24 @@ function ui_rukzak:get_selected_item()
 end
 
 
+local inv_close_snd = sound_object( "interface\\inv_close" )
+
 function ui_rukzak:on_quit()
   if self.changed then
     save_rukzak( self.owner_id, self.items_other )
   end
   if self.weight_timer then self.weight_timer:stop() end
-  sound_object( "interface\\inv_close" ):play( db.actor, 0, sound_object.s2d )
   self:GetHolder():start_stop_menu( self, true )
-  self.index_other = nil
-  self.index_our   = nil
+  self:clear_all_lists()
+  self.ui_list_other = nil
+  self.ui_list_our   = nil
   self:dsh_unregister_self()
   active_ui_rukzak = false
   db.actor:restore_weapon()
+  inv_close_snd:play( db.actor, 0, sound_object.s2d )
+  dsh.exec_on_update(
+    function() collectgarbage( "collect" ) end
+  )
 end
 
 
@@ -1505,6 +1508,8 @@ end
 
 
 function ui_rukzak:clear_all_lists()
+  self.index_other = {}
+  self.index_our   = {}
   self.ui_list_other:RemoveAll()
   self.ui_list_our:RemoveAll()
 end
@@ -1662,18 +1667,15 @@ function ui_rukzak:show_item_descr( ui_item )
     self.item_icon = CUIStatic()
     self.item_icon:SetWindowName( "cur_item_textur" )
     self.item_icon:SetAutoDelete( true )
+    self.item_icon:EnableHeading( true )
     self.dialog:AttachChild( self.item_icon )
   end
-  local x =  10
-  local y =  10
-  local w = 230
-  local h = 150
-  local tx = get_u32( sect, "inv_grid_x"      ) * 50
-  local ty = get_u32( sect, "inv_grid_y"      ) * 50
+  local x  =  10
+  local y  =  10
+  local w  = 230
+  local h  = 150
   local tw = get_u32( sect, "inv_grid_width"  ) * 50
   local th = get_u32( sect, "inv_grid_height" ) * 50
-  self.item_icon:InitTexture( dsh.get_ui_icon_equipment_name( sect ) )
-  self.item_icon:SetOriginalRect( tx, ty, tw, th )
   local nw, nh
   if tw > w or th > h then
     local rw = tw / w
@@ -1685,17 +1687,16 @@ function ui_rukzak:show_item_descr( ui_item )
       nw = math.round( tw / rh )
       nh = h
     end
-    self.item_icon:SetStretchTexture( true )
   else
     nw = tw
     nh = th
-    self.item_icon:SetStretchTexture( false )
   end
   self.item_icon:Init(
     x + math.round( ( w - nw ) / 2 ),
     y + math.round( ( h - nh ) / 2 ),
     nw, nh
   )
+  CIconParams( sect ):set_shader( self.item_icon )
   if self.item_descr then
     self.descr_scroll:Clear()
     self.item_descr:DetachFromParent()
@@ -1838,9 +1839,8 @@ end
 
 
 function ui_rukzak:full_reload()
+  self:clear_all_lists()
   self.changed     = false
-  self.index_other = {}
-  self.index_our   = {}
   self.items_other = load_rukzak( self.owner_id )
   self.items_our   = get_actor_items()
   self.moved       = true
