@@ -53,6 +53,7 @@ local armor_allowed_locations = {}
 -- состояния не готовности к огню, нужно заставить встать перед
 -- началом стрельбы
 local not_ready_states = {
+  [ "busy"     ] = true,
   [ "sit"      ] = true,
   [ "sit_knee" ] = true,
   [ "sit_ass"  ] = true,
@@ -61,10 +62,6 @@ local not_ready_states = {
   [ "guard"    ] = true,
   [ "patrol"   ] = true,
 }
-
--- рестрикшены, которые нельзя восстанавливать если они были сняты,
--- находятся в скриптe _g
-local restrictions_off = true
 
 local low_range_npc_aggr = 30
 local far_range_mon_aggr = 50
@@ -148,14 +145,6 @@ function attach( sm )
 end
 
 
---- время входа в бой
-local intros = {
-  [ "novice"      ] = 400,
-  [ "experienced" ] = 300,
-  [ "veteran"     ] = 200,
-  [ "master"      ] = 100,
-}
-
 --- время на прицеливание
 --- для эффективной стрельбы из дробовика необходимо,
 --- чтобы выдерживался интервал между выстрелами,
@@ -230,7 +219,6 @@ local last_sent_vertex          = {}
 local last_hideout              = {}
 local sounds_timeout            = {}
 local intro_time                = {}
-local already_hear              = {}
 local choosen_hide_combat_state = {}
 local choosen_hide_state        = {}
 cooldown                        = {}
@@ -253,8 +241,6 @@ local hit_memory                = {} -- хитоая память
 local active_grenades           = {} -- активные гранатные угрозы
 local deadman_vtx               = {} -- точка откуда будем ждать успокоения
 local count_update              = {} -- Счетчик апдейтов
-local backup_restrictions_in    = {} -- табличка для сохранения рестрикторов
-local backup_restrictions_out   = {} -- табличка для сохранения рестрикторов
 local grenka_already_shout      = {}
 local grenka_already_blow       = {}
 local escape_point              = {}
@@ -267,9 +253,7 @@ local postcombat                = {}
 -- при выборе обхода справа или слева, NPC запоминает это и какое-то
 -- время придерживается этой стратегии
 local maneuver_strategy         = {}
-knife_scheme                    = {} -- безоружные неписи
 local can_fire                  = {}
-local need_knife                = {}
 
 in_combat = {}
 
@@ -344,11 +328,9 @@ function evaluator_check_altcombat:evaluate()
     and count_update[ self.object:id() ] <= engage_after_update
   then
     count_update[ self.object:id() ] = count_update[ self.object:id() ] + 1
-    in_combat[ self.object:id() ] = nil
     return false
   elseif not count_update[ self.object:id() ] then
     count_update[ self.object:id() ] = 0
-    in_combat[ self.object:id()    ] = nil
     return false
   end
 
@@ -360,8 +342,6 @@ function evaluator_check_altcombat:evaluate()
       and forbidden_schemes[ db.storage[ self.object:id() ].active_scheme ]
     )
   then
-    restore_restrictions( self.object )
-    in_combat[ self.object:id() ] = nil
     return false
   else
     if not inited[ self.object:id() ] then
@@ -395,29 +375,18 @@ function evaluator_check_altcombat:evaluate()
         or ( is_armor( best_enemy ) and armor_alive( best_enemy ) )
       )
       and (
-        not ( IsStalker( best_enemy ) and xr_wounded.is_wounded( best_enemy ) )
+        not ( best_enemy:is_stalker() and xr_wounded.is_wounded( best_enemy ) )
       )
       and ( not is_exclusion( self.object ) )
       and bw
     then
       ogse_debug.add_active_eval( self.object, script_name(), "altcombat" )
-      if not already_hear[ self.object:id() ] then
-        already_hear[ self.object:id() ] = true
-        if not intro_time[ self.object:id() ] then
-          intro_time[ self.object:id() ] = time_global() + intros[ npc_rank ]
-        end
-        cooldown[ self.object:id() ] = time_global() + cooldown_time
-      end
-      in_combat[ self.object:id() ] = true
       return true
     else
       if targ ~= false and not is_exclusion( self.object ) then
         ogse_debug.add_active_eval( self.object, script_name(), "altcombat_2" )
-        in_combat[ self.object:id() ] = true
         return true
       end
-      restore_restrictions( self.object )
-      in_combat[ self.object:id() ] = nil
       return false
     end
   else
@@ -425,22 +394,13 @@ function evaluator_check_altcombat:evaluate()
       local obj = level.object_by_id( targ )
       if
         not (
-          IsStalker( obj ) and obj:alive() and xr_wounded.is_wounded( obj )
+          obj:is_stalker() and obj:alive() and xr_wounded.is_wounded( obj )
         )
       then
         ogse_debug.add_active_eval( self.object, script_name(), "altcombat_3" )
-        in_combat[ self.object:id() ] = true
         return true
       end
     end
-    if already_hear[ self.object:id() ] then
-      already_hear[ self.object:id() ] = nil
-    end
-    if intro_time[ self.object:id() ] and not self.object:best_danger() then
-      intro_time[ self.object:id() ] = nil
-    end
-    restore_restrictions( self.object )
-    in_combat[ self.object:id() ] = nil
     return false
   end
 end
@@ -462,6 +422,8 @@ function action_altcombat:initialize()
   npc:set_item( object.idle, nil )
   self:check_objects()
   sr_light.check_light( npc )
+  set_sound_event( npc, "start" )
+  state_mgr.set_state( npc, "threat" )
 
   if
     db.storage[ self.object:id() ]
@@ -473,12 +435,40 @@ function action_altcombat:initialize()
     campers[ self.object:id()  ] = nil
     monolith[ self.object:id() ] = nil
   end
+
+  self.check_ready_state = true
+  in_combat[ npc:id() ] = true
+end
+
+
+function playing_hit_animation( npc )
+  local t = hit_timeout[ npc:id() ]
+  if t and t > time_global() and npc:animation_count() > 0 then
+    return true
+  elseif t then
+    hit_timeout[ npc:id() ] = nil
+  end
+  return false
+end
+
+
+function action_altcombat:not_ready_state()
+  local npc = self.object
+  if self.check_ready_state then
+    local anim = db.storage[ npc:id() ].state_mgr.animstate:state()
+    if not_ready_states[ anim ] then return true end
+    self.check_ready_state = nil
+  end
+  if playing_hit_animation( npc ) then return true end
+  return false
 end
 
 
 function action_altcombat:execute()
   action_base.execute( self )
   local npc = self.object
+
+  if self:not_ready_state() then return end
 
   if xr_wounded.is_wounded( npc ) or not self.object:alive() then
     reset_everything( npc )
@@ -510,7 +500,6 @@ function action_altcombat:execute()
   -- получим текущее оружие
   local bw = get_best_weapon( npc )
 
-  process_restrictions(npc)
   -- строим список врагов/друзей, проверяем линию огня - в своих и
   -- нейтралов чтоб не стрелять
   self:check_objects( bw, enemy )
@@ -546,16 +535,8 @@ function action_altcombat:execute()
       if
         deadman_vtx[ npc:id() ]
         and npc:accessible( deadman_vtx[ npc:id() ] )
-        and not npc:level_vertex_id() == deadman_vtx[ npc:id() ]
+        and npc:level_vertex_id() ~= deadman_vtx[ npc:id() ]
       then
-        if
-          hit_timeout[ npc:id() ]
-          and hit_timeout[ npc:id() ] > time_global()
-        then
-          self.object:movement_enabled( false )
-        elseif hit_timeout[ npc:id() ] then
-          hit_timeout[ npc:id() ] = nil
-        end
         set_transfer_state( self.object, deadman_target )
         utils.send_to_nearest_accessible_vertex( npc, deadman_vtx[ npc:id() ] )
       else
@@ -605,21 +586,6 @@ function action_altcombat:execute()
     enable_object( self.object, enemy )
     if bw then self.object:set_item( object.aim1, bw ) end
     notify_friends( self.object, enemy )
-    local anim = db.storage[ npc:id() ].state_mgr.animstate:state()
-    if
-      not_ready_states[ anim ]
-      and not ( anim == "guard" or anim == "patrol" )
-    then
-      state_mgr.set_state(
-        npc, "hide_fire", nil, nil, { look_object = enemy },
-        { animation = true, animation_nout = true }
-      )
-    else
-      state_mgr.set_state(
-        npc, "threat_fire", nil, nil, { look_object = enemy },
-        { animation = true, animation_nout = true }
-      )
-    end
     set_combat_sight( npc, enemy, bw )
   end
 
@@ -630,71 +596,7 @@ function action_altcombat:execute()
   local distance = be_pos:distance_to( npc_pos )
   local cover
 
-  -- принимаем решение
-  local anim = db.storage[ npc:id() ].state_mgr.animstate:state()
-  if
-    intro_time[ self.object:id() ]
-    and intro_time[ self.object:id() ] > time_global()
-  then
-    set_combat_sight( npc, be, bw )
-    set_transfer_state( npc, be )
-    if not_ready_states[ anim ] then
-      assist_point = find_cover( npc, enemy, 2 )
-      if not assist_point or assist_point == 0 then
-        assist_point = select_position( npc, nil, true )
-      end
-    else
-      assist_point = select_position( npc, nil, true )
-    end
-    if
-      npc:level_vertex_id() == assist_point
-      or npc:position():distance_to( level.vertex_position( assist_point ) ) < 1.0
-    then
-      if is_safe_to_block_movement( npc, be ) then
-        self.object:movement_enabled( false )
-      end
-    else
-      if
-        hit_timeout[ npc:id() ] and hit_timeout[ npc:id() ] > time_global()
-      then
-        self.object:movement_enabled( false )
-      elseif hit_timeout[ npc:id() ] then
-        hit_timeout[ npc:id() ] = nil
-        utils.send_to_nearest_accessible_vertex( npc, assist_point )
-      else
-        utils.send_to_nearest_accessible_vertex( npc, assist_point )
-      end
-    end
-    set_sound_event( npc, "start" )
-    return
-  end
-
   process_combat_sound( npc )
-
-  if npc:see( be ) and ( not is_armor( be ) ) and knife_scheme[ npc:id() ] then
-    npc:set_mental_state( anim.danger )
-    assist_point = select_enemy_pos_fanatic( npc, be )
-    last_algorythm = "enemy_vertex"
-    if assist_point then
-      xr_sound.set_sound( npc, nil )
-      set_combat_sight( npc, be, bw )
-      set_escape_state( npc, be )
-      if npc:level_vertex_id() ~= assist_point then
-        if
-          hit_timeout[ npc:id() ] and hit_timeout[ npc:id() ] > time_global()
-        then
-          self.object:movement_enabled( false )
-        elseif hit_timeout[ npc:id() ] then
-          hit_timeout[ npc:id() ] = nil
-          utils.send_to_nearest_accessible_vertex( npc, assist_point )
-        else
-          utils.send_to_nearest_accessible_vertex( npc, assist_point )
-        end
-      end
-    end
-    return
-  end
-
 
   local height          = be_pos.y - npc_pos.y
   local actor_at_height = (
@@ -903,16 +805,7 @@ function action_altcombat:execute()
         last_time_send[ npc:id() ] = nil
       end
     else
-      if
-        hit_timeout[ npc:id() ] and hit_timeout[ npc:id() ] > time_global()
-      then
-        self.object:movement_enabled( false )
-      elseif hit_timeout[ npc:id() ] then
-        hit_timeout[ npc:id() ] = nil
-        utils.send_to_nearest_accessible_vertex( npc, assist_point )
-      else
-        utils.send_to_nearest_accessible_vertex( npc, assist_point )
-      end
+      utils.send_to_nearest_accessible_vertex( npc, assist_point )
     end
   end
 end
@@ -1005,12 +898,15 @@ end
 
 function action_altcombat:finalize()
   action_base.finalize( self )
-  xr_sound.set_sound( self.object, nil )
-  self.object:movement_enabled( true )
-  stop_play_sound( self.object )
-  sr_light.check_light( self.object )
-  monolith[ self.object:id() ] = nil
-  campers[ self.object:id()  ] = nil
+  local npc = self.object
+  xr_sound.set_sound( npc, nil )
+  npc:movement_enabled( true )
+  stop_play_sound( npc )
+  sr_light.check_light( npc )
+  campers[   npc:id() ] = nil
+  cooldown[  npc:id() ] = time_global() + cooldown_time
+  in_combat[ npc:id() ] = nil
+  monolith[  npc:id() ] = nil
 end
 
 
@@ -1181,12 +1077,7 @@ function hit_fx( obj, amount, who, bone_index )
   if ( not obj ) or xr_wounded.is_wounded( obj ) or not obj:alive() then
     return
   end
-
-  if hit_timeout[ obj:id() ] and hit_timeout[ obj:id() ] > time_global() then
-    return
-  elseif hit_timeout[ obj:id() ] then
-    hit_timeout[ obj:id() ] = nil
-  end
+  if playing_hit_animation( obj ) then return end
 
   local binder = obj:binded_object()
   if not binder.last_hit_data then return end
@@ -1212,17 +1103,15 @@ function hit_fx( obj, amount, who, bone_index )
 
   local has_exo = dsh.is_exo_visual( obj )
   local key_2, hit_delay
-  if amount > 0.01 then
-    if amount <= 0.1 or has_exo then
-      hit_delay = 1000
-      key_2     = "light"
-    elseif amount <= 0.25 then
-      hit_delay = 1500
-      key_2     = "medium"
-    else
-      hit_delay = 2000
-      key_2     = "heavy"
-    end
+  if amount <= 0.1 or has_exo then
+    hit_delay = 1000
+    key_2     = "light"
+  elseif amount <= 0.25 then
+    hit_delay = 1500
+    key_2     = "medium"
+  else
+    hit_delay = 2000
+    key_2     = "heavy"
   end
 
   local key_3
@@ -1242,42 +1131,18 @@ function hit_fx( obj, amount, who, bone_index )
       key_3 = "hand_left"
     elseif bone_index >= 31 and bone_index < 40 then
       key_3 = "hand_right"
---[=[
-      if not has_exo then
-        local r = -1
-        if bone_index == 33 then
-          -- попадание в предплечье
-          r = math.random() * 100
-          need_drop = r < 30
-        end
-        if bone_index >= 34 and bone_index <= 38 then
-          -- по кисти или пальцам
-          r = math.random()*100
-          need_drop = r < 50
-        end
-      end
---]=]
     end
   end
 
-  if key_1 and key_2 and key_3 then
+  if key_1 and key_2 and key_3 and hit_delay then
     local anim = crit_anims[ key_1 ][ key_2 ][ key_3 ]
     if anim then
+      obj:clear_animations()
       obj:add_animation( anim, true, false )
-      if hit_delay then
-        hit_timeout[ obj:id() ] = time_global() + hit_delay
-      end
+      obj:movement_enabled( false )
+      hit_timeout[ obj:id() ] = time_global() + hit_delay
     end
   end
-
---[=[
-  if need_drop and who:id() == db.actor:id() then
-    local active_item = obj:active_item()
-    if active_item then
-      obj:drop_item( active_item )
-    end
-  end
---]=]
 end
 
 
@@ -1286,12 +1151,16 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
   -- записываем в табличку
   local npc = obj
   if who and npc and who:id() == npc:id() then return end
-  hit_fx( npc, amount, who, bone_index )
+
+  if in_combat[ npc:id() ] and amount > 0.01 then
+    hit_fx( npc, amount, who, bone_index )
+  end
 
   if
-    amount and amount > 0.01 and npc:alive() and not xr_wounded.is_wounded( npc )
+    amount and amount > 0.01 and npc:alive()
+    and not xr_wounded.is_wounded( npc )
   then
-    if IsStalker( who ) then
+    if who:is_actor() or who:is_stalker() then
       if who:alive() then
         if
           targets_list[ npc:id() ] and not targets_list[ npc:id() ][ who:id() ]
@@ -1348,7 +1217,7 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
           set_sound_event( npc, "ff" )
         end
       end
-    elseif IsMonster( who ) then
+    elseif who:is_monster() then
       if who:alive() then
         if
           targets_list[ npc:id() ] and not targets_list[ npc:id() ][ who:id() ]
@@ -1441,7 +1310,6 @@ end
 function reset_everything( npc )
   local binder = npc:binded_object()
   binder[ "xrs_battle_ai.set_combat_sight" ] = nil
-  already_hear[ npc:id() ] = nil
   choosen_hide_combat_state[ npc:id() ] = nil
   choosen_hide_state[ npc:id() ] = nil
   cooldown[ npc:id() ] = nil
@@ -1449,7 +1317,6 @@ function reset_everything( npc )
   disabled_objects[ npc:id() ] = nil
   hit_memory[ npc:id() ] = nil
   inited[ npc:id() ] = nil
-  intro_time[ npc:id() ] = nil
   last_choosed_path[ npc:id() ] = nil
   last_enemy[ npc:id() ] = nil
   last_enemy_id[ npc:id() ] = nil
@@ -1462,7 +1329,6 @@ function reset_everything( npc )
   sounds_timeout[ npc:id() ] = nil
   targets_list[ npc:id() ] = {}
   time_hide[ npc:id() ] = nil
-  restore_restrictions( npc )
 end
 
 
@@ -2608,12 +2474,6 @@ end
 
 
 function set_weapons_fire( npc, enemy, weapon, override_vis, npc_rank )
-  if hit_timeout[ npc:id() ] and hit_timeout[ npc:id() ] > time_global() then
-    return
-  elseif hit_timeout[ npc:id() ] then
-    hit_timeout[ npc:id() ] = nil
-  end
-
   if
     enemy
     and ( enemy:alive() or ( is_armor( enemy ) and armor_alive( enemy ) ) )
@@ -2647,10 +2507,8 @@ function set_weapons_fire( npc, enemy, weapon, override_vis, npc_rank )
       type_of_fire = object.fire1
     else
       local weapon_unstrapped = npc:weapon_unstrapped()
-      local anim              = db.storage[ npc:id() ].state_mgr.animstate:state()
       if
-        ( not weapon_unstrapped ) or not_ready_states[ anim ]
-        or ( IsRPG( weapon ) and distance < 25 )
+        ( not weapon_unstrapped ) or ( IsRPG( weapon ) and distance < 25 )
       then
         rq           = false
         type_of_fire = object.aim1
@@ -2707,28 +2565,13 @@ end
 
 
 function set_escape_state( npc, enemy )
-  if hit_timeout[ npc:id() ] and hit_timeout[ npc:id() ] > time_global() then
-    return
-  elseif hit_timeout[ npc:id() ] then
-    hit_timeout[ npc:id() ] = nil
-  end
-
-  local emerg
-  local anim = db.storage[ npc:id() ].state_mgr.animstate:state()
-  if not_ready_states[ anim ] then
-    emerg = { animation = true, animation_nout = true }
-  end
-
   local state_name
   if in_transit( npc ) then
     state_name = "assault"
   else
     state_name = "claim"
   end
-
-  state_mgr.set_state(
-    npc, state_name, nil, nil, { look_object = enemy }, emerg
-  )
+  state_mgr.set_state( npc, state_name, nil, nil, { look_object = enemy } )
 end
 
 
@@ -2746,18 +2589,6 @@ end
 
 
 function set_combat_state( npc, enemy, weapon )
-  if hit_timeout[ npc:id() ] and hit_timeout[ npc:id() ] > time_global() then
-    return
-  elseif hit_timeout[ npc:id() ] then
-    hit_timeout[ npc:id() ] = nil
-  end
-
-  local emerg
-  local anim = db.storage[ npc:id() ].state_mgr.animstate:state()
-  if not_ready_states[ anim ] then
-    emerg = { animation = true, animation_nout = true }
-  end
-
   local state_name
   if in_hideout( npc ) then
     local hide_val = last_hideout[ npc:id() ].value
@@ -2778,28 +2609,14 @@ function set_combat_state( npc, enemy, weapon )
       state_name = "hide_fire"
     end
   end
-
-  if state_name then
-    state_mgr.set_state(
-      npc, state_name, nil, nil, looking_to_enemy( npc, enemy ), emerg
-    )
-  end
+  
+  state_mgr.set_state(
+    npc, state_name, nil, nil, looking_to_enemy( npc, enemy )
+  )
 end
 
 
 function set_transfer_state( npc, enemy )
-  if hit_timeout[ npc:id() ] and hit_timeout[ npc:id() ] > time_global() then
-    return
-  elseif hit_timeout[ npc:id() ] then
-    hit_timeout[ npc:id() ] = nil
-  end
-
-  local emerg
-  local anim = db.storage[ npc:id() ].state_mgr.animstate:state()
-  if not_ready_states[ anim ] then
-    emerg = { animation = true, animation_nout = true }
-  end
-
   local state_name
   if in_hideout( npc ) then
     local hide_val = last_hideout[ npc:id() ].value
@@ -2814,11 +2631,9 @@ function set_transfer_state( npc, enemy )
     state_name = "threat"
   end
 
-  if state_name then
-    state_mgr.set_state(
-      npc, state_name, nil, nil, { look_object = enemy }, emerg
-    )
-  end
+  state_mgr.set_state(
+    npc, state_name, nil, nil, { look_object = enemy }
+  )
 end
 
 
@@ -2850,11 +2665,6 @@ end
 
 
 function set_escape_sight( npc, vertex )
-  if hit_timeout[ npc:id() ] and hit_timeout[ npc:id() ] > time_global() then
-    return
-  elseif hit_timeout[ npc:id() ] then
-    hit_timeout[ npc:id() ] = nil
-  end
   local vertex_pos = level.vertex_position( vertex )
   vertex_pos.y = vertex_pos.y + 1.5
   npc:set_desired_direction()
@@ -2863,11 +2673,6 @@ end
 
 
 function set_combat_sight( npc, enemy, weapon )
-  if hit_timeout[ npc:id() ] and hit_timeout[ npc:id() ] > time_global() then
-    return
-  elseif hit_timeout[ npc:id() ] then
-    hit_timeout[ npc:id() ] = nil
-  end
   if not weapon then return end
 
   local enemy_pos = enemy:position()
@@ -2956,7 +2761,6 @@ function set_combat_sight( npc, enemy, weapon )
   if
     ( npc:see( enemy ) and enemy:alive() )
     or ( is_armor( enemy ) and armor_alive( enemy ) )
-    or knife_scheme[ npc:id() ]
   then
     st.look_pos = look_pos
     npc:set_desired_direction()
@@ -3188,7 +2992,7 @@ function select_position( npc, target, flag )
     last_time_send[ npc:id() ] and last_time_send[ npc:id() ] > time_global()
   then
     if flag then
-      return npc:level_vertex_id()
+      return last_sent_vertex[ npc:id() ]
     else
       return 0
     end
@@ -3343,7 +3147,7 @@ end
 
 
 function find_vertex_in_radius( npc, around_vertex, radius )
-  local dist = math.random( 0, radius )
+  local dist = math.random( radius )
   if dist == 0 then
     if
       npc:accessible( around_vertex )
@@ -3355,32 +3159,22 @@ function find_vertex_in_radius( npc, around_vertex, radius )
     end
   end
   local around_pos = level.vertex_position( around_vertex )
-  local new_dir    = vector():set(
-    math.random( -1000, 1000 ) / 1000, 0, math.random( -1000, 1000 ) / 1000
-  )
-  new_dir:normalize()
-  local ai_step     = 0.7 -- шаг AI сетки
-  local math_pi_180 = 180 / math.pi
-  local pi2         = math.pi * 2
+  local ai_step    = 0.7 -- шаг AI сетки
   while dist >= ai_step do
-    -- итератор вращения направления
-    local rotate_angle = math.asin( ai_step / dist )
-    local cur_angle, cur_dir = 0, new_dir
-    while math.abs( cur_angle ) < pi2 do
-      -- ищем вертекс
-      -- нужная нам позиция
-      local pos     = vector():mad( around_pos, cur_dir, dist )
-      local vert_ok = level.vertex_id_by_pos( pos )
+    local vertexes = {}
+    level.iterate_vertices_border(
+      around_pos, dist,
+      function( lvid )
+        table.insert( vertexes, lvid )
+      end
+    )
+    dsh.shuffle( vertexes )
+    for _, vert_ok in ipairs( vertexes ) do
       if
-        level.valid_vertex_id( vert_ok )
-        and npc:accessible( vert_ok )
-        and not check_vertex_locked( npc, vert_ok )
+        npc:accessible( vert_ok ) and not check_vertex_locked( npc, vert_ok )
       then
         return vert_ok
       end
-      -- поворачиваем направление поиска
-      cur_angle = cur_angle + rotate_angle
-      cur_dir   = vector_rotate_y( cur_dir, rotate_angle * math_pi_180 )
     end
     dist = dist - ai_step
   end
@@ -3624,86 +3418,6 @@ function correct_position( gi, npc )
     return npc:vertex_in_direction( gi:level_vertex_id(), diff, len )
   else
     return gi:level_vertex_id()
-  end
-end
-
-
-function process_restrictions( npc )
-  if restrictions_off then return end
-  local name    = npc:name()
-  local profile = npc:profile_name()
-  if
-    string.find( name, "sniper" ) or string.find( profile, "sniper" )
-    or string.find( name, "watch" ) or string.find( profile, "watch" )
-    or string.find( name, "commander" ) or string.find( profile, "commander" )
-    or string.find( name, "leader" ) or string.find( profile, "leader" )
-    or string.find( name, "aem_" ) or string.find( profile, "aem_" )
-    or string.find( name, "bar_arena" ) or string.find( profile, "bar_arena" )
-  then
-    return false
-  end
-  local restr_out = npc:out_restrictions()
-  local restr_in  = npc:in_restrictions()
-  if not backup_restrictions_out[ npc:id() ] then
-    backup_restrictions_out[ npc:id() ] = restr_out
-  end
-  if not backup_restrictions_in[ npc:id() ] then
-    backup_restrictions_in[ npc:id() ] = restr_in
-  end
-  npc:remove_all_restrictions()
-end
-
-
-function clean_restrictions( str_restr )
-  local out_str_1 = ""
-  local out_str_2 = ""
-  local out_str_3 = ""
-  local out_str   = str_restr
-  local result    = 0
-  for k, v in pairs( excluded_restrictors ) do
-    local pattern_1 = k .. ","
-    local pattern_2 = "," .. k
-    local pattern_3 = k
-    out_str_1, result = string.gsub( out_str,   pattern_1, "" )
-    out_str = out_str_1
-    out_str_2, result = string.gsub( out_str_1, pattern_2, "" )
-    out_str = out_str_2
-    out_str_3, result = string.gsub( out_str_2, pattern_3, "" )
-    out_str = out_str_3
-  end
-  return out_str
-end
-
-
-function restore_restrictions( npc )
-  if restrictions_off then return end
-  local name    = npc:name()
-  local profile = npc:profile_name()
-  if
-    string.find( name, "sniper" ) or string.find( profile, "sniper" )
-    or string.find( name, "watch" ) or string.find( profile, "watch" )
-    or string.find( name, "commander" ) or string.find( profile, "commander" )
-    or string.find( name, "leader" ) or string.find( profile, "leader" )
-    or string.find( name, "aem_" ) or string.find( profile, "aem_" )
-    or string.find( name, "bar_arena" ) or string.find( profile, "bar_arena" )
-    or string.find( name, "trader" ) or string.find( profile, "trader" )
-  then
-    return false
-  end
-  if
-    backup_restrictions_out[ npc:id() ]
-    or backup_restrictions_in[ npc:id() ]
-  then
-    --log1("[XRS BATTLE AI] REMOVING ALL RESTRICTIONS FOR "..npc:name())
-    npc:remove_all_restrictions()
-    local restr_out = clean_restrictions( backup_restrictions_out[ npc:id() ] )
-    local restr_in  = clean_restrictions( backup_restrictions_in[ npc:id()  ] )
-    --log1("[XRS BATTLE AI] ADDING IN RESTRICTIONS "..restr_out.." FOR "..npc:name())
-    --log1("[XRS BATTLE AI] ADDING OUT RESTRICTIONS "..restr_out.." FOR "..npc:name())
-    npc:add_restrictions( restr_out, restr_in )
-    backup_restrictions_out[ npc:id() ] = nil
-    backup_restrictions_in[ npc:id()  ] = nil
-    -- ogse.fix_restrictors(npc)
   end
 end
 
