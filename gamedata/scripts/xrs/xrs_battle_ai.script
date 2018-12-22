@@ -28,7 +28,7 @@ local memory_timeout            = 80000
 -- предотвращения выхода из боя слишком рано), для неписей умножается
 -- на 2
 local remember_enemy            = 10000
-local inertion_time_grenade     = 3000 -- сколько бояться гранаты
+local inertion_time_grenade     = 5000 -- сколько бояться гранаты
 -- С какого апдейта схема начинает работать. Нельзя чтобы схема
 -- стартовала включенной сразу же, иначе будут глюки на переключении
 -- схем и выборе оружия
@@ -362,6 +362,11 @@ function evaluator_check_altcombat:evaluate()
     end
     reprioritize_targets( self.object )
     check_for_grenades( self.object )
+  end
+
+  if active_grenades[ self.object:id() ] then
+    ogse_debug.add_active_eval( self.object, script_name(), "altcombat_gr" )
+    return true
   end
 
   local bw         = get_best_weapon( self.object )
@@ -3302,28 +3307,23 @@ function check_for_grenades( npc )
     local bd_type = best_danger:type()
     if bd_type == danger_object.grenade then
       if not active_grenades[ npc:id() ] then
-        if npc:character_community() ~= "zombied" then
-          local best_danger_object = best_danger:dependent_object()
-          if
-            best_danger_object
-            and ( not grenka_already_blow[ best_danger_object:id() ] )
-            and npc:position():distance_to( best_danger_object:position() ) < distant_combat_distance
-          then
-            local id = best_danger_object:id()
-            active_grenades[ npc:id() ] = {
-              grenade = id,
-              parent  = best_danger:object():id(),
-              timeout = time_global()+inertion_time_grenade,
-            }
-            if
-              ogse.get_npc_relation( npc, best_danger:object() ) == "enemy"
-            then
-              enable_object( npc, best_danger:object() )
-              process_enemy( npc, best_danger:object() )
-              -- npc:make_object_visible_somewhen(best_danger:object())
-              xr_sound.set_sound( npc, "beware_grenade" )
-            end
+        local best_danger_object = best_danger:dependent_object()
+        if
+          best_danger_object
+          and ( not grenka_already_blow[ best_danger_object:id() ] )
+          and npc:position():distance_to( best_danger_object:position() ) < distant_combat_distance
+        then
+          local id = best_danger_object:id()
+          active_grenades[ npc:id() ] = {
+            grenade = id,
+            parent  = best_danger:object():id(),
+            timeout = time_global() + inertion_time_grenade,
+          }
+          if check_is_enemy( npc, best_danger:object() ) then
+            enable_object( npc, best_danger:object() )
+            process_enemy( npc, best_danger:object() )
           end
+          xr_sound.set_sound( npc, "beware_grenade" )
         end
       end
     end
@@ -3358,13 +3358,10 @@ function evade_grenades( npc )
     if not escape_point[ npc:id() ] then
       last_hideout[ npc:id()    ] = nil
       locked_vertexes[ npc:id() ] = nil
-      local parent      = level.object_by_id( danger.parent )
-      local distance    = npc:position():distance_to( parent:position() )
-      local danger_vert = level.vertex_in_direction(
-        parent:level_vertex_id(), parent:direction(), distance
-      )
-      local cover       = npc:best_cover(
-        npc:position(), level.vertex_position( danger_vert ), 15, 5, 30
+      local cover = npc:best_cover(
+        npc:position(),
+        level.vertex_position( danger_obj:level_vertex_id() ),
+        15, 5, 30
       )
       local best_dist, best_dir = 0, vector():set( 0, 0, 0 )
       local dir   = npc:position():sub( danger_obj:position() ):normalize()
