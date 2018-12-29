@@ -280,6 +280,11 @@ function evaluator_love_napalm_smell:evaluate()
   if self.a.next_check_time < time_global() then
     if npc:body_state() == move.crouch then return false end
     self.a.next_check_time = time_global() + 1000
+    if not xrs_battle_ai.in_combat[ npc:id() ] then return end
+    local st = xrs_battle_ai.get_schema_storage( npc )
+    if st and st.active_grenade then
+      return false
+    end
     local be = xrs_battle_ai.get_target( npc ) or npc:best_enemy()
     if not be then return false end
     if
@@ -354,96 +359,6 @@ function evaluator_love_napalm_smell:check_grenade( section )
 end
 
 
-class "evaluator_oh_shit" ( property_evaluator )
-function evaluator_oh_shit:__init( name, storage ) super( nil, name )
-  self.a = storage
-  self.a.throwing = false
-  self.a.grenades = {}
-  for k, v in ipairs( gr_types ) do
-    local t = {}
-    t.radius, t.explode_time = get_grenade_radius( v )
-    self.a.grenades[ v ] = t
-  end
-end
-
-
-function evaluator_oh_shit:evaluate()
-  local npc = self.object
-  if forbidden_comms[ npc:character_community() ] or not npc:alive() then
-    return false
-  end
-  if no_grenades[ npc:id() ] then return false end
-
-  if self.a.danger_inert and self.a.danger_inert > time_global() then
-    ogse_debug.add_active_eval( self.object, script_name(), "oh_shit" )
-    return true
-  end
-
-  local danger, danger_r, dist = false, 0, 1000
---[=[
-  local best_danger = npc:best_danger()
-  if best_danger then
-    local bd_type = best_danger:type()
-    if bd_type == danger_object.grenade then
-      local best_danger_object = best_danger:dependent_object()
-      if
-        best_danger_object
-        and self.a.grenades[ best_danger_object:section() ]
-        and level.object_by_id( best_danger_object:id() )
-      then
-        danger   = best_danger:position()
-        danger_r = self.a.grenades[ best_danger_object:section() ].radius
-        dist     = danger:distance_to( npc:position() )
-        self.a.danger_id = best_danger_object:id()
-      end
-    end
-  end
---]=]
-  for k, v in pairs( grenades ) do
-    if get_grenade( k ) and v - 1500 > time_global() then
-      if grenade_times[ k ] and time_global() - grenade_times[ k ] < 250 then
-        self.a.cover = nil
-        return false
-      end
-      local gdist = get_grenade( k ):position():distance_to( npc:position() )
-      if
-        gdist < self.a.grenades[ get_grenade( k ):section() ].radius
-        and gdist < dist
-      then
-        danger   = get_grenade( k ):position()
-        danger_r = self.a.grenades[ get_grenade( k ):section() ].radius
-        if danger then
-          self.a.danger_id = k
-        end
-        dist = gdist
-      end
-    end
-  end
-
-  if danger then
-    self.a.danger           = danger
-    self.a.danger_r         = danger_r
-    self.a.last_danger_time = time_global()
-    ogse_debug.add_active_eval( self.object, script_name(), "oh_shit_2" )
-    return true
-  else
-    if ( self.a.last_danger_time or 0 ) + 2000 > time_global() then
-      if npc:position():distance_to( self.a.danger ) < self.a.danger_r then
-        self.a.danger_inert = time_global() + 2500
-        ogse_debug.add_active_eval( self.object, script_name(), "oh_shit_3" )
-        return true
-      end
-      self.a.danger_id        = nil
-      self.a.danger           = nil
-      self.a.danger_r         = nil
-      self.a.last_danger_time = nil
-    end
-  end
-  self.a.cover = nil
-  return false
-end
-
-
 class "action_kill_it_with_fire" ( action_base )
 function action_kill_it_with_fire:__init( name, storage ) super( nil, name )
   self.a = storage
@@ -474,57 +389,37 @@ function action_kill_it_with_fire:execute()
 
   local npc = self.object
   if not self.at_pos then
-    if time_global() > self.time_back_to_pos then
-      self.a.throwing = false
+    local fr_inj, en_inj = check_victims(
+      npc, self.a.target_point,
+      self.a.grenades[ get_grenade( self.a.grenade ):section() ].radius
+    )
+    if fr_inj or not en_inj then
+      self.a.grenade      = nil
+      self.a.throwing     = false
+      self.a.target_point = nil
+      self.finalized      = true
       return
     end
-    if
-      self.a.from_vert == npc:level_vertex_id()
-      and self.a.from_pos:distance_to( npc:position() ) < 0.3
-    then
-      local fr_inj, en_inj = check_victims(
-        npc, self.a.target_point,
-        self.a.grenades[ get_grenade( self.a.grenade ):section() ].radius
-      )
-      if fr_inj or not en_inj then
-        self.a.grenade      = nil
-        self.a.throwing     = false
-        self.a.target_point = nil
-        self.finalized      = true
-        return
-      end
-      npc:set_item( object.idle, nil )
-      npc:set_movement_type( move.stand )
-      npc:set_mental_state( anim.danger )
-      npc:set_body_state( move.standing )
-      npc:movement_enabled( true )
-      local snd_sect = snd_grenade_replics[ npc:character_community() ]
-        or snd_grenade_replics.stalker
-      local snd_rnd  = math.random( table.getn( snd_sect ) + 1 )
-      if snd_rnd <= table.getn( snd_sect ) then
-        local snd = "grenadier\\" .. snd_sect[ snd_rnd ]
-        snd = xr_sound.get_safe_sound_object( snd )
-        if snd then
-          snd:play_no_feedback( npc, sound_object.s3d, 0, npc:position(), 1.0 )
-        end
-      end
-      self.start_time = time_global()
-      self.throw_time = self.start_time + 1000
-      self.end_time   = self.throw_time +  300
-      self.at_pos     = true
-      grenadiers[ npc:id() ] = self.a.grenade
-      return
-    end
-    utils.send_to_nearest_accessible_vertex( npc, self.a.from_vert )
-    npc:set_movement_type( move.run )
+    npc:set_item( object.idle, nil )
+    npc:set_movement_type( move.stand )
+    npc:set_mental_state( anim.danger )
     npc:set_body_state( move.standing )
-    npc:set_desired_position( self.a.from_pos )
-    npc:clear_animations()
-    local be = xrs_battle_ai.get_target( npc ) or npc:best_enemy()
-    if be and npc:see( be ) then
-      npc:set_sight( look.point, be:position() )
-      npc:set_desired_direction( be:position():sub( npc:position() ) )
+    npc:movement_enabled( true )
+    local snd_sect = snd_grenade_replics[ npc:character_community() ]
+      or snd_grenade_replics.stalker
+    local snd_rnd  = math.random( table.getn( snd_sect ) + 1 )
+    if snd_rnd <= table.getn( snd_sect ) then
+      local snd = "grenadier\\" .. snd_sect[ snd_rnd ]
+      snd = xr_sound.get_safe_sound_object( snd )
+      if snd then
+        snd:play_no_feedback( npc, sound_object.s3d, 0, npc:position(), 1.0 )
+      end
     end
+    self.start_time = time_global()
+    self.throw_time = self.start_time + 1000
+    self.end_time   = self.throw_time +  300
+    self.at_pos     = true
+    grenadiers[ npc:id() ] = self.a.grenade
     return
   end
 
@@ -545,11 +440,7 @@ function action_kill_it_with_fire:execute()
   end
 
   if time_global() < self.end_time and self.begin_throw then
-    if npc:animation_count() > 0 then
-      return
-    else
-      state_mgr.set_state( npc, "sneak_fire", nil, nil, { look_object = be } )
-    end
+    if npc:animation_count() > 0 then return end
   end
 
   if time_global() > self.end_time and not self.can_explode then
@@ -569,9 +460,9 @@ function action_kill_it_with_fire:execute()
     --   self.a.grenade, "grenade_location",
     --   get_grenade( self.a.grenade ):section()
     -- )
-    local t = self.a.grenades[ get_grenade( self.a.grenade ):section() ]
-    local timeout = t.explode_time - ( time_global() - self.can_explode )
-    grenades[ get_grenade( self.a.grenade ):id() ] = time_global() + timeout
+    local obj   = get_grenade( self.a.grenade )
+    local r, dt = get_grenade_radius( obj:section() )
+    grenades[ self.a.grenade ] = time_global() + dt
     run_grenade_timer()
     self.a.grenade         = nil
     self.a.next_check_time = time_global() + math.random( 7000, 15000 )
@@ -587,81 +478,9 @@ function action_kill_it_with_fire:finalize()
 end
 
 
-class "action_run_run_run" (action_base)
-function action_run_run_run:__init( name, storage ) super( nil, name )
-  self.a = storage
-end
-
-
-function action_run_run_run:initialize()
-  action_base.initialize( self )
-  local npc = self.object
-  npc:clear_animations()
-  npc:set_item( object.idle, nil )
-  xr_sound.set_sound( npc, nil )
-  stop_play_sound( npc )
-end
-
-
-function action_run_run_run:execute()
-  action_base.execute( self )
-  local npc = self.object
-  if
-    self.a.danger_id
-    and grenade_owners[ self.a.danger_id ]
-    and grenade_owners[ self.a.danger_id ] == npc:id()
-  then
-    -- наша личная гренка
-    ogse_debug.add_active_eval( self.object, script_name(), "action_grenade" )
-    npc:set_mental_state( anim.danger )
-    npc:set_sight( look.direction, self.a.danger )
-    state_mgr.set_state( npc, "hide_fire" )
-  else
-    -- а это не наша... никто гренку не терял?
-    ogse_debug.add_active_eval( self.object, script_name(), "action_grenade_panic" )
-    if not self.a.cover then
-      local cover = npc:best_cover( npc:position(), self.a.danger, 15, 5, 20 )
-      if cover then
-        self.a.cover = cover:level_vertex_id()
-      end
-    end
-    local best_dist, best_dir = 0, vector():set( 0, 0, 0 )
-    local dir   = npc:position():sub( self.a.danger ):normalize()
-    local dvert = npc:level_vertex_id()
-    if self.a.cover then
-      dvert = self.a.cover
-    else
-      for a = -120, 120, 10 do
-        local ndir  = vector_rotate_y( dir, a )
-        local vert  = level.vertex_in_direction(
-          npc:level_vertex_id(), ndir, 50
-        )
-        local ndist = level.vertex_position( vert ):distance_to( self.a.danger )
-        if ndist > best_dist and npc:accessible( vert ) then
-          best_dist = ndist
-          dvert     = vert
-          break
-        end
-      end
-    end
-    npc:set_sight( look.direction, level.vertex_position( dvert ) )
-    state_mgr.set_state( npc, "sprint_p" )
-    utils.send_to_nearest_accessible_vertex( npc, dvert )
-  end
-end
-
-
-function action_run_run_run:finalize()
-  self.object:set_mental_state( anim.danger )
-  action_base.finalize( self )
-end
-
-
 local base = 18670 -- 87460
 prop_fire            = base + 0
-prop_grenade         = base + 1
 evid_crazy_grenadier = prop_fire
-evid_aaa_grenade     = prop_grenade
 
 local base_act = base -- 87480
 act_kill_it = base_act + 0
@@ -683,17 +502,12 @@ function add_to_binder( object, char_ini, scheme, section, st )
   local state_mgr_to_idle_combat = xr_actions_id.state_mgr + 1
   local state_mgr_to_idle_alife  = xr_actions_id.state_mgr + 2
   manager:remove_evaluator( prop_fire    )
-  manager:remove_evaluator( prop_grenade )
   if object:character_community() == "zombied" or not object:alive() then
     manager:add_evaluator( prop_fire,    property_evaluator_const( false ) )
-    manager:add_evaluator( prop_grenade, property_evaluator_const( false ) )
     return
   end
   manager:add_evaluator(
     prop_fire, evaluator_love_napalm_smell( "evaluator_love_napalm_smell", st )
-  )
-  manager:add_evaluator(
-    prop_grenade, evaluator_oh_shit( "evaluator_oh_shit", st )
   )
 
   local action = action_kill_it_with_fire( "action_kill_it_with_fire", st )
@@ -702,36 +516,22 @@ function add_to_binder( object, char_ini, scheme, section, st )
     world_property( stalker_ids.property_anomaly, false )
   )
   action:add_precondition( world_property( property_wounded, false ) )
-  action:add_precondition( world_property( prop_grenade, false ) )
   action:add_precondition( world_property( prop_fire, true ) )
   action:add_effect( world_property( prop_fire, false ) )
   manager:add_action( act_kill_it, action )
 
-  action = action_run_run_run( "action_run_run_run", st )
-  action:add_precondition( world_property( stalker_ids.property_alive, true ) )
-  action:add_precondition(
-    world_property( stalker_ids.property_anomaly, false )
-  )
-  action:add_precondition( world_property( property_wounded, false ) )
-  action:add_precondition( world_property( prop_grenade, true ) )
-  action:add_effect( world_property( prop_grenade, false ) )
-  manager:add_action( act_run, action )
-
   action = manager:action( stalker_ids.action_combat_planner )
   action:add_precondition( world_property( prop_fire, false ) )
-  action:add_precondition( world_property( prop_grenade, false ) )
 
   action = manager:action( stalker_ids.action_danger_planner )
   action:add_precondition( world_property( prop_fire, false ) )
-  action:add_precondition( world_property( prop_grenade, false ) )
 
   action = manager:action( state_mgr_to_idle_alife )
   action:add_precondition( world_property( prop_fire, false ) )
-  action:add_precondition( world_property( prop_grenade, false ) )
+  -- action:add_precondition( world_property( prop_grenade, false ) )
 
   action = manager:action( state_mgr_to_idle_combat )
   action:add_precondition( world_property( prop_fire, false ) )
-  action:add_precondition( world_property( prop_grenade, false ) )
 end
 
 
@@ -786,6 +586,7 @@ function get_grenade_radius( sect )
 end
 
 
+local visible_grenades = {}
 local exploding = {}
 
 function update()
@@ -826,11 +627,22 @@ function update()
         grenade_owners[ k ] = nil
         grenade_times[ k ]  = nil
         grenades[ k ] = nil
+        visible_grenades[ k ] = nil
+      else
+        local obj = level.object_by_id( k )
+        if obj and not visible_grenades[ k ] then
+          local vel = vector():set( 0, 0, 0 )
+          obj:get_physics_shell():get_linear_vel( vel )
+          if vel:magnitude() < 10 then
+            visible_grenades[ k ] = true
+          end
+        end
       end
     else
       grenade_owners[ k ] = nil
       grenade_times[ k ]  = nil
       grenades[ k ]       = nil
+      visible_grenades[ k ] = nil
     end
   end
   for k, v in pairs( test_grenades ) do
@@ -1018,4 +830,15 @@ end
 
 function get_gr_types()
   return gr_types
+end
+
+
+function iterate_active_grenades( f )
+  for id, _ in pairs( visible_grenades ) do
+    local obj = level.object_by_id( id )
+    if obj then
+      local radius = get_grenade_radius( obj:section() )
+      f( obj, grenade_owners[ id ], radius )
+    end
+  end
 end
