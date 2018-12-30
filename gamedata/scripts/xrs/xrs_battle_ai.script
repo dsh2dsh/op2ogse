@@ -313,6 +313,7 @@ end
 class "evaluator_check_altcombat" ( property_evaluator )
 function evaluator_check_altcombat:__init( name, storage ) super( nil, name )
   self.st = storage
+  self.known_corpses = {}
 end
 
 
@@ -337,28 +338,30 @@ function evaluator_check_altcombat:evaluate()
     )
   then
     return false
-  else
-    if not inited[ self.object:id() ] then
-      -- произведем инициализацию таблиц данных селектора
-      targets_list[ self.object:id() ] = {}        -- список целей
-      last_target[ self.object:id()  ] = {}        -- последняя цель
-      setup_sound_table( self.object )
-      inited[ self.object:id()       ] = true
-      local ini = battle.is_battle_spawned( self.object )
-      if ini then
-        local actor_is_enemy = get_bool(
-          "battle", "xrs_battle_ai.actor_is_enemy", false, ini
-        )
-        if actor_is_enemy then
-          register_as_target( self.object, db.actor )
-        end
+  end
+
+  if not inited[ self.object:id() ] then
+    -- произведем инициализацию таблиц данных селектора
+    targets_list[ self.object:id() ] = {}        -- список целей
+    last_target[ self.object:id()  ] = {}        -- последняя цель
+    setup_sound_table( self.object )
+    inited[ self.object:id()       ] = true
+    local ini = battle.is_battle_spawned( self.object )
+    if ini then
+      local actor_is_enemy = get_bool(
+        "battle", "xrs_battle_ai.actor_is_enemy", false, ini
+      )
+      if actor_is_enemy then
+        register_as_target( self.object, db.actor, true )
       end
     end
-    reprioritize_targets( self.object )
-    if self:check_for_grenades( self.object ) then
-      ogse_debug.add_active_eval( self.object, script_name(), "altcombat_gr" )
-      return true
-    end
+  end
+
+  self:check_corpse_danger()
+  reprioritize_targets( self.object )
+  if self:check_for_grenades( self.object ) then
+    ogse_debug.add_active_eval( self.object, script_name(), "altcombat_gr" )
+    return true
   end
 
   local bw         = get_best_weapon( self.object )
@@ -400,6 +403,41 @@ function evaluator_check_altcombat:evaluate()
     end
     return false
   end
+end
+
+
+function evaluator_check_altcombat:check_corpse_danger()
+  local npc         = self.object
+  local best_danger = npc:best_danger()
+  if not best_danger then return false end
+  if best_danger:type() ~= danger_object.entity_corpse then return false end
+
+  local bd_object = best_danger:object()
+  if self.known_corpses[ bd_object:id() ] then return false end
+  self.known_corpses[ bd_object:id() ] = true
+  if bd_object:is_actor() or check_is_enemy( npc, bd_object ) then
+    return false
+  end
+
+  local killer_id = dsh_deadmans.is_fresh_deadman( bd_object:id() )
+  if not (
+    killer_id and killer_id ~= bd_object:id() and killer_id ~= npc:id()
+  ) then
+    return false
+  end
+
+  local enemy = level.object_by_id( killer_id )
+  if
+    enemy and enemy:alive()
+    and ( enemy:is_actor() or enemy:is_custom_monster() )
+    and ( not ( enemy:is_stalker() and xr_wounded.is_wounded( enemy ) ) )
+    and check_is_enemy( npc, enemy )
+  then
+    register_as_target( npc, enemy, true )
+    return true
+  end
+
+  return false
 end
 
 
@@ -733,12 +771,15 @@ function action_altcombat:execute()
     last_algorythm = "find_cover_2"
 
     set_combat_sight( npc, be, bw )
+    set_transfer_state( npc, be )
+--[=[ dsh:
     if can_fire[ npc:id() ] then
       set_combat_state( npc, be, bw )
       set_weapons_fire( npc, be, bw, true, npc_rank )
     else
       set_transfer_state( npc, be )
     end
+--]=]
     choose_idle_scheme(npc, "defence")
 
   else
@@ -1523,7 +1564,7 @@ function is_enemy_see( enemy, npc )
     return true
   elseif enemy:is_actor() then
     return actor_see( npc )
-  elseif IsStalker( enemy ) or IsMonster( enemy ) then
+  elseif enemy:is_custom_monster() then
     return
       ( enemy:best_enemy() and enemy:best_enemy():id() == npc:id() )
       and true or false
@@ -1532,7 +1573,7 @@ function is_enemy_see( enemy, npc )
 end
 
 
-function register_as_target( npc, enemy )
+function register_as_target( npc, enemy, force_vis )
   local id = enemy:id()
   if
     ( not targets_list[ npc:id() ] ) or not targets_list[ npc:id() ][ id ]
@@ -1540,9 +1581,9 @@ function register_as_target( npc, enemy )
     if npc and npc:alive() and not xr_wounded.is_wounded(npc) then
       local dist = npc:position():distance_to( enemy:position() )
       local enemy_record = {
-        npc    = IsStalker( enemy) ,
+        npc    = ( enemy:is_actor() or enemy:is_custom_monster() ),
         range  = dist,
-        vis    = is_enemy_see( enemy, npc ),
+        vis    = ( force_vis or is_enemy_see( enemy, npc ) ),
         weight = 1000,
       }
       if enemy_record.vis and enemy_record.npc then
@@ -2783,24 +2824,18 @@ function set_combat_sight( npc, enemy, weapon )
     "[%s]: %s: unknown bone %s", script_name(), enemy:name(), bone
   )
   local look_pos = enemy:bone_position( bone )
-
+  
   if
-    ( npc:see( enemy ) and enemy:alive() )
-    or ( is_armor( enemy ) and armor_alive( enemy ) )
+    ( not npc:see( enemy ) )
+    and npc:memory_position( enemy ):magnitude() ~= 0
   then
-    st.look_pos = look_pos
-    npc:set_desired_direction()
-    if weapon then
-      npc:set_sight( look.fire_point, look_pos )
-    end
-  elseif not npc:see( enemy ) then
-    local last_seen_pos = npc:memory_position( enemy )
-    st.look_pos = last_seen_pos
-    if last_seen_pos then
-      if weapon then
-        npc:set_sight( look.fire_point, last_seen_pos )
-      end
-    end
+    look_pos = npc:memory_position( enemy )
+  end
+
+  st.look_pos = look_pos
+  npc:set_desired_direction()
+  if weapon then
+    npc:set_sight( look.fire_point, look_pos )
   end
 end
 
