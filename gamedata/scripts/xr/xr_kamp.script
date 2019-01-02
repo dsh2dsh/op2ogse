@@ -1076,7 +1076,10 @@ end
 
 
 function CKampManager:reset_position( npc )
-  db.storage[ npc:id() ][ self.scheme ].pos_vertex = nil
+  local t = db.storage[ npc:id() ][ self.scheme ]
+  t.go_position = nil
+  t.on_position = nil
+  t.pos_vertex  = nil
 end
 
 
@@ -1129,25 +1132,28 @@ end
 function evaluator_on_position:evaluate()
   if not self.a.updates_passed then
     self.a.updates_passed = 0
-  elseif self.a.updates_passed < 20 then
+  elseif self.a.updates_passed < 10 then
     self.a.updates_passed = self.a.updates_passed + 1
+    return false
   end
   if not self.a.pos_vertex then return false end
   local npc = self.object
-  if
-    npc:level_vertex_id() == self.a.pos_vertex
-    or (
-      npc:path_completed()
-      and level.vertex_position( self.a.pos_vertex ):distance_to_sqr(
-        npc:position()
-      ) < 8
-    )
-  then
-    if self.a.updates_passed < 10 then
+  if self.a.on_position then
+    self.a.go_position = nil
+    if npc:level_vertex_id() == self.a.on_position then
+      ogse_debug.add_active_eval( npc, script_name(), "on_position" )
+      return true
+    else
+      self.a.on_position = nil
       return false
     end
-    ogse_debug.add_active_eval( npc, script_name(), "on_position" )
-    return true
+  elseif self.a.go_position then
+    if npc:path_completed() then
+      self.a.go_position = nil
+      self.a.on_position = npc:level_vertex_id()
+      return true
+    end
+    ogse_debug.add_active_eval( npc, script_name(), "go_position" )
   end
   return false
 end
@@ -1365,7 +1371,7 @@ function action_go_position:execute()
   then
     return
   end
-  if not ( self.a.updates_passed and self.a.updates_passed >= 10 ) then
+  if ( not self.a.updates_passed ) or self.a.updates_passed < 10 then
     return
   end
   local npc = self.object
@@ -1388,6 +1394,8 @@ function action_go_position:execute()
   end
   npc:set_dest_level_vertex_id( self.a.pos_vertex )
   state_mgr.set_state( npc, self.a.def_state_moving )
+  self.a.go_position = ( self.a.go_position or 0 ) + 1
+  self.a.on_position = nil
 end
 
 
@@ -1445,6 +1453,8 @@ end
 
 
 function action_wait:finalize()
+  self.a.go_position = nil
+  self.a.on_position = nil
   if self.a.kamp_user then
     self.a.kamp:decreasePops( self.object )
     self.a.kamp_user = false
@@ -1590,15 +1600,6 @@ function action_go_to_deadman:execute()
   -- долгое путешествие до трупа успешно завершилось, ура, товарищи
   if npc:path_completed() or self.dest_lvid == npc:level_vertex_id() then
     self.a.reached = true
---[=[
-  elseif npc:path_completed() then
-    deadmansids[ self.a.choosed_deadman ] = nil
-    self.a.captures        = nil
-    self.a.choosed_deadman = nil
-    self.a.failed          = true
-    self.a.reached         = nil
-    tried_too_much( gi, true )
---]=]
   end
 end
 
