@@ -144,6 +144,15 @@ function evaluator_love_napalm_smell:set_next_check_time()
 end
 
 
+function evaluator_love_napalm_smell:too_many_test_grenades()
+  local cnt = 0
+  for id, time in pairs( test_grenades ) do
+    cnt = cnt + 1
+  end
+  return cnt >= 20
+end
+
+
 function evaluator_love_napalm_smell:evaluate()
   if not self.object:alive() then return false end
 
@@ -184,6 +193,7 @@ function evaluator_love_napalm_smell:evaluate()
     curr_gr = nil
   end
   if not curr_gr then return false end
+  if self:too_many_test_grenades() then return false end
 
   -- можно швыряться - вероятность никого не задеть (кроме врагов)
   -- достаточно велика
@@ -198,7 +208,7 @@ function evaluator_love_napalm_smell:evaluate()
   local timeout  = time_global()
     + self.a.grenades[ curr_gr:section() ].explode_time
   self.testing = {}
-  for _, force in ipairs({ 8000, 19000 }) do
+  for _, force in ipairs({ 8000, 19000, math.random( 30000, 60000 ) }) do
     local sobj = alife():create(
       curr_gr:section() .. "_test",
       npc:bone_position( grenade_bone ),
@@ -418,14 +428,10 @@ function action_kill_it_with_fire:execute()
     return
 
   elseif self.state == 1 then
-    if self.timeout > time_global() and npc:animation_count() > 0 then
-      return
-    end
     local obj = level.object_by_id( self.a.grenade )
     npc:drop_item_and_teleport( obj, npc:bone_position( grenade_bone ) )
     self.state   = self.state + 1
     self.timeout = time_global() + 1000
-    return
 
   elseif self.state == 2 then
     local obj = level.object_by_id( self.a.grenade )
@@ -440,7 +446,14 @@ function action_kill_it_with_fire:execute()
     grenade_times[  self.a.grenade ] = time_global()
     grenadiers[ npc:id() ] = nil
     self.a.grenade         = nil
-    self.a.next_check_time = time_global() + math.random( 7000, 15000 )
+    self.state   = self.state + 1
+    self.timeout = time_global() + 1000
+
+  elseif self.state == 3 then
+    if self.timeout > time_global() and npc:animation_count() > 0 then
+      return
+    end
+    self.a.next_check_time = time_global() + math.random( 10000, 30000 )
     self.a.target_point    = nil
     self.a.throwing        = false
     self.finalized         = true
@@ -589,22 +602,23 @@ end
 
 
 function npc_update( npc )
-  ogse_signals.get_mgr():reschedule( 60000 )
-  for k, v in ipairs( gr_types ) do
-    local curr_gr = npc:object( v )
-    if not curr_gr then
-      local prb = npc:character_rank() / 1500
-      if prb > 0.9  then prb = 0.9  end
-      if prb < 0.01 then prb = 0.01 end
-      if math.random() < prb then
-        alife():create(
-          v,
-          npc:position(), npc:level_vertex_id(), npc:game_vertex_id(),
-          npc:id()
-        )
-      end
-    else
-      break
+  ogse_signals.get_mgr():reschedule( math.random( 50000, 60000 ) )
+  local t = {}
+  for _, sect in ipairs( gr_types ) do
+    if npc:object( sect ) then return end
+    table.insert( t, sect )
+  end
+  dsh.shuffle( t )
+  for _, sect in ipairs( t ) do
+    local prb = npc:character_rank() / 1500
+    if prb > 0.9  then prb = 0.9  end
+    if prb < 0.01 then prb = 0.01 end
+    if math.random() < prb then
+      alife():create(
+        sect,
+        npc:position(), npc:level_vertex_id(), npc:game_vertex_id(), npc:id()
+      )
+      return
     end
   end
 end
