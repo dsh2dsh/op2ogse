@@ -447,7 +447,6 @@ end
 function evaluator_check_altcombat:get_nearest_grenade()
   local npc = self.object
 
-  local grenade, nearest
   local best_danger = npc:best_danger()
   if best_danger then
     local bd_type = best_danger:type()
@@ -457,34 +456,17 @@ function evaluator_check_altcombat:get_nearest_grenade()
         bd_object and level.object_by_id( bd_object:id() )
         and ( not grenka_already_blow[ bd_object:id() ] )
       then
-        grenade = {
-          [ "grenade" ] = bd_object:id(),
-          [ "parent"  ] = best_danger:object():id(),
-        }
-        nearest = bd_object
+        local dist   = npc:position():distance_to( bd_object:position() )
+        local radius = xrs_grenade.get_grenade_radius( bd_object:section() )
+        if dist < radius * 0.9 then
+          return {
+            [ "grenade" ] = bd_object:id(),
+            [ "parent"  ] = best_danger:object():id(),
+          }
+        end
       end
     end
   end
-
-  local pos = npc:position()
-  xrs_grenade.iterate_active_grenades(
-    function( obj, parent, radius )
-      local dist = pos:distance_to( obj:position() )
-      if
-        npc:see( obj ) and dist < radius * 0.9 and (
-          ( not nearest )
-          or dist < pos:distance_to( nearest:position() )
-        )
-      then
-        nearest = obj
-        if not grenade then grenade = {} end
-        grenade.grenade = nearest:id()
-        grenade.parent  = parent
-      end
-    end
-  )
-
-  return grenade
 end
 
 
@@ -665,7 +647,7 @@ function action_altcombat:_execute()
   elseif distance < 5 then
     time_hide[ npc:id() ] = nil
     cur_situation  = 2
-    last_algorythm = "find_cover_2"
+    last_algorythm = "find_cover_6"
     set_combat_sight( npc, be, bw )
     if can_fire[ npc:id() ] then
       set_combat_state( npc, be, bw )
@@ -803,6 +785,7 @@ function action_altcombat:_execute()
     [ "find_cover_5"  ] = function() return
       find_cover( npc, be, 5, self.st.is_camper )
     end,
+    [ "find_cover_6"  ] = function() return find_cover( npc, be, 6 ) end,
     [ "grenade"       ] = function() return 0 end,
   }
   ASSERT(
@@ -2794,13 +2777,15 @@ function find_cover( npc, enemy, mode, camper_vertex )
   local to_enemy     = npc_pos:distance_to( enemy_pos )
 
   local cover_cache    = {}
-  local cover_callback = function( cover )
+  local cover_callback = function( cover, next_check )
     local cover_vertex = cover:level_vertex_id()
     local cached       = cover_cache[ cover_vertex ]
     if cached ~= nil then return cached end
     cover_cache[ cover_vertex ] = not (
       check_vertex_locked( npc, cover_vertex )
       or its_a_trap( npc, cover_vertex )
+      or ( next_check and next_check( cover ) )
+      or false
     )
     return cover_cache[ cover_vertex ]
   end
@@ -2849,6 +2834,24 @@ function find_cover( npc, enemy, mode, camper_vertex )
 
   elseif mode == 5 then       -- возврат кемпера на точку
     cover_vertex = camper_vertex
+
+  elseif mode == 6 then       -- срочное отступление, противник очень близко
+    cover_cache = {}
+    for _, r in ipairs({ 10, 30 }) do
+      cover = npc:best_cover(
+        npc_pos, enemy_pos, r, to_enemy + 5, to_enemy + r,
+        function( cover )
+          return cover_callback(
+            cover,
+            function( cover )
+              local pos = cover:position()
+              return pos:distance_to( npc_pos ) > pos:distance_to( enemy_pos )
+            end
+          )
+        end
+      )
+      if cover then break end
+    end
 
   elseif mode == 0 then       -- оборона
     cover_cache = {}
