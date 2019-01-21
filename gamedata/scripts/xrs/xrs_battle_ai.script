@@ -588,7 +588,8 @@ function action_altcombat:_execute()
     end
     local last_deadman_id = deadman_vtx[ npc:id() ]
     if ( not last_deadman_id ) or last_deadman_id ~= deadman then
-      deadman_vtx[ npc:id() ] = deadman
+      deadman_vtx[    npc:id() ] = deadman
+      last_time_send[ npc:id() ] = nil
       local lvid = find_cover( npc, deadman_target, random_choice( 1, 3, 4 ) )
       if lvid then
         utils.send_to_nearest_accessible_vertex( npc, lvid )
@@ -630,17 +631,19 @@ function action_altcombat:_execute()
 
   process_combat_sound( npc )
 
-  local height          = be_pos.y - npc_pos.y
-  local actor_at_height = (
-    be_pos.y > npc_pos.y and height > 3 and be:id() == db.actor:id()
-  )
+  local actor_at_height = false
+  if be:is_actor() then
+    local lvid_pos  = level.vertex_position( db.actor:level_vertex_id() )
+    local height    = db.actor:position().y - lvid_pos.y
+    actor_at_height = ( height > 3 )
+  end
   local cur_situation   = 0
 
+  set_combat_sight( npc, be, bw )
   if has_grenade then
     time_hide[ npc:id() ] = nil
     cur_situation  = 1
     last_algorythm = "grenade"
-    set_combat_sight( npc, be, bw )
     if self.can_fire then
       set_weapons_fire( npc, be, bw, false, npc_rank )
     end
@@ -649,7 +652,6 @@ function action_altcombat:_execute()
     time_hide[ npc:id() ] = nil
     cur_situation  = 2
     last_algorythm = "find_cover_6"
-    set_combat_sight( npc, be, bw )
     if self.can_fire then
       set_combat_state( npc, be, bw )
       set_weapons_fire( npc, be, bw, false, npc_rank )
@@ -667,7 +669,6 @@ function action_altcombat:_execute()
     cur_situation  = 3
     last_algorythm = "find_cover_2"
 
-    set_combat_sight( npc, be, bw )
     if self.can_fire then
       set_combat_state( npc, be, bw )
       set_weapons_fire( npc, be, bw, false, npc_rank )
@@ -703,7 +704,6 @@ function action_altcombat:_execute()
       end
     end
 
-    set_combat_sight( npc, be, bw )
     if self.can_fire then
       set_combat_state( npc, be, bw )
       set_weapons_fire( npc, be, bw, false, npc_rank )
@@ -718,7 +718,6 @@ function action_altcombat:_execute()
     cur_situation  = 6
     last_algorythm = "find_cover_2"
 
-    set_combat_sight( npc, be, bw )
     set_transfer_state( npc, be )
     choose_idle_scheme(npc, "defence")
 
@@ -748,7 +747,6 @@ function action_altcombat:_execute()
       end
     end
 
-    set_combat_sight( npc, be, bw )
     set_transfer_state( npc, be )
     choose_idle_scheme( npc, "lost" )
   end
@@ -924,16 +922,21 @@ function action_altcombat:evade_grenades()
 
   local enemy = get_target( npc )
   if npc:path_completed() and enemy then
+    npc:set_sight( enemy, true, true )
     return false
   elseif npc:path_completed() then
     if not enemy then
       enemy = level.object_by_id( danger.parent ) or danger_obj
     end
-    state_mgr.set_state(
-      npc, "hide_na", nil, nil, { look_object = enemy }
-    )
+    npc:set_sight( enemy, true, true )
+    npc:set_movement_type( move.stand )
+    npc:set_mental_state( anim.danger )
+    npc:set_body_state( move.crouch )
   else
-    state_mgr.set_state( npc, "assault" )
+    npc:set_sight( look.path_dir, true, true )
+    npc:set_movement_type( move.run )
+    npc:set_mental_state( anim.danger )
+    npc:set_body_state( move.standing )
   end
 
   return true
@@ -2444,92 +2447,93 @@ end
 
 
 function set_weapons_fire( npc, enemy, weapon, override_vis, npc_rank )
-  if
+  if not (
     enemy
     and ( enemy:alive() or ( is_armor( enemy ) and armor_alive( enemy ) ) )
-    and weapon and not ( IsStalker( enemy ) and xr_wounded.is_wounded( enemy ) )
-  then
-    local time_aim     = time_to_aim[ npc_rank ]
-    local type_of_fire = object.aim1
-    local be_pos       = enemy:position()
-    local npc_pos      = weapon:get_weapon():get_fire_point()
+    and weapon
+    and not ( enemy:is_stalker() and xr_wounded.is_wounded( enemy ) )
+  ) then
+    return
+  end
 
-    local binder = npc:binded_object()
-    local st     = binder[ "xrs_battle_ai.set_combat_sight" ]
-    if st and st.look_pos then
-      be_pos = st.look_pos
-    else
-      if is_armor( enemy ) then
-        if string.find( enemy:name(), "btr" ) then
-          be_pos = enemy:bone_position( "mashine_gun_tower" )
-        else
-          be_pos = enemy:bone_position( "korpus1" )
-        end
+  local time_aim     = time_to_aim[ npc_rank ]
+  local type_of_fire = object.aim1
+  local be_pos       = enemy:position()
+
+  local binder = npc:binded_object()
+  local st     = binder[ "xrs_battle_ai.set_combat_sight" ]
+  if st and st.look_pos then
+    be_pos = st.look_pos
+  else
+    if is_armor( enemy ) then
+      if string.find( enemy:name(), "btr" ) then
+        be_pos = enemy:bone_position( "mashine_gun_tower" )
       else
-        be_pos = enemy:bone_position( "bip01_head" )
+        be_pos = enemy:bone_position( "korpus1" )
       end
-    end
-    local distance = npc_pos:distance_to( be_pos )
-
-    local rq = npc:see( enemy )
-    if is_armor( enemy ) and armor_alive( enemy ) then
-      rq           = false
-      type_of_fire = object.fire1
     else
-      local weapon_unstrapped = npc:weapon_unstrapped()
-      if
-        ( not weapon_unstrapped ) or ( IsRPG( weapon ) and distance < 25 )
-      then
-        rq           = false
+      be_pos = enemy:bone_position( "bip01_head" )
+    end
+  end
+
+  local npc_pos  = vector():set( 0, 0, 0 )
+  local npc_dir  = vector():set( 0, 0, 0 )
+  npc:g_fireParams( weapon, npc_pos, npc_dir )
+  local distance = npc_pos:distance_to( be_pos )
+
+  local rq = npc:see( enemy )
+  if is_armor( enemy ) and armor_alive( enemy ) then
+    rq           = false
+    type_of_fire = object.fire1
+  else
+    local weapon_unstrapped = npc:weapon_unstrapped()
+    if
+      ( not weapon_unstrapped ) or ( IsRPG( weapon ) and distance < 25 )
+    then
+      rq           = false
+      type_of_fire = object.aim1
+    end
+  end
+
+  if rq then
+    rq = level.ray_query(
+      npc_pos, npc_dir, distance + 5, rq_target.rqtBoth, npc
+    )
+    type_of_fire = object.fire1 -- по умолчанию можем стрелять
+    if rq.result then
+      local obj = rq.object
+      local is_alive_mob = obj and ( obj:is_actor() or obj:is_custom_monster() )
+        and obj:alive()
+      if is_alive_mob and not check_is_enemy( npc, obj, true ) then
+        -- если попадем в своего - стрелять нельзя
         type_of_fire = object.aim1
       end
     end
+  end
 
-    if rq then
-      local dir_enemy = utils.vector_copy_by_val( be_pos ):sub( npc_pos )
-      dir_enemy:normalize()
-      rq = level.ray_query(
-        npc_pos, dir_enemy, distance + 5, rq_target.rqtBoth, npc
-      )
-      type_of_fire = object.fire1 -- по умолчанию можем стрелять
-      if rq.result then
-        local obj = rq.object
-        local is_alive_mob = obj and ( IsStalker( obj ) or IsMonster( obj ) )
-          and obj:alive()
-        if is_alive_mob and not check_is_enemy( npc, obj, true ) then
-          -- если попадем в своего - стрелять нельзя
-          type_of_fire = object.aim1
-        end
-      end
+  if type_of_fire == object.fire1 then
+    if st and st.use_deviation then
+      st.use_deviation = false
+      local dev = add_deviation( npc, be_pos, weapon, distance, enemy )
+      be_pos.x  = be_pos.x + dev.x
+      be_pos.y  = be_pos.y + dev.y
+      be_pos.z  = be_pos.z + dev.z
+      npc:set_sight( look.fire_point, be_pos )
     end
+  end
 
-    if type_of_fire == object.fire1 then
-      if st and st.use_deviation then
-        st.use_deviation = false
-        local dev = add_deviation( npc, be_pos, weapon, distance, enemy )
-        be_pos.x  = be_pos.x + dev.x
-        be_pos.y  = be_pos.y + dev.y
-        be_pos.z  = be_pos.z + dev.z
-        npc:set_sight( look.fire_point, be_pos )
-      end
+  if IsShotgun( weapon ) or IsSniperRifle( weapon ) then
+    npc:set_item( type_of_fire, weapon, 1, time_aim.other )
+  elseif IsRPG( weapon ) then
+    npc:set_item( type_of_fire, weapon, 1, time_aim.rpg )
+  else
+    local qs = get_u32(
+      weapon:section(), "xrs_battle_ai.preffered_fire_mode"
+    )
+    if not qs then
+      qs = math.random( 2, 5 )
     end
-
-    if IsShotgun( weapon ) then
-      npc:set_item( type_of_fire, weapon, 1, time_aim.other )
-    elseif IsSniperRifle( weapon ) then
-      npc:set_item( type_of_fire, weapon, 1, time_aim.other )
-    elseif IsRPG( weapon ) then
-      npc:set_item( type_of_fire, weapon, 1, time_aim.rpg )
-    else
-      local qs = get_u32(
-        weapon:section(), "xrs_battle_ai.preffered_fire_mode"
-      )
-      if not qs then
-        qs = math.random( 2, 5 )
-      end
-      npc:set_item( type_of_fire, weapon, qs, time_aim.other )
-    end
-
+    npc:set_item( type_of_fire, weapon, qs, time_aim.other )
   end
 end
 
@@ -2548,51 +2552,61 @@ end
 
 
 function set_combat_state( npc, enemy, weapon )
+  npc:set_mental_state( anim.danger )
   local state_name
   if in_hideout( npc ) then
+    npc:set_movement_type( move.stand )
     local hide_val = last_hideout[ npc:id() ].value
     if hide_val <= 0.45 then
+      npc:set_body_state( move.crouch )
       state_name = "hide_fire"
     else
+      npc:set_body_state( move.standing )
       state_name = "threat_fire"
     end
   elseif in_transit( npc ) then
+    npc:set_movement_type( move.walk )
+    npc:set_body_state( move.standing )
     state_name = "raid_fire"
   else
+    npc:set_movement_type( move.stand )
     local npc_pos  = npc:position()
     local be_pos   = enemy:position()
     local distance = be_pos:distance_to( npc_pos )
     if distance < close_combat_distance then
+      npc:set_body_state( move.standing )
       state_name = "threat_fire"
     else
+      npc:set_body_state( move.crouch )
       state_name = "hide_fire"
     end
   end
-
-  state_mgr.set_state(
-    npc, state_name, nil, nil, looking_to_enemy( npc, enemy )
-  )
 end
 
 
 function set_transfer_state( npc, enemy )
+  npc:set_mental_state( anim.danger )
   local state_name
   if in_hideout( npc ) then
+    npc:set_movement_type( move.stand )
     local hide_val = last_hideout[ npc:id() ].value
     if hide_val <= 0.45 then
+      npc:set_body_state( move.crouch )
       state_name = "hide_na"
     else
+      npc:set_body_state( move.standing )
       state_name = "threat"
     end
   elseif in_transit( npc ) then
+    npc:set_sight( look.path_dir, true, true )
+    npc:set_movement_type( move.run )
+    npc:set_body_state( move.standing )
     state_name = "assault"
   else
+    npc:set_movement_type( move.stand )
+    npc:set_body_state( move.standing )
     state_name = "threat"
   end
-
-  state_mgr.set_state(
-    npc, state_name, nil, nil, { look_object = enemy }
-  )
 end
 
 
@@ -2624,7 +2638,10 @@ end
 
 
 function set_combat_sight( npc, enemy, weapon )
-  if not weapon then return end
+  if not weapon then
+    npc:set_sight( enemy, true, true )
+    return
+  end
 
   local enemy_pos = enemy:position()
   local npc_pos   = npc:position()
@@ -2647,7 +2664,7 @@ function set_combat_sight( npc, enemy, weapon )
   then
     bone = st.bone
   else
-    if IsStalker( enemy ) then
+    if enemy:is_actor() or enemy:is_stalker() then
       if distance < 10 then
         use_deviation = true
         if enemy:body_state() == move.crouch then
@@ -2718,9 +2735,7 @@ function set_combat_sight( npc, enemy, weapon )
 
   st.look_pos = look_pos
   npc:set_desired_direction()
-  if weapon then
-    npc:set_sight( look.fire_point, look_pos )
-  end
+  npc:set_sight( look.fire_point, look_pos )
 end
 
 
@@ -2796,9 +2811,15 @@ function find_cover( npc, enemy, mode, camper_vertex )
   if mode == 1 then           -- атака
     local max = math.max( to_enemy, min_dist )
     local min = min_dist
-    if to_enemy > 50 + min then
-      cover = npc:angle_cover( npc_pos, 50, enemy_pos, min, max, enemy_vertex )
-    else
+    for _, r in ipairs({ 70, 50, 30 }) do
+      if to_enemy - r > min then
+        cover = npc:angle_cover(
+          npc_pos, r, enemy_pos, min, max, enemy_vertex
+        )
+        break
+      end
+    end
+    if not cover then
       cover_cache = {}
       for _, r in ipairs({ 10, 30 }) do
         cover = npc:angle_cover(
