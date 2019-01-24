@@ -714,6 +714,8 @@ bigfont.xdb: увеличивает шрифт в игре
 
 coc_actor_step.xdb: звук шагов ГГ и CoC
 
+doberbull_op21_inv.xdb: инвентарь из ОП 2.1 от DoberBull
+
 haarhus_inv.xdb: темный инвентарь от Haarhus
 
 nlc7_bolt.xdb, nlc7_bolt2.xdb: болты разных версий из NLC7 Переосмысление
