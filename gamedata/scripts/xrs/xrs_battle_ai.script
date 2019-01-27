@@ -8,11 +8,7 @@
 -----------------------------------------------------------------------
 --- Ќастройки:
 -----------------------------------------------------------------------
-local total_debug               = false --get_console():get_bool( "write_debug_log" )
--- врем€, сколько примерно сидеть в укрытии, миллиссекунд
-local time_to_hide              = 5000
--- врем€, сколько сто€ть на точке маневрировани€, миллиссекунд
-local time_to_maneuver          = 2500
+local total_debug               = false
 local close_combat_distance     = 15 -- дистанци€ ближнего бо€
 -- дистанци€ когда бой уже не считаетс€ ближним
 local distant_combat_distance   = 35
@@ -30,8 +26,6 @@ local remember_enemy            = 10000
 -- стартовала включенной сразу же, иначе будут глюки на переключении
 -- схем и выборе оружи€
 local engage_after_update       = 3
--- врем€, мсек, сколько придерживатьс€ выбранной тактики
-local time_mantain_tactics      = 30000
 local visibility_treshold_value = 0.45 -- трешхолд видимости
 
 -- веро€тность сказать фразу
@@ -630,14 +624,7 @@ function action_altcombat:_execute()
   local assist_point, cover, last_algorythm
 
   process_combat_sound( npc )
-
-  local actor_at_height = false
-  if be:is_actor() then
-    local lvid_pos  = level.vertex_position( db.actor:level_vertex_id() )
-    local height    = db.actor:position().y - lvid_pos.y
-    actor_at_height = ( height > 3 )
-  end
-  local cur_situation   = 0
+  local cur_situation = 0
 
   set_combat_sight( npc, be, bw )
   if has_grenade then
@@ -684,24 +671,13 @@ function action_altcombat:_execute()
     -- если видим врага и он Ќ≈ видит нас - стрел€ем, маневриру€
     self.st.ready_to_grenade = true
     time_hide[ npc:id() ] = nil
-    if actor_at_height then
-      cur_situation = 4
-      if self.st.is_camper then
-        last_algorythm = "find_cover_5"
-      else
-        last_algorythm = random_choice(
-          "find_cover_1", "find_cover_3", "find_cover_4"
-        )
-      end
+    cur_situation = 4
+    if self.st.is_camper then
+      last_algorythm = "find_cover_5"
     else
-      cur_situation = 5
-      if self.st.is_camper then
-        last_algorythm = "find_cover_5"
-      else
-        last_algorythm = random_choice(
-          "find_cover_1", "find_cover_3", "find_cover_4"
-        )
-      end
+      last_algorythm = random_choice(
+        "find_cover_1", "find_cover_3", "find_cover_4"
+      )
     end
 
     if self.can_fire then
@@ -715,7 +691,7 @@ function action_altcombat:_execute()
   elseif ( not npc:see( be ) ) and be:see( npc ) then
     -- если Ќ≈ видим врага и он видит нас - убегаем, ищем укрытие
     time_hide[ npc:id() ] = nil
-    cur_situation  = 6
+    cur_situation  = 5
     last_algorythm = "find_cover_2"
 
     set_transfer_state( npc, be )
@@ -728,39 +704,36 @@ function action_altcombat:_execute()
       time_hide[ npc:id() ] = time_global() + math.random( 7000, 15000 )
     end
     if self.st.is_camper then
-      cur_situation  = 7
+      cur_situation  = 6
       last_algorythm = "find_cover_5"
     else
       if time_hide[ npc:id() ] < time_global() then
-        if actor_at_height then
-          cur_situation  = 8
-          last_algorythm = "find_cover_2"
+        if self:actor_at_height( be ) then
+          cur_situation  = 7
+          last_algorythm = random_choice( "find_cover_2", "find_cover_7" )
         else
-          cur_situation  = 9
+          cur_situation  = 8
           last_algorythm = random_choice(
             "find_cover_1", "find_cover_3", "find_cover_4"
           )
         end
       else
-        cur_situation  = 10
-        last_algorythm = "find_cover_2"
+        cur_situation  = 9
+        last_algorythm = random_choice( "find_cover_2", "find_cover_7" )
       end
     end
 
-    set_transfer_state( npc, be )
+    set_transfer_state( npc, be, true )
     choose_idle_scheme( npc, "lost" )
   end
 
   local lcp     = last_choosed_path[ npc:id() ]
   local use_lcp = false
   if
-    lcp and lcp.timeout > time_global()
-    and lcp.situation == cur_situation and lcp.be == be:id()
+    lcp and lcp.situation == cur_situation and lcp.be == be:id()
+    and be:position():distance_to( lcp.pos ) < 5
   then
-    if be:position():distance_to( lcp.pos ) < 5 then
-      last_algorythm = lcp.alg
-      use_lcp        = true
-    end
+    use_lcp = true
   end
   if not use_lcp then
     if not lcp then
@@ -771,7 +744,6 @@ function action_altcombat:_execute()
     lcp.be        = be:id()
     lcp.pos       = be:position()
     lcp.situation = cur_situation
-    lcp.timeout   = time_global() + time_mantain_tactics
     last_time_send[ npc:id() ] = nil
   end
 
@@ -785,6 +757,7 @@ function action_altcombat:_execute()
       find_cover( npc, be, 5, self.st.is_camper )
     end,
     [ "find_cover_6"  ] = function() return find_cover( npc, be, 6 ) end,
+    [ "find_cover_7"  ] = function() return find_cover( npc, be, 7 ) end,
     [ "grenade"       ] = function() return 0 end,
   }
   ASSERT(
@@ -795,20 +768,23 @@ function action_altcombat:_execute()
   assist_point = actions[ last_algorythm ]()
 
   if assist_point and assist_point ~= 0 then
-    if
-      npc:level_vertex_id() == assist_point
-      or npc:position():distance_to( level.vertex_position( assist_point ) ) <= 1.0
-    then
-      if is_safe_to_block_movement( npc, be ) then
-        self.object:movement_enabled( false )
-      else
-        last_time_send[ npc:id() ] = nil
-      end
-      last_time_send[ npc:id() ] = nil
-    else
-      utils.send_to_nearest_accessible_vertex( npc, assist_point )
-    end
+    utils.send_to_nearest_accessible_vertex( npc, assist_point )
   end
+end
+
+
+function action_altcombat:actor_at_height( be )
+  if not be:is_actor() then return false end
+  local height = db.actor:position().y - self.object:position().y
+  if height < 3 then return false end
+  if
+    ( not self.actor_at_height_inert )
+    or self.actor_at_height_inert < time_global()
+  then
+    self.actor_at_height_inert     = time_global() + math.random( 60 ) * 1000
+    self.actor_at_height_threshold = math.random( 2 )
+  end
+  return ( self.actor_at_height_threshold > 1 )
 end
 
 
@@ -2552,21 +2528,17 @@ end
 
 function set_combat_state( npc, enemy, weapon )
   npc:set_mental_state( anim.danger )
-  local state_name
   if in_hideout( npc ) then
     npc:set_movement_type( move.stand )
     local hide_val = last_hideout[ npc:id() ].value
     if hide_val <= 0.45 then
       npc:set_body_state( move.crouch )
-      state_name = "hide_fire"
     else
       npc:set_body_state( move.standing )
-      state_name = "threat_fire"
     end
   elseif in_transit( npc ) then
     npc:set_movement_type( move.walk )
     npc:set_body_state( move.standing )
-    state_name = "raid_fire"
   else
     npc:set_movement_type( move.stand )
     local npc_pos  = npc:position()
@@ -2574,37 +2546,32 @@ function set_combat_state( npc, enemy, weapon )
     local distance = be_pos:distance_to( npc_pos )
     if distance < close_combat_distance then
       npc:set_body_state( move.standing )
-      state_name = "threat_fire"
     else
       npc:set_body_state( move.crouch )
-      state_name = "hide_fire"
     end
   end
 end
 
 
-function set_transfer_state( npc, enemy )
+function set_transfer_state( npc, enemy, sight )
   npc:set_mental_state( anim.danger )
-  local state_name
   if in_hideout( npc ) then
     npc:set_movement_type( move.stand )
     local hide_val = last_hideout[ npc:id() ].value
     if hide_val <= 0.45 then
       npc:set_body_state( move.crouch )
-      state_name = "hide_na"
     else
       npc:set_body_state( move.standing )
-      state_name = "threat"
     end
   elseif in_transit( npc ) then
-    npc:set_sight( look.path_dir, true, true )
+    if sight then
+      npc:set_sight( look.path_dir, true, true )
+    end
     npc:set_movement_type( move.run )
     npc:set_body_state( move.standing )
-    state_name = "assault"
   else
     npc:set_movement_type( move.stand )
     npc:set_body_state( move.standing )
-    state_name = "threat"
   end
 end
 
@@ -2778,10 +2745,7 @@ function find_cover( npc, enemy, mode, camper_vertex )
   --   function position() const;
   -- };
 
-  if
-    last_time_send[ npc:id() ] and last_time_send[ npc:id() ] > time_global()
-    and not npc:path_completed()
-  then
+  if last_time_send[ npc:id() ] and not npc:path_completed() then
     return 0
   end
   if not ( npc and enemy ) then return end
@@ -2807,19 +2771,16 @@ function find_cover( npc, enemy, mode, camper_vertex )
 
   local cover, cover_vertex
   local min_dist = close_combat_distance
-  if mode == 1 then           -- атака
+  if mode == 1 then             -- атака по дуге
     local max = math.max( to_enemy, min_dist )
     local min = min_dist
-    for _, r in ipairs({ 70, 50, 30 }) do
-      if to_enemy - r > min then
-        cover = npc:angle_cover(
-          npc_pos, r, enemy_pos, min, max, enemy_vertex
-        )
-        break
-      end
+    cover_cache = {}
+    if to_enemy - min > 0 then
+      cover = npc:angle_cover(
+        npc_pos, to_enemy, enemy_pos, min, max, enemy_vertex, cover_callback
+      )
     end
     if not cover then
-      cover_cache = {}
       for _, r in ipairs({ 10, 30 }) do
         cover = npc:angle_cover(
           npc_pos, r, enemy_pos, min, max, enemy_vertex, cover_callback
@@ -2828,7 +2789,7 @@ function find_cover( npc, enemy, mode, camper_vertex )
       end
     end
 
-  elseif mode == 2 then       -- отступление
+  elseif mode == 2 then         -- отступление
     cover_cache = {}
     for _, r in ipairs({ 10, 30 }) do
       cover = npc:best_cover(
@@ -2837,7 +2798,7 @@ function find_cover( npc, enemy, mode, camper_vertex )
       if cover then break end
     end
 
-  elseif mode == 3 then
+  elseif mode == 3 then         -- атака
     cover_cache = {}
     for _, r in ipairs({ 10, 30 }) do
       cover = npc:ambush_cover(
@@ -2846,7 +2807,7 @@ function find_cover( npc, enemy, mode, camper_vertex )
       if cover then break end
     end
 
-  elseif mode == 4 then
+  elseif mode == 4 then         -- атака
     cover_cache = {}
     for _, r in ipairs({ 10, 30 }) do
       local max = math.max( to_enemy, min_dist )
@@ -2857,10 +2818,10 @@ function find_cover( npc, enemy, mode, camper_vertex )
       if cover then break end
     end
 
-  elseif mode == 5 then       -- возврат кемпера на точку
+  elseif mode == 5 then         -- возврат кемпера на точку
     cover_vertex = camper_vertex
 
-  elseif mode == 6 then       -- срочное отступление, противник очень близко
+  elseif mode == 6 then -- срочное отступление, противник очень близко
     cover_cache = {}
     for _, r in ipairs({ 10, 30 }) do
       cover = npc:best_cover(
@@ -2878,7 +2839,22 @@ function find_cover( npc, enemy, mode, camper_vertex )
       if cover then break end
     end
 
-  elseif mode == 0 then       -- оборона
+  elseif mode == 7 then         -- отступление по дуге
+    cover_cache = {}
+    cover = npc:angle_cover(
+      npc_pos, to_enemy, enemy_pos, to_enemy, to_enemy * 2, enemy_vertex,
+      cover_callback
+    )
+    if not cover then
+      for _, r in ipairs({ 10, 30 }) do
+        cover = npc:best_cover(
+          npc_pos, enemy_pos, r, to_enemy, to_enemy + r, cover_callback
+        )
+        if cover then break end
+      end
+    end
+
+  elseif mode == 0 then         -- оборона
     cover_cache = {}
     for _, r in ipairs({ 10, 30 }) do
       cover = npc:safe_cover( npc_pos, r, 0, cover_callback )
@@ -2900,10 +2876,7 @@ function find_cover( npc, enemy, mode, camper_vertex )
     cover_vertex, enemy_pos:sub( cover_pos )
   )
 
-  local dist_to_cover = cover_pos:distance_to( npc_pos )
-  local move_speed    = 1.8
-  local move_time     = dist_to_cover / move_speed
-  last_time_send[ npc:id()   ] = time_global() + move_time + time_to_hide
+  last_time_send[ npc:id()   ] = time_global()
   last_sent_vertex[ npc:id() ] = cover_vertex
   last_hideout[ npc:id()     ] = {
     value = cover_value,
@@ -2912,20 +2885,6 @@ function find_cover( npc, enemy, mode, camper_vertex )
   locked_vertexes[ npc:id() ] = cover_vertex
 
   return cover_vertex
-end
-
-
-function is_safe_to_block_movement( npc, enemy )
---[=[
-  if not enemy then return true end
-  if
-    npc:position():distance_to( enemy:position() ) > distant_combat_distance
-    and not enemy:see( npc )
-  then
-    return true
-  end
---]=]
-  return false
 end
 
 
