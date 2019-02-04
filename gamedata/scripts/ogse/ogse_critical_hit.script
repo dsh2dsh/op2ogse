@@ -7,9 +7,20 @@
 -----------------------------------------------------------------------
 
 function attach( sm )
-  sm:subscribe({ signal = "on_hit", fun = this.check_critical })
+  sm:subscribe({ signal = "on_hit",   fun = this.check_critical })
+  sm:subscribe({ signal = "on_death", fun = this.on_death       })
 end
 auto_attach = true
+
+
+function on_death( obj, who )
+  local binder = obj:binded_object()
+  local data   = binder.last_hit_data
+  if not data then return end
+  local dir = vector():set( 0, 0, 0 )
+  local who = level.object_by_id( data.who_id )
+  check_critical( obj, data.power, dir, who, data.bone_id )
+end
 
 
 local last_cam_name = ""
@@ -24,70 +35,60 @@ function check_critical( obj, amount, local_direction, who, bone_index )
     return
   end
 
-  if amount > 0.05 and bone_index and bone_index > 0 and db.actor:alive() then
+  if amount > 0.05 and bone_index then
     local headshot = false
     local str      = " "
     local cam, pp
-    if bone_index < 5 then
-      str = " попадание в левую ногу (%s): %s"
-      cam = "hit_back_left"
-    elseif ( bone_index >= 5 and bone_index < 9 ) then
-      str = " попадание в правую ногу (%s): %s"
-      cam = "hit_back_right"
-    elseif ( bone_index >= 9 and bone_index < 11 ) then
-      str = " попадание в туловище (%s): %s"
+    if bone_index == 0 then
+      str = " попадание в таз (%s, %s): %s"
       cam = "hit_front"
-    elseif ( bone_index >= 11 and bone_index < 18 ) then
-      str = " попадание в голову (%s): %s"
-      if IsStalker( who ) then
-        headshot = true
-        cam = "head_shot"
-        pp  = "blink"
-      else
-        cam = "hit_front"
-      end
-    elseif ( bone_index >= 18 and bone_index < 31 ) then
-      str = " попадание в левую руку (%s): %s"
+    elseif bone_index < 5 then
+      str = " попадание в левую ногу (%s, %s): %s"
+      cam = "hit_back_left"
+    elseif bone_index < 9 then
+      str = " попадание в правую ногу (%s, %s): %s"
+      cam = "hit_back_right"
+    elseif bone_index < 12 then
+      str = " попадание в туловище (%s, %s): %s"
+      cam = "hit_front"
+    elseif bone_index < 13 then
+      str = " попадание в шею (%s, %s): %s"
+      cam = "hit_front"
+    elseif bone_index < 18 then
+      str = " попадание в голову (%s, %s): %s"
+      cam = "head_shot"
+      pp  = "blink"
+      headshot = true
+    elseif bone_index < 31 then
+      str = " попадание в левую руку (%s, %s): %s"
       cam = "hit_front_left"
-    elseif ( bone_index >= 31 and bone_index < 40 ) then
-      str = " попадание в правую руку (%s): %s"
+    elseif bone_index < 44 then
+      str = " попадание в правую руку (%s, %s): %s"
       cam = "hit_front_right"
---[=[
-      local need_drop = false
-      if bone_index == 33 then
-        -- попадание в предплечье
-        need_drop = ( math.random() < 0.5 )
-      elseif ( bone_index >= 34 and bone_index <= 38 ) then
-        -- по кисти или пальцам
-        need_drop = ( math.random() < 0.7 )
+    else
+      str = " попадание в туловище (%s, %s): %s"
+      cam = "hit_front"
+    end
+    if db.actor:alive() then
+      if pp then
+        level.add_pp_effector( pp .. ".ppe", 99, false )
       end
-      if need_drop then
-        local active_item = db.actor:active_item()
-        if
-          active_item and active_item:section()~= "bolt"
-          and active_item:section()~= "wpn_knife"
-        then
-          db.actor:drop_item( active_item )
-        end
+      if cam and ( cam ~= last_cam_name or time_global() >= next_cam_t ) then
+        level.add_cam_effector(
+          "camera_effects\\" .. cam .. ".anm", 100, false, ""
+        )
+        last_cam_name = cam
+        next_cam_t    = time_global() + 1000
       end
---]=]
-    end
-    if pp then
-      level.add_pp_effector( pp .. ".ppe", 99, false )
-    end
-    if cam and ( cam ~= last_cam_name or time_global() >= next_cam_t ) then
-      level.add_cam_effector(
-        "camera_effects\\" .. cam .. ".anm", 100, false, ""
-      )
-      last_cam_name = cam
-      next_cam_t    = time_global() + 1000
-    end
-    if headshot or hit_type == hit.explosion then
-      dsh_monster_attack.run_snd_vol_timer( 0.1 )
+      if headshot or hit_type == hit.explosion then
+        dsh_monster_attack.run_snd_vol_timer( 0.1 )
+      end
     end
     log2(
-      "[%s]: %s", script_name(), string.format(
-        str, get_bone_name_by_id( obj, bone_index ), amount
+      "[%s]: %s%s", script_name(),
+      ( db.actor:alive() and "" or "[death]" ),
+      string.format(
+        str, bone_index, get_bone_name_by_id( obj, bone_index ), amount
       )
     )
   end
