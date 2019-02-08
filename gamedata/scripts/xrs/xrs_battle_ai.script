@@ -8,6 +8,13 @@
 -----------------------------------------------------------------------
 --- Настройки:
 -----------------------------------------------------------------------
+
+-- Параметры адаптивной дисперсии при стрельбе по актору. Дисперсия
+-- будет меняться с коэффициентом от max до min в течении time.
+local firing_actor_disp_max  = 2
+local firing_actor_disp_min  = 1
+local firing_actor_disp_time = 2000
+
 local total_debug               = false
 local close_combat_distance     = 15 -- дистанция ближнего боя
 -- дистанция когда бой уже не считается ближним
@@ -523,7 +530,11 @@ end
 function action_altcombat:execute()
   local pt = profile_timer()
   pt:start()
+  self.firing_actor = false
   self:_execute()
+  if not self.firing_actor then
+    self.start_firing_actor = nil
+  end
   pt:stop()
   if pt:time() > 20000 then
     log2(
@@ -927,7 +938,8 @@ function action_altcombat:finalize()
   sr_light.check_light( npc )
   cooldown[  npc:id() ] = time_global() + cooldown_time
   in_combat[ npc:id() ] = nil
-  self.combat_sight = nil
+  self.combat_sight        = nil
+  self.start_firing_actor  = nil
   self.st.ready_to_grenade = nil
   npc:stalker_disp_base( 0 )
 end
@@ -2477,7 +2489,7 @@ function action_altcombat:set_weapons_fire( enemy, weapon, override_vis, npc_ran
   end
 
   if type_of_fire == object.fire1 then
-    if st and st.use_deviation then
+    if distance > 0 and st and st.use_deviation then
       self:add_deviation( be_pos, weapon, distance, enemy )
     else
       npc:stalker_disp_base( 0 )
@@ -2569,6 +2581,20 @@ function action_altcombat:add_deviation( position, weapon, distance, enemy )
       else
         max = 0
       end
+      self.firing_actor = true
+      if self.start_firing_actor then
+        local time = time_global() - self.start_firing_actor
+        local k    = 1 - ( time / firing_actor_disp_time )
+        if k > 0 then
+          local min_max = firing_actor_disp_max - firing_actor_disp_min
+          max = max * ( firing_actor_disp_min + min_max * k )
+        else
+          max = max * firing_actor_disp_min
+        end
+      else
+        self.start_firing_actor = time_global()
+        max = max * firing_actor_disp_max
+      end
     end
   end
   npc:stalker_disp_base( distance, max )
@@ -2619,7 +2645,7 @@ function action_altcombat:set_combat_sight( enemy, weapon )
   end
 
   local look_pos
-  if bone then  
+  if bone then
     local bone_id = enemy:get_bone_id( bone )
     ASSERT(
       bone_id ~= 65535,
@@ -2634,7 +2660,7 @@ function action_altcombat:set_combat_sight( enemy, weapon )
   then
     look_pos = npc:memory_position( enemy )
   end
-  
+
   st.look_pos = look_pos
   npc:set_desired_direction()
   if look_pos then
