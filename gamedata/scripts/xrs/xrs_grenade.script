@@ -6,6 +6,9 @@
 --' переработка, доработки алгоритма: KamikaZze
 --------------------------------------------------------------------------------
 
+-- как часто пытаться спаунить гранаты во время боя
+local spawn_grenade_freq = 300 * 1000
+
 local forbidden_comms = {       -- запретные коммунити
   [ "arena_enemy"   ] = true,
   [ "ecolog"        ] = true,
@@ -82,47 +85,14 @@ snd_grenade_replics.sniper  = snd_grenade_replics.bandit
 
 function attach( sm )
   sm:subscribe({ signal = "on_npc_death", fun = this.on_death })
-  sm:subscribe({ signal = "on_npc_net_destroy", fun = this.on_destroy })
+  sm:subscribe({ signal = "on_npc_net_destroy", fun = this.on_death })
   sm:subscribe({ signal = "on_npc_throw_grenade", fun = this.on_throw_grenade })
-  sm:subscribe({ signal = "on_npc_spawn", fun = this.on_npc_spawn })
   sm:subscribe({ signal = "on_spawn",     fun = this.init_grenade_radius })
 end
 
 
-function on_npc_spawn( obj, binder )
-  if not obj:alive() then return end
-  if
-    forbidden_comms[ obj:character_community() ]
-    or obj:character_community() == "quest_stalker"
-    or obj:name() == "mil_stalker0012"
-    or obj:name() == "yantar_ecolog_general"
-    or string.find( obj:section(), "arena" )
-    or string.find( obj:section(), "aem" )
-    or rx_utils.IsTrader( obj )
-  then
-    return
-  end
-  local s = {
-    [ "signal" ] = "on_npc_update." .. obj:id(),
-    [ "fun"    ] = this.npc_update,
-  }
-  binder[ "xrs_grenade.subscribed" ] = s
-  ogse_signals.get_mgr():subscribe( s )
-end
-
-
-function on_death( obj )
-  local binder     = obj:binded_object()
-  local subscribed = binder[ "xrs_grenade.subscribed" ]
-  if subscribed then
-    ogse_signals.get_mgr():unsubscribe( subscribed )
-  end
-  on_destroy( obj )
-end
-
-
 local firing = {}
-function on_destroy( obj )
+function on_death( obj )
   firing[ obj:id() ] = nil
 end
 
@@ -144,7 +114,46 @@ end
 
 
 function evaluator_love_napalm_smell:set_next_check_time()
-  self.a.next_check_time = time_global() + math.random( 10000, 20000 )
+  self.a.next_check_time = time_global() + math.random( 10, 20 ) * 1000
+end
+
+
+function evaluator_love_napalm_smell:get_grenade( be )
+  local npc = self.object
+  local spawn_grenade = true
+  for _, v in ipairs( gr_types ) do
+    local curr_gr = npc:object( v )
+    if curr_gr then
+      spawn_grenade = false
+      if self:check_grenade( curr_gr:section(), be ) then
+        return curr_gr
+      end
+    end
+  end
+  if self.next_spawn_grenade and self.next_spawn_grenade > time_global() then
+    spawn_grenade = false
+  end
+  if spawn_grenade then
+    self.next_spawn_grenade = time_global() + spawn_grenade_freq
+    local t = {}
+    for _, sect in ipairs( gr_types ) do
+      table.insert( t, sect )
+    end
+    dsh.shuffle( t )
+    local sobj
+    for _, sect in ipairs( t ) do
+      local prb = npc:character_rank() / 1500
+      if prb > 0.9  then prb = 0.9  end
+      if prb < 0.01 then prb = 0.01 end
+      if math.random() < prb then
+        sobj = alife():create(
+          sect,
+          npc:position(), npc:level_vertex_id(), npc:game_vertex_id(), npc:id()
+        )
+        break
+      end
+    end
+  end
 end
 
 
@@ -166,24 +175,26 @@ function evaluator_love_napalm_smell:evaluate()
   if not be then return false end
   if not self:good_target( be ) then return false end
 
-  local curr_gr
-  for _, v in ipairs( gr_types ) do
-    curr_gr = npc:object( v )
-    if curr_gr and self:check_grenade( curr_gr:section(), be ) then break end
-    curr_gr = nil
-  end
+  local curr_gr = self:get_grenade( be )
   if not curr_gr then return false end
 
-  local throw_enabled
   if
-    math.random() < 0.5
-    and level.valid_vertex_id( level.vertex_id( be:position() ) )
+    be:is_actor() and self.next_actor_grenade
+    and self.next_actor_grenade > time_global()
   then
+    return false
+  end
+
+  local throw_enabled
+  if level.valid_vertex_id( level.vertex_id( be:position() ) ) then
     throw_enabled = npc:throw_target( be:position(), be:level_vertex_id(), be )
   else
     throw_enabled = npc:throw_target( be:position(), be )
   end
   if throw_enabled then
+    if be:is_actor() then
+      self.next_actor_grenade = time_global() + math.random( 60, 300 ) * 1000
+    end
     self.a.grenade      = curr_gr:id()
     self.a.target_enemy = be:id()
     self.a.target_pos   = be:position()
@@ -328,7 +339,7 @@ function action_kill_it_with_fire:finalize()
   action_base.finalize( self )
   local npc = self.object
   firing[ npc:id() ] = nil
-  self.a.next_check_time = time_global() + math.random( 60000, 300000 )
+  self.a.next_check_time = time_global() + math.random( 60, 300 ) * 1000
   self.a.throwing        = false
   self.at_pos            = false
   self.finalized         = true
@@ -356,29 +367,6 @@ function get_grenade_radius( sect )
     grenade_data[ sect ] = t
   end
   return t.radius
-end
-
-
-function npc_update( npc )
-  ogse_signals.get_mgr():reschedule( math.random( 60000, 120000 ) )
-  local t = {}
-  for _, sect in ipairs( gr_types ) do
-    if npc:object( sect ) then return end
-    table.insert( t, sect )
-  end
-  dsh.shuffle( t )
-  for _, sect in ipairs( t ) do
-    local prb = npc:character_rank() / 1500
-    if prb > 0.9  then prb = 0.9  end
-    if prb < 0.01 then prb = 0.01 end
-    if math.random() < prb then
-      alife():create(
-        sect,
-        npc:position(), npc:level_vertex_id(), npc:game_vertex_id(), npc:id()
-      )
-      return
-    end
-  end
 end
 
 
@@ -418,13 +406,22 @@ act_kill_it = base_act + 0
 act_run     = base_act + 1
 
 
-function add_to_binder( object, char_ini, scheme, section, st )
-  local manager = object:motivation_action_manager()
+function add_to_binder( obj, char_ini, scheme, section, st )
+  local manager = obj:motivation_action_manager()
   local property_wounded         = xr_evaluators_id.sidor_wounded_base
   local state_mgr_to_idle_combat = xr_actions_id.state_mgr + 1
   local state_mgr_to_idle_alife  = xr_actions_id.state_mgr + 2
   manager:remove_evaluator( prop_fire )
-  if forbidden_comms[ object:character_community() ] or not object:alive() then
+  if
+    forbidden_comms[ obj:character_community() ]
+    or obj:character_community() == "quest_stalker"
+    or obj:name() == "mil_stalker0012"
+    or obj:name() == "yantar_ecolog_general"
+    or string.find( obj:section(), "arena" )
+    or string.find( obj:section(), "aem" )
+    or rx_utils.IsTrader( obj )
+    or not obj:alive()
+  then
     manager:add_evaluator( prop_fire, property_evaluator_const( false ) )
     return
   end
