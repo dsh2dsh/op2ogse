@@ -51,28 +51,91 @@ end
 
 class "generic_mine_binder" ( object_binder )
 function generic_mine_binder:__init( obj ) super( obj )
-  self.exploded = false
-  self.freq     = 1000
+  self.feel_touch_inside = {}
+  self.freq   = 500
+  self.radius = 2
   self.ready_to_explode = false
 end
 
 
-function generic_mine_binder:net_spawn( data )
-  if not object_binder.net_spawn( self, data ) then
+function generic_mine_binder:net_spawn( sobj )
+  if not object_binder.net_spawn( self, sobj ) then
     return false
   end
-  self.dsh_update_t = 0
+  if sobj.parent_id == 65535 then
+    self.object:add_feel_touch(
+      self.radius, self,
+      self.feel_touch_new_delete, self.feel_touch_contact
+    )
+  end
   return true
+end
+
+
+function generic_mine_binder:net_destroy()
+  if self.sig_update then
+    self:unsubscribe()
+  end
+end
+
+
+function generic_mine_binder:unsubscribe()
+  ogse_signals.get_mgr():unsubscribe( self.sig_update )
+  self.sig_update = nil
+end
+
+
+function generic_mine_binder:feel_touch_contact( obj )
+  return obj:is_car()
+    or (
+      ( obj:is_actor() or ( obj:is_custom_monster() and obj:radius() >= 0.6 ) )
+      and obj:alive()
+    )
+end
+
+
+function generic_mine_binder:feel_touch_new_delete( obj, is_new )
+  if is_new then
+    self.feel_touch_inside[ obj:id() ] = true
+    if not self.sig_update then
+      self.sig_update = { signal = "on_update", fun = self.on_update, self = self }
+      ogse_signals.get_mgr():subscribe( self.sig_update )
+    end
+  else
+    self.feel_touch_inside[ obj:id() ] = nil
+    if self.sig_update and not self:is_anybody_inside() then
+      self:unsubscribe()
+    end
+  end
+end
+
+
+function generic_mine_binder:is_anybody_inside()
+  for id, _ in pairs( self.feel_touch_inside ) do
+    local obj
+    if alife():object( id ) then
+      obj = level.object_by_id( id )
+    end
+    if obj then
+      if obj:is_car() or obj:alive() then
+        return obj
+      else
+        self.feel_touch_inside[ id ] = nil
+      end
+    end
+  end
+  return false
 end
 
 
 function generic_mine_binder:check_btr()
   local pos = self.object:position()
-  for id, _ in pairs( db.btr ) do
+  for id, _ in pairs( self.feel_touch_inside ) do
     local obj = level.object_by_id( id )
     if
-      obj and obj:get_car():GetfHealth() > 0
-      and obj:position():distance_to( pos ) < 2
+      obj and obj:is_car()
+      and obj:get_car():GetfHealth() > 0
+      and obj:position():distance_to( pos ) < self.radius
     then
       return true
     end
@@ -84,11 +147,12 @@ end
 function generic_mine_binder:check_creature()
   local aobj = get_actor_obj()
   local pos  = self.object:position()
-  for id, _ in pairs( db.creature ) do
+  for id, _ in pairs( self.feel_touch_inside ) do
     local obj = level.object_by_id( id )
     if
-      obj and obj:alive() and obj:radius() >= 0.6
-      and ( obj:position():distance_to( pos ) - obj:radius() ) < 2
+      obj and ( obj:is_actor() or obj:is_custom_monster() )
+      and obj:alive()
+      and obj:position():distance_to( pos ) < self.radius
       and not (
         obj:is_actor() and (
           aobj:is_actor_creep() or aobj:is_actor_creeping()
@@ -103,9 +167,7 @@ function generic_mine_binder:check_creature()
 end
 
 
-function generic_mine_binder:update( delta )
-  object_binder.update( self, delta )
-  if self.dsh_update_t > time_global() then return end
+function generic_mine_binder:on_update()
   local id = self.object:id()
   if self.object:parent() then
     if mines_on_timer[ id ] then
@@ -113,16 +175,25 @@ function generic_mine_binder:update( delta )
       mines_on_timer[ id ] = nil
     end
     self.ready_to_explode = false
+    self.object:remove_feel_touch(
+      self, self.feel_touch_new_delete, self.feel_touch_contact
+    )
+    self:unsubscribe()
+    return
+  elseif not self:is_anybody_inside() then
+    self:unsubscribe()
+    return
   elseif not self.ready_to_explode then
     if not mines_on_timer[ id ] then
       self.ready_to_explode = true
     end
   end
-  if self.ready_to_explode and not self.exploded then
+  if self.ready_to_explode then
     if self:check_btr() or self:check_creature() then
+      self:unsubscribe()
       self.object:explode_initiator( db.actor:id() )
-      self.exploded = true
+      return
     end
   end
-  self.dsh_update_t = time_global() + self.freq
+  ogse_signals.get_mgr():reschedule( self.freq + math.random( 100 ) )
 end
