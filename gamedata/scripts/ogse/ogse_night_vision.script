@@ -12,6 +12,7 @@ function attach(sm)
   sm:subscribe({ signal = "on_key_down",     fun = this.call_pnv        })
   sm:subscribe({ signal = "on_load",         fun = this.on_game_load    })
   sm:subscribe({ signal = "on_mm_return_game", fun = this.on_mm_return_game })
+  sm:subscribe({ signal = "on_scope_zoom",   fun = this.on_scope_zoom   })
   sm:subscribe({ signal = "on_sniper_mode",  fun = this.on_sniper_mode  })
   sm:subscribe({ signal = "on_spawn",        fun = this.on_spawn        })
 end
@@ -153,6 +154,23 @@ function on_sniper_mode( mode )
       night_vision_fx_not_sniper = true
       switch_2 = false
     end
+  end
+end
+
+
+function on_scope_zoom( sect, mode )
+  if mode then
+    night_vision_fx_not_sniper = false
+    if can_light_sights( sect ) then
+      if nv_scope_fx_autoenable then
+        nv_scope_fx( true )
+      end
+    else
+      turn_off_scope_sights_lighting()
+    end
+  else
+    night_vision_fx_not_sniper = true
+    night_vision_scope_fx_on   = false
   end
 end
 
@@ -601,6 +619,7 @@ function on_destroy()
     cmd( "r2_sun_lumscale", r2_sun_lumscale )
     r2_sun_lumscale = nil
   end
+  turn_off_scope_sights_lighting()
   get_grids():reset()
 end
 
@@ -699,6 +718,7 @@ function grid_static:hide_static( static )
       end
     end
   end
+  if not static then return end
   local st = self.statics[ static ]
   if st and st:IsShown() then
     st:Show( false )
@@ -707,19 +727,45 @@ function grid_static:hide_static( static )
 end
 
 
-function turn_on_scope_sights_lighting( scope_sect, texture )
+function can_light_sights( sect )
   if
-    get_bool( scope_sect, "ogse_night_vision.acog_tritium", false )
+    get_bool( sect, "ogse_night_vision.acog_tritium", false )
     or dsh_acumm.has_power() > 0
   then
+    return true
+  end
+  return false
+end
+
+
+local replaced_textures = {}
+
+function turn_on_scope_sights_lighting( scope_sect, texture )
+  if not can_light_sights( scope_sect ) then return end
+  night_vision_scope_fx_on = true
+  if
+    get_bool( scope_sect, "use_scope_zoom", false )
+    or not get_string( scope_sect, "scope_texture" )
+  then
+    local tex1, tex2 = unpack( parse_names( texture ) )
+    if not replaced_textures[ tex1 ] then
+      local textures   = texture_find( tex1 )
+      local texture    = textures[ tex1 ]
+      texture:load( tex2 )
+      replaced_textures[ tex1 ] = texture
+    end
+  else
     get_grids():show_static( texture, true )
-    night_vision_scope_fx_on = true
     ogse_signals.get_mgr():call( "on_scope_sights_lighting" )
   end
 end
 
 
 function turn_off_scope_sights_lighting()
+  for name, texture in pairs( replaced_textures ) do
+    texture:load( name )
+    replaced_textures[ name ] = nil
+  end
   get_grids():hide_static()
   night_vision_scope_fx_on = false
 end
