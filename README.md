@@ -665,6 +665,8 @@
 * nlc7_cold_wasterland.7z: Холодная пустошь от Кота из этой темы
   http://nlc-zone.ru/forum/topic/160-sborki-dopolneniya-i-pravki/?p=177837
 
+* ns16_levels_marsh.7z: локация Болота из новой Солянки
+
 * ogse_sky_high.7z: тестуры неба с бОльшим разрешением
 
 * sgc_v92_v1.7z: тестуры от V92 c доработками adm-ral
@@ -711,6 +713,8 @@ coc_actor_step.xdb: звук шагов ГГ и CoC
 doberbull_op21_inv.xdb: инвентарь из ОП 2.1 от DoberBull
 
 haarhus_inv.xdb: темный инвентарь от Haarhus
+
+nlc7_abakan.xdb: Абакан из NLC7 3.0 и сквозные прицелы для некоторого оружия
 
 nlc7_bolt.xdb, nlc7_bolt2.xdb: болты разных версий из NLC7 Переосмысление
 
