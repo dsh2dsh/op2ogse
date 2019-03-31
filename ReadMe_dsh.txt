@@ -719,8 +719,6 @@ doberbull_op21_inv.xdb: инвентарь из ОП 2.1 от DoberBull
 
 haarhus_inv.xdb: темный инвентарь от Haarhus
 
-nlc7_abakan.xdb: Абакан из NLC7 3.0 и сквозные прицелы для некоторого оружия
-
 nlc7_bolt.xdb, nlc7_bolt2.xdb: болты разных версий из NLC7 Переосмысление
 
 nlc7_icons.xdb: иконки еды и частей мутантов из NLC7
