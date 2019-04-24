@@ -28,6 +28,7 @@ function main_check( obj, hit_data )
   end
   local mob = load_cfg( obj:section() )
   if not mob.active then return end
+  if mob.max_hit == 0 or table.getn( mob.bones ) == 0 then return end
   if battle.is_volna_monster( obj ) then return end
   if
     hit_data.hit_type == hit.explosion
@@ -63,11 +64,33 @@ function spawn_parts( obj, number, who )
 end
 
 
+function remove_from_inv( obj, sect )
+  obj:iterate_inventory(
+    function( obj, item )
+      if item:section() == sect then
+        local sobj = alife():object( item:id() )
+        if sobj then
+          alife():release( sobj )
+        end
+      end
+    end,
+    obj
+  )
+end
+
+
 function spawn_parts_for_actor( obj, number )
   local mob = load_cfg( obj:section() )
   if not mob.active then return end
   local spawned = false
-  if number < mob.max_hit then
+  if mob.max_hit == 0 and mob.spawn_red_part then
+    if not obj:object( mob.spawn_red_part ) then
+      spawned = spawn_part_in_inv( obj, nil, mob.spawn_red_part )
+      if spawned then
+        remove_from_inv( obj, mob.spawn_part )
+      end
+    end
+  elseif number < mob.max_hit then
     local num_of_parts = 1
     if spawn_max or mob.spawn_max then
       num_of_parts = mob.max_hit - number
@@ -87,17 +110,7 @@ function spawn_parts_for_actor( obj, number )
       end
     end
   elseif cleanup_default_parts then
-    obj:iterate_inventory(
-      function( obj, item )
-        if item:section() == mob.spawn_part then
-          local sobj = alife():object( item:id() )
-          if sobj then
-            alife():release( sobj )
-          end
-        end
-      end,
-      obj
-    )
+    remove_from_inv( obj, mob.spawn_part )
   end
   if mob.likes_arts and not is_handmade_monster( obj ) then
     local rnd = dsh.get_next_random(
@@ -165,7 +178,11 @@ function spawn_part_in_inv( obj, part, red_part )
       part = red_part
     end
   end
-  amk.spawn_item_in_inv( part, obj )
+  if part then
+    amk.spawn_item_in_inv( part, obj )
+    return true
+  end
+  return false
 end
 
 
@@ -221,13 +238,13 @@ function load_cfg( sect )
     t.active = get_bool( sect, "smart_monster_parts.active", false )
     if t.active then
       t.bones      = parse_names(
-        get_string( sect, "smart_monster_parts.bones" )
+        get_string( sect, "smart_monster_parts.bones", "" )
       )
       t.dont_spawn_if_object = get_string(
         sect, "smart_monster_parts.dont_spawn_if_object"
       )
       t.likes_arts = get_bool( sect, "smart_monster_parts.likes_arts", false )
-      t.max_hit    = get_u32( sect, "smart_monster_parts.max_hit" )
+      t.max_hit    = get_u32( sect, "smart_monster_parts.max_hit", 0 )
       t.spawn_max  = get_bool( sect, "smart_monster_parts.spawn_max", false )
       t.spawn_part = get_string( sect, "smart_monster_parts.spawn_part" )
       t.spawn_red_part = get_string(
