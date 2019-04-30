@@ -420,8 +420,9 @@ function evaluator_check_altcombat:check_for_grenades()
 
   if self.st.active_grenade then
     local check = self.st.active_grenade
-    if not level.object_by_id( check.grenade ) then
-      grenka_already_blow[ check.grenade ] = true
+    local obj   = level.object_by_id( check.grenade )
+    if check.timeout < time_global() or not ( obj and obj:is_grenade() ) then
+      grenka_already_blow[ check.name ] = time_global()
     end
   end
 
@@ -465,16 +466,23 @@ function evaluator_check_altcombat:get_nearest_grenade()
     if bd_type == danger_object.grenade then
       local bd_object = best_danger:dependent_object()
       if
-        bd_object and level.object_by_id( bd_object:id() )
+        bd_object
+        and level.object_by_id( bd_object:id() )
         and bd_object:is_grenade()
-        and ( not grenka_already_blow[ bd_object:id() ] )
+        and (
+          ( not grenka_already_blow[ bd_object:name() ] )
+          or time_global() - grenka_already_blow[ bd_object:name() ] > 5000
+        )
       then
+        grenka_already_blow[ bd_object:name() ] = nil
         local dist   = npc:position():distance_to( bd_object:position() )
         local radius = xrs_grenade.get_grenade_radius( bd_object:section() )
         if dist < radius * 0.9 then
           return {
             [ "grenade" ] = bd_object:id(),
+            [ "name"    ] = bd_object:name(),
             [ "parent"  ] = best_danger:object():id(),
+            [ "timeout" ] = time_global() + 5000,
           }
         end
       end
@@ -530,8 +538,11 @@ end
 function action_altcombat:not_ready_state()
   local npc = self.object
   if self.check_ready_state then
-    local anim = db.storage[ npc:id() ].state_mgr.animstate:state()
-    if not_ready_states[ anim ] then return true end
+    local t = db.storage[ npc:id() ]
+    if t and t.state_mgr then
+      local anim = t.state_mgr.animstate:state()
+      if not_ready_states[ anim ] then return true end
+    end
     self.check_ready_state = nil
   end
   if playing_hit_animation( npc ) then return true end
@@ -886,10 +897,13 @@ function action_altcombat:evade_grenades()
   local id         = danger.grenade
   local danger_obj = level.object_by_id( id )
 
-  if grenka_already_blow[ id ] or not danger_obj then
+  local blown = grenka_already_blow[ danger.name ]
+  if blown or not danger_obj then
     self.st.active_grenade = nil
     npc:set_mental_state( anim.danger )
-    grenka_already_blow[ id ] = true
+    if not blown then
+      grenka_already_blow[ danger.name ] = time_global()
+    end
     escape_point[ npc:id() ] = nil
     return false
   end
