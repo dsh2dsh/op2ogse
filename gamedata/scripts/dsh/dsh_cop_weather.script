@@ -275,17 +275,20 @@ search_step:setHMS( 0, 0, 1 )
 
 
 local weather_ini_files = {}
-function get_weather_ini( weather_name )
+function get_weather_ini( weather_name, is_effect )
   if not weather_ini_files[ weather_name ] then
-    local ltx = "environment\\weathers\\" .. weather_name .. ".ltx"
+    local prefix = "environment\\" .. (
+      is_effect and "weather_effects" or "weathers"
+    ) .. "\\"
+    local ltx = prefix .. weather_name .. ".ltx"
     weather_ini_files[ weather_name ] = ini_file( ltx )
   end
   return weather_ini_files[ weather_name ]
 end
 
 
-function read_cycle_points( cycle_ltx, points_table )
-  local ini = get_weather_ini( cycle_ltx )
+function read_cycle_points( cycle_ltx, points_table, is_effect )
+  local ini = get_weather_ini( cycle_ltx, is_effect )
   ini:iterate_sections(
     function( time_str )
       local h, m, s = time_str:match( "^(%d%d):(%d%d):(%d%d)$" )
@@ -298,7 +301,8 @@ function read_cycle_points( cycle_ltx, points_table )
     end
   )
   ASSERT(
-    table.getn( points_table ) > 0, "[%s]: %s is empty", script_name(), ltx
+    table.getn( points_table ) > 0,
+    "[%s]: %s is empty", script_name(), cycle_ltx
   )
   table.sort( points_table, function( a1, a2 ) return a1.time < a2.time end )
   -- прописываем в каждую точку её индекс для облегчения поиска в дальнейшем
@@ -449,7 +453,7 @@ function StaticForecast:load()
     if self.cycles[ p.cycle ] then
       cycle_points = self.cycles[ p.cycle ].points
     elseif p.surge_frame then
-      local ini = read_cycle_points( p.cycle, cycle_points )
+      local ini = read_cycle_points( p.cycle, cycle_points, true )
       self.cycles[ p.cycle ] = {
         ini    = ini,
         ltx    = p.cycle,
@@ -893,7 +897,7 @@ function StaticForecast:insert_surge_sequence()
   local is_day = ( h >= 5 and h <= 20 )
   local cycle  = is_day and "fx_blowout_day" or "fx_blowout_night"
   local surge_points = {}
-  local ini = read_cycle_points( cycle, surge_points )
+  local ini = read_cycle_points( cycle, surge_points, true )
   self.cycles[ cycle ] = {
     ini    = ini,
     ltx    = cycle,
@@ -932,13 +936,13 @@ function StaticForecast:insert_surge_sequence()
   if tdiff > 5 * 60 then
     local t = game.CTime( self.forecast[ insert_pos - 1 ].time )
       + seconds2ctime( 60 * 3 )
-    local transition_point = { time = t }
-    transition_point.cycle = self.forecast[ insert_pos ].cycle
-    transition_point.data  = table.clone_simple(
+    local tp = { time = t }
+    tp.cycle = self.forecast[ insert_pos ].cycle
+    tp.data  = table.clone_simple(
       self.forecast[ insert_pos ].data
     )
-    transition_point.data.time = get_day_time_sec( t )
-    table.insert( self.forecast, insert_pos, transition_point )
+    tp.data.time = get_day_time_sec( t )
+    table.insert( self.forecast, insert_pos, tp )
   end
 end
 
@@ -1620,24 +1624,43 @@ function WeatherManager:update()
   monitoring_weather_sect = t.cycle
   local weather_ltx = afc.cycles[ t.cycle ].ltx
   if t.surge_frame then
-    if not level.is_wfx_playing() then
+    if not self.is_wfx_playing then
       if t.data.time_orig > 0 then
-        local dt = t.data.time_orig + game.get_game_time():diffSec( t.data.time )
-        level.start_weather_fx_from_time( weather_ltx, dt )
+        local dt = t.data.time_orig + game.get_game_time():diffSec( t.time )
+        local res = level.start_weather_fx_from_time( weather_ltx, dt )
+        ASSERT(
+          ( res and level.is_wfx_playing() ),
+          "[%s]: got false: weather_ltx[%s] dt[%s]",
+          script_name(), weather_ltx, dt
+        )
       else
         level.set_weather_fx( weather_ltx )
       end
+      self.is_wfx_playing = true
     end
   elseif self.script_weather_enabled then
-    if now or weather_ltx ~= level.get_weather() then
-      local ltx = weather_ltx
-      if string.find( ltx, "_0", -2, true ) then
-        ltx = string.gsub( ltx, "_0$", "_" .. self:get_moon_phase() )
-      end
-      level.set_weather( ltx, now )
+    if now or self.is_wfx_playing then
+      local ltx = self:get_final_weather_ltx( weather_ltx )
+      level.set_weather( ltx, true )
+    end
+    local t2 = afc:get_p2()
+    if t2.cycle ~= t.cycle then
+      local ltx = self:get_final_weather_ltx( afc.cycles[ t2.cycle ].ltx )
+      level.set_weather_next( ltx, t2.data.time )
     end
   end
+  if self.is_wfx_playing and not t.surge_frame then
+    self.is_wfx_playing = nil
+  end
   afc:process_first_point_info()
+end
+
+
+function WeatherManager:get_final_weather_ltx( ltx )
+  if string.find( ltx, "_0", -2, true ) then
+    ltx = string.gsub( ltx, "_0$", "_" .. self:get_moon_phase() )
+  end
+  return ltx
 end
 
 
