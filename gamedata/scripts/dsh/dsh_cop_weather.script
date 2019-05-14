@@ -29,30 +29,31 @@
 
 -- алгоритм выбора погоды, имитирующий исходный из Atmosfear
 --
--- end_w - это максимальное кол-во часов, которое может длиться эта
--- погода. При достижении этого кол-ва будет выбрана новая погода. А
--- до этого момента, чем дольше длиться эта погода, тем вероятнее, что
--- она смениться на другую.
+-- end_w - это максимальное кол-во секций этой погоды, идущих подряд.
+-- При достижении этого кол-ва будет выбрана новая погода. А до этого
+-- момента, чем дольше длиться эта погода, тем вероятнее, что она
+-- смениться на другую. Т.к. одна секция, как правило, длится один
+-- час, для простоты можно считать, что это макс. кол-во часов.
 --
 -- tr_w  - таблица со списком возможных циклов (для перехода с данного)
 -- и их весов
 local weather_transitions_default = {
   storm = {
-    end_w = 3.82,
+    end_w = 6,
     tr_w  = {
       storm     = 20,
       rain      = 80,
     },
   },
   clear = {
-    end_w = 3.23,
+    end_w = 8,
     tr_w  = {
       partly    = 70,
       clear     = 20,
     },
   },
   partly = {
-    end_w = 2.82,
+    end_w = 8,
     tr_w  = {
       clear     = 50,
       cloudy    = 30,
@@ -60,7 +61,7 @@ local weather_transitions_default = {
     },
   },
   cloudy = {
-    end_w = 4.58,
+    end_w = 8,
     tr_w  = {
       foggy     = 40,
       partly    = 30,
@@ -68,7 +69,7 @@ local weather_transitions_default = {
     },
   },
   foggy = {
-    end_w = 3.82,
+    end_w = 2,
     tr_w  = {
       foggy     = 10,
       partly    = 30,
@@ -77,14 +78,13 @@ local weather_transitions_default = {
     },
   },
   veryfoggy = {
-    end_w = 2.82,
+    end_w = 1,
     tr_w  = {
-      veryfoggy = 10,
-      foggy     = 90,
+      foggy     = 100,
     },
   },
   rain = {
-    end_w = 3.93,
+    end_w = 6,
     tr_w  = {
       cloudy    = 50,
       foggy     = 10,
@@ -96,7 +96,7 @@ local weather_transitions_default = {
 
 local weather_transitions_marsh = {
   foggy = {
-    end_w = 7.7,
+    end_w = 8,
     tr_w  = {
       foggy     = 80,
       rain      = 10,
@@ -104,7 +104,7 @@ local weather_transitions_marsh = {
     },
   },
   rain = {
-    end_w = 3.82,
+    end_w = 4,
     tr_w  = {
       foggy     = 80,
       rain      = 10,
@@ -112,17 +112,16 @@ local weather_transitions_marsh = {
     },
   },
   storm = {
-    end_w = 3.82,
+    end_w = 4,
     tr_w  = {
       rain      = 90,
       storm     = 10,
     },
   },
   veryfoggy = {
-    end_w = 2.82,
+    end_w = 1,
     tr_w  = {
-      foggy     = 90,
-      veryfoggy = 10,
+      foggy     = 100,
     },
   },
 }
@@ -807,6 +806,11 @@ function StaticForecast:get_frame( idx )
 end
 
 
+function StaticForecast:pre_blowout_weather()
+  return "foggy"
+end
+
+
 -- проверить, что уже вставлена переходная точка начала выброса.
 -- если нет, то при возможности вставить
 function StaticForecast:check_and_assign_surge_frame( next_surge_time )
@@ -846,6 +850,9 @@ function StaticForecast:check_and_assign_surge_frame( next_surge_time )
         surge_start = true,
         time = game.CTime( next_surge_time ),
       }
+      local pre_blowout = self:pre_blowout_weather()
+      p1.cycle = pre_blowout
+      p2.cycle = pre_blowout
       -- точку вставляем с погодой от ближней к ней границы
       -- удалять ли из прогноза вторую точку включающего фрейма
       local del_p2 = false
@@ -864,9 +871,9 @@ function StaticForecast:check_and_assign_surge_frame( next_surge_time )
       new_point.data.time = get_day_time_sec( next_surge_time )
       if del_p2 then table.remove( self.forecast, i + 1 ) end
       if past_surge then
-        table.insert( self.forecast, 1,     new_point)
+        table.insert( self.forecast, 1,     new_point )
       else
-        table.insert( self.forecast, i + 1, new_point)
+        table.insert( self.forecast, i + 1, new_point )
       end
       self.surge_frame_assigned = true
       ogse_surge_mgr.surge_log(
@@ -931,6 +938,8 @@ function StaticForecast:insert_surge_sequence()
     if tdiff > 0 then break end
     table.remove( self.forecast, insert_pos )
   end
+  self.forecast[ insert_pos ].cycle = self.forecast[ 1 ].cycle
+--[=[
   -- если от последней точки выброса до следующей точки больше пяти
   -- минут, то воткнуть дополнительную точку через три минуты
   if tdiff > 5 * 60 then
@@ -944,6 +953,7 @@ function StaticForecast:insert_surge_sequence()
     tp.data.time = get_day_time_sec( t )
     table.insert( self.forecast, insert_pos, tp )
   end
+--]=]
 end
 
 
@@ -997,7 +1007,7 @@ function DynamicForecast:load()
       self.cycles[ cycle_name ]
       and self.weather_transitions[ cycle_name ]
     then
-      self.cycles[ cycle_name ].skipped = skipped
+      self.cycles[ cycle_name ].skipped = 0 -- skipped
     end
   end
   log2(
@@ -1032,7 +1042,7 @@ function DynamicForecast:save()
   local t = {}
   for cycle_name, cycle_data in pairs( self.cycles ) do
     if cycle_data.skipped and self.weather_transitions[ cycle_name ] then
-      table.insert( t, { cycle_name, cycle_data.skipped } )
+      table.insert( t, { cycle_name, 0 } ) -- cycle_data.skipped
     end
   end
   local prefix = string.format(
@@ -1080,16 +1090,15 @@ function DynamicForecast:append_forecast_point( day_start_time, frame_point_data
   if prev_last_point then
     ogse_surge_mgr.surge_log( "update self.last_weather_time" )
     -- длительность цикла в минутах
-    self.last_weather_time = new_point.time:diffSec( prev_last_point.time ) / 60
+    if cycle_name == prev_last_point.cycle then
+      self.last_weather_time = self.last_weather_time + 1
+    else
+      self.last_weather_time = 1
+    end
   else                   -- была пустая очередь, сбрасываем статистику
     ogse_surge_mgr.surge_log( "resettig statistics" )
-    self.last_weather_time = 0  -- первая точка
+    self.last_weather_time = 1  -- первая точка
     self:reset_statistics() -- сбрасываем данные для алгоритма переключения
-  end
-  for cycle_name, cycle_data in pairs( self.cycles ) do
-    if cycle_data.skipped and self.weather_transitions[ cycle_name ] then
-      cycle_data.skipped = cycle_data.skipped + 1
-    end
   end
   ogse_surge_mgr.surge_log( "DynamicForecast:append_forecast_point - END" )
   return new_point
@@ -1097,71 +1106,36 @@ end
 
 -- служебная внутренняя функция получения следующего погодного цикла
 -- за последней точкой прогноза
--- алгоритм выбора погоды в стиле 692
 function DynamicForecast:aux_choose_next_weather()
   ogse_surge_mgr.surge_log( "DynamicForecast:aux_choose_next_weather" )
   local last_point = self:get_last_point()
-  if self.last_weather_time < 1 then
-    -- если был переходный фрейм, то длительность последнего цикла в
-    -- очереди нулевая
-    return last_point.cycle -- делаем как минимум ещё один фрейм такой же погоды
-    -- TODO: а надо ли? Циклы пасмурной погоды и так забивают всё,
-    --       может лучше манипулировать вероятностью ухода с цикла?
-    --       Поэкспериментрировать!
-  end
-  -- это не переходный цикл, решаем куда переходим
-  local next_cycle
   -- данные по переходам в/из последнего цикла
   local wtr = self.weather_transitions[ last_point.cycle ]
-  local trans_prob = wtr.end_w / ( self.last_weather_time / 60 )
+  local trans_prob = wtr.end_w / self.last_weather_time
     -- проверяем, что пора соскочить с этого цикла
   if math.random() > trans_prob then -- если ещё рано
     return last_point.cycle
   end
-  -- находим циклы с минимальным и максимальным пропущенным числом
-  local last_cycle_skipped = self.cycles[ last_point.cycle ].skipped
-  local min_skipped        = last_cycle_skipped -- минимум пропущенных
-  local max_skipped        = last_cycle_skipped -- максимум пропущенных
-  for cycle_name, cycle_data in pairs( self.cycles ) do
-    if cycle_data.skipped and self.weather_transitions[ cycle_name ] then
-      if cycle_data.skipped < min_skipped then
-        min_skipped = cycle_data.skipped
-      end
-      if cycle_data.skipped > max_skipped then
-        max_skipped = cycle_data.skipped
-      end
-    end
-  end
-  -- составляем таблицу нормированных весов только для переходов,
-  -- которые доступны из текущего
+  -- составляем таблицу весов только для переходов, которые доступны
+  -- из текущего
   local weight_scales = {}
   local wsum          = 0
   for cycle_name, weight in pairs( wtr.tr_w ) do
     -- перебираем все варианты, доступные из текущего цикла
-    local skipped_weight_scale
-    -- least skipped cycle gets 0.5 weight, most skipped used gets 1.5
-    -- вычисленные веса лежат в пределах [0.5, 1.5]
-    if min_skipped < max_skipped then
-      skipped_weight_scale = 0.5
-        + ( self.cycles[ cycle_name ].skipped - min_skipped )
-        / ( max_skipped - min_skipped )
-    else
-      skipped_weight_scale = 1
-    end
-    wsum = wsum + weight * skipped_weight_scale
-    table.insert( weight_scales, { cycle_name, wsum } )
+    wsum = wsum + weight
+    table.insert( weight_scales, { cycle_name, weight } )
   end
+  table.sort( weight_scales, function( a, b ) return a[ 2 ] > b[ 2 ] end )
   -- выбираем следующий цикл
-  local rand_val = math.random() -- случайное число 0..1
-  next_cycle = weight_scales[ table.getn( weight_scales ) ][ 1 ]
+  local next_cycle
+  local rand_val = math.random( wsum )
   for _, trw in ipairs( weight_scales ) do
-    if trw[ 2 ] / wsum >= rand_val then -- сравниваем с нормированной величиной
+    rand_val = rand_val - trw[ 2 ]
+    if rand_val <= 0 then
       next_cycle = trw[ 1 ]
       break
     end
   end
-  -- сменился цикл, сбрасываем время непрерывного действия
-  self.last_weather_time = 0
   ogse_surge_mgr.surge_log( "DynamicForecast:aux_choose_next_weather - END" )
   return next_cycle
 end
@@ -1644,7 +1618,7 @@ function WeatherManager:update()
       level.set_weather( ltx, true )
     end
     local t2 = afc:get_p2()
-    if t2.cycle ~= t.cycle then
+    if t2.cycle ~= t.cycle and not ( t2.surge_start or t2.surge_frame ) then
       local ltx = self:get_final_weather_ltx( afc.cycles[ t2.cycle ].ltx )
       level.set_weather_next( ltx, t2.data.time )
     end
