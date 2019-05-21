@@ -146,15 +146,10 @@ function attach( sm ) -- для менеджера сигналов
 end
 
 
-local level_far_plane_k
 local pt, wm
-
 function on_actor_init()
   pt = game.CTime( game.get_game_time() )
   wm = WeatherManager() -- создание
-  level_far_plane_k = get_float(
-    level.name(), "ogse_weather_mgr.far_plane_k", nil, game_ini()
-  )
 end
 
 
@@ -1160,54 +1155,32 @@ function WeatherManager:__init()
     self.reset_weather = true
   end
 
-  local weather_by_level = {}
-  local ini = game_ini()
-  local levels_number = ini:line_count( "level_maps_single" )
-  for i = 0, levels_number - 1 do
-    local res, lname = ini:r_line( "level_maps_single", i, "", "" )
-    weather_by_level[ lname ] = get_string( lname, "weathers", "default", ini )
-  end
-  if ini:section_exist( "level_maps_single_ext" ) then
-    local t = get_section_keys( "level_maps_single_ext", ini )
-    for _, lname in ipairs( t ) do
-      weather_by_level[ lname ] = get_string(
-        lname, "weathers", "default", ini
-      )
-    end
-  end
-
-  -- проверяем, что уровень имеет свою погоду (обычно подземный)
-  local level_name = level.name()
-  self.indoor_weather = isIndoor( level_name )
-    and weather_by_level[ level_name ]
-
-  if
-    sys_ini:section_exist( "level_suffix_table" )
-    and sys_ini:line_exist( "level_suffix_table", level.name() )
-  then
-    self.lvl_suffix = sys_ini:r_string(
-      "level_suffix_table", level.name()
-    ) or ""
-  else
-    self.lvl_suffix = ""
-  end
-
   self.forecasts = {}           -- таблица со всеми прогнозами
-  -- перебираем все уровни, создаём соответстсвующие прогнозы
-  for lname, weather_name in pairs( weather_by_level ) do
-    if not self.forecasts[ weather_name ] and not isIndoor( lname ) then
-      local fc = weather_transitions[ weather_name ]
-        and DynamicForecast( weather_name, weather_transitions[ weather_name ] )
-        or  StaticForecast( weather_name )
-      self.forecasts[ weather_name ] = fc
-    end
+  -- создаём соответствующие прогнозы
+  for weather_name, weather_trans in pairs( weather_transitions ) do
+    local fc = DynamicForecast( weather_name, weather_trans )
+    self.forecasts[ weather_name ] = fc
   end
-  self.active_forecast = self.forecasts[ weather_by_level[ level_name ] ]
+  local weather_name = get_string(
+    level.name(), "weathers", "default", game_ini()
+  )
+  weather_name = xr_logic.pick_section_from_condlist(
+    db.actor, db.actor,
+    xr_logic.parse_condlist( db.actor, level.name(), "weathers", weather_name )
+  )
+  self.indoor_weather = isIndoor( level.name() ) and weather_name
+  ASSERT(
+    ( self.indoor_weather or self.forecasts[ weather_name ] ),
+    "[%s]: %s not found in forecasts", script_name(), tostring( weather_name )
+  )
   -- для подземного уровня активным ставим дефолтовый, только для
   -- того, чтобы дергать им события выброса
   if self.indoor_weather then
     self.active_forecast = self.forecasts.default
+  else
+    self.active_forecast = self.forecasts[ weather_name ]
   end
+  ASSERT( self.active_forecast, "[%s]: active_forecast not set", script_name() )
   self.active_forecast.active = true
   self:show_active_forecast()
 
@@ -1366,9 +1339,6 @@ function WeatherManager:dump_state2lines( max_lines )
     )
   )
   table.insert(
-    str_tab, string.format( "level suffix: %s", self.lvl_suffix )
-  )
-  table.insert(
     str_tab, string.format( "time factor: %5.1f", level.get_time_factor() )
   )
   table.insert(
@@ -1502,47 +1472,6 @@ function WeatherManager:update_forecast()
     forecast:check_and_assign_surge_frame( self.next_surge_time )
   end
   ogse_surge_mgr.surge_log( "WeatherManager:update_forecast - END" )
-end
-
-
--- заполняем таблицу на основе данных секции
-function get_weather_cycle( section )
-  local t = {}
-  t.env_ambient = get_string( section, "env_ambient" )
-  return t
-end
-
-
-function WeatherManager:compile_frame_point( env_desc, point_data )
-  local env = level.environment()
-  env_desc:load( point_data.data.time, point_data.data.section, env )
-  if level_far_plane_k then
-    env_desc.far_plane = env_desc.far_plane * level_far_plane_k
-  end
-  local t = get_weather_cycle( point_data.data.section )
-  if
-    t.env_ambient
-    and not string.find( t.env_ambient, "blowout", 1, true )
-  then
-    env_desc:set_env_ambient( t.env_ambient .. self.lvl_suffix, env )
-  end
-end
-
-
--- установить текущий погодный фрейм в движке
-function WeatherManager:setup_frame( p1, p2 )
-  ogse_surge_mgr.surge_log(
-    "setup_frame: %s - %s", p1.data.section, p2.data.section
-  )
-  ASSERT( "ogse_script_weather" == level.get_weather(), "" )
-  -- SetEnvDescData(
-  --   p1.data.section, p2.data.section, p1.data.time, p2.data.time
-  -- )
-  local env = level.environment()
-  self:compile_frame_point( env:getCurrentWeather( 0 ), p1 )
-  self:compile_frame_point( env:getCurrentWeather( 1 ), p2 )
-  env:ForceReselectEnvs()
-  ogse_surge_mgr.surge_log( "setup_frame - END" )
 end
 
 
