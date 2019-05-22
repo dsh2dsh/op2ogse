@@ -740,7 +740,7 @@ end
 
 -- обновить цепочку фреймов на ближайшие forecast_time часов
 -- здесь также осуществляется вставка кадров выброса
-function StaticForecast:update()
+function StaticForecast:update( next_surge_time )
   ogse_surge_mgr.surge_log( "StaticForecast:update" )
 
   local current_time = game.get_game_time() -- текущее время
@@ -820,6 +820,7 @@ function StaticForecast:update()
     local p2 = self:append_forecast_point( day_start_time, fd2, cycle_name )
   end
   -- дополнить цепочку фреймов до forecast_time часов
+  local pre_blowout = false
   while true do
     ogse_surge_mgr.surge_log( "adding points. begin loop" )
     -- получаем последнюю точку в прогнозе. На данный момент должно быть как
@@ -835,7 +836,13 @@ function StaticForecast:update()
     -- min_transition_time
     local min_next_time = last_point.time + min_transition_time
     -- вычисляем погодный цикл для этого момента
-    local next_cycle    = self:aux_choose_next_weather()
+    local next_cycle
+    if pre_blowout then
+      -- перед выбросом и после него будет туман
+      next_cycle = self:pre_blowout_weather()
+    else
+      next_cycle = self:aux_choose_next_weather()
+    end
     -- здесь имеем в переменной next_cycle как результат работы алгоритма
     -- выбора строку - имя нового цикла
     -- теперь надо фактически вставить новую точку в конец прогноза из
@@ -857,6 +864,34 @@ function StaticForecast:update()
       local new_point = self:append_forecast_point(
         day_start_time, fd2, next_cycle
       )
+      if pre_blowout then
+        if new_point.time:diffSec( next_surge_time ) >= 3600 then
+          -- после выброса прошло больше часа, значит можем продолжить
+          -- назначать обычную погоду
+          table.remove( self.forecast, table.getn( self.forecast ) )
+          pre_blowout = false
+          break
+        end
+      elseif
+        -- в промежутке у нас будет выброс, значит нужно переназначить
+        -- погоду, что бы перед выбросом и сразу после него был туман
+        next_surge_time >= last_point.time
+        and next_surge_time <= new_point.time
+      then
+        -- удаляем два последних фрейма и ставим флажок
+        for i = 1, 2 do
+          table.remove( self.forecast, table.getn( self.forecast ) )
+        end
+        -- туман до выброса должен быть не менее часа, поэтому удалим
+        -- все неподходящие, предыдущие фреймы
+        while next_surge_time:diffSec( self:get_last_point().time ) < 3600 do
+          table.remove( self.forecast, table.getn( self.forecast ) )
+        end
+        -- и перезапустим расчет прогноза с последнего фрейма,
+        -- подходящего по времени
+        pre_blowout = true
+        break
+      end
       last_point = new_point
     until search_time > min_next_time
   end
@@ -1532,7 +1567,7 @@ end
 function WeatherManager:update_forecast()
   ogse_surge_mgr.surge_log( "WeatherManager:update_forecast" )
   for weather_name, forecast in pairs( self.forecasts ) do
-    forecast:update()
+    forecast:update( self.next_surge_time )
     forecast:check_and_assign_surge_frame( self.next_surge_time )
   end
   ogse_surge_mgr.surge_log( "WeatherManager:update_forecast - END" )
