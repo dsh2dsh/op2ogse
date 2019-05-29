@@ -121,7 +121,7 @@ end
 
 function action_door:door_play_snd_from_set( sndset )
   if self.snd_obj then
-    self.snd_obj:stop ()
+    self.snd_obj:stop()
     self.snd_obj = nil
   end
 
@@ -156,14 +156,37 @@ function action_door:fastcall()
   return false
 end
 
+function action_door:open_fastcall()
+  if not self.initialized then return false end
+
+  if self:is_open() then
+    local ph_obj = self.object:get_physics_object()
+    -- Игнорирование динамики на момент открытия/закрытия
+    ph_obj:unset_door_ignore_dynamics()
+    return true
+  end
+  return false
+end
+
 
 function action_door:close_action()
   -- Закрыли до предела, будем блокировать
   if self.st.no_force then
-    self.joint:set_max_force_and_velocity(      0, 0, 0 )
+    self.joint:set_max_force_and_velocity(     0, 0, 0 )
   else
-    self.joint:set_max_force_and_velocity( 100000, 1, 0 )
+    self.joint:set_max_force_and_velocity( 10000, 1, 0 )
+    --!!! Фиксируем кость.
+    local ph_shell = self.object:get_physics_shell()
+    if ph_shell then
+      local ph_element = ph_shell:get_element_by_bone_name( "door" )
+      if not ph_element:is_fixed() then
+        ph_element:fix()
+      end
+    end
   end
+  local ph_obj = self.object:get_physics_object()
+  -- Игнорирование динамики на момент открытия/закрытия
+  ph_obj:unset_door_ignore_dynamics()
   self.block = false
   -- Отыграть звук когда дверь захлопнулась:
   if not self.soundless_block and self.st.snd_close_stop then
@@ -179,8 +202,22 @@ function action_door:open_door( disable_snd )
     end
   end
 
+  self.object:set_fastcall( self.open_fastcall, self )
+
+  --!!! Тут надо снять фиксацию кости
+  local ph_shell = self.object:get_physics_shell()
+  if ph_shell then
+    local ph_element = ph_shell:get_element_by_bone_name( "door" )
+    if ph_element:is_fixed() then
+      ph_element:release_fixed()
+      local ph_obj = self.object:get_physics_object()
+      -- Игнорирование динамики на момент открытия/закрытия
+      ph_obj:set_door_ignore_dynamics()
+    end
+  end
+
   if self.st.no_force then
-    self.joint:set_max_force_and_velocity( 0,  0, 0 )
+    self.joint:set_max_force_and_velocity( 0, 0, 0 )
   else
     self.joint:set_max_force_and_velocity(
       ( self.st.apply_force or 2100 ), -3, 0
@@ -195,8 +232,27 @@ end
 
 
 function action_door:is_closed()
-  local angle = self.joint:get_axis_angle( 90 )
-  if angle <= self.low_limits then
+  local angle
+  if self.st.slider then
+    angle = -self.joint:get_axis_angle( 0 )
+  else
+    angle = math.abs( self.joint:get_axis_angle( 0 ) )
+  end
+  if angle <= self.low_limits + 0.02 then
+    return true
+  end
+  return false
+end
+
+
+function action_door:is_open()
+  local angle
+  if self.st.slider then
+    angle = -self.joint:get_axis_angle( 0 )
+  else
+    angle = math.abs( self.joint:get_axis_angle( 0 ) )
+  end
+  if angle >= self.hi_limits - 0.02 then
     return true
   end
   return false
@@ -213,11 +269,9 @@ function action_door:close_door( disable_snd )
   -- Ставим коллбек для отлова окончания закрытия двери (чтобы
   -- заблокировать ее и проиграть звук, если нужно):
   self.object:set_fastcall( self.fastcall, self )
-  -- self.object:set_fastcall( self.fastcall, self )
-  -- self.object:set_fastcall( self.fastcall, self )
 
   if self.st.no_force then
-    self.joint:set_max_force_and_velocity(  0,  0, 0 )
+    self.joint:set_max_force_and_velocity( 0,  0, 0 )
   else
     self.joint:set_max_force_and_velocity(
       ( self.st.apply_force or 200 ), 3, 0
@@ -225,6 +279,10 @@ function action_door:close_door( disable_snd )
   end
   self.block           = true   -- Закрываем и блокируем
   self.soundless_block = disable_snd
+
+  local ph_obj = self.object:get_physics_object()
+  -- Игнорирование динамики на момент открытия/закрытия
+  ph_obj:set_door_ignore_dynamics()
 
   if self.show_tips then
     if self.st.locked and self.st.tip_unlock then
@@ -471,6 +529,9 @@ function set_scheme( npc, ini, scheme, section, gulag_name )
   )
   st.tip_close       = utils.cfg_get_string(
     ini, section, "tip_close", npc, false, "", "tip_door_close"
+  )
+  st.slider          = utils.cfg_get_bool(
+    ini, section, "slider", npc, false, false
   )
   st.snd_open_start  = utils.cfg_get_string(
     ini, section, "snd_open_start", npc, false, "", "trader_door_open_start"
