@@ -151,6 +151,7 @@ function action_door:fastcall()
 
   if self.block and self:is_closed() then
     self:close_action()
+    self.object:on_door_is_closed()
     return true
   end
   return false
@@ -163,6 +164,7 @@ function action_door:open_fastcall()
     local ph_obj = self.object:get_physics_object()
     -- »гнорирование динамики на момент открыти€/закрыти€
     ph_obj:unset_door_ignore_dynamics()
+    self.object:on_door_is_open()
     return true
   end
   return false
@@ -297,13 +299,13 @@ function action_door:close_door( disable_snd )
 end
 
 
-function action_door:try_switch()
+function action_door:try_switch( npc )
   if self.st.on_use then
     if
       xr_logic.switch_to_section(
         self.object, self.st,
         xr_logic.pick_section_from_condlist(
-          db.actor, self.object, self.st.on_use.condlist
+          npc, self.object, self.st.on_use.condlist
         )
       )
     then
@@ -314,13 +316,13 @@ function action_door:try_switch()
 end
 
 
-function action_door:use_callback( door, actor )
+function action_door:use_callback( door, npc )
   if self.st.locked then
     if self.st.snd_open_start then
       self:door_play_snd_from_set( self.st.snd_open_start )
     end
   end
-  self:try_switch()
+  self:try_switch( npc )
 end
 
 
@@ -496,61 +498,79 @@ function action_door:update_vertexes()
 end
 
 
-function add_to_binder( npc, ini, scheme, section, storage )
-  local new_action = action_door( npc, storage )
+function add_to_binder( obj, ini, scheme, section, storage )
+  obj:register_door_for_npc()
+  local new_action = action_door( obj, storage )
 
   -- «арегистрировать все actions, в которых должен быть вызван метод
   -- reset_scheme при изменении настроек схемы:
-  xr_logic.subscribe_action_for_events( npc, storage, new_action )
+  xr_logic.subscribe_action_for_events( obj, storage, new_action )
 end
 
 
-function set_scheme( npc, ini, scheme, section, gulag_name )
-  local st = xr_logic.assign_storage_and_bind( npc, ini, scheme, section )
-  st.logic = xr_logic.cfg_get_switch_conditions( ini, section, npc )
+function set_scheme( obj, ini, scheme, section, gulag_name )
+  local st = xr_logic.assign_storage_and_bind( obj, ini, scheme, section )
+  st.logic = xr_logic.cfg_get_switch_conditions( ini, section, obj )
 
   st.closed          = utils.cfg_get_bool(
-    ini, section, "closed", npc, false, true
+    ini, section, "closed", obj, false, true
   )
   st.locked          = utils.cfg_get_bool(
-    ini, section, "locked", npc, false
+    ini, section, "locked", obj, false
   )
   st.no_force        = utils.cfg_get_bool(
-    ini, section, "no_force", npc, false, false
+    ini, section, "no_force", obj, false, false
+  )
+  st.not_for_npc     = utils.cfg_get_bool(
+    ini, section, "not_for_npc", obj, false, false
   )
   st.show_tips       = utils.cfg_get_bool(
-    ini, section, "show_tips", npc, false, true
+    ini, section, "show_tips", obj, false, true
   )
   st.tip_open        = utils.cfg_get_string(
-    ini, section, "tip_open", npc, false, "", "tip_door_open"
+    ini, section, "tip_open", obj, false, "", "tip_door_open"
   )
   st.tip_unlock      = utils.cfg_get_string(
-    ini, section, "tip_open", npc, false, "", "tip_door_locked"
+    ini, section, "tip_open", obj, false, "", "tip_door_locked"
   )
   st.tip_close       = utils.cfg_get_string(
-    ini, section, "tip_close", npc, false, "", "tip_door_close"
+    ini, section, "tip_close", obj, false, "", "tip_door_close"
   )
   st.slider          = utils.cfg_get_bool(
-    ini, section, "slider", npc, false, false
+    ini, section, "slider", obj, false, false
   )
   st.snd_open_start  = utils.cfg_get_string(
-    ini, section, "snd_open_start", npc, false, "", "trader_door_open_start"
+    ini, section, "snd_open_start", obj, false, "", "trader_door_open_start"
   )
   st.snd_close_start = utils.cfg_get_string(
-    ini, section, "snd_close_start", npc, false, "", "trader_door_close_start"
+    ini, section, "snd_close_start", obj, false, "", "trader_door_close_start"
   )
   st.snd_close_stop  = utils.cfg_get_string(
-    ini, section, "snd_close_stop", npc, false, "", "trader_door_close_stop"
+    ini, section, "snd_close_stop", obj, false, "", "trader_door_close_stop"
   )
-  st.on_use          = xr_logic.cfg_get_condlist( ini, section, "on_use", npc )
+  st.on_use          = xr_logic.cfg_get_condlist( ini, section, "on_use", obj )
   st.hit_on_bone     = utils.parse_data_1v(
-    npc, utils.cfg_get_string( ini, section, "hit_on_bone", npc, false, "" )
+    obj, utils.cfg_get_string( ini, section, "hit_on_bone", obj, false, "" )
   )
   st.apply_force = get_u32( section, "apply_force", nil, ini )
 
+  if st.locked and not st.closed then
+    st.locked = false
+  end
+
+  if st.locked or st.not_for_npc then
+    if not obj:is_door_locked_for_npc() then
+      obj:lock_door_for_npc()
+    end
+  else
+    if obj:is_door_locked_for_npc() then
+      obj:unlock_door_for_npc()
+    end
+  end
+
   local def_radius = false
   if st.closed then
-    def_radius = disable_vertexes_by_name[ npc:name() ] or false
+    def_radius = disable_vertexes_by_name[ obj:name() ] or false
   end
   st.disable_vertexes_radius = get_float(
     section, "disable_vertexes_radius", def_radius, ini
