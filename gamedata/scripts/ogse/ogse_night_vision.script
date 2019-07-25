@@ -70,6 +70,17 @@ local nv_btr_ppe_factor = 1.0
 
 
 function on_spawn()
+  if not dsh_cfg.get_data().debug_mode then
+    for _, k in ipairs({
+      "r__pnv_color",
+      "r__pnv_mode",
+      "r__pnv_noise",
+      "r__pnv_scanlines",
+    }) do
+      get_console():disable_command( k )
+    end
+  end
+  cmd( "r__pnv_mode 0" )
   dsh.exec_on_update( this.on_first_update )
   rebind_use_pnv()
   nv_scope_fx_autoenable = ogse.load_var_safe(
@@ -287,7 +298,7 @@ function nv_fx( mode )
     and night_vision_fx_not_trunk
     and night_vision_fx_not_btr
   then
-    local nightvision_section, nv_item, nv_item_section
+    local nightvision_section, nv_item
     local nv_in_outfit = db.actor:item_in_slot( 6 )
     if nv_in_outfit and not nightvision_section then
       local  nv_sect = nv_in_outfit:section()
@@ -310,7 +321,7 @@ function nv_fx( mode )
       nightvision_section
       and is_nv_allowed( nightvision_section, nv_item )
     then
-      turn_on_nv_fx( nightvision_section )
+      turn_on_nv_fx( nightvision_section, nv_item )
       ogse.save_var( "pnv", true )
       active_nv_device = nv_item
     end
@@ -325,49 +336,38 @@ end
 
 
 -- Старт ПНВ (не использовать напрямую)
-local r2_sun_lumscale
-
-function turn_on_nv_fx( nightvision_section )
+function turn_on_nv_fx( nightvision_section, nv_item )
   if not is_nv_working() then
-    if nightvision_section == "thermal" then
-      cmd( "r2_render_mode thermal" )
-      night_vision_fx_on = true
-      snd_fx_start()
+    local nv_sect = nv_item:section()
+    local r__pnv_mode = get_float( nv_sect, "r__pnv_mode", 0 )
+    if r__pnv_mode > 1 then
+      local color = get_vector( nv_sect, "r__pnv_color" )
+      cmd(
+        "r__pnv_color",
+        string.format( "%f,%f,%f", color.x, color.y, color.z )
+      )
+      cmd( "r__pnv_noise", get_float( nv_sect, "r__pnv_noise" ) )
+      cmd( "r__pnv_scanlines", get_float( nv_sect, "r__pnv_scanlines" ) )
+      cmd( "r__pnv_mode", r__pnv_mode )
     elseif sys_ini:line_exist( nightvision_section, "pp_eff_name" ) then
       local nightvision_fx = sys_ini:r_string(
         nightvision_section, "pp_eff_name"
       )
       level.add_pp_effector( nightvision_fx, 2997, true )
       level.set_pp_effector_factor( 2997, nv_ppe_factor )
-      local light_amp = get_float( nightvision_section, "light_amp" )
-      if light_amp then
-        r2_sun_lumscale = get_con_float( "r2_sun_lumscale" )
-        cmd( "r2_sun_lumscale", light_amp )
-      end
-      night_vision_fx_on = true
-      snd_fx_start()
     end
+    night_vision_fx_on = true
+    snd_fx_start()
   end
 end
 
 
 -- Остановка ПНВ (не использовать напрямую)
-function turn_off_nv_fx(section)
+function turn_off_nv_fx( section )
   if is_nv_working() then
-    local nv_sect = db.actor:item_in_slot( 11 )
-    if
-      ( nv_sect and nv_sect:section() == "device_termovizor" )
-      or section == "device_termovizor"
-      or get_con_string( "r2_render_mode" ) == "thermal"
-    then
-      cmd( "r2_render_mode normal" )
-    else
-      if r2_sun_lumscale then
-        cmd( "r2_sun_lumscale", r2_sun_lumscale )
-        r2_sun_lumscale = nil
-      end
-      level.remove_pp_effector( 2997 )
-    end
+    -- local nv = db.actor:item_in_slot( 11 )
+    cmd( "r__pnv_mode", 0 )
+    level.remove_pp_effector( 2997 )
     night_vision_fx_on = false
     snd_fx_stop()
   end
@@ -621,10 +621,7 @@ end
 
 
 function on_destroy()
-  if r2_sun_lumscale then
-    cmd( "r2_sun_lumscale", r2_sun_lumscale )
-    r2_sun_lumscale = nil
-  end
+  cmd( "r__pnv_mode 0" )
   turn_off_scope_sights_lighting()
   get_grids():reset()
 end
