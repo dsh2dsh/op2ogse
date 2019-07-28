@@ -7,7 +7,7 @@
 #define NV_BRIGHTNESS 5.0 // NV_COLOR.w
 
 //effects
-#define NV_FLICKERING
+//#define NV_FLICKERING
 #define NV_NOISE
 #define NV_VIGNETTE
 #define NV_SCANLINES
