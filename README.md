@@ -718,17 +718,17 @@ doberbull_op21_inv.xdb: инвентарь из ОП 2.1 от DoberBull
 
 nlc7_bolt.xdb, nlc7_bolt2.xdb: болты разных версий из NLC7 Переосмысление
 
-nlc7_icons.xdb: иконки еды и частей мутантов из NLC7
-
 nlc7_icons_alt1.xdb: альтернативные иконки еды
-
-nlc7_icons_ammo.xdb: иконки патронов из NLC7
-
-nlc7_icons_arts.xdb: иконки артефактов из NLC7
 
 op2_actor_step: звук шагов ГГ из ОП-2
 
 op2_bolt.xdb: болт из ОП-2
+
+op2_icons.xdb: иконки еды и частей мутантов из ОП-2
+
+op2_icons_ammo.xdb: иконки патронов из ОП-2
+
+op2_icons_arts.xdb: иконки артефактов из ОП-2
 
 sak_bolt.xdb: другая версия болта из NLC7
 
