@@ -37,44 +37,53 @@ function action_karavan:initialize()
         )
 	self.offset:normalize()
 end
+
+
 function action_karavan:execute()
-	action_base.execute(self)
-	local npc = self.object
-	if xr_logic.try_switch_to_another_section(npc,self.st,db.actor) then
-		return
-	end
-	local dist = level.vertex_position( db.actor:level_vertex_id() )
-          :distance_to( npc:position() ) - npc:radius()
-	local state,look,anim = state_mgr.get_state(npc)
-	if dist <= self.st.radius then
-		state,look,anim = self.st.close_state,nil,true
-	elseif dist <= self.st.close_dist then
-		state,look,anim = self.st.close_state,nil,true
-	elseif dist >= self.st.faraway_dist then
-		state,look,anim = self.st.faraway_state,nil,true
-		-- state,look,anim = self.st.wait_state,nil,true
-	elseif dist < self.st.near_dist then
-		state,look,anim = self.st.near_state,nil,true
-	elseif not (state and state_lib.states[state].movement == move.stand) then
-		state,look,anim = self.st.faraway_state,nil,true
-	end	
-	if self.st.look == true and state_lib.states[state].movement == move.stand then
-		look = true
-	end
-	if look == true then
-		look = {look_object = db.actor}
-	end
-	if anim == true then
-		anim = {animation = true}
-	end
-	if state then
-		state_mgr.set_state(npc,state,nil,nil,look,anim)
-	end
-	if state_lib.states[state].movement ~= move.stand then
-		local vertex_id = level.vertex_in_direction( db.actor:level_vertex_id(), self.offset, self.st.radius + npc:radius() )
-		utils.send_to_nearest_accessible_vertex(npc,vertex_id)
-	end
+  action_base.execute( self )
+  local npc = self.object
+  if xr_logic.try_switch_to_another_section( npc, self.st, db.actor ) then
+    return
+  end
+  local actor_pos = level.vertex_position( db.actor:level_vertex_id() )
+  local dist      = actor_pos:distance_to( npc:position() )
+  local state, look, anim = state_mgr.get_state( npc )
+  if dist <= self.st.close_dist then
+    local dp = db.actor:position():distance_to( npc:position() )
+    if dp > self.st.close_dist * 2 then
+      state, look, anim = self.st.wait_state,  nil, true
+    else
+      state, look, anim = self.st.close_state, nil, true
+    end
+  elseif dist <= self.st.near_dist then
+    state, look, anim = self.st.near_state,    nil, true
+  else
+    state, look, anim = self.st.faraway_state, nil, true
+  end	
+  local movement = state_lib.states[ state ].movement
+  if movement ~= move.stand then
+    local pos = vector():mad( actor_pos, self.offset, self.st.radius )
+    local vertex_id = level.vertex_id_by_pos( pos )
+    if level.valid_vertex_id( vertex_id ) then
+      utils.send_to_nearest_accessible_vertex( npc, vertex_id )
+    elseif npc:path_completed() then
+      state, look, anim = self.st.wait_state, nil, true
+      movement = state_lib.states[ state ].movement
+    end
+  end
+  if self.st.look and movement == move.stand then
+    look = true
+  end
+  if look then
+    look = { look_object = db.actor }
+  end
+  if anim then
+    anim = { animation = true }
+  end
+  state_mgr.set_state( npc, state, nil, nil, look, anim )
 end
+
+
 function action_karavan:finalize()
 	self.object:clear_animations()
 end
@@ -119,16 +128,15 @@ function set_scheme(npc,ini,scheme,section,gulag_name)
 	st.near_state = utils.cfg_get_string(ini,section,"near_state",npc,false,"") or "rush"
 	st.faraway_state = utils.cfg_get_string(ini,section,"faraway_state",npc,false,"") or "sprint"
 	st.wait_state = utils.cfg_get_string(ini,section,"wait_state",npc,false,"") or "hide"
-	st.look = utils.cfg_get_bool(ini,section,"look_on_actor",npc,false)
+	st.look = true --utils.cfg_get_bool(ini,section,"look_on_actor",npc,false)
 	st.radius = utils.cfg_get_number(ini,section,"radius",npc,false) or 4
 	st.no_loot = utils.cfg_get_bool(ini,section,"no_loot",npc,false)
 	if st.no_loot ~= true then
 		st.no_loot = nil
 	end
 	st.enabled = true
-  if st.close_dist < st.radius + npc:radius() then
-    st.close_dist = st.radius + npc:radius()
-  end
+  st.radius     = math.max( db.actor:radius() * 2 + npc:radius(), st.radius )
+  st.close_dist = math.max( st.close_dist, st.radius )
 end
 function disable_scheme(npc,scheme)
 	rx_ai.printf("disable")
