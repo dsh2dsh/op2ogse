@@ -4,7 +4,7 @@
 
 Форум проекта:
 
-- http://www.amk-team.ru/forum/index.php?showtopic=13176
+- https://www.amk-team.ru/forum/topic/13176-dsh-mod/
 
 
 Важное замечание. Либо играйте так, как я задумал, либо со всеми
