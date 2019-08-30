@@ -148,6 +148,10 @@ function CRandomTask:__init()
     if self.task_ini:line_exist( sect_id, "target" ) then
       curr_task_info.target = self.task_ini:r_string( sect_id, "target" )
     end
+    -- кол-во требуемых target
+    curr_task_info.target_cnt = get_u32(
+      sect_id, "target_cnt", 1, self.task_ini
+    )
     if self.task_ini:line_exist( id, "info" ) then
       curr_task_info.info = self.task_ini:r_string( sect_id, "info" )
     end
@@ -166,6 +170,18 @@ function CRandomTask:__init()
     curr_task_info.idle_time = utils.cfg_get_number(
       self.task_ini, sect_id, "idle_time", nil, false, 24 * 60 * 60
     )
+    -- время блокирования задания после его выполнения (в игровых часах )
+    local pause_time = get_string( sect_id, "pause_time", nil, self.task_ini )
+    if pause_time then
+      local min, max = parse_nums( pause_time )
+      curr_task_info.pause_time = { min, ( max or min ) }
+    end
+    -- время активности задания (в игровых часах)
+    local active_time = get_string( sect_id, "active_time", nil, self.task_ini )
+    if active_time then
+      local min, max = parse_nums( active_time )
+      curr_task_info.active_time = { min, ( max or min ) }
+    end
     -- Приоритет квеста, выдаются доступные квесты с наименьшим приоритетом
     curr_task_info.prior     = utils.cfg_get_number(
       self.task_ini, sect_id, "prior", nil, false, 0
@@ -679,11 +695,11 @@ function CRandomTask:task_complete( p1, p2 )
 
   if p2 == 0 then
     if ( not t.need_return ) and t.status == "completed" then
-      t.last_task_time = game.get_game_time()
+      self:set_task_on_pause( t )
       return true
     end
     if t.status == "rewarded" then
-      t.last_task_time = game.get_game_time()
+      self:set_task_on_pause( t )
       return true
     end
   end
@@ -725,7 +741,7 @@ function CRandomTask:task_complete( p1, p2 )
         return true
       end
     elseif t.type == "monster_part" then
-      if has_monster_part( t.target ) then
+      if has_monster_part( t.target, t.target_cnt ) then
         t.status = "completed"
         return true
       end
@@ -752,18 +768,18 @@ function CRandomTask:task_fail( p1, p2 )
     local parent = alife():story_object( story_by_parent[ t.parent ] )
     if parent == nil or ( parent.alive ~= nil and not parent:alive() ) then
       t.status = "failed"
-      t.last_task_time = game.get_game_time()
+      self:set_task_on_pause( t )
       return true
     end
 
     if t.status == "refused" or t.status == "failed" then
-      t.last_task_time = game.get_game_time()
+      self:set_task_on_pause( t )
       return true
     end
     if t.type == "defend_lager" then
       if alife():object( t.selected_target ).gulag:get_population_comed() == 0 then
         t.status = "failed"
-        t.last_task_time = game.get_game_time()
+        self:set_task_on_pause( t )
         return true
       end
     end
@@ -881,6 +897,11 @@ function CRandomTask:check_task_props( task_id )
     t.last_task_time ~= nil
     and game.get_game_time():diffSec( t.last_task_time ) < t.idle_time
   then
+    t.enabled_props = false
+    return
+  end
+
+  if ogse_st_mgr.timer_exists( "task_manager.on_pause." .. t.name ) then
     t.enabled_props = false
     return
   end
@@ -1054,7 +1075,7 @@ function CRandomTask:completed_task( actor, npc, p1, p2, p3 )
       can_finish = false
     end
   elseif task_desc.type == "monster_part" then
-    if not has_monster_part( task_desc.target ) then
+    if not has_monster_part( task_desc.target, task_desc.target_cnt ) then
       can_finish = false
     end
   elseif task_desc.type == "find_item" then
@@ -1120,10 +1141,10 @@ function CRandomTask:task_reward( npc, actor, p1, p2 )
         })
       end
     elseif t.type == "monster_part" then
-      if not has_monster_part( t.target ) then
+      if not has_monster_part( t.target, t.target_cnt ) then
         can_finish = false
       else
-        out_monster_part( t.target )
+        out_monster_part( t.target, t.target_cnt )
       end
     elseif t.type == "find_item" then
       if not amk_utils.inventory_search( t.target, 1 ) then
@@ -1452,6 +1473,36 @@ function CRandomTask:stats( obj )
       log2( "[%s] %s : %s", v.status, k, tostring( v.enabled_props ) )
       print_table( v.init_condition )
     end
+  end
+end
+
+
+function CRandomTask:set_task_on_pause( t )
+  t.last_task_time = game.get_game_time()
+  if not t.pause_time then return end
+  local time = 3600 * math.random( unpack( t.pause_time ) )
+  ogse_st_mgr.start_gtimer(
+    "task_manager.on_pause." .. t.name, time,
+    "task_manager.unpause_task", t.name
+  )
+end
+
+
+function CRandomTask:unpause_task( task_id )
+  local t = self.task_info[ task_id ]
+  if not ( t and t.active_task ) then return end
+  local time = 3600 * math.random( unpack( t.active_time ) )
+  ogse_st_mgr.start_gtimer(
+    "task_manager.active_until." .. t.name, time,
+    "task_manager.pause_task", t.name
+  )
+end
+
+
+function CRandomTask:pause_task( task_id )
+  local t = self.task_info[ task_id ]
+  if t then
+    self:set_task_on_pause( t )
   end
 end
 
@@ -1988,4 +2039,14 @@ function out_monster_part( sect, n )
   while table.getn( t ) > 0 do
     ogse.remove_item_from_inventory( table.remove( t ) )
   end
+end
+
+
+function unpause_task( task_id )
+  get_random_task():unpause_task( task_id )
+end
+
+
+function pause_task( task_id )
+  get_random_task():pause_task( task_id )
 end
