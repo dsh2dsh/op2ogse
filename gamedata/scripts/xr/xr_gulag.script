@@ -494,11 +494,33 @@ end
 -- вызывается у персонажей из net_spawn() и из gulag:object_setup_offline()
 -- если он уже пришёл на работу, настроить ему логику и рестрикторы (при необходимости).
 -- obj=game_object
-function gulag:object_setup_online( obj_id, obj, need_setup_logic, need_setup_restrictors )
+function gulag:object_setup_online( obj_id, obj, need_setup_logic, need_setup_restrictors, is_retry )
   -- log2( "[smart_terrain %s] gulag: object_setup_online: obj=%s need_setup_logic=%s need_setup_restrictors=%s", self.name, obj:name(), tostring(need_setup_logic), tostring(need_setup_restrictors) )
   self.Object[ obj_id ] = obj
   if self.ObjectJob[ obj_id ] then
-    local job = self.Job[ self.ObjectJob[ obj_id ] ]
+    local jobn = self.ObjectJob[ obj_id ]
+    if jobn > table.getn( self.Job ) and not is_retry then
+      log2(
+        "[%s]: [%s]: job[%s/%s] not found for %s",
+        script_name(), self.name, jobn, table.getn( self.Job ), obj:name()
+      )
+      self:removeObject( obj_id )
+      self:addObject( obj_id )
+      self:update()
+      return self:object_setup_online( obj_id, obj, need_setup_logic, need_setup_restrictors, true )
+    end
+    local job = self.Job[ jobn ]
+    ASSERT(
+      job, "[%s]: [%s]: job[%s/%s] not found for %s",
+      script_name(), self.name, self.ObjectJob[ obj_id ],
+      table.getn( self.Job ), obj:name()
+    )
+    if is_retry then
+      log2(
+        "[%s]: [%s]: new job[%s/%s] found for %s",
+        script_name(), self.name, jobn, table.getn( self.Job ), obj:name()
+      )
+    end
     if need_setup_logic and not self:dsh_is_free_logic() then
       self:dsh_fix_gulags_relation( obj )
       self:setup_logic( obj, job.section )
@@ -1211,8 +1233,7 @@ end
 
 function gulag:reinit_job_online()
   for id, npc_info in pairs( self.npc_info ) do
-    local jobN = self.ObjectJob[ id ]
-    local job  = self.Job[ jobN ]
+    local job = self:getJob( id )
     if job then
       local se_obj = npc_info.se_obj
       self:setup_job_online( se_obj, job )
@@ -1319,7 +1340,8 @@ function gulag:free_obj( obj_id )
   local jobN = self.ObjectJob[ obj_id ]
   if jobN then
     self.ObjectJob[ obj_id ] = nil
-    self.Job[ jobN ].object  = nil
+    local job = self.Job[ jobN ]
+    if job then job.object = nil end
 
     if self.npc_info[ obj_id ] then
       local sobj = self.npc_info[ obj_id ].se_obj
