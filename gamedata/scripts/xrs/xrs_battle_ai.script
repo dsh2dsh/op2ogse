@@ -300,6 +300,7 @@ end
 
 
 function evaluator_check_altcombat:evaluate()
+  self.st.evaluated = nil
   if self.count_update <= engage_after_update then
     self.count_update = self.count_update + 1
     return false
@@ -337,6 +338,7 @@ function evaluator_check_altcombat:evaluate()
   reprioritize_targets( self.object )
   if self:check_for_grenades( self.object ) then
     ogse_debug.add_active_eval( self.object, script_name(), "altcombat_gr" )
+    self.st.evaluated = true
     return true
   end
 
@@ -357,10 +359,12 @@ function evaluator_check_altcombat:evaluate()
       and bw
     then
       ogse_debug.add_active_eval( self.object, script_name(), "altcombat" )
+      self.st.evaluated = true
       return true
     else
       if targ and not is_exclusion( self.object ) then
         ogse_debug.add_active_eval( self.object, script_name(), "altcombat_2" )
+        self.st.evaluated = true
         return true
       end
       return false
@@ -372,6 +376,7 @@ function evaluator_check_altcombat:evaluate()
         obj:is_stalker() and obj:alive() and xr_wounded.is_wounded( obj )
       ) then
         ogse_debug.add_active_eval( self.object, script_name(), "altcombat_3" )
+        self.st.evaluated = true
         return true
       end
     end
@@ -498,7 +503,8 @@ end
 
 
 function action_altcombat:initialize()
-  action_base.initialize( self )
+  -- action_base.initialize( self )
+  if not self.st.evaluated then return end
   local npc = self.object
   xr_sound.set_sound( npc, nil )
   npc:movement_enabled( true )
@@ -521,6 +527,11 @@ function action_altcombat:initialize()
   self.can_fire = false
   self.check_ready_state = true
   in_combat[ npc:id() ] = true
+
+  npc:set_desired_direction()
+  npc:set_desired_position()
+  npc:set_detail_path_type( move.curve )
+  npc:set_path_type( game_object.level_path )
 end
 
 
@@ -551,6 +562,7 @@ end
 
 
 function action_altcombat:execute()
+  if not self.st.evaluated then return end
   local pt = profile_timer()
   pt:start()
   self.firing_actor = false
@@ -569,25 +581,26 @@ end
 
 
 function action_altcombat:_execute()
-  action_base.execute( self )
+  -- action_base.execute( self )
   self.st.ready_to_grenade = false
   local npc = self.object
 
-  if self:not_ready_state() then return end
-
-  if xr_wounded.is_wounded( npc ) or not self.object:alive() then
+  if xr_wounded.is_wounded( npc ) or not npc:alive() then
     reset_everything( npc )
     return
   end
+  if self:not_ready_state() then return end
 
   if self:evade_grenades() then return end
   local has_grenade = self.st.active_grenade
 
+--[=[
   self.object:movement_enabled( true )
   self.object:set_desired_direction()
   self.object:set_desired_position()
   self.object:set_detail_path_type( move.curve )
   self.object:set_path_type( game_object.level_path )
+--]=]
 
   local enemy = get_target( npc ) -- текущий враг
   local deadman
@@ -956,7 +969,8 @@ end
 
 
 function action_altcombat:finalize()
-  action_base.finalize( self )
+  self.st.evaluated = nil
+  -- action_base.finalize( self )
   local npc = self.object
   xr_sound.set_sound( npc, nil )
   npc:movement_enabled( true )
@@ -2794,6 +2808,9 @@ function find_cover( npc, enemy, mode, camper_vertex )
         if cover then break end
       end
     end
+    if not cover then
+      cover_vertex = find_pseudo_cover( npc, enemy, true )
+    end
 
   elseif mode == 2 then         -- отступление
     cover_cache = {}
@@ -2803,6 +2820,9 @@ function find_cover( npc, enemy, mode, camper_vertex )
       )
       if cover then break end
     end
+    if not cover then
+      cover_vertex = find_pseudo_cover( npc, enemy, false )
+    end
 
   elseif mode == 3 then         -- атака
     cover_cache = {}
@@ -2811,6 +2831,9 @@ function find_cover( npc, enemy, mode, camper_vertex )
         npc_pos, enemy_pos, r, close_combat_distance, cover_callback
       )
       if cover then break end
+    end
+    if not cover then
+      cover_vertex = find_pseudo_cover( npc, enemy, true )
     end
 
   elseif mode == 4 then         -- атака
@@ -2823,11 +2846,16 @@ function find_cover( npc, enemy, mode, camper_vertex )
       )
       if cover then break end
     end
+    if not cover then
+      cover_vertex = find_pseudo_cover( npc, enemy, true )
+    end
 
   elseif mode == 5 then         -- возврат кемпера на точку
     cover_vertex = camper_vertex
 
   elseif mode == 6 then -- срочное отступление, противник очень близко
+    cover_vertex = find_pseudo_cover( npc, enemy, false )
+--[=[
     cover_cache = {}
     for _, r in ipairs({ 10, 30 }) do
       cover = npc:best_cover(
@@ -2844,6 +2872,10 @@ function find_cover( npc, enemy, mode, camper_vertex )
       )
       if cover then break end
     end
+    if not cover then
+      cover_vertex = find_pseudo_cover( npc, enemy, false )
+    end
+--]=]
 
   elseif mode == 7 then         -- отступление по дуге
     cover_cache = {}
@@ -2858,6 +2890,9 @@ function find_cover( npc, enemy, mode, camper_vertex )
         )
         if cover then break end
       end
+    end
+    if not cover then
+      cover_vertex = find_pseudo_cover( npc, enemy, false )
     end
 
   elseif mode == 0 then         -- оборона
@@ -2891,6 +2926,106 @@ function find_cover( npc, enemy, mode, camper_vertex )
   locked_vertexes[ npc:id() ] = cover_vertex
 
   return cover_vertex
+end
+
+
+function find_pseudo_cover( npc, enemy, attack )
+  local dir = vector():sub( enemy:position(), npc:position() )
+  local rotate_min, rotate_max
+  if attack then
+    rotate_min, rotate_max =  0,  90
+  else
+    rotate_min, rotate_max = 45, 180
+  end
+  local min_dist, max_dist = 10, 10
+  local node_1_vertex_id = find_vertex_around(
+    npc, npc:level_vertex_id(), dir, rotate_min, rotate_max,
+    min_dist, max_dist
+  )
+  local node_2_vertex_id = find_vertex_around(
+    npc, npc:level_vertex_id(), dir, rotate_min, rotate_max,
+    min_dist, max_dist, -1
+  )
+  if node_1_vertex_id and node_2_vertex_id then
+    local pos   = npc:position()
+    local dist1 = pos:distance_to( level.vertex_position( node_1_vertex_id ) )
+    local dist2 = pos:distance_to( level.vertex_position( node_2_vertex_id ) )
+    if dist1 > dist2 then
+      return node_1_vertex_id
+    elseif dist2 > dist1 then
+      return node_2_vertex_id
+    else
+      return random_choice( node_1_vertex_id, node_2_vertex_id )
+    end
+  elseif node_1_vertex_id then
+    return node_1_vertex_id
+  elseif node_2_vertex_id then
+    return node_2_vertex_id
+  else
+    node_1_vertex_id = find_vertex_around(
+      npc, npc:level_vertex_id(), dir, 0, 360,
+      min_dist, max_dist
+    )
+    node_2_vertex_id = find_vertex_around(
+      npc, npc:level_vertex_id(), dir, 0, 360,
+      min_dist, max_dist, -1
+    )
+    if node_1_vertex_id and node_2_vertex_id then
+      local pos   = npc:position()
+      local dist1 = pos:distance_to( level.vertex_position( node_1_vertex_id ) )
+      local dist2 = pos:distance_to( level.vertex_position( node_2_vertex_id ) )
+      if dist1 > dist2 then
+        return node_1_vertex_id
+      elseif dist2 > dist1 then
+        return node_2_vertex_id
+      else
+        return random_choice( node_1_vertex_id, node_2_vertex_id )
+      end
+    elseif node_1_vertex_id then
+      return node_1_vertex_id
+    else
+      return node_2_vertex_id
+    end
+  end
+end
+
+
+function find_vertex_around( npc, around_vertex, dir, rotate_min, rotate_max, offset_min, offset_max, sign )
+  if not sign then sign = 1 end
+  local ai_step     = 0.7 -- шаг AI сетки
+  local math_pi_180 = 180 / math.pi
+
+  local random_rotate    = math.random( rotate_min, rotate_max )
+  local cur_dir          = vector_rotate_y( dir, random_rotate * sign )
+  local random_offset    = math.random( offset_min, offset_max )
+  local rotate_angle     = math.asin( ai_step / random_offset )
+  local rotate_angle_deg = rotate_angle * math_pi_180 * sign
+  local cur_angle        = 0
+  local vertex_id
+  while not vertex_id do
+    -- проверяем точку слева
+    vertex_id = level.vertex_in_direction(
+      around_vertex, cur_dir, random_offset
+    )
+    if
+      vertex_id == around_vertex
+      or ( not npc:accessible( vertex_id ) )
+      or check_vertex_locked( npc, vertex_id )
+      or its_a_trap( npc, vertex_id )
+    then
+      vertex_id = nil
+      -- поворачиваем направление поиска
+      cur_angle = cur_angle + rotate_angle
+      if rotate_min + cur_angle * math_pi_180 > rotate_max then
+        break
+      else
+        cur_dir = vector_rotate_y( cur_dir, rotate_angle_deg )
+      end
+    else
+      break
+    end
+  end
+  return vertex_id
 end
 
 
