@@ -1,13 +1,13 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 -- величина разряда
-local step = 0.007
+local step = 0.014
 -- как часто выполняется разряд фонарика ( в милисекундах реального времени )
 local freq = 31 * 1000
 
 
 function attach( sm )
-  sm:subscribe({ signal = "on_first_update", fun = this.set_torch_mode })
+  sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
   sm:subscribe({ signal = "on_key_down",     fun = this.on_key_down    })
   sm:subscribe({ signal = "on_mm_return_game", fun = this.on_mm_return_game })
   sm:subscribe({ signal = "on_sleep_finished", fun = this.on_sleep_finished })
@@ -38,6 +38,11 @@ end
 
 function on_mm_return_game()
   rebind_use_torch()
+end
+
+
+function on_first_update()
+  set_torch_mode()
 end
 
 
@@ -94,31 +99,19 @@ end
 
 function set_near_mode( torch, r )
   torch_mode = "near"
-  local g, b
-  if r then
-    g, b = r, r
-  else
-    r, g, b = get_torch_rgb()
-  end
+  if not r then r = get_torch_power() end
   torch:set_range( 20 * r )
-  torch:set_angle( math.rad( 110 ) )
-  torch:set_rgb( r, g, b )
-  torch:set_brightness( 255 )
+  torch:set_angle( math.rad( 90 ) )
+  torch:set_brightness( r )
 end
 
 
 function set_far_mode( torch, r )
   torch_mode = "far"
-  local g, b
-  if r then
-    g, b = r, r
-  else
-    r, g, b = get_torch_rgb()
-  end
+  if not r then r = get_torch_power() end
   torch:set_range( 60 * r )
   torch:set_angle( math.rad( 60 ) )
-  torch:set_rgb( r, g, b )
-  torch:set_brightness( 255 )
+  torch:set_brightness( r )
 end
 
 
@@ -136,14 +129,16 @@ end
 function play_click()
   snd_obj = xr_sound.get_safe_sound_object( [[device\click10b]] )
   if snd_obj then
-    snd_obj:play_no_feedback( db.actor, sound_object.s2d, 0, vector():set( 0, 0, 0 ), 1.0 )
+    snd_obj:play_no_feedback(
+      db.actor, sound_object.s2d, 0, vector():set( 0, 0, 0 ), 1.0
+    )
   end
 end
 
 
 function get_torch_power( new )
   local vname = "dsh_torch.power"
-  local power = ogse.load_var( vname, 0.9 )
+  local power = ogse.load_var( vname, 1 )
   if new then
     ogse.save_var( vname, new, "float" )
   end
@@ -151,18 +146,9 @@ function get_torch_power( new )
 end
 
 
-function get_torch_rgb()
-  local power  = get_torch_power()
-  local mode_k = torch_mode == "near" and 1 or 2
-  local r_old  = power + ( mode_k - 1 ) * 0.1
-  local r_new, g_new = r_old, r_old - 0.07
-  return r_new, g_new, g_new
-end
-
-
 function recharge_torch( cond )
   if not cond then cond = 1 end
-  get_torch_power( 0.9 * cond )
+  get_torch_power( cond )
   set_torch_mode()
 end
 
@@ -170,6 +156,8 @@ end
 local flash_t
 function discharge_torch()
   if torch_mode == "off" then return end
+  local torch = db.actor:item_in_slot( 9 )
+  if not ( torch and torch:is_torch() ) then return end
   local power = get_torch_power()
   if math.random() < 0.35 then
     set_torch_mode( power * ( math.random( 3, 10 ) ) / 10 )
@@ -182,11 +170,16 @@ function discharge_torch()
       end
     )
   else
-    if power > 0.01 then
-      local mode_k = torch_mode == "near" and 1 or 2
-      get_torch_power( power - ( step * ( mode_k * 2 ) ) )
+    local k   = ( torch_mode == "near" and 1 or 2 )
+    local dec = step * k
+    if power > dec then
+      get_torch_power( power - dec )
+      set_torch_mode()
+    else
+      torch = get_torch_obj( torch )
+      torch:switch( false )
+      torch_mode = "off"
     end
-    set_torch_mode()
   end
 end
 
