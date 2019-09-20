@@ -57,8 +57,6 @@ function check_military_blockpost( obj )
 end
 
 
-local freq = 60000
-
 function add_cache_rec( obj, enemy, is_enemy, freq )
   local binder = obj:binded_object()
   local cached = binder[ "dsh_enemies.cached" ]
@@ -89,15 +87,17 @@ function get_cache_rec( obj, enemy )
   if cached and cached[ enemy:id() ] then
     local res, ttl = unpack( cached[ enemy:id() ] )
     if ttl <= time_global() then
-      res = check_is_enemy_always( obj, enemy )
-      add_cache_rec( obj, enemy, res, freq )
-      add_cache_rec( enemy, obj, res, freq )
+      local fr
+      res, fr = check_is_enemy_always( obj, enemy )
+      add_cache_rec( obj, enemy, res, fr )
+      add_cache_rec( enemy, obj, res, fr )
     end
     is_enemy = res
   else
-    is_enemy = check_is_enemy_always( obj, enemy )
-    add_cache_rec( obj, enemy, is_enemy, freq )
-    add_cache_rec( enemy, obj, is_enemy, freq )
+    local fr
+    is_enemy, fr = check_is_enemy_always( obj, enemy )
+    add_cache_rec( obj, enemy, is_enemy, fr )
+    add_cache_rec( enemy, obj, is_enemy, fr )
   end
   return is_enemy
 end
@@ -113,7 +113,25 @@ function enemy_callback( obj, enemy, result )
 end
 
 
+-- как долго кешировать результат проверки
+local far_freq =  5000          -- если слишком далеко
+local freq     = 60000          -- в остальных случаях
+
 function check_is_enemy_always( obj, enemy )
+  if not is_enemy_by_dist( obj, enemy ) then
+    return false, far_freq
+  end
+  if obj:is_stalker() or enemy:is_stalker() then
+    local apos  = db.actor:position()
+    local odist = apos:distance_to( obj:position() )
+    local edist = apos:distance_to( enemy:position() )
+    if
+      odist > far_r and edist > far_r
+      and not ( db.actor:see( obj ) or db.actor:see( enemy ) )
+    then
+      return false, far_freq
+    end
+  end
   local ignories = {
     this.get_ignore_by_community,
     this.get_ignore_by_name_or_strn,
@@ -129,9 +147,29 @@ function check_is_enemy_always( obj, enemy )
           or is_ignored_community( enemy, ignore_name )
           or ( strn and strn:name() == ignore_name )
         then
-          return false
+          return false, freq
         end
       end
+    end
+  end
+  return true, freq
+end
+
+
+-- дальше этого расстояния сталкеры не должны ни с кем воевать, если
+-- только их или их врага не видит актор
+local too_far = 100
+
+function is_enemy_by_dist( obj, enemy )
+  if obj:is_stalker() or enemy:is_stalker() then
+    local apos  = db.actor:position()
+    local odist = apos:distance_to( obj:position() )
+    local edist = apos:distance_to( enemy:position() )
+    if
+      odist > too_far and edist > too_far
+      and not ( db.actor:see( obj ) or db.actor:see( enemy ) )
+    then
+      return false
     end
   end
   return true
