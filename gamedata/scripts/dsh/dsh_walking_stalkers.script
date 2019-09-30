@@ -1,5 +1,10 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
+-- как долго можно оставаться в лагере дружественному сталкеру, после окончания
+-- обязательно времени
+local FRIENDS_MAX_STAY = 172800 -- два дня
+
+
 local update_signal
 function attach( sm )
   sm:subscribe({ signal = "on_begin_job_first_time", fun = this.on_begin_job })
@@ -63,10 +68,10 @@ end
 function periodic_job()
   local gogogo = {}
   smart_terrain.iterate_smart_terrains( function( strn )
-    check_too_slow_npc( strn )
-    if not is_walking_smart( strn ) then return end
     strn:initialize_if_needed()
     local gulag = strn.gulag
+    check_too_slow_npc( strn )
+    if not is_walking_smart( strn ) then return end
     if gulag then
       for _, sobj in ipairs( get_walk_npc( strn ) ) do
         table.insert( gogogo, {
@@ -143,8 +148,8 @@ function get_walk_npc( strn )
   if sys_ini:section_exist( sect ) then
     keep_min = get_u32( sect, "dsh_walking_keep_min", keep_min )
   end
-  local comed    = gulag:get_population_comed()
-  local gogogo   = {}
+  local comed  = gulag:get_population_comed()
+  local gogogo = {}
   if comed < keep_min + 1 then return gogogo end
   local comed_npc = {}
   for id, v in pairs( strn.npc_info ) do
@@ -173,7 +178,9 @@ function get_walk_npc( strn )
         table.insert( not_ready_to_go, v )
       elseif is_too_late( v.sobj ) then
         table.insert( not_ready_to_go, v )
-      else
+      elseif not amk_offline_alife.is_actors_friend( v.sobj ) then
+        table.insert( ready_to_go,     v )
+      elseif math.random() < ( v.diff_sec / FRIENDS_MAX_STAY ) then
         table.insert( ready_to_go,     v )
       end
     end
@@ -187,7 +194,7 @@ function get_walk_npc( strn )
       and num_to_go > 0
       and num_to_go == table.getn( ready_to_go ) -- идут все, кто собрался
       and table.getn( not_ready_to_go ) == 1     -- остается один
-      and math.random() < 0.5
+      and math.random() < 0.6
     then
       -- да ну нафиг, я тоже тогда пойду с мужиками.
       num_to_go = num_to_go + 1
@@ -217,8 +224,8 @@ end
 function is_too_late( npc )
   if IsMonster( npc ) then return false end
   local htime = level.get_time_hours()
-  if htime <= 4 or htime >= 21 then
-    if math.random() < 0.7 then return true end
+  if htime < 5 or htime > 21 then
+    if math.random() < 0.8 then return true end
   end
   return false
 end
@@ -351,16 +358,18 @@ function check_too_slow_npc( strn )
       npc_sobj
       and object_level_name( npc_sobj ) ~= object_level_name( strn )
     then
-      local diff_sec = game.get_game_time():diffSec( v.stay_end )
-      if diff_sec > max_time then
+      local begin_job = (
+        strn.gulag.Object_didnt_begin_job[ npc_sobj.id ] == false
+      )
+      local diff_sec  = game.get_game_time():diffSec( v.stay_end )
+      if diff_sec > max_time and not begin_job then
         log2(
-          "[%s] %s on %s is to slow going to smart_terrain %s on %s: %s seconds till registration",
+          "[%s] %s (%s) is too slow going to smart_terrain %s (%s): %s seconds till registration",
           script_name(),
           npc_sobj:name(),object_level_name( npc_sobj ),
           strn:name(), object_level_name( strn ),
           diff_sec
         )
-        log2( "[%s]: teleporting...", script_name() )
         alife():teleport_object(
           id, strn.position, strn.m_level_vertex_id, strn.m_game_vertex_id
         )
