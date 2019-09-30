@@ -287,7 +287,7 @@ function gulag:prepare_jobs()
   end
   for obj_id, jobN in pairs( self.ObjectJob ) do
     local job = self.Job[ jobN ]
-    if job ~= nil then
+    if job then
       job.object = obj_id
     end
   end
@@ -501,13 +501,20 @@ function gulag:object_setup_online( obj_id, obj, need_setup_logic, need_setup_re
     local jobn = self.ObjectJob[ obj_id ]
     if jobn > table.getn( self.Job ) and not is_retry then
       log2(
-        "[%s]: [%s]: job[%s/%s] not found for %s",
-        script_name(), self.name, jobn, table.getn( self.Job ), obj:name()
+        "[%s]: [%s]: job[%s/%s] not found for %s: is_retry[%s]",
+        script_name(), self.name, jobn, table.getn( self.Job ), obj:name(),
+        ( is_retry and "true" or "false" )
       )
-      self:removeObject( obj_id )
-      self:addObject( obj_id )
-      self:update()
-      return self:object_setup_online( obj_id, obj, need_setup_logic, need_setup_restrictors, true )
+      if self.npc_info[ obj_id ].exclusive then
+        log2( "[%s]: [%s]: lets try to find a new job for %s", script_name(), self.name, obj:name() )
+        self:free_obj_and_reinit( obj_id )
+        return self:object_setup_online( obj_id, obj, need_setup_logic, need_setup_restrictors, true )
+      else
+        local sobj = self.npc_info[ obj_id ].se_obj
+        log2( "[%s]: [%s]: schedule kicking of %s", script_name(), self.name, sobj:name() )
+        self.smrttrn:kick_on_update( obj_id )
+        return false
+      end
     end
     local job = self.Job[ jobn ]
     ASSERT(
@@ -529,6 +536,7 @@ function gulag:object_setup_online( obj_id, obj, need_setup_logic, need_setup_re
       self:set_restrictions( obj, job.out_rest, job.in_rest, job.info_rest )
     end
   end
+  return true
 end
 
 
@@ -1341,7 +1349,7 @@ function gulag:free_obj( obj_id )
   if jobN then
     self.ObjectJob[ obj_id ] = nil
     local job = self.Job[ jobN ]
-    if job then job.object = nil end
+    if job and job.object == obj_id then job.object = nil end
 
     if self.npc_info[ obj_id ] then
       local sobj = self.npc_info[ obj_id ].se_obj
@@ -1618,17 +1626,47 @@ function setup_gulag_and_logic_on_spawn( obj, st, sobj, stype, loaded )
   end
   
   if strn then
-    local need_setup_logic = strn.gulag.Object_begin_job[ obj:id() ]
-      and not loaded
-    local need_setup_restrictors = strn.gulag.Object_begin_job[ obj:id() ]
     strn:initialize_if_needed()
-    strn.gulag:object_setup_online(
-      obj:id(), obj, need_setup_logic, need_setup_restrictors
-    )
-    if not need_setup_logic then
-      if not strn.gulag:dsh_is_free_logic() then
-        xr_logic.initialize_obj( obj, st, loaded, db.actor, stype )
+    local gulag     = strn.gulag
+    local begin_job = gulag.Object_begin_job[ obj:id() ]
+    local need_setup_logic = begin_job and not loaded
+    local need_setup_restrictors = gulag.Object_begin_job[ obj:id() ]
+    if 
+      gulag:object_setup_online(
+        obj:id(), obj, need_setup_logic, need_setup_restrictors
+      )
+    then
+      if not need_setup_logic then
+        if not gulag:dsh_is_free_logic() then
+          local job = gulag:getJob( obj:id() )
+          if begin_job and job.section ~= st.loaded_section_logic then
+            log2(
+              "[%s]: [%s]: %s has wrong loaded_section_logic[%s]: job[%s/%s] job.section[%s]",
+              script_name(), gulag.name, obj:name(), st.loaded_section_logic,
+              job.num, table.getn( gulag.Job ), job.section
+            )
+            resetJob( obj, gulag )
+            gulag:object_setup_online( obj:id(), obj, true, true, true )
+            job = gulag:getJob( obj:id() )
+            if job then
+              log2(
+                "[%s]: [%s]: %s got new job[%s/%s] job.section[%s]",
+                script_name(), gulag.name, obj:name(), job.num,
+                table.getn( gulag.Job ), job.section
+              )
+            else
+              log2(
+                "[%s]: [%s]: %s kicking because has no job",
+                script_name(), gulag.name, obj:name()
+              )
+              strn:kick_on_update( obj:id() )
+            end
+          else
+            xr_logic.initialize_obj( obj, st, loaded, db.actor, stype )
+          end
+        end
       end
+    else
     end
   else
     xr_logic.initialize_obj( obj, st, loaded, db.actor, stype )
@@ -1753,17 +1791,17 @@ function getGulagState( name_or_sid )
 	return ( gulag and gulag.state ) or 0
 end
 
+
 -- освободить персонажа от работы.
 -- obj=game_object
-function resetJob( obj )
-	printf( "gulag resetJob: obj=%s", obj:name() )
-
-	local gulag = get_npc_gulag( obj )
-	if gulag then
-		gulag:free_obj_and_reinit( obj:id() )
-		gulag:update()
-	end
+function resetJob( obj, gulag )
+  if not gulag then gulag = get_npc_gulag( obj ) end
+  if gulag then
+    gulag:free_obj_and_reinit( obj:id() )
+    gulag:update()
+  end
 end
+
 
 function clearJob( obj )
 	local sim = alife()
