@@ -137,16 +137,6 @@ function is_walking_smart( strn )
       res = xr_logic.pick_section_from_condlist( db.actor, db.actor, pc ) ~= nil
     end
   end
-  if res and strn.level_name == level.name() then
-    -- свои не должны начинать гулять на текущей локации, что бы глаза
-    -- не мозолить своими брожениями и мутантов по чем зря не
-    -- изводить
-    for id, v in pairs( strn.npc_info ) do
-      local sobj = alife():object( id )
-      res = ( not amk_offline_alife.is_actors_friend( sobj ) )
-      break
-    end
-  end
   return res
 end
 
@@ -169,10 +159,14 @@ function get_walk_npc( strn )
       and ( not gulag.Object_didnt_begin_job[ id ] )
       and check_npc_job( sect, id, gulag )
     then
-      table.insert( comed_npc, {
-        diff_sec = game.get_game_time():diffSec( v.stay_end ),
-        sobj     = npc_sobj,
-      })
+      table.insert(
+        comed_npc,
+        {
+          [ "diff_sec" ] = game.get_game_time():diffSec( v.stay_end ),
+          [ "npc_info" ] = v,
+          [ "sobj"     ] = npc_sobj,
+        }
+      )
     end
   end
   if table.getn( comed_npc ) > 0 then
@@ -182,16 +176,37 @@ function get_walk_npc( strn )
     local ready_to_go     = {}
     local not_ready_to_go = {}
     for _, v in ipairs( comed_npc ) do
+      local sobj = v.sobj
       if v.diff_sec < 0 then
         table.insert( not_ready_to_go, v )
-      elseif is_too_bad_weather( v.sobj ) then
+      elseif is_too_bad_weather( sobj ) then
         table.insert( not_ready_to_go, v )
-      elseif is_too_late( v.sobj ) then
+      elseif is_too_late( sobj ) then
         table.insert( not_ready_to_go, v )
-      elseif not amk_offline_alife.is_actors_friend( v.sobj ) then
+      elseif not amk_offline_alife.is_actors_friend( sobj ) then
         table.insert( ready_to_go,     v )
       elseif math.random() < ( v.diff_sec / FRIENDS_MAX_STAY ) then
-        table.insert( ready_to_go,     v )
+        -- свои не должны начинать гулять на текущей локации, что бы
+        -- глаза не мозолить своими брожениями и зверушек не тиранить
+        if sobj.level_name == level.name() then
+          local obj = level.object_by_id( sobj.id )
+          if
+            obj and (
+              obj:position():distance_to( db.actor:position() ) < 100
+              or db.actor:see( obj )
+            )
+          then
+            -- если он находится не слишком далеко или актор его видит,
+            -- тогда пусть посидит еще
+            table.insert( not_ready_to_go, v )
+          else
+            -- иначе пусть идет, его принудительно переведут в оффлайн и он
+            -- исчезнет
+            table.insert( ready_to_go, v )
+          end
+        else
+          table.insert( ready_to_go, v )
+        end
       end
     end
     local allowed_to_go = comed - keep_min
