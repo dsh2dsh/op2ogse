@@ -129,6 +129,18 @@ local dead_mutant = {
   "characters_voice\\human_01\\dolg\\reactions\\dead_mutant\\dead_mutant_3",
 }
 
+-- фракции, у которых есть собственная озвучка после лутания
+local postloot_comm = {
+  [ "bandit"   ] = true,
+  [ "dolg"     ] = true,
+  [ "ecolog"   ] = true,
+  [ "freedom"  ] = true,
+  [ "killer"   ] = true,
+  [ "military" ] = true,
+  [ "monolith" ] = true,
+  [ "stalker"  ] = true,
+}
+
 -- квестовые персонажи, которым можно собирать лут.
 local npc_can_trade_anyway = {
   [ "bar_zastava_guard_3" ] = true, -- Киценко
@@ -360,7 +372,74 @@ function postmortem_sound( npc, body )
   local snd_obj = xr_sound.get_safe_sound_object( snd_name )
   if snd_obj and not snd_obj:playing() then
     snd_obj:play_no_feedback( npc, sound_object.s3d, 0, npc:position(), 1.0 )
-    sound_timer[ npc:id() ] = time_global() + math.random( 15000, 25000 )
+    sound_timer[ npc:id() ] = time_global() + snd_obj:length()
+      + math.random( 15000, 25000 )
+    return snd_obj:length()
+  end
+end
+
+
+function beginloot_sound( npc, body )
+  if not ( npc and body ) then return end
+  if
+    sound_timer[ npc:id() ]
+    and sound_timer[ npc:id() ] > time_global()
+  then
+    return
+  end
+  local snd_name
+  local comm = postloot_comm[ npc:character_community() ]
+    and npc:character_community() or "stalker"
+  if IsStalker( body ) then
+    snd_name = string.format(
+      "characters_voice\\loot\\%s\\loot_begin_%s", comm, math.random( 3 )
+    )
+  elseif IsMonster( body ) then
+    snd_name = string.format(
+      "characters_voice\\loot_monster\\%s\\loot_begin_1", comm
+    )
+  end
+  if not snd_name then return end
+  local snd_obj = xr_sound.get_safe_sound_object( snd_name )
+  if snd_obj and not snd_obj:playing() then
+    snd_obj:play_no_feedback( npc, sound_object.s3d, 0, npc:position(), 1.0 )
+    sound_timer[ npc:id() ] = time_global() + snd_obj:length()
+      + math.random( 15000, 25000 )
+    return snd_obj:length()
+  end
+end
+
+
+local postloot_timer = {}
+
+function postloot_sound( npc, body, found )
+  if not ( npc and body ) then return end
+  if
+    postloot_timer[ npc:id() ]
+    and postloot_timer[ npc:id() ] > time_global()
+  then
+    return
+  end
+  local snd_name
+  local comm = postloot_comm[ npc:character_community() ]
+    and npc:character_community() or "stalker"
+  local good_bad = found and "good" or "bad"
+  if IsStalker( body ) then
+    snd_name = string.format(
+      "characters_voice\\loot\\%s\\loot_%s_%s", comm, good_bad, math.random( 3 )
+    )
+  elseif IsMonster( body ) then
+    snd_name = string.format(
+      "characters_voice\\loot_monster\\%s\\loot_%s_1", comm, good_bad
+    )
+  end
+  if not snd_name then return end
+  local snd_obj = xr_sound.get_safe_sound_object( snd_name )
+  if snd_obj and not snd_obj:playing() then
+    snd_obj:play_no_feedback( npc, sound_object.s3d, 0, npc:position(), 1.0 )
+    postloot_timer[ npc:id() ] = time_global() + snd_obj:length()
+      + math.random( 15000, 25000 )
+    return snd_obj:length()
   end
 end
 
@@ -701,8 +780,18 @@ function act_grab_item:initialize()
   self.st.rnd          = math.random()
   if gi then
     if IsStalker( gi ) or IsMonster( gi ) then
-      self.tt = time_global() + 3000
-      postmortem_sound( npc, gi )
+      local snd_len
+      if math.random() < 0.5 then
+        snd_len = postmortem_sound( npc, gi )
+        if snd_len then
+          self.skip_postloot_snd = true
+        else
+          snd_len = 0
+        end
+      else
+        snd_len = beginloot_sound( npc, gi ) or 0
+      end
+      self.tt = time_global() + math.max( 3000, snd_len * 1.2 )
     else
       self.tt = time_global() + 2200
     end
@@ -745,10 +834,11 @@ function act_grab_item:execute()
     else
       state_mgr.set_state( npc, "dynamite", nil, nil, { look_object = gi } )
     end
-  else
+  elseif not self.tt2 then
     -- поднимаем
     if gi and gi:parent() == nil and not do_not_touch( gi ) then
       if IsStalker( gi ) or IsMonster( gi ) then
+        local found = false
         gi:iterate_inventory(
           function ( d, item )
             if item:section() ~= "bolt" and not do_not_touch( item ) then
@@ -756,10 +846,17 @@ function act_grab_item:execute()
               if gi:is_outfit() then
                 amkii_equip.CAmkDisguise():Update( npc, gi )
               end
+              found = true
             end
           end, nil
         )
         corpse_checked[ gi:id() ] = false -- нет больше лута тут
+        if not self.skip_postloot_snd then
+          local snd_len = postloot_sound( npc, gi, found )
+          if snd_len then
+            self.tt2 = time_global() + snd_len
+          end
+        end
       else
         gi:transfer_item( gi, npc )
         npc:enable_memory_object( gi, false )
@@ -776,6 +873,10 @@ function act_grab_item:execute()
         npc, "sneak_no_wpn", nil, nil, nil, { animation = true }
       )
     end
+    if not self.tt2 then
+      self.tt2 = time_global()
+    end
+  elseif self.tt2 < time_global() then
     -- *голосом мастера Йода* объект нельзя освобождать тут нам,
     -- *асинхронно transfer_item выполняется, clearGObject делаем
     -- *поэтому
