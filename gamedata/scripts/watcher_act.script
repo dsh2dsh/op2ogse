@@ -330,7 +330,7 @@ local corpse_checked   = {}
 
 function checkCorpse( obj )
   if corpse_checked[ obj:id() ] == nil then
-    if ( IsStalker( obj ) or IsMonster( obj ) ) and not obj:alive() then
+    if obj:is_custom_monster() and not obj:alive() then
       local cnt = 0
       obj:iterate_inventory(
         function ( dummy, item )
@@ -357,7 +357,7 @@ function postmortem_sound( npc, body )
     return
   end
   local snd_name
-  if IsStalker( body ) then
+  if body:is_stalker() then
     if npc:relation( body ) == game_object.friend then
       snd_name = dead_friend[ math.random( table.getn( dead_friend ) ) ]
     elseif npc:relation( body ) == game_object.neutral then
@@ -365,7 +365,7 @@ function postmortem_sound( npc, body )
     elseif npc:relation( body ) == game_object.enemy then
       snd_name = dead_enemy[ math.random( table.getn( dead_enemy ) ) ]
     end
-  elseif IsMonster( body ) then
+  elseif body:is_monster() then
     snd_name = dead_mutant[ math.random( table.getn( dead_mutant ) ) ]
   end
   if not snd_name then return end
@@ -390,11 +390,11 @@ function beginloot_sound( npc, body )
   local snd_name
   local comm = postloot_comm[ npc:character_community() ]
     and npc:character_community() or "stalker"
-  if IsStalker( body ) then
+  if body:is_stalker() then
     snd_name = string.format(
       "characters_voice\\loot\\%s\\loot_begin_%s", comm, math.random( 3 )
     )
-  elseif IsMonster( body ) then
+  elseif body:is_monster() then
     snd_name = string.format(
       "characters_voice\\loot_monster\\%s\\loot_begin_1", comm
     )
@@ -424,11 +424,11 @@ function postloot_sound( npc, body, found )
   local comm = postloot_comm[ npc:character_community() ]
     and npc:character_community() or "stalker"
   local good_bad = found and "good" or "bad"
-  if IsStalker( body ) then
+  if body:is_stalker() then
     snd_name = string.format(
       "characters_voice\\loot\\%s\\loot_%s_%s", comm, good_bad, math.random( 3 )
     )
-  elseif IsMonster( body ) then
+  elseif body:is_monster() then
     snd_name = string.format(
       "characters_voice\\loot_monster\\%s\\loot_%s_1", comm, good_bad
     )
@@ -463,7 +463,7 @@ function isValuable( obj )
     or bgwith( sec, "wpn_" )
     or bgwith( sec, "energy_" )
     or checkCorpse( obj )
-  ), ( IsStalker( obj ) or IsMonster( obj ) )
+  ), obj:is_custom_monster()
 end
 
 
@@ -517,7 +517,7 @@ end
 
 
 function correct_position( gi, npc )
-  if IsStalker( gi ) or IsMonster( gi ) then
+  if gi:is_custom_monster() then
     -- Вычисляем вектор разницы между координатами кости и level
     -- vertex. Пытаемся найти level vertex наиболее близкий к кости
     local real_vtx = gi:level_vertex_id()
@@ -566,7 +566,7 @@ function ev_see_stuff:check_item( obj, dist_limit, busy )
 
   if
     ( not self.st.disabled_objects[ obj:id() ] )
-    and ( obj:parent() == nil or not IsStalker( obj:parent() ) )
+    and ( obj:parent() == nil or not obj:parent():is_stalker() )
     and (
       obj_owner[ obj:id() ] == nil
       or obj_owner[ obj:id() ] == npc:id()
@@ -775,11 +775,13 @@ function act_grab_item:initialize()
   if gi then
     npc:set_desired_direction()
     npc:set_desired_position()
+    xr_sound.set_sound( npc, nil )
+    stop_play_sound( npc )
   end
   self.st.block_search = true
   self.st.rnd          = math.random()
   if gi then
-    if IsStalker( gi ) or IsMonster( gi ) then
+    if gi:is_custom_monster() then
       local snd_len
       if math.random() < 0.5 then
         snd_len = postmortem_sound( npc, gi )
@@ -789,9 +791,9 @@ function act_grab_item:initialize()
           snd_len = 0
         end
       else
-        snd_len = beginloot_sound( npc, gi ) or 0
+        snd_len = ( beginloot_sound( npc, gi ) or 0 )
       end
-      self.tt = time_global() + math.max( 3000, snd_len * 1.2 )
+      self.tt = time_global() + math.max( 3000, snd_len )
     else
       self.tt = time_global() + 2200
     end
@@ -815,10 +817,10 @@ function act_grab_item:execute()
     end
     return
   end
-  if self.tt > time_global() then
+  if self.tt > time_global() or ( self.tt2 and self.tt2 > time_global() ) then
     -- поднятие анимировать нам надо
-    if IsStalker( gi ) or IsMonster( gi ) then
-      if IsStalker( gi ) then
+    if gi:is_custom_monster() then
+      if gi:is_stalker() then
         if self.st.rnd > 0.5 then
           state_mgr.set_state(
             npc, "obisk_trupa",  nil, nil, { look_object = gi }
@@ -836,27 +838,39 @@ function act_grab_item:execute()
     end
   elseif not self.tt2 then
     -- поднимаем
-    if gi and gi:parent() == nil and not do_not_touch( gi ) then
-      if IsStalker( gi ) or IsMonster( gi ) then
-        local found = false
+    if
+      gi and gi:is_custom_monster() and not (
+        self.skip_postloot_snd or gi:parent() or do_not_touch( gi )
+      )
+    then
+      local found = false
+      gi:iterate_inventory(
+        function ( d, item )
+          if item:section() ~= "bolt" and not do_not_touch( item ) then
+            found = true
+          end
+        end, nil
+      )
+      local snd_len = postloot_sound( npc, gi, found )
+      if snd_len then
+        self.tt2 = time_global() + snd_len
+      end
+    end
+    if not self.tt2 then self.tt2 = time_global() end
+  else
+    if gi and not ( gi:parent() or do_not_touch( gi ) ) then
+      if gi:is_custom_monster() then
         gi:iterate_inventory(
           function ( d, item )
             if item:section() ~= "bolt" and not do_not_touch( item ) then
               gi:transfer_item( item, npc )
-              if gi:is_outfit() then
-                amkii_equip.CAmkDisguise():Update( npc, gi )
+              if item:is_outfit() then
+                amkii_equip.CAmkDisguise():Update( npc, item )
               end
-              found = true
             end
           end, nil
         )
         corpse_checked[ gi:id() ] = false -- нет больше лута тут
-        if not self.skip_postloot_snd then
-          local snd_len = postloot_sound( npc, gi, found )
-          if snd_len then
-            self.tt2 = time_global() + snd_len
-          end
-        end
       else
         gi:transfer_item( gi, npc )
         npc:enable_memory_object( gi, false )
@@ -864,19 +878,9 @@ function act_grab_item:execute()
           amkii_equip.CAmkDisguise():Update( npc, gi )
         end
       end
-      claimed_pos[ gi:level_vertex_id() ] = nil
-      obj_owner[ gi:id() ] = nil
     end
-    if gi and not ( IsStalker( gi ) or IsMonster( gi ) ) then
-      self.object:clear_animations()
-      state_mgr.set_state(
-        npc, "sneak_no_wpn", nil, nil, nil, { animation = true }
-      )
-    end
-    if not self.tt2 then
-      self.tt2 = time_global()
-    end
-  elseif self.tt2 < time_global() then
+    claimed_pos[ gi:level_vertex_id() ] = nil
+    obj_owner[ gi:id() ] = nil
     -- *голосом мастера Йода* объект нельзя освобождать тут нам,
     -- *асинхронно transfer_item выполняется, clearGObject делаем
     -- *поэтому
@@ -886,11 +890,14 @@ end
 
 
 function act_grab_item:finalize()
+  action_base.finalize( self )
   local npc = self.object
   self.st.block_search = nil
   trigger_timed( self.st, "tm1" )
   self.st.dest_lvid = nil -- Очищаем скорректированную точку назначения
-  action_base.finalize( self )
+  self.skip_postloot_snd = nil
+  self.tt  = nil
+  self.tt2 = nil
 end
 
 
