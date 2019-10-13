@@ -701,17 +701,23 @@ function se_smart_terrain:obj_accepts_smart_terrain( obj )
   if conds then
     local done = true
     -- перебираем все варианты условий из секции непис€
-    if xr_logic.pick_section_from_condlist(
-      db.actor_proxy, obj, conds[ "none" ]
-    ) then
+    if
+      xr_logic.pick_section_from_condlist(
+        db.actor_proxy, obj, conds[ "none" ]
+      ) ~= nil
+    then
       return disagreed -- €вно прописано, что не идЄт ни в какой смарт
-    elseif xr_logic.pick_section_from_condlist(
-      db.actor_proxy, obj, conds[ self:name() ]
-    ) then
+    elseif
+      xr_logic.pick_section_from_condlist(
+        db.actor_proxy, obj, conds[ self:name() ]
+      ) ~= nil
+    then
       return agreed_exclusive   -- идЄт только в этот смарт
-    elseif xr_logic.pick_section_from_condlist(
-      db.actor_proxy, obj, conds[ "any" ]
-    ) then
+    elseif
+      xr_logic.pick_section_from_condlist(
+        db.actor_proxy, obj, conds[ "any" ]
+      ) ~= nil
+    then
       done = false              -- разрешили идти в любой смарт
     end
     if done then
@@ -902,6 +908,23 @@ function se_smart_terrain:register_npc( obj )
     local sm = ogse_signals.get_mgr()
     sm:call( "on_full_smart_terrain", self )
   end
+
+  if obj.last_alife_task then
+    if obj.level_name ~= self.level_name then
+      obj.last_alife_task_ttl = time_global() + math.random( 5 ) * 60 * 1000
+      -- log2(
+      --   "[%s]: [%s] %s (%s) set last_alife_task_ttl[%s]",
+      --   script_name(), self:name(), obj:name(), obj.level_name,
+      --   obj.last_alife_task_ttl - time_global()
+      -- )
+    else
+      -- log2(
+      --   "[%s]: [%s] %s (%s) clear last_alife_task",
+      --   script_name(), self:name(), obj:name(), obj.level_name
+      -- )
+      obj.last_alife_task = nil
+    end
+  end
   -- log2(
   --   "[smart_terrain %s] added %s to gulag type=%s",
   --   self:name(), obj:name(), self.gparams.type
@@ -1021,6 +1044,24 @@ function se_smart_terrain:task( sobj )
     )
     self:unregister_npc( sobj )  --'«атычка против вылета.
     return CALifeSmartTerrainTask( "simulation_default_path" )
+  end
+  if sobj.last_alife_task then
+    if sobj.last_alife_task_ttl < time_global() then
+      -- log2(
+      --   "[%s]: [%s] %s (%s) last_alife_task expired ttl[%s]",
+      --   script_name(), self:name(), sobj:name(), sobj.level_name,
+      --   sobj.last_alife_task_ttl - time_global()
+      -- )
+      sobj.last_alife_task     = nil
+      sobj.last_alife_task_ttl = nil
+    else
+      -- log2(
+      --   "[%s]: [%s] %s (%s) use last_alife_task ttl[%s]",
+      --   script_name(), self:name(), sobj:name(), sobj.level_name,
+      --   sobj.last_alife_task_ttl - time_global()
+      -- )
+      return sobj.last_alife_task
+    end
   end
   return job.alife_task
 end
@@ -1666,6 +1707,8 @@ function se_smart_terrain:kick_on_update( id )
 end
 
 
+local need_exclusive_update_brains = false
+
 function on_spawn()
   local cnt = 0;
   log2( "[%s]: patch level_groups", script_name() )
@@ -1685,7 +1728,9 @@ function on_spawn()
   if cnt > 0 then
     log2( "[%s]: %s patche(s) applied", script_name(), cnt )
   end
-  exclusive_update_brains()
+  if need_exclusive_update_brains then
+    exclusive_update_brains()
+  end
   dsh.timeout(
     smart_terrain_choose_interval,
     function()
@@ -1727,24 +1772,34 @@ function smart_brain_update( sobj )
                 and dsh.is_free_logic_mob( sobj ) == strn.id
               )
             ),
-            "[%s]: %s rejected %s: %s",
-            script_name(), strn:name(), sobj:name(), sobj:smart_terrain_id()
+            "[%s]: %s rejected %s (%s): %s",
+            script_name(), strn:name(), sobj:name(), sobj.level_name,
+            sobj:smart_terrain_id()
+          )
+          log2(
+            "[%s]: %s (%s) registered in %s",
+            script_name(), sobj:name(), sobj.level_name, strn:name()
           )
           return
+        elseif not strn then
+          log2(
+            "[%s]: smart terrain %s not found in alife()",
+            script_name(), strn:name()
+          )
         end
       end
     end
-    log2( "[%s]: no smart terrain found for %s", script_name(), sobj:name() )
+    if
+      not (
+        conds.any
+        and xr_logic.pick_section_from_condlist( db.actor_proxy, sobj, conds.any ) ~= nil
+      )
+    then
+      log2( "[%s]: no smart terrain found for %s", script_name(), sobj:name() )
+      return
+    end
   end
-  if
-    ( not conds )
-    or (
-      conds.any
-      and xr_logic.pick_section_from_condlist( db.actor_proxy, sobj, conds.any )
-    )
-  then
-    sobj:brain():update()
-  end
+  sobj:brain():update()
 end
 
 
@@ -1760,16 +1815,50 @@ function exclusive_update_brains()
           "[%s]: %s is dead or can't choose alife tasks",
           script_name(), sobj:name()
         )
-        log2( "[%s]: update brain %s", script_name(), sobj:name() )
-        smart_brain_update( sobj )
-        cnt = cnt + 1
+        local need_brain_update = false
+        local conds     = sobj.smart_terrain_conditions
+        local str_conds = sobj.smart_terrain_str_conditions
+        for k, v in pairs( conds ) do
+          if k ~= "any" then
+            local strn = alife():object( k )
+            if strn:is_gulag_available() then
+              local s = xr_logic.pick_section_from_condlist(
+                db.actor_proxy, sobj, v
+              )
+              if s ~= nil then
+                log2(
+                  "[%s]: register %s (%s) in %s: '%s' = '%s'",
+                  script_name(), sobj:name(), sobj.level_name, strn:name(),
+                  tostring( str_conds[ k ] ), tostring( s )
+                )
+                need_brain_update = true
+                break
+              end
+            elseif sobj.smart_terrain_conditions_cnt == 1 then
+              -- моб хочет идти исключительно в этот смарт, но смарт
+              -- еще закрыт. ¬ этом случае, пусть смарт сам подберет
+              -- своих, когда откроетс€.
+              strn.has_waiting_exclusive = true
+              sobj.waiting_smart_terrain = strn.id
+              sobj:brain():can_choose_alife_tasks( false )
+            end
+          end
+        end
+        if need_brain_update then
+          log2( "[%s]: update brain %s", script_name(), sobj:name() )
+          smart_brain_update( sobj )
+          cnt = cnt + 1
+        end
         sobj.need_brain_update = false
       end
     end
   end
   pt:stop()
   if cnt > 0 then
-    log2( "[%s]: %s brains updated: %s", script_name(), cnt, pt:time() )
+    log2(
+      "[%s]: %s exclusive brains updated: %s",
+      script_name(), cnt, pt:time()
+    )
   end
 end
 
@@ -1847,7 +1936,8 @@ end
 function fill_exclusives( sobj )
   local conds, str_conds = read_smart_terrain_conditions( sobj )
   if conds then
-    sobj.smart_terrain_conditions = conds
+    sobj.smart_terrain_conditions     = conds
+    sobj.smart_terrain_str_conditions = str_conds
     local cnt = 0
     for name, condlist in pairs( conds ) do
       cnt = cnt + 1
@@ -1855,40 +1945,16 @@ function fill_exclusives( sobj )
     end
     sobj.smart_terrain_conditions_cnt = cnt
     if sobj:brain():can_choose_alife_tasks() then
-      if cnt == 1 and str_conds[ "none" ] == "true" then
+      if cnt == 1 and str_conds.none == "true" then
         sobj:brain():can_choose_alife_tasks( false )
       elseif sobj:smart_terrain_id() == 65535 and sobj:alive() then
         ASSERT(
           conds.none == nil,
           "[%s]: %s has none = %s", script_name(), sobj:name(), str_conds.none
         )
-        for k, v in pairs( conds ) do
-          if k ~= "any" then
-            local strn = alife():object( k )
-            if strn then -- при начале новой игры смартов нет
-              if strn:is_gulag_available() then
-                if
-                  xr_logic.pick_section_from_condlist(
-                    db.actor_proxy, sobj, v
-                  )
-                then
-                  log2(
-                    "[%s]: register %s in %s",
-                    script_name(), sobj:name(), strn:name()
-                  )
-                  sobj.need_brain_update = true
-                  break
-                end
-              elseif cnt == 1 then
-                -- моб хочет идти исключительно в этот смарт, но смарт
-                -- еще закрыт. ¬ этом случае, пусть смарт сам подберет
-                -- своих, когда откроетс€.
-                strn.has_waiting_exclusive = true
-                sobj.waiting_smart_terrain = strn.id
-                sobj:brain():can_choose_alife_tasks( false )
-              end
-            end
-          end
+        if cnt > 1 or ( cnt == 1 and not conds.any ) then
+          sobj.need_brain_update = true
+          need_exclusive_update_brains = true
         end
       end
     end
