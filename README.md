@@ -512,8 +512,6 @@
 
 atmosfear3_rain.xdb: текстура дождя с заметными каплями
 
-bigfont.xdb: увеличивает шрифт в игре
-
 coc_actor_step.xdb: звук шагов ГГ из CoC
 
 nlc7_bolt.xdb, nlc7_bolt2.xdb: болты разных версий из NLC7 Переосмысление
