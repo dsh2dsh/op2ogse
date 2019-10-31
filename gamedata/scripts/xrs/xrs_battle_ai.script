@@ -131,10 +131,13 @@ local headshot_prob = {
 
 
 function attach( sm )
+  sm:subscribe({ signal = "on_monster_death", fun = this.on_monster_death })
+  sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_monster_net_destroy })
   sm:subscribe({ signal = "on_npc_death", fun = this.death_place  })
   sm:subscribe({ signal = "on_npc_hit",   fun = this.hit_callback })
-  sm:subscribe({ signal = "on_npc_net_destroy", fun = this.go_offline  })
+  sm:subscribe({ signal = "on_npc_net_destroy", fun = this.go_offline })
   sm:subscribe({ signal = "on_spawn",     fun = this.on_spawn     })
+  sm:subscribe({ signal = "on_wounded",   fun = this.on_wounded   })
 end
 
 
@@ -218,12 +221,11 @@ local last_reprioritize         = {} -- время приоретизации
 local last_target               = {} -- последняя цель
 local last_enemy_id             = {}         -- ид последнего врага
 local inited                    = {}         -- инициализированы ли
-local bad_hide                  = {} -- ненадежное укрытие
 local locked_vertexes           = {} -- занятые вертексы
+local locked_vertexes_r         = {}
 local death_places              = {} -- места смерти союзников, избегать их
 local time_hide                 = {} -- время ожидания
 local hit_memory                = {} -- хитоая память
-local deadman_vtx               = {} -- точка откуда будем ждать успокоения
 local grenka_already_blow       = {}
 local escape_point              = {}
 local last_choosed_path         = {}
@@ -323,7 +325,7 @@ function evaluator_check_altcombat:evaluate()
   if not inited[ self.object:id() ] then
     -- произведем инициализацию таблиц данных селектора
     targets_list[ self.object:id() ] = {}        -- список целей
-    last_target[ self.object:id()  ] = {}        -- последняя цель
+    last_target[ self.object:id()  ] = nil       -- последняя цель
     setup_sound_table( self.object )
     inited[ self.object:id()       ] = true
     local ini = battle.is_battle_spawned( self.object )
@@ -345,42 +347,22 @@ function evaluator_check_altcombat:evaluate()
     return true
   end
 
-  local bw         = get_best_weapon( self.object )
-  local targ       = have_fresh_deadman( self.object )
   local best_enemy = get_target( self.object )
-  if best_enemy then
-    if
-      best_enemy:alive()
-      and (
-        not ( best_enemy:is_stalker() and xr_wounded.is_wounded( best_enemy ) )
-      )
-      and ( not is_exclusion( self.object ) )
-      and bw
-    then
-      ogse_debug.add_active_eval( self.object, script_name(), "altcombat" )
-      self.st.evaluated = time_global()
-      return true
-    else
-      if targ and not is_exclusion( self.object ) then
-        ogse_debug.add_active_eval( self.object, script_name(), "altcombat_2" )
-        self.st.evaluated = time_global()
-        return true
-      end
-      return false
-    end
-  else
-    if targ and not is_exclusion( self.object ) then
-      local obj = level.object_by_id( targ )
-      if not (
-        obj:is_stalker() and obj:alive() and xr_wounded.is_wounded( obj )
-      ) then
-        ogse_debug.add_active_eval( self.object, script_name(), "altcombat_3" )
-        self.st.evaluated = time_global()
-        return true
-      end
-    end
-    return false
+  if
+    best_enemy and best_enemy:alive()
+    and ( not xr_wounded.is_wounded( best_enemy ) )
+    and get_best_weapon( self.object )
+  then
+    ogse_debug.add_active_eval( self.object, script_name(), "altcombat" )
+    self.st.evaluated = time_global()
+    return true
+  elseif have_fresh_deadman( self.object ) then
+    ogse_debug.add_active_eval( self.object, script_name(), "altcombat_2" )
+    self.st.evaluated = time_global()
+    return true
   end
+
+  return false
 end
 
 
@@ -418,7 +400,7 @@ function is_danger_corpse( npc, enemy )
   if
     enemy and enemy:alive()
     and ( enemy:is_actor() or enemy:is_custom_monster() )
-    and ( not ( enemy:is_stalker() and xr_wounded.is_wounded( enemy ) ) )
+    and ( not xr_wounded.is_wounded( enemy ) )
     and check_is_enemy( npc, enemy )
   then
     return true
@@ -520,7 +502,7 @@ function action_altcombat:initialize()
   xr_sound.set_sound( npc, nil )
   npc:movement_enabled( true )
   stop_play_sound( npc )
-  npc:set_item( object.idle, nil )
+  self:set_weapons_idle( get_best_weapon( npc ) )
   self:check_objects()
   sr_light.check_light( npc )
   set_sound_event( npc, "start" )
@@ -543,6 +525,9 @@ function action_altcombat:initialize()
   npc:set_desired_position()
   npc:set_detail_path_type( move.curve )
   npc:set_path_type( game_object.level_path )
+  npc:set_mental_state( anim.danger )
+  npc:set_body_state( move.standing )
+  npc:set_dest_level_vertex_id( npc:level_vertex_id() )
 
   self.initialized = true
 end
@@ -567,9 +552,19 @@ function action_altcombat:not_ready_state()
       local anim = t.state_mgr.animstate:state()
       if not_ready_states[ anim ] then return true end
     end
+    if
+      npc:animation_count() > 0 or npc:body_state() ~= move.standing
+      or npc:is_body_turning()
+    then
+      self.aiming = nil
+      return true
+    end
     self.check_ready_state = nil
   end
-  if playing_hit_animation( npc ) then return true end
+  if playing_hit_animation( npc ) then
+    self.aiming = nil
+    return true
+  end
   return false
 end
 
@@ -614,6 +609,9 @@ function action_altcombat:_execute()
   end
   if self:not_ready_state() then return end
 
+  -- получим текущее оружие
+  local bw = get_best_weapon( npc )
+
   if self:evade_grenades() then return end
   local has_grenade = self.st.active_grenade
 
@@ -623,7 +621,7 @@ function action_altcombat:_execute()
     deadman = have_fresh_deadman( npc )
   end
   if not ( enemy or deadman ) then
-    deadman_vtx[ npc:id()       ] = nil
+    self:set_weapons_idle( bw )
     last_time_send[ npc:id()    ] = nil
     last_enemy_id[ npc:id()     ] = nil
     primary_target[ npc:id()    ] = nil
@@ -631,32 +629,20 @@ function action_altcombat:_execute()
     return
   end
 
-  -- получим текущее оружие
-  local bw = get_best_weapon( npc )
-
-  -- если ещё свежий труп
+  -- пауза перед выходом из боя
   if deadman then
     stop_play_sound( npc )
-    local deadman_target = level.object_by_id( deadman )
-    if not deadman_target then
-      reset_everything( npc )
-      return
+    local obj = level.object_by_id( deadman )
+    if obj then
+      npc:set_sight( obj, true, true )
     end
-    local last_deadman_id = deadman_vtx[ npc:id() ]
-    if ( not last_deadman_id ) or last_deadman_id ~= deadman then
-      deadman_vtx[    npc:id() ] = deadman
-      last_time_send[ npc:id() ] = nil
-      local lvid = self:find_cover( deadman_target, random_choice( 1, 3, 4 ) )
-      if lvid then
-        utils.send_to_nearest_accessible_vertex( npc, lvid )
-      end
+    self:set_transfer_state( obj, bw )
+    if bw then
+      self.object:set_item( object.aim1, bw )
+      self.aiming = true
     end
-    self:set_combat_sight( deadman_target, bw )
-    self:set_transfer_state( deadman_target, bw )
     last_enemy_id[ npc:id() ] = nil
     return
-  else
-    deadman_vtx[ npc:id() ] = nil
   end
 
   -- строим список врагов/друзей, проверяем линию огня - в своих и
@@ -967,7 +953,7 @@ function action_altcombat:evade_grenades()
   if ( not ep ) or ep.id ~= id then
     last_hideout[    npc:id() ] = nil
     last_time_send[  npc:id() ] = nil
-    locked_vertexes[ npc:id() ] = nil
+    lock_vertex( npc, nil )
     local pos   = npc:position()
     local dist  = pos:distance_to( danger_obj:position() )
     local dvert = self:find_cover( danger_obj, 2 )
@@ -1018,12 +1004,15 @@ function action_altcombat:finalize()
   npc:movement_enabled( true )
   stop_play_sound( npc )
   sr_light.check_light( npc )
+  self:set_weapons_idle( get_best_weapon( npc ) )
   reset_everything( npc )
   cooldown[ npc:id() ] = time_global() + cooldown_time
+  self.aiming              = nil
   self.combat_sight        = nil
   self.start_firing_actor  = nil
   self.st.ready_to_grenade = nil
   npc:stalker_disp_base( 0 )
+  npc:set_body_state( move.standing )
   self.initialized = nil
 end
 
@@ -1031,7 +1020,7 @@ end
 function check_friends_enemy( npc, enemy_id )
   local function check_enemy( npc, obj )
     if
-      obj and obj.clsid  and IsStalker( obj ) and obj:alive()
+      obj and obj:is_stalker() and obj:alive()
       and npc:id() ~= obj:id() and obj:id() ~= db.actor:id()
     then
       if
@@ -1068,7 +1057,7 @@ end
 function notify_friends( npc, enemy )
   local function notify_friend( npc, obj )
     if
-      obj and obj.clsid and IsStalker( obj ) and obj:alive()
+      obj and obj:is_stalker() and obj:alive()
       and npc:id() ~= obj:id()
       and obj:id() ~= db.actor:id()
       and not xr_wounded.is_wounded( obj )
@@ -1263,11 +1252,9 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
   if in_combat[ npc:id() ] and amount > 0.01 then
     hit_fx( npc, amount, who, bone_index )
     if in_hideout( npc ) and ( who:is_stalker() or who:is_actor() ) then
-      death_places[ npc:level_vertex_id() ] = {
-        [ "killer" ] = who:id(),
-        [ "ttl"    ] = time_global() + 30000,
-      }
+      register_death_place( npc:level_vertex_id(), who, 5000 )
     end
+    last_time_send[ npc:id() ] = nil
   end
 
   if
@@ -1294,11 +1281,9 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
                 register_as_target( npc, who )
               end
             end
-            -- npc:make_object_visible_somewhen( who )
           else
             enable_object( npc, who )
             process_enemy( npc, who )
-            -- npc:make_object_visible_somewhen( who )
           end
         elseif
           targets_list[ npc:id() ] and targets_list[ npc:id() ][ who:id() ]
@@ -1307,27 +1292,16 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
           enemy_record.last_time_seen = time_global()
           enemy_record.vertex         = who:level_vertex_id()
         end
-        if
-          not (
-            (
-              npc:relation( who ) ~= game_object.enemy
-              or npc:character_community() == who:character_community()
-            )
-            and who:id() ~= db.actor:id()
-          )
-        then
+        if npc:is_relation_enemy( who ) or who:is_actor() then
           if not hit_memory[ npc:id() ] then
             hit_memory[ npc:id() ] = {}
           end
           local mem = hit_memory[ npc:id() ]
           mem[ who:id() ] = true
           if amount > 0.1 then
-            primary_target[ npc:id() ] = who:id()
+            set_primary_target( npc, who:id() )
           end
-        elseif
-          npc:relation(who) ~= game_object.enemy
-          or npc:character_community() == who:character_community()
-        then
+        else
           set_sound_event( npc, "ff" )
         end
       end
@@ -1338,7 +1312,6 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
         then
           enable_object( npc, who )
           process_enemy( npc, who )
-          -- npc:make_object_visible_somewhen( who )
         elseif
           targets_list[ npc:id() ] and targets_list[ npc:id() ][ who:id() ]
         then
@@ -1352,26 +1325,12 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
         local mem = hit_memory[ npc:id() ]
         mem[ who:id() ] = true
         if amount > 0.1 then
-          primary_target[ npc:id() ] = who:id()
+          set_primary_target( npc, who:id() )
         end
       end
     end
 
-    if in_hideout( npc ) and last_hideout[ npc:id() ] then
-      locked_vertexes[ 0 ] = last_hideout[ npc:id() ].vtx
-      bad_hide[ last_hideout[ npc:id() ].vtx ] = time_global() + 30000
-      last_hideout[ npc:id()     ] = nil
-      last_sent_vertex[ npc:id() ] = nil
-    end
-    last_time_send[ npc:id() ] = nil
-
-    local deadman = have_fresh_deadman( npc )
-    if deadman then
-      last_target[ npc:id() ][ deadman ] = nil
-      last_enemy_id[ npc:id()     ] = nil
-      primary_target[ npc:id()    ] = nil
-      last_reprioritize[ npc:id() ] = nil
-    end
+    last_reprioritize[ npc:id() ] = nil
   end
 end
 
@@ -1385,26 +1344,65 @@ function death_place( obj, who )
     end
   end
 
-  if who:is_stalker() or who:is_actor() then
-    death_places[ vertex ] = {
-      killer = who:id(),
-      ttl    = time_global() + 30000,
-    }
+  -- if who:is_stalker() or who:is_actor() then
+  local t = last_hideout[ npc:id() ]
+  if t and who:is_actor() and npc:level_vertex_id() == t.vtx then
+    register_death_place( vertex, who, 30000 )
   end
 
   notify_friends( npc, who )
   reset_everything( npc )
+  target_lost( npc )
+end
+
+
+function register_death_place( lvid, who, ttl )
+  local t = {
+    [ "killer" ] = who:id(),
+    [ "ttl"    ] = time_global() + ttl,
+  }
+  death_places[ lvid ] = t
+  return t
+end
+
+
+function on_monster_death( obj, who )
+  target_lost( obj )
+end
+
+
+function on_monster_net_destroy( obj )
+  target_lost( obj )
+end
+
+
+function on_wounded( npc )
+  local be = get_target( npc ) or npc:best_enemy()
+  if is_danger_corpse( npc, be ) then
+    notify_friends( npc, be )
+  end
+  target_lost( npc )
+end
+
+
+function target_lost( obj )
+  -- если это чья-то главная цель, то ему нужно выбрать нового врага
+  for npc_id, enemy_id in pairs( primary_target ) do
+    if enemy_id == obj:id() then
+      last_reprioritize[ npc_id ] = nil
+    end
+  end
 end
 
 
 function go_offline( obj )
   reset_everything( obj )
+  target_lost( obj )
 end
 
 
 function reset_everything( npc )
   cooldown[ npc:id() ] = nil
-  deadman_vtx[ npc:id() ] = nil
   disabled_objects[ npc:id() ] = nil
   escape_point[ npc:id() ] = nil
   hit_memory[ npc:id() ] = nil
@@ -1415,8 +1413,9 @@ function reset_everything( npc )
   last_hideout[ npc:id() ] = nil
   last_reprioritize[ npc:id() ] = nil
   last_sent_vertex[ npc:id() ] = nil
+  last_target[ npc:id() ] = nil
   last_time_send[ npc:id() ] = nil
-  locked_vertexes[ npc:id() ] = nil
+  lock_vertex( npc, nil )
   primary_target[ npc:id() ] = nil
   sounds_timeout[ npc:id() ] = nil
   targets_list[ npc:id() ] = {}
@@ -1425,28 +1424,18 @@ end
 
 
 function its_a_trap( npc, vertex )
-  local community  = npc:character_community()
-  local vertex_pos = level.vertex_position( vertex )
-  for k, v in pairs( death_places ) do
-    if v.ttl > time_global() then
-      local k_pos = level.vertex_position( k )
-      if k == vertex or k_pos:distance_to( vertex_pos ) < 5 then
-        local enemy = level.object_by_id( v.killer )
-        if
-          enemy
-          and ( enemy:is_actor() or enemy:is_stalker() )
-          and enemy:alive()
-          and not xr_wounded.is_wounded( enemy )
-        then
-          return check_is_enemy( npc, enemy )
-        else
-          death_places[ k ] = nil
-        end
-      end
-    else
-      death_places[ k ] = nil
+  local t = death_places[ vertex ]
+  if not t then return false end
+  if t.ttl > time_global() then
+    local enemy = level.object_by_id( t.killer )
+    if
+      enemy and ( enemy:is_actor() or enemy:is_stalker() )
+      and not xr_wounded.is_wounded( enemy )
+    then
+      return check_is_enemy( npc, enemy )
     end
   end
+  death_places[ vertex ] = nil
   return false
 end
 
@@ -1461,7 +1450,7 @@ function process_enemy( npc, may_be_enemy )
     if
       npc:relation( enemy ) == game_object.friend
       or (
-        IsStalker( enemy )
+        enemy:is_stalker()
         and npc:character_community() == enemy:character_community()
       )
     then
@@ -1470,7 +1459,7 @@ function process_enemy( npc, may_be_enemy )
           set_sound_event( npc, "dead" )
           already_know_about[ npc:id() ][ enemy:id() ] = true
         end
-      elseif IsStalker( enemy ) and xr_wounded.is_wounded( enemy ) then
+      elseif xr_wounded.is_wounded( enemy ) then
         if not already_know_about[ npc:id() ][ enemy:id() ] then
           set_sound_event( npc, "fr_hit" )
           already_know_about[ npc:id() ][ enemy:id() ] = true
@@ -1480,16 +1469,16 @@ function process_enemy( npc, may_be_enemy )
   else
     return
   end
-  if
-    enemy:alive()
-    and not ( IsStalker( enemy ) and xr_wounded.is_wounded( enemy ) )
-  then
+  if enemy:alive() and not xr_wounded.is_wounded( enemy ) then
     if we_are_under_attack( npc, enemy ) then
       -- человек ты иль монструшка
       -- check_is_enemy( npc, enemy )
-      if IsStalker( enemy ) and check_is_enemy( npc, enemy ) then
+      if
+        ( enemy:is_actor() or enemy:is_stalker() )
+        and check_is_enemy( npc, enemy )
+      then
         register_as_target( npc, enemy )
-      elseif IsMonster( enemy ) and check_is_enemy( npc, enemy ) then
+      elseif enemy:is_monster() and check_is_enemy( npc, enemy ) then
         register_as_target( npc, enemy )
       end
     end
@@ -1515,7 +1504,7 @@ function we_are_under_attack( npc, enemy )
       if
         target:id() == npc:id()
         or (
-          IsStalker( target ) and target:alive()
+          ( target:is_actor() or target:is_stalker() ) and target:alive()
           and (
             npc:relation( target ) == game_object.friend
             or npc:character_community() == target:character_community()
@@ -1570,19 +1559,21 @@ end
 
 
 function register_as_target( npc, enemy, force_vis )
+  local enemy_record
   local id = enemy:id()
   if
     ( not targets_list[ npc:id() ] ) or not targets_list[ npc:id() ][ id ]
   then
-    if npc and npc:alive() and not xr_wounded.is_wounded(npc) then
+    if npc and npc:alive() and not xr_wounded.is_wounded( npc ) then
       local dist = npc:position():distance_to( enemy:position() )
-      local enemy_record = {
-        npc    = ( enemy:is_actor() or enemy:is_custom_monster() ),
+      enemy_record = {
+        engine = false,
+        npc    = ( enemy:is_actor() or enemy:is_stalker() ),
         range  = dist,
         vis    = ( force_vis or is_enemy_see( enemy, npc ) ),
         weight = 1000,
       }
-      if enemy_record.vis and enemy_record.npc then
+      if enemy_record.npc and ( enemy_record.vis or npc:see( enemy ) ) then
         enemy_record.last_time_seen = time_global()
         enemy_record.vertex         = enemy:level_vertex_id()
       end
@@ -1594,13 +1585,44 @@ function register_as_target( npc, enemy, force_vis )
       return
     end
   end
+  return enemy_record
 end
 
 
+function set_primary_target( npc, new_id )
+  local id = primary_target[ npc:id() ]
+  if id and id ~= new_id then
+    local obj     = level.object_by_id( id )
+    local timeout = remember_enemy
+    if obj and ( obj:is_actor() or obj:is_stalker() ) then
+      timeout = timeout * 2
+    end
+    last_target[ npc:id() ] = {
+      [ "id"   ] = id,
+      [ "time" ] = time_global() + timeout,
+    }
+  end
+  primary_target[ npc:id() ] = new_id
+end
+
+
+-- обновление основной цели, вызывается из апдейта или любой другой
+-- аналогичной обработки, хоть из эвалуатора
+-- обновим предварительно реестр целей
 function reprioritize_targets( npc )
-  -- обновление основной цели, вызывается из апдейта или любой другой
-  -- аналогичной обработки, хоть из эвалуатора
-  -- обновим предварительно реестр целей
+  -- если у нас нет текущей цели, но есть движковая, то нужно
+  -- немедленно обновить список целей, что бы зарегистрировать
+  -- движкового врага. Иначе, если время обновления еще не наступило,
+  -- боевка отключится, т.к. врага нет, и включится движковая боевка,
+  -- т.к. есть движковый враг.
+  local be = get_target( npc )
+  if not ( be and be:alive() and not xr_wounded.is_wounded( be ) ) then
+    local enemy = npc:best_enemy()
+    if enemy and enemy:alive() and not xr_wounded.is_wounded( enemy ) then
+      last_reprioritize[ npc:id() ] = nil
+    end
+  end
+
   if
     last_reprioritize[ npc:id() ]
     and last_reprioritize[ npc:id() ] > time_global()
@@ -1611,15 +1633,6 @@ function reprioritize_targets( npc )
   get_targets_from_memory( npc )
   refresh_targets( npc )
 
-  if locked_vertexes[ 0 ] then
-    local check_hide = locked_vertexes[ 0 ]
-    local check_time = bad_hide[ check_hide ]
-    if time_global() > check_time then
-      bad_hide[ check_hide ] = nil
-      locked_vertexes[ 0 ]   = nil
-    end
-  end
-
   if total_debug then
     print_table_inlog_v2(
       targets_list[ npc:id() ],
@@ -1627,7 +1640,6 @@ function reprioritize_targets( npc )
     )
   end
 
-  local enemy_by_engine = npc:best_enemy()
   for k, v in pairs( targets_list[ npc:id() ] ) do
     if v.vis then               -- если цель видит нас
       local close_combat, far_combat = combat_ranges( npc, v.npc )
@@ -1637,7 +1649,7 @@ function reprioritize_targets( npc )
           -- и цель на средней дистанции
           v.weight = v.range * mult
         elseif v.range < close_combat then -- а если вплотную
-          v.weight = v.range * mult -- 0
+          v.weight = v.range * mult
         elseif check_friends_enemy( npc, k ) then
           v.weight = v.range * mult * 3
         end
@@ -1656,8 +1668,7 @@ function reprioritize_targets( npc )
       end
     else -- если не видит
       if primary_target[ npc:id() ] == k then
-        last_target[ npc:id() ][ k ] = time_global()
-        primary_target[ npc:id() ] = nil
+        set_primary_target( npc, nil )
       end
       if not v.npc then         -- если она монстр
         if v.range < max_invisible_range_mon then
@@ -1684,15 +1695,8 @@ function reprioritize_targets( npc )
         end
       end
     end
-    if
-      enemy_by_engine and enemy_by_engine:alive()
-      and not (
-        IsStalker( enemy_by_engine )
-        and xr_wounded.is_wounded( enemy_by_engine )
-      )
-      and k == enemy_by_engine:id()
-    then
-      v.weight = v.weight / 1.3
+    if v.engine then
+      v.weight = v.weight * 0.75
     end
   end
 
@@ -1723,7 +1727,7 @@ function reprioritize_targets( npc )
     end
   end
   if last_range then
-    last_target[ npc:id() ] = {}
+    last_target[ npc:id() ] = nil
   end
 
   if primary_target[ npc:id() ] then
@@ -1736,7 +1740,7 @@ function reprioritize_targets( npc )
     if not deadman then
       last_enemy_id[ npc:id()  ] = nil
       primary_target[ npc:id() ] = nil
-      last_target[ npc:id()    ] = {}
+      last_target[ npc:id()    ] = nil
     end
     last_reprioritize[ npc:id() ] = time_global() + 500
   end
@@ -1759,13 +1763,7 @@ function refresh_targets( npc )
   local enemy_by_engine = npc:best_enemy()
   if
     enemy_by_engine and enemy_by_engine:alive()
-    and (
-      not (
-        enemy_by_engine:is_stalker()
-        and xr_wounded.is_wounded( enemy_by_engine )
-      )
-    )
-    and is_enemy_see( enemy_by_engine, npc )
+    and ( not xr_wounded.is_wounded( enemy_by_engine ) )
   then
     if
       ( not targets_list[ npc:id() ][ enemy_by_engine:id() ] )
@@ -1779,8 +1777,7 @@ function refresh_targets( npc )
       else
         disable_object( npc, enemy_by_engine )
         if primary_target[ npc:id() ] == enemy_by_engine:id() then
-          last_target[ npc:id() ][ enemy_by_engine:id() ] = time_global()
-          primary_target[ npc:id() ] = nil
+          set_primary_target( npc, nil )
         end
         targets_list[ npc:id() ][ enemy_by_engine:id() ] = nil
       end
@@ -1793,7 +1790,8 @@ function refresh_targets( npc )
     local best_danger_object = danger_by_engine:object()
     if best_danger_object then
       local bd_type = danger_by_engine:type()
-      local is_stalker_obj = IsStalker( best_danger_object )
+      local is_stalker_obj = best_danger_object:is_actor()
+        or best_danger_object:is_stalker()
       if is_stalker_obj and check_is_enemy( npc, best_danger_object ) then
         local is_still_alive = best_danger_object:alive()
         if
@@ -1812,8 +1810,7 @@ function refresh_targets( npc )
               else
                 disable_object( npc, best_danger_object )
                 if primary_target[ npc:id() ] == best_danger_object:id() then
-                  last_target[ npc:id() ][ best_danger_object:id() ] = time_global()
-                  primary_target[ npc:id() ] = nil
+                  set_primary_target( npc, nil )
                 end
                 targets_list[ npc:id() ][ best_danger_object:id() ] = nil
               end
@@ -1825,12 +1822,15 @@ function refresh_targets( npc )
   end
 
   for k, v in pairs( targets_list[ npc:id() ] ) do
+    if enemy_by_engine and k == enemy_by_engine:id() then
+      v.engine = true
+    else
+      v.engine = false
+    end
     local check_target = level.object_by_id( k )
     if
       check_target and check_target:alive()
-      and not (
-        check_target:is_stalker() and xr_wounded.is_wounded( check_target )
-      )
+      and not xr_wounded.is_wounded( check_target )
     then
       v.vis = is_enemy_see( check_target, npc )
       local dist = npc:position():distance_to( check_target:position() )
@@ -1840,18 +1840,16 @@ function refresh_targets( npc )
           if dist > 100 then
             disable_object( npc, check_target )
             if primary_target[ npc:id() ] == k then
-              last_target[ npc:id() ][ k ] = time_global()
-              primary_target[ npc:id() ] = nil
+              set_primary_target( npc, nil )
             end
             targets_list[ npc:id() ][ k ] = nil
           end
         else
           if check_is_enemy( npc, check_target ) then
-            if dist > 100 and k ~= db.actor:id() then
+            if dist > 100 and not check_target:is_actor() then
               disable_object( npc, check_target )
               if primary_target[ npc:id() ] == k then
-                last_target[ npc:id() ][ k ] = time_global()
-                primary_target[ npc:id() ] = nil
+                set_primary_target( npc, nil )
               end
               targets_list[ npc:id() ][ k ] = nil
             else
@@ -1863,8 +1861,7 @@ function refresh_targets( npc )
           else
             disable_object( npc, check_target )
             if primary_target[ npc:id() ] == k then
-              last_target[ npc:id() ][ k ] = time_global()
-              primary_target[ npc:id() ] = nil
+              set_primary_target( npc, nil )
             end
             targets_list[ npc:id() ][ k ] = nil
           end
@@ -1878,20 +1875,18 @@ function refresh_targets( npc )
     elseif check_target then
       if not check_target:alive() then
         set_sound_event( npc, "killed" )
-      elseif
-        check_target:is_stalker() and xr_wounded.is_wounded( check_target )
-      then
+        disable_object( npc, check_target )
+      elseif xr_wounded.is_wounded( check_target ) then
         set_sound_event( npc, "hit" )
       end
-      disable_object( npc, check_target )
       if primary_target[ npc:id() ] == k then
-        last_target[ npc:id() ][ k ] = time_global()
-        primary_target[ npc:id() ] = nil
+        set_primary_target( npc, nil )
       end
       targets_list[ npc:id() ][ k ] = nil
     else
       if primary_target[ npc:id() ] == k then
-        primary_target[ npc:id() ] = nil
+        set_primary_target( npc, nil )
+--[=[
         local self_hit = hit()
         self_hit.type      = hit.strike
         self_hit.power     = 0
@@ -1899,6 +1894,7 @@ function refresh_targets( npc )
         self_hit.draftsman = npc
         self_hit.direction = vector():set( 0, 0, 0 )
         npc:hit( self_hit )
+--]=]
       end
       targets_list[ npc:id() ][ k ] = nil
     end
@@ -1918,7 +1914,9 @@ function get_targets_from_memory( npc )
   if mem then
     for k, v in pairs( mem ) do
       local enemy = level.object_by_id( k )
-      if enemy and IsStalker( enemy ) and enemy:alive() then
+      if
+        enemy and ( enemy:is_actor() or enemy:is_stalker() ) and enemy:alive()
+      then
         process_enemy( npc, enemy )
       end
     end
@@ -1974,30 +1972,10 @@ end
 
 
 function have_fresh_deadman( npc )
-  if not last_target[ npc:id() ] then return false end
   local t = last_target[ npc:id() ]
-  local targets = {}
-  for k, v in pairs( t ) do
-    local obj     = level.object_by_id( k )
-    local timeout = remember_enemy
-    if obj and ( obj:is_actor() or obj:is_stalker() ) then
-      timeout = timeout * 2
-    end
-    if not obj then
-      t[ k ] = nil
-    elseif not ( obj:is_actor() or obj:is_custom_monster() )  then
-      t[ k ] = nil
-    elseif v + timeout > time_global() then
-      table.insert( targets, k )
-    else
-      t[ k ] = nil
-    end
+  if t and t.time > time_global() then
+    return t.id
   end
-  if table.getn( targets ) > 0 then
-    table.sort( targets, function( a, b ) return t[ a ] > t[ b ] end )
-    return targets[ 1 ]
-  end
-  return false
 end
 
 
@@ -2327,14 +2305,10 @@ end
 function action_altcombat:set_weapons_fire( enemy, weapon, override_vis, npc_rank )
   if not (
     enemy and enemy:alive() and weapon
-    and not ( enemy:is_stalker() and xr_wounded.is_wounded( enemy ) )
+    and not xr_wounded.is_wounded( enemy )
   ) then
     return
   end
-
-  local npc          = self.object
-  local time_aim     = time_to_aim[ npc_rank ]
-  local type_of_fire = object.aim1
 
   local be_pos = enemy:position()
   local st     = self.combat_sight
@@ -2342,24 +2316,27 @@ function action_altcombat:set_weapons_fire( enemy, weapon, override_vis, npc_ran
     be_pos = st.look_pos
   end
 
+  local npc      = self.object
   local npc_pos  = vector():set( 0, 0, 0 )
   local npc_dir  = vector():set( 0, 0, 0 )
   npc:g_fireParams( weapon, npc_pos, npc_dir )
   local distance = npc_pos:distance_to( be_pos )
 
-  local rq = npc:see_right_now( enemy )
-    or ( enemy:is_actor() and npc:can_kill_enemy() )
-  local weapon_unstrapped = npc:weapon_unstrapped()
+  local type_of_fire
   if
-    ( not weapon_unstrapped ) or ( IsRPG( weapon ) and distance < 25 )
+    ( not npc:weapon_unstrapped() ) or ( IsRPG( weapon ) and distance < 25 )
   then
-    rq = false
+    type_of_fire = object.aim1
+  elseif npc:can_fire_to_enemy( enemy ) then
+    if self.aiming and self.aiming == weapon:id() then
+      type_of_fire = object.fire1
+    else
+      type_of_fire = object.aim1
+    end
+  else
     type_of_fire = object.aim1
   end
-
-  if rq then
-    type_of_fire = object.fire1 -- по умолчанию можем стрелять
-  end
+  self.aiming = weapon:id()
 
   if type_of_fire == object.fire1 then
     if distance > 0 and st and st.use_deviation then
@@ -2369,6 +2346,7 @@ function action_altcombat:set_weapons_fire( enemy, weapon, override_vis, npc_ran
     end
   end
 
+  local time_aim = time_to_aim[ npc_rank ]
   if IsShotgun( weapon ) or IsSniperRifle( weapon ) then
     npc:set_item( type_of_fire, weapon, 1, time_aim.other )
   elseif IsRPG( weapon ) then
@@ -2378,7 +2356,13 @@ function action_altcombat:set_weapons_fire( enemy, weapon, override_vis, npc_ran
       weapon:section(), "xrs_battle_ai.preffered_fire_mode"
     )
     if not qs then
-      qs = math.random( 2, 5 )
+      if distance > 50 then
+        qs = math.random( 2 )
+      elseif distance > 30 then
+        qs = math.random( 3 )
+      else
+        qs = math.random( 5 )
+      end
     end
     npc:set_item( type_of_fire, weapon, qs, time_aim.other )
   end
@@ -2434,9 +2418,15 @@ function action_altcombat:set_transfer_state( enemy, wpn, sight )
     npc:set_movement_type( move.stand )
     npc:set_body_state( move.standing )
   end
+  self:set_weapons_idle( wpn )
+end
+
+
+function action_altcombat:set_weapons_idle( wpn )
   if wpn then
-    npc:set_item( object.idle, wpn )
+    self.object:set_item( object.idle, wpn )
   end
+  self.aiming = nil
 end
 
 
@@ -2550,23 +2540,37 @@ end
 
 
 function check_vertex_locked( npc, vertex )
-  if locked_vertexes[ 0 ] and locked_vertexes[ 0 ] == vertex then
-    return true
-  end
-  local vertex_pos = level.vertex_position( vertex )
-  for k, v in pairs( locked_vertexes ) do
-    local loced_vtx_pos = level.vertex_position( v )
-    if
-      k ~= npc:id()
-      and ( v == vertex or vertex_pos:distance_to( loced_vtx_pos ) < 2 )
-    then
-      local checking_npc = level.object_by_id( k )
-      if checking_npc and checking_npc:alive() then
-        return true
-      end
+  local npc_id = is_locked_vertex( npc, vertex )
+  if npc_id then
+    local checking_npc = level.object_by_id( npc_id )
+    if checking_npc then
+      return checking_npc:alive()
     end
   end
   return false
+end
+
+
+function is_locked_vertex( npc, lvid )
+  local npc_id = locked_vertexes_r[ lvid ]
+  if npc_id and npc_id ~= npc:id() then
+    local npc_lvid = locked_vertexes[ npc_id ]
+    if npc_lvid == lvid then
+      return npc_id
+    end
+  end
+end
+
+
+function lock_vertex( npc, lvid )
+  local prev = locked_vertexes[ npc:id() ]
+  if prev then
+    locked_vertexes_r[ prev ] = nil
+  end
+  locked_vertexes[ npc:id() ] = lvid
+  if lvid then
+    locked_vertexes_r[ lvid ] = npc:id()
+  end
 end
 
 
@@ -2633,7 +2637,7 @@ function find_cover( npc, enemy, mode, camper_vertex )
       end
     end
     if not cover then
-      cover_vertex = find_pseudo_cover( npc, enemy, true )
+      cover_vertex = find_pseudo_cover( npc, enemy, true, cover_cache )
     end
 
   elseif mode == 2 then         -- отступление
@@ -2645,7 +2649,7 @@ function find_cover( npc, enemy, mode, camper_vertex )
       if cover then break end
     end
     if not cover then
-      cover_vertex = find_pseudo_cover( npc, enemy, false )
+      cover_vertex = find_pseudo_cover( npc, enemy, false, cover_cache )
     end
 
   elseif mode == 3 then         -- атака
@@ -2657,7 +2661,7 @@ function find_cover( npc, enemy, mode, camper_vertex )
       if cover then break end
     end
     if not cover then
-      cover_vertex = find_pseudo_cover( npc, enemy, true )
+      cover_vertex = find_pseudo_cover( npc, enemy, true, cover_cache )
     end
 
   elseif mode == 4 then         -- атака
@@ -2671,14 +2675,14 @@ function find_cover( npc, enemy, mode, camper_vertex )
       if cover then break end
     end
     if not cover then
-      cover_vertex = find_pseudo_cover( npc, enemy, true )
+      cover_vertex = find_pseudo_cover( npc, enemy, true, cover_cache )
     end
 
   elseif mode == 5 then         -- возврат кемпера на точку
     cover_vertex = camper_vertex
 
   elseif mode == 6 then -- срочное отступление, противник очень близко
-    cover_vertex = find_pseudo_cover( npc, enemy, false )
+    cover_vertex = find_pseudo_cover( npc, enemy, false, cover_cache )
 --[=[
     cover_cache = {}
     for _, r in ipairs({ 10, 30 }) do
@@ -2697,7 +2701,7 @@ function find_cover( npc, enemy, mode, camper_vertex )
       if cover then break end
     end
     if not cover then
-      cover_vertex = find_pseudo_cover( npc, enemy, false )
+      cover_vertex = find_pseudo_cover( npc, enemy, false, cover_cache )
     end
 --]=]
 
@@ -2716,7 +2720,7 @@ function find_cover( npc, enemy, mode, camper_vertex )
       end
     end
     if not cover then
-      cover_vertex = find_pseudo_cover( npc, enemy, false )
+      cover_vertex = find_pseudo_cover( npc, enemy, false, cover_cache )
     end
 
   elseif mode == 0 then         -- оборона
@@ -2747,13 +2751,14 @@ function find_cover( npc, enemy, mode, camper_vertex )
     value = cover_value,
     vtx   = cover_vertex,
   }
-  locked_vertexes[ npc:id() ] = cover_vertex
+  lock_vertex( npc, cover_vertex )
 
   return cover_vertex
 end
 
 
-function find_pseudo_cover( npc, enemy, attack )
+function find_pseudo_cover( npc, enemy, attack, cover_cache )
+  if not cover_cache then cover_cache = {} end
   local dir = vector():sub( enemy:position(), npc:position() )
   local rotate_min, rotate_max
   if attack then
@@ -2764,11 +2769,11 @@ function find_pseudo_cover( npc, enemy, attack )
   local min_dist, max_dist = 10, 10
   local node_1_vertex_id = find_vertex_around(
     npc, npc:level_vertex_id(), dir, rotate_min, rotate_max,
-    min_dist, max_dist
+    min_dist, max_dist,  1, cover_cache
   )
   local node_2_vertex_id = find_vertex_around(
     npc, npc:level_vertex_id(), dir, rotate_min, rotate_max,
-    min_dist, max_dist, -1
+    min_dist, max_dist, -1, cover_cache
   )
   if node_1_vertex_id and node_2_vertex_id then
     local pos   = npc:position()
@@ -2788,11 +2793,11 @@ function find_pseudo_cover( npc, enemy, attack )
   else
     node_1_vertex_id = find_vertex_around(
       npc, npc:level_vertex_id(), dir, 0, 360,
-      min_dist, max_dist
+      min_dist, max_dist,  1, cover_cache
     )
     node_2_vertex_id = find_vertex_around(
       npc, npc:level_vertex_id(), dir, 0, 360,
-      min_dist, max_dist, -1
+      min_dist, max_dist, -1, cover_cache
     )
     if node_1_vertex_id and node_2_vertex_id then
       local pos   = npc:position()
@@ -2814,7 +2819,7 @@ function find_pseudo_cover( npc, enemy, attack )
 end
 
 
-function find_vertex_around( npc, around_vertex, dir, rotate_min, rotate_max, offset_min, offset_max, sign )
+function find_vertex_around( npc, around_vertex, dir, rotate_min, rotate_max, offset_min, offset_max, sign, cover_cache )
   if not sign then sign = 1 end
   local ai_step     = 0.7 -- шаг AI сетки
   local math_pi_180 = 180 / math.pi
@@ -2834,9 +2839,11 @@ function find_vertex_around( npc, around_vertex, dir, rotate_min, rotate_max, of
     if
       vertex_id == around_vertex
       or ( not npc:accessible( vertex_id ) )
+      or cover_cache[ vertex_id ] == false
       or check_vertex_locked( npc, vertex_id )
       or its_a_trap( npc, vertex_id )
     then
+      cover_cache[ vertex_id ] = false
       vertex_id = nil
       -- поворачиваем направление поиска
       cur_angle = cur_angle + rotate_angle
@@ -2850,21 +2857,6 @@ function find_vertex_around( npc, around_vertex, dir, rotate_min, rotate_max, of
     end
   end
   return vertex_id
-end
-
-
-function is_exclusion( npc )
-  local name    = npc:name()
-  local profile = npc:profile_name()
-  if
-    string.find( name, "prisoner" ) or string.find( profile, "prisoner" )
-    or string.find( name, "captive" ) or string.find( profile, "captive" )
-    or string.find( name, "esc_shustryi" )
-  then
-    return true
-  else
-    return false
-  end
 end
 
 
