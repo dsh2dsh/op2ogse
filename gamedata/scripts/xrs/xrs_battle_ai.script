@@ -215,7 +215,6 @@ local last_time_send            = {}
 local last_sent_vertex          = {}
 local last_hideout              = {}
 local sounds_timeout            = {}
-local disabled_objects          = {} -- таблица забытых объектов
 local targets_list              = {} -- список целей
 local last_reprioritize         = {} -- врем€ приоретизации
 local last_target               = {} -- последн€€ цель
@@ -225,7 +224,6 @@ local locked_vertexes           = {} -- зан€тые вертексы
 local locked_vertexes_r         = {}
 local death_places              = {} -- места смерти союзников, избегать их
 local time_hide                 = {} -- врем€ ожидани€
-local hit_memory                = {} -- хитоа€ пам€ть
 local grenka_already_blow       = {}
 local escape_point              = {}
 local last_choosed_path         = {}
@@ -1105,27 +1103,12 @@ end
 
 
 function disable_object( npc, enemy ) -- забыть объект
-  if npc and enemy then
-    local id = enemy:id()
-    if not disabled_objects[ npc:id() ] then
-      disabled_objects[ npc:id() ] = {}
-    end
-    if not disabled_objects[ npc:id() ][ id ] then
-      npc:enable_memory_object( enemy, false )
-      disabled_objects[ npc:id() ][ id ] = id
-    end
-  end
+  npc:enable_memory_object( enemy, false )
 end
 
 
 function enable_object( npc, enemy ) -- вспомнить объект
-  if npc and enemy then
-    local id = enemy:id()
-    if disabled_objects[ npc:id() ] and disabled_objects[ npc:id() ][ id ] then
-      npc:enable_memory_object( enemy, true )
-      disabled_objects[ npc:id() ][ id ] = nil
-    end
-  end
+  npc:enable_memory_object( enemy, true )
 end
 
 
@@ -1261,72 +1244,52 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
     amount and amount > 0.01 and npc:alive()
     and not xr_wounded.is_wounded( npc )
   then
-    if who:is_actor() or who:is_stalker() then
-      if who:alive() then
-        if
-          targets_list[ npc:id() ] and not targets_list[ npc:id() ][ who:id() ]
-        then
-          if who:id() == db.actor:id() then
-            enable_object( npc, who )
-            if check_is_enemy( npc, who ) then
-              register_as_target( npc, who )
-            else
-              if not damage_from_actor[ npc:id() ] then
-                damage_from_actor[ npc:id() ] = amount
-              else
-                damage_from_actor[ npc:id() ] =
-                  damage_from_actor[ npc:id() ] + amount
-              end
-              if damage_from_actor[ npc:id() ] > 0.2 then
-                register_as_target( npc, who )
-              end
-            end
+    if not targets_list[ npc:id() ] then
+      targets_list[ npc:id() ] = {}
+    end
+    if ( who:is_actor() or who:is_stalker() ) and who:alive() then
+      if not targets_list[ npc:id() ][ who:id() ] then
+        enable_object( npc, who )
+        if who:id() == db.actor:id() then
+          if check_is_enemy( npc, who ) then
+            register_as_target( npc, who )
           else
-            enable_object( npc, who )
-            process_enemy( npc, who )
-          end
-        elseif
-          targets_list[ npc:id() ] and targets_list[ npc:id() ][ who:id() ]
-        then
-          local enemy_record = targets_list[ npc:id() ][ who:id() ]
-          enemy_record.last_time_seen = time_global()
-          enemy_record.vertex         = who:level_vertex_id()
-        end
-        if npc:is_relation_enemy( who ) or who:is_actor() then
-          if not hit_memory[ npc:id() ] then
-            hit_memory[ npc:id() ] = {}
-          end
-          local mem = hit_memory[ npc:id() ]
-          mem[ who:id() ] = true
-          if amount > 0.1 then
-            set_primary_target( npc, who:id() )
+            if not damage_from_actor[ npc:id() ] then
+              damage_from_actor[ npc:id() ] = amount
+            else
+              damage_from_actor[ npc:id() ] =
+                damage_from_actor[ npc:id() ] + amount
+            end
+            if damage_from_actor[ npc:id() ] > 0.2 then
+              register_as_target( npc, who )
+            end
           end
         else
-          set_sound_event( npc, "ff" )
-        end
-      end
-    elseif who:is_monster() then
-      if who:alive() then
-        if
-          targets_list[ npc:id() ] and not targets_list[ npc:id() ][ who:id() ]
-        then
-          enable_object( npc, who )
           process_enemy( npc, who )
-        elseif
-          targets_list[ npc:id() ] and targets_list[ npc:id() ][ who:id() ]
-        then
-          local enemy_record = targets_list[ npc:id() ][ who:id() ]
-          enemy_record.last_time_seen = time_global()
-          enemy_record.vertex         = who:level_vertex_id()
         end
-        if not hit_memory[ npc:id() ] then
-          hit_memory[ npc:id() ] = {}
-        end
-        local mem = hit_memory[ npc:id() ]
-        mem[ who:id() ] = true
+      else
+        local enemy_record = targets_list[ npc:id() ][ who:id() ]
+        enemy_record.last_time_seen = time_global()
+        enemy_record.vertex         = who:level_vertex_id()
+      end
+      if npc:is_relation_enemy( who ) or who:is_actor() then
         if amount > 0.1 then
           set_primary_target( npc, who:id() )
         end
+      else
+        set_sound_event( npc, "ff" )
+      end
+    elseif who:is_monster() and who:alive() then
+      if not targets_list[ npc:id() ][ who:id() ] then
+        enable_object( npc, who )
+        process_enemy( npc, who )
+      else
+        local enemy_record = targets_list[ npc:id() ][ who:id() ]
+        enemy_record.last_time_seen = time_global()
+        enemy_record.vertex         = who:level_vertex_id()
+      end
+      if amount > 0.1 then
+        set_primary_target( npc, who:id() )
       end
     end
 
@@ -1403,9 +1366,7 @@ end
 
 function reset_everything( npc )
   cooldown[ npc:id() ] = nil
-  disabled_objects[ npc:id() ] = nil
   escape_point[ npc:id() ] = nil
-  hit_memory[ npc:id() ] = nil
   in_combat[ npc:id() ] = nil
   inited[ npc:id() ] = nil
   last_choosed_path[ npc:id() ] = nil
@@ -1559,11 +1520,12 @@ end
 
 
 function register_as_target( npc, enemy, force_vis )
+  if not targets_list[ npc:id() ] then
+    targets_list[ npc:id() ] = {}
+  end
   local enemy_record
   local id = enemy:id()
-  if
-    ( not targets_list[ npc:id() ] ) or not targets_list[ npc:id() ][ id ]
-  then
+  if not targets_list[ npc:id() ][ id ] then
     if npc and npc:alive() and not xr_wounded.is_wounded( npc ) then
       local dist = npc:position():distance_to( enemy:position() )
       enemy_record = {
@@ -1576,9 +1538,6 @@ function register_as_target( npc, enemy, force_vis )
       if enemy_record.npc and ( enemy_record.vis or npc:see( enemy ) ) then
         enemy_record.last_time_seen = time_global()
         enemy_record.vertex         = enemy:level_vertex_id()
-      end
-      if not targets_list[ npc:id() ] then
-        targets_list[ npc:id() ] = {}
       end
       targets_list[ npc:id() ][ id ] = enemy_record
     else
@@ -1603,6 +1562,14 @@ function set_primary_target( npc, new_id )
     }
   end
   primary_target[ npc:id() ] = new_id
+end
+
+
+function remove_from_targets( npc, id )
+  if primary_target[ npc:id() ] == id then
+    set_primary_target( npc, nil )
+  end
+  targets_list[ npc:id() ][ id ] = nil
 end
 
 
@@ -1764,22 +1731,14 @@ function refresh_targets( npc )
   if
     enemy_by_engine and enemy_by_engine:alive()
     and ( not xr_wounded.is_wounded( enemy_by_engine ) )
+    and ( not targets_list[ npc:id() ][ enemy_by_engine:id() ]
   then
-    if
-      ( not targets_list[ npc:id() ][ enemy_by_engine:id() ] )
-      and not (
-        disabled_objects[ npc:id() ]
-        and disabled_objects[ npc:id() ][ enemy_by_engine:id() ]
-      )
-    then
-      if check_is_enemy( npc, enemy_by_engine ) then
-        register_as_target( npc, enemy_by_engine )
-      else
-        disable_object( npc, enemy_by_engine )
-        if primary_target[ npc:id() ] == enemy_by_engine:id() then
-          set_primary_target( npc, nil )
-        end
-        targets_list[ npc:id() ][ enemy_by_engine:id() ] = nil
+    if check_is_enemy( npc, enemy_by_engine ) then
+      register_as_target( npc, enemy_by_engine )
+    else
+      disable_object( npc, enemy_by_engine )
+      if primary_target[ npc:id() ] == enemy_by_engine:id() then
+        set_primary_target( npc, nil )
       end
     end
   end
@@ -1792,28 +1751,18 @@ function refresh_targets( npc )
       local bd_type = danger_by_engine:type()
       local is_stalker_obj = best_danger_object:is_actor()
         or best_danger_object:is_stalker()
-      if is_stalker_obj and check_is_enemy( npc, best_danger_object ) then
-        local is_still_alive = best_danger_object:alive()
-        if
-          is_still_alive and not xr_wounded.is_wounded( best_danger_object )
-        then
-          if needed_dangers[ bd_type ] then
-            if
-              ( not targets_list[ npc:id() ][ best_danger_object:id() ] )
-              and not (
-                disabled_objects[ npc:id() ]
-                and disabled_objects[ npc:id() ][ best_danger_object:id() ]
-              )
-            then
-              if check_is_enemy( npc, best_danger_object ) then
-                register_as_target( npc, best_danger_object )
-              else
-                disable_object( npc, best_danger_object )
-                if primary_target[ npc:id() ] == best_danger_object:id() then
-                  set_primary_target( npc, nil )
-                end
-                targets_list[ npc:id() ][ best_danger_object:id() ] = nil
-              end
+      if
+        is_stalker_obj and needed_dangers[ bd_type ]
+        and best_danger_object:alive()
+        and not xr_wounded.is_wounded( best_danger_object )
+      then
+        if not targets_list[ npc:id() ][ best_danger_object:id() ] then
+          if check_is_enemy( npc, best_danger_object ) then
+            register_as_target( npc, best_danger_object )
+          else
+            disable_object( npc, best_danger_object )
+            if primary_target[ npc:id() ] == best_danger_object:id() then
+              set_primary_target( npc, nil )
             end
           end
         end
@@ -1821,6 +1770,7 @@ function refresh_targets( npc )
     end
   end
 
+  local max_range = npc:range() -- 100
   for k, v in pairs( targets_list[ npc:id() ] ) do
     if enemy_by_engine and k == enemy_by_engine:id() then
       v.engine = true
@@ -1837,21 +1787,15 @@ function refresh_targets( npc )
       v.range = dist
       if not v.vis then
         if not v.npc then
-          if dist > 100 then
-            disable_object( npc, check_target )
-            if primary_target[ npc:id() ] == k then
-              set_primary_target( npc, nil )
-            end
-            targets_list[ npc:id() ][ k ] = nil
+          if dist > max_range and not v.engine then
+            remove_from_targets( npc, k )
           end
         else
           if check_is_enemy( npc, check_target ) then
-            if dist > 100 and not check_target:is_actor() then
-              disable_object( npc, check_target )
-              if primary_target[ npc:id() ] == k then
-                set_primary_target( npc, nil )
-              end
-              targets_list[ npc:id() ][ k ] = nil
+            if
+              dist > max_range and not ( v.engine or check_target:is_actor() )
+            then
+              remove_from_targets( npc, k )
             else
               if npc:see( check_target ) or st.is_camper then
                 v.last_time_seen = time_global()
@@ -1860,17 +1804,12 @@ function refresh_targets( npc )
             end
           else
             disable_object( npc, check_target )
-            if primary_target[ npc:id() ] == k then
-              set_primary_target( npc, nil )
-            end
-            targets_list[ npc:id() ][ k ] = nil
+            remove_from_targets( npc, k )
           end
         end
-      else
-        if v.npc then
-          v.last_time_seen = time_global()
-          v.vertex         = check_target:level_vertex_id()
-        end
+      elseif v.npc then
+        v.last_time_seen = time_global()
+        v.vertex         = check_target:level_vertex_id()
       end
     elseif check_target then
       if not check_target:alive() then
@@ -1879,24 +1818,9 @@ function refresh_targets( npc )
       elseif xr_wounded.is_wounded( check_target ) then
         set_sound_event( npc, "hit" )
       end
-      if primary_target[ npc:id() ] == k then
-        set_primary_target( npc, nil )
-      end
-      targets_list[ npc:id() ][ k ] = nil
+      remove_from_targets( npc, k )
     else
-      if primary_target[ npc:id() ] == k then
-        set_primary_target( npc, nil )
---[=[
-        local self_hit = hit()
-        self_hit.type      = hit.strike
-        self_hit.power     = 0
-        self_hit.impulse   = 0.01
-        self_hit.draftsman = npc
-        self_hit.direction = vector():set( 0, 0, 0 )
-        npc:hit( self_hit )
---]=]
-      end
-      targets_list[ npc:id() ][ k ] = nil
+      remove_from_targets( npc, k )
     end
   end
 end
@@ -1910,16 +1834,8 @@ function get_targets_from_memory( npc )
   for o in npc:memory_sound_objects() do
     process_enemy( npc, o:object() )
   end
-  local mem = hit_memory[ npc:id() ]
-  if mem then
-    for k, v in pairs( mem ) do
-      local enemy = level.object_by_id( k )
-      if
-        enemy and ( enemy:is_actor() or enemy:is_stalker() ) and enemy:alive()
-      then
-        process_enemy( npc, enemy )
-      end
-    end
+  for o in npc:memory_hit_objects() do
+    process_enemy( npc, o:object() )
   end
 end
 
