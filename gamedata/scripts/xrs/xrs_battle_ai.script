@@ -526,6 +526,7 @@ function action_altcombat:initialize()
   npc:set_body_state( move.standing )
   npc:set_dest_level_vertex_id( npc:level_vertex_id() )
   npc:register_in_combat()
+  expire_death_places( npc )
 
   self.initialized = true
 end
@@ -1256,8 +1257,12 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
 
   if in_combat[ npc:id() ] and amount > 0.01 then
     -- hit_fx( npc, amount, who, bone_index )
-    if in_hideout( npc ) and ( who:is_stalker() or who:is_actor() ) then
-      register_death_place( npc:level_vertex_id(), who, 5000 )
+    local lvid = locked_vertexes[ npc:id() ]
+    if lvid then
+      local pos = level.vertex_position( lvid )
+      if npc:position():distance_to( pos ) < 2 then
+        register_death_place( lvid, who, 5000 )
+      end
     end
     last_time_send[ npc:id() ] = nil
   end
@@ -1320,19 +1325,23 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
 end
 
 
-function death_place( obj, who )
-  local npc       = obj
-  local vertex    = npc:level_vertex_id()
+function expire_death_places( obj )
   for k, v in pairs( death_places ) do
     if v.ttl <= time_global() or v.killer == obj:id() then
       death_places[ k ] = nil
     end
   end
+end
 
-  -- if who:is_stalker() or who:is_actor() then
-  local t = last_hideout[ npc:id() ]
-  if t and who:is_actor() and npc:level_vertex_id() == t.vtx then
-    register_death_place( vertex, who, 30000 )
+
+function death_place( npc, who )
+  expire_death_places( npc )
+  if who:is_actor() then
+    local lvid = locked_vertexes[ npc:id() ]
+    local pos  = level.vertex_position( lvid )
+    if npc:position():distance_to( pos ) < 2 then
+      register_death_place( lvid, who, 30000 )
+    end
   end
 
   notify_friends( npc, who )
@@ -1403,6 +1412,7 @@ function reset_everything( npc )
   sounds_timeout[ npc:id() ] = nil
   targets_list[ npc:id() ] = {}
   time_hide[ npc:id() ] = nil
+  expire_death_places( npc )
 end
 
 
@@ -2233,9 +2243,8 @@ end
 function in_hideout( npc )
   local t = last_hideout[ npc:id() ]
   if t and ( npc:level_vertex_id() == t.vtx or npc:path_completed() ) then
-    return true
+    return t.vtx
   end
-  return false
 end
 
 
