@@ -334,7 +334,7 @@ function evaluator_check_altcombat:evaluate()
   end
 
   self:check_corpse_danger()
-  reprioritize_targets( self.object )
+  self:reprioritize_targets()
   if self:check_for_grenades( self.object ) then
     ogse_debug.add_active_eval( self.object, script_name(), "altcombat_gr" )
     self.st.evaluated = time_global()
@@ -382,7 +382,7 @@ function evaluator_check_altcombat:check_corpse_danger()
 
   local enemy = level.object_by_id( killer_id )
   if is_danger_corpse( npc, enemy ) then
-    register_as_target( npc, enemy, true )
+    register_as_target( npc, enemy, enemy:is_actor() )
     return true
   end
 
@@ -475,6 +475,186 @@ function evaluator_check_altcombat:get_nearest_grenade()
         end
       end
     end
+  end
+end
+
+
+-- обновление основной цели, вызывается из апдейта или любой другой
+-- аналогичной обработки, хоть из эвалуатора
+-- обновим предварительно реестр целей
+function evaluator_check_altcombat:reprioritize_targets()
+  local npc = self.object
+  -- если у нас нет текущей цели, но есть движковая, то нужно
+  -- немедленно обновить список целей, что бы зарегистрировать
+  -- движкового врага. Иначе, если время обновления еще не наступило,
+  -- боевка отключится, т.к. врага нет, и включится движковая боевка,
+  -- т.к. есть движковый враг.
+  local be = get_target( npc )
+  if not ( be and be:alive() and not xr_wounded.is_wounded( be ) ) then
+    local enemy = npc:best_enemy()
+    if enemy and enemy:alive() and not xr_wounded.is_wounded( enemy ) then
+      last_reprioritize[ npc:id() ] = nil
+    end
+  end
+
+  if
+    last_reprioritize[ npc:id() ]
+    and last_reprioritize[ npc:id() ] > time_global()
+  then
+    return
+  end
+
+  self:get_targets_from_memory()
+  refresh_targets( npc )
+
+  if total_debug then
+    print_table_inlog_v2(
+      targets_list[ npc:id() ],
+      string.format( "--XRS_BATTLE_AI: TARGS of %s >>", npc:name() )
+    )
+  end
+
+  for k, v in pairs( targets_list[ npc:id() ] ) do
+    if v.vis then               -- если цель видит нас
+      local close_combat, far_combat = combat_ranges( npc, v.npc )
+      local mult = combat_multiplier( v.npc )
+      if not v.npc then         -- если она монстр
+        if v.range >= close_combat and v.range < far_combat then
+          -- и цель на средней дистанции
+          v.weight = v.range * mult
+        elseif v.range < close_combat then -- а если вплотную
+          v.weight = v.range * mult
+        elseif check_friends_enemy( npc, k ) then
+          v.weight = v.range * mult * 3
+        end
+      else -- а если непись
+        if v.range >= close_combat and v.range < far_combat then
+          -- если не ближний бой
+          v.weight = v.range
+        elseif v.range < close_combat then -- а если ближний
+          v.weight = v.range * mult
+        elseif v.range > far_combat and v.range < ( npc:range() * 1.5 ) then
+          -- сверхдальний бой
+          v.weight = v.range * mult * 2
+        elseif check_friends_enemy( npc, k ) then
+          v.weight = v.range * mult * 3
+        end
+      end
+    else -- если не видит
+      if primary_target[ npc:id() ] == k then
+        set_primary_target( npc, nil )
+      end
+      if not v.npc then         -- если она монстр
+        if v.range < max_invisible_range_mon then
+          v.weight = v.range * 2
+        else
+          v.weight = 1000
+        end
+      else                                        -- а если непись
+        if v.range < max_invisible_range_npc then -- если в радиусе "слуха"
+          v.weight = v.range * 3
+        elseif v.range < distant_combat_distance then
+          -- если в радиусе дальнего боя
+          if
+            v.last_time_seen
+            and v.last_time_seen + memory_timeout > time_global()
+          then
+            -- если видели её не менее минуты назад
+            v.weight = v.range * 5
+          else
+            v.weight = 1000
+          end
+        else
+          v.weight = 1000
+        end
+      end
+    end
+    if v.engine then
+      v.weight = v.weight * combat_mult_engine
+    end
+  end
+
+  local last_range
+  local last_weight = 1000
+  for k, v in pairs( targets_list[ npc:id() ] ) do
+    if v.weight < last_weight then
+      last_range  = v.range
+      last_weight = v.weight
+      primary_target[ npc:id() ] = k
+    end
+  end
+
+  if not primary_target[ npc:id() ] then
+    for k, v in pairs( targets_list[ npc:id() ] ) do
+      if v.range < last_weight then
+        last_weight = v.range
+        if
+          v.npc
+          and v.range < close_combat_distance
+          and v.last_time_seen
+          and v.last_time_seen + memory_timeout < time_global()
+        then
+          last_range = v.range
+          primary_target[ npc:id() ] = k
+        end
+      end
+    end
+  end
+  if last_range then
+    last_target[ npc:id() ] = nil
+  end
+
+  if primary_target[ npc:id() ] then
+    if last_range and last_range > npc:range() then
+      npc:set_range( last_range * 1.1 )
+    end
+    last_reprioritize[ npc:id() ] = time_global() + reprioritize_timeout
+  else
+    local deadman = have_fresh_deadman( npc )
+    if not deadman then
+      last_enemy_id[ npc:id()  ] = nil
+      primary_target[ npc:id() ] = nil
+      last_target[ npc:id()    ] = nil
+    end
+    last_reprioritize[ npc:id() ] = time_global() + 500
+  end
+end
+
+
+function evaluator_check_altcombat:get_targets_from_memory()
+  -- сбор врагов, вызывается из reprioritize_targets
+  local npc = self.object
+  for o in npc:memory_visible_objects() do
+    local obj = o:object()
+    process_enemy( npc, obj )
+--[=[
+    if
+      obj and ( not self.known_corpses[ obj:id() ] )
+      and obj:is_stalker() and ( not obj:alive() )
+      and npc:see( obj )
+    then
+      self.known_corpses[ obj:id() ] = true
+      if
+        npc:character_community() == obj:character_community()
+        or npc:relation( obj ) == game_object.friend
+      then
+        local id = dsh_deadmans.is_fresh_deadman( obj:id() )
+        if id and id ~= obj:id() and id ~= npc:id() then
+          local enemy = level.object_by_id( id )
+          if is_danger_corpse( npc, enemy ) then
+            register_as_target( npc, enemy, enemy:is_actor() )
+          end
+        end
+      end
+      disable_object( npc, obj )
+    end
+--]=]
+  end
+  for o in npc:memory_sound_objects() do
+    process_enemy( npc, o:object() )
+  end
+  for o in npc:memory_hit_objects() do
+    process_enemy( npc, o:object() )
   end
 end
 
@@ -1307,47 +1487,38 @@ function its_a_trap( npc, vertex )
 end
 
 
-function process_enemy( npc, may_be_enemy )
-  local valid, enemy = validate_enemy_object( may_be_enemy )
-  if valid == false or not enemy then return end
-  if npc:id() ~= enemy:id() then
-    if not already_know_about[ npc:id() ] then
-      already_know_about[ npc:id() ] = {}
-    end
-    if
-      npc:relation( enemy ) == game_object.friend
-      or (
-        enemy:is_stalker()
-        and npc:character_community() == enemy:character_community()
-      )
-    then
-      if not enemy:alive() then
-        if not already_know_about[ npc:id() ][ enemy:id() ] then
-          set_sound_event( npc, "dead" )
-          already_know_about[ npc:id() ][ enemy:id() ] = true
-        end
-      elseif xr_wounded.is_wounded( enemy ) then
-        if not already_know_about[ npc:id() ][ enemy:id() ] then
-          set_sound_event( npc, "fr_hit" )
-          already_know_about[ npc:id() ][ enemy:id() ] = true
-        end
+function process_enemy( npc, enemy )
+  if not (
+    enemy and npc:id() ~= enemy:id()
+    and ( enemy:is_actor() or enemy:is_custom_monster() )
+  ) then
+    return
+  end
+  if not already_know_about[ npc:id() ] then
+    already_know_about[ npc:id() ] = {}
+  end
+  if
+    npc:relation( enemy ) == game_object.friend
+    or (
+      enemy:is_stalker()
+      and npc:character_community() == enemy:character_community()
+    )
+  then
+    if not enemy:alive() then
+      if not already_know_about[ npc:id() ][ enemy:id() ] then
+        set_sound_event( npc, "dead" )
+        already_know_about[ npc:id() ][ enemy:id() ] = true
+      end
+    elseif xr_wounded.is_wounded( enemy ) then
+      if not already_know_about[ npc:id() ][ enemy:id() ] then
+        set_sound_event( npc, "fr_hit" )
+        already_know_about[ npc:id() ][ enemy:id() ] = true
       end
     end
-  else
-    return
   end
   if enemy:alive() and not xr_wounded.is_wounded( enemy ) then
     if we_are_under_attack( npc, enemy ) then
-      -- человек ты иль монструшка
-      -- check_is_enemy( npc, enemy )
-      if
-        ( enemy:is_actor() or enemy:is_stalker() )
-        and check_is_enemy( npc, enemy )
-      then
-        register_as_target( npc, enemy )
-      elseif enemy:is_monster() and check_is_enemy( npc, enemy ) then
-        register_as_target( npc, enemy )
-      end
+      register_as_target( npc, enemy )
     end
   end
 end
@@ -1426,29 +1597,38 @@ end
 
 
 function register_as_target( npc, enemy, force_vis )
+  if not ( npc and npc:alive() and not xr_wounded.is_wounded( npc ) ) then
+    return
+  end
   if not targets_list[ npc:id() ] then
     targets_list[ npc:id() ] = {}
   end
   local enemy_record
   local id = enemy:id()
-  if not targets_list[ npc:id() ][ id ] then
-    if npc and npc:alive() and not xr_wounded.is_wounded( npc ) then
-      local dist = npc:position():distance_to( enemy:position() )
-      enemy_record = {
-        engine = false,
-        npc    = ( enemy:is_actor() or enemy:is_stalker() ),
-        range  = dist,
-        vis    = ( force_vis or is_enemy_see( enemy, npc ) ),
-        weight = 1000,
-      }
-      if enemy_record.npc and ( enemy_record.vis or npc:see( enemy ) ) then
-        enemy_record.last_time_seen = time_global()
-        enemy_record.vertex         = enemy:level_vertex_id()
-      end
-      targets_list[ npc:id() ][ id ] = enemy_record
-    else
-      return
+  if targets_list[ npc:id() ][ id ] then
+    local t = targets_list[ npc:id() ][ id ]
+    if force_vis then
+      t.last_time_seen = time_global()
+      t.vertex         = enemy:level_vertex_id()
+      t.vis            = true
+      t.vis_lock       = true
     end
+    enemy_record = t
+  else
+    local dist = npc:position():distance_to( enemy:position() )
+    enemy_record = {
+      engine = false,
+      npc    = ( enemy:is_actor() or enemy:is_stalker() ),
+      range  = dist,
+      vis    = ( force_vis or is_enemy_see( enemy, npc ) ),
+      vis_lock = force_vis,
+      weight = 1000,
+    }
+    if enemy_record.npc and ( enemy_record.vis or npc:see( enemy ) ) then
+      enemy_record.last_time_seen = time_global()
+      enemy_record.vertex         = enemy:level_vertex_id()
+    end
+    targets_list[ npc:id() ][ id ] = enemy_record
   end
   return enemy_record
 end
@@ -1476,147 +1656,6 @@ function remove_from_targets( npc, id )
     set_primary_target( npc, nil )
   end
   targets_list[ npc:id() ][ id ] = nil
-end
-
-
--- обновление основной цели, вызывается из апдейта или любой другой
--- аналогичной обработки, хоть из эвалуатора
--- обновим предварительно реестр целей
-function reprioritize_targets( npc )
-  -- если у нас нет текущей цели, но есть движковая, то нужно
-  -- немедленно обновить список целей, что бы зарегистрировать
-  -- движкового врага. Иначе, если время обновления еще не наступило,
-  -- боевка отключится, т.к. врага нет, и включится движковая боевка,
-  -- т.к. есть движковый враг.
-  local be = get_target( npc )
-  if not ( be and be:alive() and not xr_wounded.is_wounded( be ) ) then
-    local enemy = npc:best_enemy()
-    if enemy and enemy:alive() and not xr_wounded.is_wounded( enemy ) then
-      last_reprioritize[ npc:id() ] = nil
-    end
-  end
-
-  if
-    last_reprioritize[ npc:id() ]
-    and last_reprioritize[ npc:id() ] > time_global()
-  then
-    return
-  end
-
-  get_targets_from_memory( npc )
-  refresh_targets( npc )
-
-  if total_debug then
-    print_table_inlog_v2(
-      targets_list[ npc:id() ],
-      string.format( "--XRS_BATTLE_AI: TARGS of %s >>", npc:name() )
-    )
-  end
-
-  for k, v in pairs( targets_list[ npc:id() ] ) do
-    if v.vis then               -- если цель видит нас
-      local close_combat, far_combat = combat_ranges( npc, v.npc )
-      local mult = combat_multiplier( v.npc )
-      if not v.npc then         -- если она монстр
-        if v.range >= close_combat and v.range < far_combat then
-          -- и цель на средней дистанции
-          v.weight = v.range * mult
-        elseif v.range < close_combat then -- а если вплотную
-          v.weight = v.range * mult
-        elseif check_friends_enemy( npc, k ) then
-          v.weight = v.range * mult * 3
-        end
-      else -- а если непись
-        if v.range >= close_combat and v.range < far_combat then
-          -- если не ближний бой
-          v.weight = v.range
-        elseif v.range < close_combat then -- а если ближний
-          v.weight = v.range * mult
-        elseif v.range > far_combat and v.range < ( npc:range() * 1.5 ) then
-          -- сверхдальний бой
-          v.weight = v.range * mult * 2
-        elseif check_friends_enemy( npc, k ) then
-          v.weight = v.range * mult * 3
-        end
-      end
-    else -- если не видит
-      if primary_target[ npc:id() ] == k then
-        set_primary_target( npc, nil )
-      end
-      if not v.npc then         -- если она монстр
-        if v.range < max_invisible_range_mon then
-          v.weight = v.range * 2
-        else
-          v.weight = 1000
-        end
-      else                                        -- а если непись
-        if v.range < max_invisible_range_npc then -- если в радиусе "слуха"
-          v.weight = v.range * 3
-        elseif v.range < distant_combat_distance then
-          -- если в радиусе дальнего боя
-          if
-            v.last_time_seen
-            and v.last_time_seen + memory_timeout > time_global()
-          then
-            -- если видели её не менее минуты назад
-            v.weight = v.range * 5
-          else
-            v.weight = 1000
-          end
-        else
-          v.weight = 1000
-        end
-      end
-    end
-    if v.engine then
-      v.weight = v.weight * combat_mult_engine
-    end
-  end
-
-  local last_range
-  local last_weight = 1000
-  for k, v in pairs( targets_list[ npc:id() ] ) do
-    if v.weight < last_weight then
-      last_range  = v.range
-      last_weight = v.weight
-      primary_target[ npc:id() ] = k
-    end
-  end
-
-  if not primary_target[ npc:id() ] then
-    for k, v in pairs( targets_list[ npc:id() ] ) do
-      if v.range < last_weight then
-        last_weight = v.range
-        if
-          v.npc
-          and v.range < close_combat_distance
-          and v.last_time_seen
-          and v.last_time_seen + memory_timeout < time_global()
-        then
-          last_range = v.range
-          primary_target[ npc:id() ] = k
-        end
-      end
-    end
-  end
-  if last_range then
-    last_target[ npc:id() ] = nil
-  end
-
-  if primary_target[ npc:id() ] then
-    if last_range and last_range > npc:range() then
-      npc:set_range( last_range * 1.1 )
-    end
-    last_reprioritize[ npc:id() ] = time_global() + reprioritize_timeout
-  else
-    local deadman = have_fresh_deadman( npc )
-    if not deadman then
-      last_enemy_id[ npc:id()  ] = nil
-      primary_target[ npc:id() ] = nil
-      last_target[ npc:id()    ] = nil
-    end
-    last_reprioritize[ npc:id() ] = time_global() + 500
-  end
 end
 
 
@@ -1688,7 +1727,9 @@ function refresh_targets( npc )
       check_target and check_target:alive()
       and not xr_wounded.is_wounded( check_target )
     then
-      v.vis = is_enemy_see( check_target, npc )
+      if not v.vis_lock then
+        v.vis = is_enemy_see( check_target, npc )
+      end
       local dist = npc:position():distance_to( check_target:position() )
       v.range = dist
       if not v.vis then
@@ -1728,20 +1769,6 @@ function refresh_targets( npc )
     else
       remove_from_targets( npc, k )
     end
-  end
-end
-
-
-function get_targets_from_memory( npc )
-  -- сбор врагов, вызывается из reprioritize_targets
-  for o in npc:memory_visible_objects() do
-    process_enemy( npc, o:object() )
-  end
-  for o in npc:memory_sound_objects() do
-    process_enemy( npc, o:object() )
-  end
-  for o in npc:memory_hit_objects() do
-    process_enemy( npc, o:object() )
   end
 end
 
