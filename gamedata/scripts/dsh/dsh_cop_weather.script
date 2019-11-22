@@ -474,6 +474,15 @@ function StaticForecast:get_first_frame()
 end
 
 
+function StaticForecast:get_p_after_surge()
+  for i, t in ipairs( self.forecast ) do
+    if not t.surge_frame then
+      return t
+    end
+  end
+end
+
+
 local point_flags = {
   surge_begin = 1,              -- 001b
   surge_frame = 2,              -- 010b
@@ -1633,12 +1642,24 @@ function WeatherManager:update_script_weather()
   if self.forced and t.surge_frame and not afc:get_p2().surge_frame then
     t = afc:get_p2()
   end
-  
+
   monitoring_weather_sect = t.cycle
   local weather_ltx = afc.cycles[ t.cycle ].ltx
 
   if t.surge_frame then
     if not self.is_wfx_playing then
+      if self.forced then
+        -- если загружен сейв с уже начавшемся выбросом, то перед
+        -- запуском выброса нужно установить погоду, которая будет
+        -- после него, что бы погода выброса плавно началась и плавно
+        -- же закончилась. Иначе, после окончания fx, погода резко
+        -- сбросится на первую загруженную, т.к. именно она была
+        -- активна после загрузки сейва.
+        local p   = afc:get_p_after_surge()
+        local ltx = self:get_final_weather_ltx( afc.cycles[ p.cycle ].ltx )
+        level.set_weather( ltx, true ) -- установили Current[ 0 ] и Current[ 1 ]
+        self.engine_last_shift = level.get_weather_last_shift()
+      end
       if t.data.time_orig > 0 then
         local dt = t.data.time_orig + game.get_game_time():diffSec( t.time )
         local res = level.start_weather_fx_from_time( weather_ltx, dt )
@@ -1654,8 +1675,7 @@ function WeatherManager:update_script_weather()
     end
 
   else
-    local forced = self.forced or self.is_wfx_playing or false
-    if forced then
+    if self.forced then
       local ltx = self:get_final_weather_ltx( weather_ltx )
       level.set_weather( ltx, true ) -- установили Current[ 0 ] и Current[ 1 ]
       local t2  = afc:get_p2()
@@ -1664,9 +1684,11 @@ function WeatherManager:update_script_weather()
         level.set_weather_next( ltx ) -- установили Current[ 1 ]
       end
     end
-    -- из какой погоды будет браться следующий Current[ 1 ]
 
-    if forced or level.get_weather_last_shift() > self.engine_last_shift then
+    -- из какой погоды будет браться следующий Current[ 1 ]
+    if
+      self.forced or level.get_weather_last_shift() > self.engine_last_shift
+    then
       local t3  = afc:get_p3()
       local ltx = self:get_final_weather_ltx( afc.cycles[ t3.cycle ].ltx )
       if ltx ~= level.get_weather() and not t3.surge_frame then
