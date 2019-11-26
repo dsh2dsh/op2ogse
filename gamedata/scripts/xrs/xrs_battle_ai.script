@@ -54,6 +54,13 @@ local not_ready_states = {
   [ "patrol"   ] = true,
 }
 
+-- в этих состояниях будем активироваться только для того, что бы
+-- заблокировать движковую боевку, а на самом деле ничего делать не
+-- будем.
+local fake_battle_states = {
+  [ "wounded_heavy" ] = true,
+}
+
 local low_range_npc_aggr = 30
 local far_range_mon_aggr = 50
 local low_range_mon_aggr =  5
@@ -672,6 +679,10 @@ function action_altcombat:initialize()
   then
     return
   end
+  if self:fake_battle_state() then
+    self.fake_battle = true
+    return
+  end
   local npc = self.object
   xr_sound.set_sound( npc, nil )
   npc:movement_enabled( true )
@@ -691,9 +702,10 @@ function action_altcombat:initialize()
     self.st.is_camper = nil
   end
 
-  self.can_fire = false
+  self.fake_battle       = nil
+  self.can_fire          = false
   self.check_ready_state = true
-  in_combat[ npc:id() ] = true
+  in_combat[ npc:id() ]  = true
 
   npc:set_desired_direction()
   npc:set_desired_position()
@@ -707,6 +719,12 @@ function action_altcombat:initialize()
   expire_death_places( npc )
 
   self.initialized = true
+end
+
+
+function action_altcombat:fake_battle_state()
+  local npc = self.object
+  return fake_battle_states[ state_mgr.get_state( npc ) ]
 end
 
 
@@ -748,6 +766,7 @@ end
 
 
 function action_altcombat:execute()
+  if self.fake_battle then return end
   if
     ( not self.st.evaluated ) or time_global() - self.st.evaluated > 1000
   then
@@ -1182,21 +1201,24 @@ end
 
 
 function action_altcombat:finalize()
-  self.st.evaluated = nil
-  -- action_base.finalize( self )
   local npc = self.object
+  self.aiming              = nil
+  self.critically_wounded  = nil
+  self.combat_sight        = nil
+  self.st.evaluated        = nil
+  self.st.ready_to_grenade = nil
+  self.start_firing_actor  = nil
+  reset_everything( npc )
+  cooldown[ npc:id() ] = time_global() + cooldown_time
+  if self.fake_battle then
+    self.fake_battle = nil
+    return
+  end
   xr_sound.set_sound( npc, nil )
   npc:movement_enabled( true )
   stop_play_sound( npc )
   sr_light.check_light( npc )
   self:set_weapons_idle( get_best_weapon( npc ) )
-  reset_everything( npc )
-  cooldown[ npc:id() ] = time_global() + cooldown_time
-  self.aiming              = nil
-  self.critically_wounded  = nil
-  self.combat_sight        = nil
-  self.start_firing_actor  = nil
-  self.st.ready_to_grenade = nil
   npc:stalker_disp_base( 0 )
   npc:set_body_state( move.standing )
   if npc:alive() then
