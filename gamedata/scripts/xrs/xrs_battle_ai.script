@@ -275,7 +275,7 @@ end
 function get_obj_rank_name( obj )
   local enemy = get_target( obj )
   if
-    enemy and enemy:id() == db.actor:id()
+    enemy and enemy:is_actor()
     and db.actor:character_rank() > obj:character_rank()
   then
     obj = db.actor
@@ -1228,38 +1228,56 @@ function action_altcombat:finalize()
 end
 
 
+function friend_is_near( npc, obj )
+  if
+    obj and obj:is_stalker() and obj:alive() and npc:id() ~= obj:id()
+    and not xr_wounded.is_wounded( obj )
+  then
+    if npc:is_relation_enemy( obj ) then
+      return false
+    end
+
+    if
+      npc:relation( obj ) == game_object.friend
+      or (
+        radio_comms[ npc:character_community() ]
+        and npc:character_community() == obj:character_community()
+      )
+      or npc:position():distance_to( obj ) < 25
+    then
+      return true
+    end
+  end
+
+  return false
+end
+
+
 function check_friends_enemy( npc, enemy_id )
   local function check_enemy( npc, obj )
     if
-      obj and obj:is_stalker() and obj:alive()
-      and npc:id() ~= obj:id() and obj:id() ~= db.actor:id()
+      friend_is_near( npc, obj )
+      and primary_target[ obj:id() ]
+      and primary_target[ obj:id() ] == enemy_id
     then
-      if
-        npc:relation( obj ) == game_object.friend
-        or (
-          radio_comms[ npc:character_community() ]
-          and npc:character_community() == obj:character_community()
-        )
-        or (
-          npc:relation( obj ) ~= game_object.enemy
-          and npc:position():distance_to( obj ) < 25
-        )
-      then
-        if
-          primary_target[ obj:id() ]
-          and primary_target[ obj:id() ] == enemy_id
-        then
-          return true
-        end
-      end
+      return true
     end
     return false
   end
+  local checked = {}
   for o in npc:memory_visible_objects() do
-    if check_enemy( npc, o:object() ) then return true end
+    local obj = o:object()
+    if not checked[ obj:id() ] then
+      if check_enemy( npc, obj ) then return true end
+      checked[ obj:id() ] = true
+    end
   end
   for o in npc:memory_sound_objects() do
-    if check_enemy( npc, o:object() ) then return true end
+    local obj = o:object()
+    if not checked[ obj:id() ] then
+      if check_enemy( npc, obj ) then return true end
+      checked[ obj:id() ] = true
+    end
   end
   return false
 end
@@ -1267,25 +1285,8 @@ end
 
 function notify_friends( npc, enemy )
   local function notify_friend( npc, obj )
-    if
-      obj and obj:is_stalker() and obj:alive()
-      and npc:id() ~= obj:id()
-      and obj:id() ~= db.actor:id()
-      and not xr_wounded.is_wounded( obj )
-    then
-      if
-        npc:relation( obj ) == game_object.friend
-        or (
-          radio_comms[ npc:character_community() ]
-          and npc:character_community() == obj:character_community()
-        )
-        or (
-          npc:relation( obj ) ~= game_object.enemy
-          and npc:position():distance_to( obj ) < 25
-        )
-      then
-        process_enemy( obj, enemy )
-      end
+    if friend_is_near( npc, obj ) then
+      process_enemy( obj, enemy )
     end
   end
   local notified = {}
@@ -1353,9 +1354,9 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
       targets_list[ npc:id() ] = {}
     end
     if ( who:is_actor() or who:is_stalker() ) and who:alive() then
-      if not targets_list[ npc:id() ][ who:id() ] then
+      if not get_target_info( npc, who:id() ) then
         enable_object( npc, who )
-        if who:id() == db.actor:id() then
+        if who:is_actor() then
           if check_is_enemy( npc, who ) then
             register_as_target( npc, who )
           else
@@ -1373,7 +1374,7 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
           process_enemy( npc, who )
         end
       else
-        local enemy_record = targets_list[ npc:id() ][ who:id() ]
+        local enemy_record = get_target_info( npc, who:id() )
         enemy_record.last_time_seen = time_global()
         enemy_record.vertex         = who:level_vertex_id()
       end
@@ -1385,11 +1386,11 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
         set_sound_event( npc, "ff" )
       end
     elseif who:is_monster() and who:alive() then
-      if not targets_list[ npc:id() ][ who:id() ] then
+      if not get_target_info( npc, who:id() ) then
         enable_object( npc, who )
         process_enemy( npc, who )
       else
-        local enemy_record = targets_list[ npc:id() ][ who:id() ]
+        local enemy_record = get_target_info( npc, who:id() )
         enemy_record.last_time_seen = time_global()
         enemy_record.vertex         = who:level_vertex_id()
       end
@@ -1516,9 +1517,12 @@ function process_enemy( npc, enemy )
   ) then
     return
   end
+  if get_target_info( npc, enemy:id() ) then return end
+
   if not already_know_about[ npc:id() ] then
     already_know_about[ npc:id() ] = {}
   end
+
   if
     npc:relation( enemy ) == game_object.friend
     or (
@@ -1547,59 +1551,75 @@ end
 
 
 function we_are_under_attack( npc, enemy )
-  if enemy:id() ~= db.actor:id() then
-    local target           = enemy:best_enemy()
-    local danger_by_engine = enemy:best_danger()
-    local best_danger_object, bd_type
-    if danger_by_engine and check_is_enemy( npc, enemy ) then
-      best_danger_object = danger_by_engine:object()
+  if not check_is_enemy( npc, enemy ) then return false end
+
+  if enemy:is_actor() then
+    local be = npc:best_enemy()
+    local bd = npc:best_danger()
+    local bd_obj
+    if bd then
+      bd_obj = bd:object()
     end
-    if ( not target ) and best_danger_object then
-      bd_type = danger_by_engine:type()
-      if targeting_dangers[ bd_type ] then
-        target = best_danger_object
-      end
-    end
-    if target then
-      if
-        target:id() == npc:id()
-        or (
-          ( target:is_actor() or target:is_stalker() ) and target:alive()
-          and (
-            npc:relation( target ) == game_object.friend
-            or npc:character_community() == target:character_community()
-          )
-        )
-      then
+    if be and be:is_actor() then
+      return true
+    elseif bd_obj and bd_obj:is_actor() then
+      local bd_type = bd:type()
+      if needed_dangers[ bd_type ] then
         return true
-      else
-        return false
       end
-    else
-      return false
     end
-  else
-    if check_is_enemy( npc, db.actor ) then
-      local be = npc:best_enemy()
-      local bd = npc:best_danger()
-      local bd_obj
-      if bd then
-        bd_obj = bd:object()
-      end
-      if be and be:id() == db.actor:id() then
-        return true
-      elseif bd_obj and bd_obj:id() == db.actor:id() then
-        local bd_type = bd:type()
-        if needed_dangers[ bd_type ] then
-          return true
-        end
-      else
-        return false
-      end
-    else
-      return false
+    return false
+  end
+
+  local target           = get_target( enemy ) or enemy:best_enemy()
+  local danger_by_engine = enemy:best_danger()
+  local best_danger_object
+  if danger_by_engine then
+    best_danger_object = danger_by_engine:object()
+  end
+  if ( not target ) and best_danger_object then
+    local bd_type = danger_by_engine:type()
+    if targeting_dangers[ bd_type ] then
+      target = best_danger_object
     end
   end
+  if not target then return false end
+
+  if target:id() == npc:id() then
+    return true
+
+  elseif npc:is_relation_enemy( target ) then
+    return false
+
+  elseif not ( npc:see( target ) or npc:position():distance_to( target ) < 25 ) then
+    return false
+
+  elseif target:is_actor() then
+    if
+      target:character_reputation() >= dsh_ogse_relations.get_max_reputation()
+    then
+      return npc:relation( target ) == game_object.friend
+        or npc:character_community() == target:character_community()
+    end
+    return false
+
+  elseif target:is_stalker() then
+    if
+      npc:relation( target ) == game_object.friend
+      or npc:character_community() == target:character_community()
+    then
+      return true
+
+    elseif
+      target:smart_terrain_id() ~= 65535
+      and target:smart_terrain_id() == npc:smart_terrain_id()
+    then
+      return true
+    end
+
+    return npc:position():distance_to( target ) < 25
+  end
+
   return false
 end
 
@@ -1627,8 +1647,8 @@ function register_as_target( npc, enemy, force_vis )
   end
   local enemy_record
   local id = enemy:id()
-  if targets_list[ npc:id() ][ id ] then
-    local t = targets_list[ npc:id() ][ id ]
+  if get_target_info( npc, id ) then
+    local t = get_target_info( npc, id )
     if force_vis then
       t.last_time_seen = time_global()
       t.vertex         = enemy:level_vertex_id()
@@ -1681,6 +1701,13 @@ function remove_from_targets( npc, id )
 end
 
 
+function get_target_info( npc, id )
+  if targets_list[ npc:id() ] then
+    return targets_list[ npc:id() ][ id ]
+  end
+end
+
+
 local scheme_name
 function get_schema_storage( npc )
   if scheme_name then
@@ -1698,7 +1725,7 @@ function refresh_targets( npc )
   if
     enemy_by_engine and enemy_by_engine:alive()
     and ( not xr_wounded.is_wounded( enemy_by_engine ) )
-    and ( not targets_list[ npc:id() ][ enemy_by_engine:id() ] )
+    and ( not get_target_info( npc, enemy_by_engine:id() ) )
   then
     register_as_target( npc, enemy_by_engine )
   end
@@ -1716,7 +1743,7 @@ function refresh_targets( npc )
         and best_danger_object:alive()
         and not xr_wounded.is_wounded( best_danger_object )
       then
-        if not targets_list[ npc:id() ][ best_danger_object:id() ] then
+        if not get_target_info( npc, best_danger_object:id() ) then
           if check_is_enemy( npc, best_danger_object ) then
             register_as_target( npc, best_danger_object )
           else
@@ -2064,7 +2091,7 @@ function process_combat_sound( npc )
     xr_sound.set_sound_play( npc, "fight_backup" )
   elseif snd_flags.idle == "lost" then
     local target = primary_target[ npc:id() ]
-    local target_info = targets_list[ npc:id() ][ target ]
+    local target_info = get_target_info( npc, target )
     if not target_info then return end
     if target_info and not target_info.last_time_seen then
       if math.random() < 0.2 then
