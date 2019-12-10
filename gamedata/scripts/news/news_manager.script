@@ -92,7 +92,56 @@ local snds = {
     pri_followers_leader_phrase1_2  = [[characters_voice\scenario\pri\followers_leader_phrase1_2_p]],
     pri_followers_leader_phrase1_3  = [[characters_voice\scenario\pri\followers_leader_phrase1_3_p]],
 }
- 
+
+
+function attach( sm )
+  sm:subscribe({ signal = "on_task", fun = this.on_task })
+end
+
+
+local changed_tasks = {}
+local changed_tasks_t
+skip_send_task = false
+
+function on_task( _task, _objective, _state )
+  if skip_send_task then return end
+  table.insert( changed_tasks, { _task, _objective, _state } )
+  if not changed_tasks_t then
+    changed_tasks_t = dsh.exec_on_update(
+      function() process_changed_tasks() end
+    )
+  end
+end
+
+
+function process_changed_tasks()
+  changed_tasks_t = nil
+  for _, t in ipairs( changed_tasks ) do
+    process_task_change( unpack( t ) )
+  end
+  changed_tasks = {}
+end
+
+
+function process_task_change( _task, _objective, _state )
+  if _objective:get_idx() == 0 then
+    if _state == task.fail then
+      db.actor:give_info_portion( "acv_task_fail" )
+      send_task( db.actor, "fail", _task, _objective )
+    elseif _state == task.completed then
+      task_manager.reward_by_task( _task )
+      send_task( db.actor, "complete", _task, _objective )
+    else
+      send_task( db.actor, "new", _task, _objective )
+    end
+  else
+    if _task:get_objective( 0 ):get_state() == task.in_progress then
+      send_task( db.actor, "update", _task, _objective )
+    end
+  end
+end
+
+
 local news = {}
 local function get_snd(t, k)
 	-- log3("getting sound: %s", tostring(k))
@@ -442,12 +491,10 @@ local cycle_task = {
 
 
 local autosave_t
-skip_send_task = false
 
 function send_task(actor, type, task, objective)
 	-- u3_utils.printf("send_task function started with type: "..type..".")
 	if db.actor == nil then return false end
-	if skip_send_task then return end
 	
 	local task_title = task:get_title()
 	local task_time = string.find(task_title, "\\n", 1, true)
@@ -508,7 +555,7 @@ function send_task(actor, type, task, objective)
 				if obj_desc1 ~= nil then
 					news_text = news_text.."\\n".."%c[255,127,255,255]Завершено: "..game.translate_string(obj_desc1)
 				end
-				if obj_desc2 ~= nil then
+				if obj_desc2 ~= nil and objective:get_idx() < objective_index then
 					news_text = news_text.."\\n".."%c[255,127,255,255]Следующее: "..game.translate_string(obj_desc2)
 				end
 			end
