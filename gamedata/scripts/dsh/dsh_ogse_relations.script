@@ -119,17 +119,38 @@ function ff_detected_sms2()
 end
 
 
-local max_reputation
+local cache_reputation_idx = {}
+local reputation
+
+function get_reputation_idx( rep )
+  if not cache_reputation_idx[ rep ] then
+    for i = 1, table.getn( reputation ), 2 do
+      if i < table.getn( reputation ) then
+        if rep < tonumber( reputation[ i + 1 ] ) then
+          cache_reputation_idx[ rep ] = i
+          break
+        end
+      else
+        cache_reputation_idx[ rep ] = i
+        break
+      end
+    end
+  end
+  return cache_reputation_idx[ rep ]
+end
+
+
+local max_reputation, max_seen_reputation, max_seen_reputation_idx
 
 function on_spawn()
   local s = get_string( "game_relations", "reputation" )
   ASSERT( s, "'reputation' not found in [game_relations]" )
-  local reputations = parse_names( s )
+  reputation = parse_names( s )
   ASSERT(
-    table.getn( reputations ) > 2,
+    table.getn( reputation ) > 2,
     "wrong 'reputation' in [game_relations]: %s", s
   )
-  local max = tonumber( reputations[ table.getn( reputations ) - 1 ] )
+  local max = tonumber( reputation[ table.getn( reputation ) - 1 ] )
   ASSERT( max, "wrong 'reputation' in [game_relations]: %s", s )
   if db.actor:character_reputation() > max then
     log2(
@@ -141,10 +162,39 @@ function on_spawn()
     )
   end
   max_reputation = max
+
+  max_seen_reputation = ogse.load_var_safe(
+    "dsh_ogse_relations.max_seen_reputation"
+  )
+  log2(
+    "[%s]: load actor's max character_reputation(): %s",
+    script_name(), tostring( max_seen_reputation )
+  )
+  if
+    ( not max_seen_reputation )
+    or db.actor:character_reputation() > max_seen_reputation
+  then
+    log2(
+      "[%s]: adjust actor's max character_reputation(): %s -> %s",
+      script_name(), tostring( max_seen_reputation ),
+      db.actor:character_reputation()
+    )
+    max_seen_reputation = db.actor:character_reputation()
+    ogse.save_var(
+      "dsh_ogse_relations.max_seen_reputation", max_seen_reputation
+    )
+  end
+  max_seen_reputation_idx = get_reputation_idx( max_seen_reputation )
+  log2(
+    "[%s]: actor's max character_reputation() index: %s",
+    script_name(), max_seen_reputation_idx
+  )
 end
 
 
 function has_enough_reputation( use_next_random )
+  local idx = get_reputation_idx( db.actor:character_reputation() )
+  if idx < max_seen_reputation_idx then return end
   local rep = math.min(
     max_reputation, math.max( 0, db.actor:character_reputation() )
   )
