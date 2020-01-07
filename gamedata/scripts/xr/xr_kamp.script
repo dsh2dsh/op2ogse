@@ -1405,6 +1405,7 @@ function action_go_position:initialize()
   self.object:set_detail_path_type( move.curve )
   self.object:set_path_type( game_object.level_path )
   self.a.pos_vertex = nil
+  state_mgr.set_state( self.object, "idle", nil, nil, nil, { animation = true } )
 end
 
 
@@ -1420,24 +1421,16 @@ function action_go_position:execute()
     return
   end
   local npc = self.object
+  if not self.ready_state then
+    if state_mgr.is_updating( npc ) then return end
+    self.ready_state = true
+  end
   local target_vertex = self.a.kamp:getDestVertex( npc )
   if self.a.pos_vertex ~= target_vertex then
     self.a.pos_vertex = target_vertex
     npc:set_desired_position(
       level.vertex_position( self.a.pos_vertex )
     )
---[=[
-    local pp = self.a.kamp.center_point:add(
-      vector():set(
-        math.random( -12, 12 ) / 10,
-        0,
-        math.random( -12, 12 ) / 10
-      )
-    )
-    npc:set_desired_direction(
-      vector():sub( pp, level.vertex_position( self.a.pos_vertex ) )
-    )
---]=]
   end
   npc:set_dest_level_vertex_id( self.a.pos_vertex )
   state_mgr.set_state( npc, self.a.def_state_moving )
@@ -1448,6 +1441,7 @@ end
 
 function action_go_position:finalize()
   action_base.finalize( self )
+  self.ready_state = nil
 end
 
 
@@ -1509,6 +1503,7 @@ function action_wait:finalize()
     self.a.kamp_user = false
   end
   action_base.finalize( self )
+  state_mgr.set_state( self.object, "idle", nil, nil, nil, { animation = true } )
 end
 
 
@@ -1597,8 +1592,7 @@ function action_go_to_deadman:initialize()
   -- на все гулянки в сторону трупа дается 30 секунд, если не успел, то
   -- да ну нафиг заморачиваться :)
   self.go_time_end   = time_global() + 30000
-  -- пойдем не спеша...
-  state_mgr.set_state( npc, self.a.def_state_moving )
+  state_mgr.set_state( npc, "idle", nil, nil, nil, { animation = true } )
   xr_sound.set_sound( npc, nil )
   stop_play_sound( npc )
 end
@@ -1609,6 +1603,10 @@ function action_go_to_deadman:execute()
   -- если initialize() не смог назначить choosed_deadman
   if not self.a.choosed_deadman then return end
   local npc = self.object
+  if not self.ready_state then
+    if state_mgr.is_updating( npc ) then return end
+    self.ready_state = true
+  end
   local gi
   if alife():object( self.a.choosed_deadman ) then
      gi = level.object_by_id( self.a.choosed_deadman )
@@ -1681,6 +1679,8 @@ function action_go_to_deadman:finalize()
     self.a.choosed_deadman = nil
     self.a.reached         = nil
   end
+  self.ready_state = nil
+  state_mgr.set_state( self.object, "idle", nil, nil, nil, { animation = true } )
 end
 
 
@@ -1719,13 +1719,7 @@ function action_moving_deadman:initialize()
     npc:set_item( object.idle, nil )
   end
 
-  -- потащим медленно, осторожно и на карачках
-  npc:set_movement_type( move.walk )
-  npc:set_mental_state( anim.danger )
-  npc:set_body_state( move.crouch )
-  npc:movement_enabled( true )
-  -- смотри мне в глаза!
-  npc:set_sight( gi, false, false, true )
+  state_mgr.set_state( npc, "idle", nil, nil, nil, { animation = true } )
 
   -- на таскание трупа в грязи даем 30 секунд
   self.time_end  = time_global() + 30000
@@ -1743,6 +1737,11 @@ function action_moving_deadman:execute()
   action_base.execute( self )
   if not self.a.choosed_deadman then return end
   local npc = self.object
+  if not self.ready_state then
+    if state_mgr.is_updating( npc ) then return end
+    state_mgr.disable( npc )
+    self.ready_state = true
+  end
   local gi
   if alife():object( self.a.choosed_deadman ) then
     gi = level.object_by_id( self.a.choosed_deadman )
@@ -1833,7 +1832,10 @@ function action_moving_deadman:finalize()
     self.a.choosed_deadman = nil
     self.a.reached         = nil
   end
-  state_mgr.set_state( self.object, self.a.def_state_moving )
+  local npc = self.object
+  state_mgr.set_state( npc, "idle", nil, nil, nil, { animation = true } )
+  state_mgr.enable( npc )
+  self.ready_state = nil
 end
 
 
@@ -1847,7 +1849,6 @@ function add_to_binder( object, ini, scheme, section, storage )
     [ "see_deadman"      ] = evid_see_deadman,
     [ "can_move_deadman" ] = xr_evaluators_id.stohe_kamp_base + 5,
     [ "contact"          ] = xr_evaluators_id.stohe_meet_base + 1,
-    [ "state_mgr_off"    ] = xr_evaluators_id.state_mgr + 3,
   }
 
   local operators  = {

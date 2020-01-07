@@ -76,13 +76,18 @@ end
 
 
 function evaluator_state_mgr_idle_off:evaluate()
-  return self.st.target_state == "idle"
+  local t = (
+    self.st.target_state == "idle"
     and self.st.planner:evaluator( self.st.properties.movement  ):evaluate()
     and self.st.planner:evaluator( self.st.properties.animstate ):evaluate()
     and self.st.planner:evaluator( self.st.properties.animation ):evaluate()
     and self.st.planner:evaluator( self.st.properties.bodystate ):evaluate()
     and self.st.planner:evaluator( self.st.properties.weapon    ):evaluate()
     and self.st.planner:evaluator( self.st.properties.mental    ):evaluate()
+  )
+  if not t then return false end
+  ogse_debug.add_active_eval( self.object, script_name(), "idle_off" )
+  return true
 end
 
 
@@ -113,30 +118,30 @@ function evaluator_state_mgr_idle_alife:evaluate()
   end
 
   if self.st.combat == true then return false end
-  if xr_wounded and xr_wounded.is_wounded( self.object ) then
+  if xr_wounded.is_wounded( self.object ) then
     self.st.alife = false
     return false
   end
 
-  if db.storage[ self.st.npc:id() ].active_section == nil then
-    if xr_meet.is_meet( self.object ) == false then
-      local t = self.st.target_state == "idle"
-        and (
-            not self.st.planner:evaluator( self.st.properties.locked ):evaluate()
-        )
-        and self.st.planner:evaluator( self.st.properties.movement  ):evaluate()
-        and self.st.planner:evaluator( self.st.properties.animstate ):evaluate()
-        and self.st.planner:evaluator( self.st.properties.animation ):evaluate()
-      if t == true then self.st.alife = true end
-      if self.st.alife == true then
-        ogse_debug.add_active_eval( self.object, script_name(), "idle_alife" )
-        return true
-      end
-      return t
-    else
-      return false
+  --dsh: if db.storage[ self.st.npc:id() ].active_section == nil then
+  if xr_meet.is_meet( self.object ) == false then
+    local t = self.st.target_state == "idle"
+      and (
+        not self.st.planner:evaluator( self.st.properties.locked ):evaluate()
+      )
+      and self.st.planner:evaluator( self.st.properties.movement  ):evaluate()
+      and self.st.planner:evaluator( self.st.properties.animstate ):evaluate()
+      and self.st.planner:evaluator( self.st.properties.animation ):evaluate()
+    if t == true then self.st.alife = true end
+    if self.st.alife == true then
+      ogse_debug.add_active_eval( self.object, script_name(), "idle_alife" )
+      return true
     end
+    return t
+  else
+    return false
   end
+  --dsh: end
 
   ogse_debug.add_active_eval( self.object, script_name(), "idle_alife_def" )
   return true
@@ -510,39 +515,44 @@ function state_manager:__init( npc )
   self.subanim           = 0
   self.need_reweapon     = false
 
-  self.sm = ogse_signals.get_mgr()
-  if npc:alive() then
-    self.subscribed = {
-      {
-        [ "signal" ] = "on_npc_update." .. self.npc:id(),
-        [ "fun"    ] = self.animstate.update,
-        [ "self"   ] = self.animstate,
-        [ "script_name" ] = "state_mgr_animstate.update",
-      },
-      {
-        [ "signal" ] = "on_npc_update." .. self.npc:id(),
-        [ "fun"    ] = self.animation.update,
-        [ "self"   ] = self.animation,
-        [ "script_name" ] = "state_mgr_animation.update",
-      },
-      {
-        [ "signal" ] = "on_npc_update." .. self.npc:id(),
-        [ "fun"    ] = self.update,
-        [ "self"   ] = self,
-        [ "script_name" ] = "state_mgr.update",
-      },
-    }
-    for _, s in ipairs( self.subscribed ) do
-      self.sm:subscribe( s )
-    end
+  self:subscribe()
+end
+
+
+function state_manager:subscribe()
+  if self.subscribed or not self.npc:alive() then return end
+  self.subscribed = {
+    {
+      [ "signal" ] = "on_npc_update." .. self.npc:id(),
+      [ "fun"    ] = self.animstate.update,
+      [ "self"   ] = self.animstate,
+      [ "script_name" ] = "state_mgr_animstate.update",
+    },
+    {
+      [ "signal" ] = "on_npc_update." .. self.npc:id(),
+      [ "fun"    ] = self.animation.update,
+      [ "self"   ] = self.animation,
+      [ "script_name" ] = "state_mgr_animation.update",
+    },
+    {
+      [ "signal" ] = "on_npc_update." .. self.npc:id(),
+      [ "fun"    ] = self.update,
+      [ "self"   ] = self,
+      [ "script_name" ] = "state_mgr.update",
+    },
+  }
+  local sm = ogse_signals.get_mgr()
+  for _, s in ipairs( self.subscribed ) do
+    sm:subscribe( s )
   end
 end
 
 
 function state_manager:unsubscribe()
   if self.subscribed then
+    local sm = ogse_signals.get_mgr()
     for _, s in ipairs( self.subscribed ) do
-      self.sm:unsubscribe( s )
+      sm:unsubscribe( s )
     end
     self.subscribed = nil
   end
@@ -660,6 +670,18 @@ function state_manager:update()
 end
 
 
+function state_manager:is_updating()
+  local pl_id = self.planner:current_action_id()
+  return ( pl_id ~= self.operators[ "end" ] )
+end
+
+
+function is_updating( npc )
+  local mgr = db.storage[ npc:id() ].state_mgr
+  if mgr then return mgr:is_updating() end
+end
+
+
 function set_state( npc, ... )
   if db.storage[ npc:id() ].state_mgr then
     db.storage[ npc:id() ].state_mgr:set_state( ... )
@@ -675,13 +697,31 @@ function get_state( npc )
 end
 
 
+function disable( npc )
+  local mgr = db.storage[ npc:id() ].state_mgr
+  if mgr then
+    mgr:unsubscribe()
+    mgr.disabled = true
+  end
+end
+
+
+function enable( npc )
+  local mgr = db.storage[ npc:id() ].state_mgr
+  if mgr then
+    mgr:subscribe()
+    mgr.disabled = nil
+  end
+end
+
+
+
+properties = {}
+properties.state_mgr_idle_combat = xr_evaluators_id.state_mgr + 1
+properties.state_mgr_idle_alife  = xr_evaluators_id.state_mgr + 2
+
 function bind_manager( object )
   local manager = object:motivation_action_manager()
-
-  local properties = {}
-  properties.state_mgr_idle_combat = xr_evaluators_id.state_mgr + 1
-  properties.state_mgr_idle_alife  = xr_evaluators_id.state_mgr + 2
-  properties.state_mgr_idle_off    = xr_evaluators_id.state_mgr + 3
 
   local operators = {}
   operators.state_mgr_to_idle_combat = xr_actions_id.state_mgr + 1
@@ -697,10 +737,6 @@ function bind_manager( object )
     properties.state_mgr_idle_alife,
     evaluator_state_mgr_idle_alife( "state_mgr_idle_alife", state_manager )
   )
-  manager:add_evaluator(
-    properties.state_mgr_idle_off,
-    evaluator_state_mgr_idle_off( "state_mgr_idle_off", state_manager )
-  )
 
   local action = this.act_state_mgr_to_idle(
     "state_mgr_to_idle_combat", state_manager
@@ -712,16 +748,6 @@ function bind_manager( object )
     world_property( properties.state_mgr_idle_combat, true  )
   )
   manager:add_action( operators.state_mgr_to_idle_combat, action )
-
-  -- Добавим ещё один тип отключения этого безобразия
-  action = this.act_state_mgr_to_off( "state_mgr_to_off", state_manager )
-  action:add_precondition(
-    world_property( properties.state_mgr_idle_off, false )
-  )
-  action:add_effect(
-    world_property( properties.state_mgr_idle_off, true  )
-  )
-  manager:add_action( operators.state_mgr_to_idle_off, action )
 
   action = this.act_state_mgr_to_idle(
     "state_mgr_to_idle_alife", state_manager
