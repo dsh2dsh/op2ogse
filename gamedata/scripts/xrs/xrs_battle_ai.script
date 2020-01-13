@@ -41,6 +41,19 @@ local sound_prob_hero  = 0.1
 local sound_prob_idle  = 0.1
 
 
+-- состояния не готовности к огню, нужно заставить встать перед
+-- началом стрельбы
+local not_ready_states = {
+  [ "busy"     ] = true,
+  [ "sit"      ] = true,
+  [ "sit_knee" ] = true,
+  [ "sit_ass"  ] = true,
+  [ "sleep"    ] = true,
+  [ "wounded_heavy"] = true,
+  [ "guard"    ] = true,
+  [ "patrol"   ] = true,
+}
+
 -- в этих состояниях будем активироваться только для того, что бы
 -- заблокировать движковую боевку, а на самом деле ничего делать не
 -- будем.
@@ -719,7 +732,11 @@ function action_altcombat:not_ready_state()
   local npc = self.object
   if self.check_ready_state then
     npc:clear_animations()
-    if state_mgr.is_updating( npc ) then return true end
+    local t = db.storage[ npc:id() ]
+    if t and t.state_mgr then
+      local anim = t.state_mgr.animstate:state()
+      if not_ready_states[ anim ] then return true end
+    end
     if
       npc:animation_count() > 0 or npc:body_state() ~= move.standing
       or npc:is_body_turning()
@@ -727,7 +744,6 @@ function action_altcombat:not_ready_state()
       self.aiming = nil
       return true
     end
-    state_mgr.disable( npc )
     self.check_ready_state = nil
   end
   if npc:critically_wounded() then
@@ -1203,8 +1219,6 @@ function action_altcombat:finalize()
     npc:unregister_in_combat()
     npc:enable_clutched_hammer( false )
   end
-  state_mgr.set_state( npc, "idle", nil, nil, nil, { animation = true } )
-  state_mgr.enable( npc )
   self.initialized = nil
 end
 
@@ -2768,7 +2782,6 @@ function add_to_binder( object, ini, scheme, section, storage )
   local property_wounded         = xr_evaluators_id.sidor_wounded_base
   local state_mgr_to_idle_combat = xr_actions_id.state_mgr + 1
   local state_mgr_to_idle_alife  = xr_actions_id.state_mgr + 2
-  local state_mgr_to_idle_off    = xr_actions_id.state_mgr + 3
 
   local lname = level.name()
   local comm  = object:character_community()
@@ -2833,15 +2846,15 @@ function add_to_binder( object, ini, scheme, section, storage )
     )
   end
 
-  for _, id in ipairs({
-    state_mgr.properties.state_mgr_idle_alife,
-    state_mgr.properties.state_mgr_idle_combat,
-  }) do
-    local action = manager:action( id )
-    action:add_precondition(
-      world_property( properties.alt_combat_enabled, false )
-    )
-  end
+  action = manager:action( state_mgr_to_idle_alife )
+  action:add_precondition(
+    world_property( properties.alt_combat_enabled, false )
+  )
+
+  action = manager:action( state_mgr_to_idle_combat )
+  action:add_precondition(
+    world_property( properties.alt_combat_enabled, false )
+  )
 end
 
 
