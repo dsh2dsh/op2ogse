@@ -106,8 +106,8 @@ function on_throw_grenade( npc, obj )
 end
 
 
-class "evaluator_love_napalm_smell" ( property_evaluator )
-function evaluator_love_napalm_smell:__init( name, storage ) super( nil, name )
+class "evaluator_love_napalm_smell"
+function evaluator_love_napalm_smell:__init( storage )
   self.a = storage
   self:set_next_check_time()
 end
@@ -157,8 +157,9 @@ function evaluator_love_napalm_smell:get_grenade( be )
 end
 
 
-function evaluator_love_napalm_smell:evaluate()
-  if not self.object:alive() then return false end
+function evaluator_love_napalm_smell:evaluate( npc )
+  self.object = npc
+  if not npc:alive() then return false end
 
   if self.a.throwing then
     ogse_debug.add_active_eval( self.object, script_name(), "love_napalm_smell_2" )
@@ -168,10 +169,8 @@ function evaluator_love_napalm_smell:evaluate()
   if self.a.next_check_time > time_global() then return false end
   self:set_next_check_time()
 
-  local npc = self.object
-  local st  = xrs_battle_ai.get_schema_storage( npc )
-  if not ( st and st.ready_to_grenade ) then return false end
-  local be  = xrs_battle_ai.get_target( npc )
+  if not self.a.ready_to_grenade then return false end
+  local be = xrs_battle_ai.get_target( npc )
   if not be then return false end
   if not self:good_target( be ) then return false end
 
@@ -229,20 +228,20 @@ function evaluator_love_napalm_smell:check_grenade( section, be )
 end
 
 
-class "action_kill_it_with_fire" ( action_base )
-function action_kill_it_with_fire:__init( name, storage ) super( nil, name )
-  self.a = storage
+class "action_kill_it_with_fire"
+function action_kill_it_with_fire:__init( npc, storage )
+  self.a      = storage
+  self.object = npc
 end
 
 
 function action_kill_it_with_fire:initialize()
-  action_base.initialize( self )
   self.at_pos    = false
   self.finalized = false
   local npc = self.object
   xr_sound.set_sound( npc, nil )
   stop_play_sound( npc )
-  self.state_mgr_state = state_mgr.get_state( npc )
+--[=[
   local target_enemy = level.object_by_id( self.a.target_enemy )
   if target_enemy then
     state_mgr.set_state(
@@ -253,16 +252,13 @@ function action_kill_it_with_fire:initialize()
       npc, "idle", nil, nil, { look_position = self.a.target_pos }
     )
   end
+--]=]
+  utils.send_to_nearest_accessible_vertex( npc, npc:level_vertex_id() )
 end
 
 
 function action_kill_it_with_fire:execute()
-  action_base.execute ( self )
   if self.finalized then return end
-  if not level.object_by_id( self.a.grenade ) then
-    self.a.throwing = false
-    return
-  end
 
   local npc = self.object
   local target_enemy = level.object_by_id( self.a.target_enemy )
@@ -294,11 +290,15 @@ function action_kill_it_with_fire:execute()
       return
     end
     local obj = level.object_by_id( self.a.grenade )
-    npc:set_item( object.fire1, obj )
-    firing[ npc:id() ] = function( gr )
-      self:on_throw_grenade( gr )
+    if obj then
+      npc:set_item( object.fire1, obj )
+      firing[ npc:id() ] = function( gr )
+        self:on_throw_grenade( gr )
+      end
+      self.state = self.state + 1
+    else
+      self.state = 3
     end
-    self.state = self.state + 1
 
   elseif self.state == 1 then
     return
@@ -312,7 +312,6 @@ function action_kill_it_with_fire:execute()
     if npc:animation_count() > 0 then return end
     self.a.throwing = false
     self.finalized  = true
-    state_mgr.set_state( npc, self.state_mgr_state )
   end
 end
 
@@ -320,7 +319,7 @@ end
 function action_kill_it_with_fire:on_throw_grenade( obj )
   if self.finalized then return end
   local npc = self.object
-  if math.random() < 0.7 then
+  if math.random() < 0.8 then
     local snd_sect = snd_grenade_replics[ npc:character_community() ]
       or snd_grenade_replics.stalker
     local snd_rnd  = math.random( table.getn( snd_sect ) )
@@ -336,7 +335,6 @@ end
 
 
 function action_kill_it_with_fire:finalize()
-  action_base.finalize( self )
   local npc = self.object
   firing[ npc:id() ] = nil
   self.a.next_check_time = time_global() + math.random( 60, 300 ) * 1000
@@ -344,6 +342,7 @@ function action_kill_it_with_fire:finalize()
   self.at_pos            = false
   self.finalized         = true
   self.state             = false
+  -- state_mgr.set_state( npc, "idle", nil, nil, nil, { animation = true } )
 end
 
 
@@ -394,74 +393,4 @@ end
 
 function get_gr_types()
   return gr_types
-end
-
-
-local base = 18670 -- 87460
-prop_fire            = base + 0
-evid_crazy_grenadier = prop_fire
-
-local base_act = base -- 87480
-act_kill_it = base_act + 0
-act_run     = base_act + 1
-
-
-function add_to_binder( obj, char_ini, scheme, section, st )
-  local manager = obj:motivation_action_manager()
-  local property_wounded         = xr_evaluators_id.sidor_wounded_base
-  local state_mgr_to_idle_combat = xr_actions_id.state_mgr + 1
-  local state_mgr_to_idle_alife  = xr_actions_id.state_mgr + 2
-  manager:remove_evaluator( prop_fire )
-  if
-    forbidden_comms[ obj:character_community() ]
-    or obj:character_community() == "quest_stalker"
-    or obj:name() == "mil_stalker0012"
-    or obj:name() == "yantar_ecolog_general"
-    or string.find( obj:section(), "arena" )
-    or string.find( obj:section(), "aem" )
-    or rx_utils.IsTrader( obj )
-    or not obj:alive()
-  then
-    manager:add_evaluator( prop_fire, property_evaluator_const( false ) )
-    return
-  end
-  manager:add_evaluator(
-    prop_fire, evaluator_love_napalm_smell( "evaluator_love_napalm_smell", st )
-  )
-
-  local action = action_kill_it_with_fire( "action_kill_it_with_fire", st )
-  action:add_precondition( world_property( stalker_ids.property_alive, true ) )
-  action:add_precondition(
-    world_property( stalker_ids.property_anomaly, false )
-  )
-  action:add_precondition( world_property( property_wounded, false ) )
-  action:add_precondition( world_property( prop_fire, true ) )
-  action:add_effect( world_property( prop_fire, false ) )
-  manager:add_action( act_kill_it, action )
-
-  action = manager:action( stalker_ids.action_combat_planner )
-  action:add_precondition( world_property( prop_fire, false ) )
-
-  action = manager:action( stalker_ids.action_danger_planner )
-  action:add_precondition( world_property( prop_fire, false ) )
-
-  action = manager:action( state_mgr_to_idle_alife )
-  action:add_precondition( world_property( prop_fire, false ) )
-  -- action:add_precondition( world_property( prop_grenade, false ) )
-
-  action = manager:action( state_mgr_to_idle_combat )
-  action:add_precondition( world_property( prop_fire, false ) )
-end
-
-
--- Функции включения/выключения схемы
-function set_scheme( npc, ini, scheme, section )
-  local st = xr_logic.assign_storage_and_bind( npc, ini, scheme, section )
-  if st then st.enabled = true end
-end
-
-
-function disable_scheme( npc, scheme )
-  local st = db.storage[ npc:id() ][ scheme ]
-  if st then st.enabled = false end
 end

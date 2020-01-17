@@ -296,12 +296,33 @@ function get_best_weapon( npc, active )
 end
 
 
+function is_not_ready_state( npc )
+  local t = db.storage[ npc:id() ]
+  if t and t.state_mgr then
+    local anim = t.state_mgr.animstate:state()
+    if not_ready_states[ anim ] then return true end
+  end
+  if
+    npc:animation_count() > 0 or npc:body_state() ~= move.standing
+    or npc:is_body_turning()
+  then
+    return true
+  end
+  return false
+end
+
+
 -- продолжаем вооруженное общение до умиротворения объекта
 class "evaluator_check_altcombat" ( property_evaluator )
 function evaluator_check_altcombat:__init( name, storage ) super( nil, name )
   self.st = storage
   self.count_update  = 0
   self.known_corpses = {}
+
+  self.st.grenadier = {}
+  self.grenadier    = xrs_grenade.evaluator_love_napalm_smell(
+    self.st.grenadier
+  )
 end
 
 
@@ -342,8 +363,16 @@ function evaluator_check_altcombat:evaluate()
 
   self:check_corpse_danger()
   self:reprioritize_targets()
-  if self:check_for_grenades( self.object ) then
-    ogse_debug.add_active_eval( self.object, script_name(), "altcombat_gr" )
+
+  self.st.grenadier_ready = self.grenadier:evaluate( self.object )
+  if self.st.grenadier_ready then
+    ogse_debug.add_active_eval( self.object, script_name(), "altcombat_grenadier" )
+    self.st.evaluated = time_global()
+    return true
+  end
+
+  if self:check_for_grenades() then
+    ogse_debug.add_active_eval( self.object, script_name(), "altcombat_gr_evade" )
     self.st.evaluated = time_global()
     return true
   end
@@ -428,13 +457,20 @@ function evaluator_check_altcombat:check_for_grenades()
       or self.st.active_grenade.grenade ~= grenade.grenade
     )
   then
+    local parent = level.object_by_id( grenade.parent )
+    if
+      parent
+      and not ( parent:id() == npc:id() or check_is_enemy( npc, parent ) )
+    then
+      return false
+    end
     self.st.active_grenade = grenade
   end
 
   grenade = self.st.active_grenade
   if not grenade then return false end
   if not grenade.inertion then
-    grenade.inertion = time_global() + math.random( 10 ) * 1000
+    grenade.inertion = time_global() + math.random( 5 ) * 1000
     return false
   end
   if grenade.inertion > time_global() then return false end
@@ -732,15 +768,7 @@ function action_altcombat:not_ready_state()
   local npc = self.object
   if self.check_ready_state then
     npc:clear_animations()
-    local t = db.storage[ npc:id() ]
-    if t and t.state_mgr then
-      local anim = t.state_mgr.animstate:state()
-      if not_ready_states[ anim ] then return true end
-    end
-    if
-      npc:animation_count() > 0 or npc:body_state() ~= move.standing
-      or npc:is_body_turning()
-    then
+    if is_not_ready_state( npc ) then
       self.aiming = nil
       return true
     end
@@ -805,7 +833,6 @@ end
 
 function action_altcombat:_execute()
   -- action_base.execute( self )
-  self.st.ready_to_grenade = false
   local npc = self.object
 
   if xr_wounded.is_wounded( npc ) or not npc:alive() then
@@ -817,8 +844,12 @@ function action_altcombat:_execute()
   -- получим текущее оружие
   local bw = get_best_weapon( npc )
 
+  if self:throw_grenade()  then return end
   if self:evade_grenades() then return end
   local has_grenade = self.st.active_grenade
+  if has_grenade and has_grenade.inertion > time_global() then
+    has_grenade = nil
+  end
 
   local enemy = get_target( npc ) -- текущий враг
   local deadman
@@ -908,7 +939,7 @@ function action_altcombat:_execute()
 
   -- если враг не умеет стрелять (мутант)
   elseif not be_can_fire then
-    self.st.ready_to_grenade = true
+    self.st.grenadier.ready_to_grenade = true
     time_hide[ npc:id() ] = nil
     cur_situation = 4
     last_algorythm = random_choice(
@@ -933,7 +964,7 @@ function action_altcombat:_execute()
 
     -- и он НЕ видит нас - стреляем наступая
     else
-      self.st.ready_to_grenade = true
+      self.st.grenadier.ready_to_grenade = true
       time_hide[ npc:id() ] = nil
       cur_situation = 6
       if self.st.is_camper then
@@ -957,7 +988,7 @@ function action_altcombat:_execute()
 
   -- если НЕ видим врага и он НЕ видит нас - ищем врага
   else
-    self.st.ready_to_grenade = true
+    self.st.grenadier.ready_to_grenade = true
     if not time_hide[ npc:id() ] then
       time_hide[ npc:id() ] = time_global() + math.random( 7000, 15000 )
     end
@@ -1147,6 +1178,10 @@ function action_altcombat:evade_grenades()
     return false
   end
 
+  if danger.inertion > time_global() then
+    return false
+  end
+
   local ep = escape_point[ npc:id() ]
   if ( not ep ) or ep.id ~= id then
     reset_last_time_send( npc )
@@ -1194,13 +1229,41 @@ function action_altcombat:evade_grenades()
 end
 
 
+function action_altcombat:throw_grenade()
+  local npc = self.object
+  if self.st.grenadier_ready then
+    if self.grenadier then
+      self.grenadier:execute()
+    else
+      self.grenadier = xrs_grenade.action_kill_it_with_fire(
+        npc, self.st.grenadier
+      )
+      self.grenadier:initialize()
+    end
+    return true
+  end
+  self.st.grenadier.ready_to_grenade = false
+  if self.grenadier then
+    self.grenadier:finalize()
+    self.aiming    = nil
+    self.grenadier = nil
+    reset_last_time_send( npc )
+    return true
+  end
+  return false
+end
+
+
 function action_altcombat:finalize()
+  if self.grenadier then self.grenadier:finalize() end
   local npc = self.object
   self.aiming              = nil
   self.critically_wounded  = nil
   self.combat_sight        = nil
+  self.grenadier           = nil
   self.st.evaluated        = nil
-  self.st.ready_to_grenade = nil
+  self.st.grenadier_ready  = nil
+  self.st.grenadier.ready_to_grenade = nil
   self.start_firing_actor  = nil
   reset_everything( npc )
   cooldown[ npc:id() ] = time_global() + cooldown_time
@@ -1219,6 +1282,7 @@ function action_altcombat:finalize()
     npc:unregister_in_combat()
     npc:enable_clutched_hammer( false )
   end
+  state_mgr.set_state( npc, "idle", nil, nil, nil, { animation = true } )
   self.initialized = nil
 end
 
@@ -1993,7 +2057,7 @@ function set_sound_event( npc, event )
       if math.random() > sound_prob_hero then return end
     end
     t[ event ] = true
-    table.insert( t.events, event );
+    table.insert( t.events, event )
   end
 end
 
@@ -2782,6 +2846,7 @@ function add_to_binder( object, ini, scheme, section, storage )
   local property_wounded         = xr_evaluators_id.sidor_wounded_base
   local state_mgr_to_idle_combat = xr_actions_id.state_mgr + 1
   local state_mgr_to_idle_alife  = xr_actions_id.state_mgr + 2
+  local state_mgr_to_idle_off    = xr_actions_id.state_mgr + 3
 
   local lname = level.name()
   local comm  = object:character_community()
@@ -2818,7 +2883,6 @@ function add_to_binder( object, ini, scheme, section, storage )
   action:add_precondition(
     world_property( xr_evaluators_id.sidor_wounded_base, false )
   )
-  action:add_precondition( world_property( xrs_grenade.prop_fire, false ) )
   action:add_precondition(
     world_property( blowout_scheme.evid_outside, false )
   )
@@ -2846,15 +2910,15 @@ function add_to_binder( object, ini, scheme, section, storage )
     )
   end
 
-  action = manager:action( state_mgr_to_idle_alife )
-  action:add_precondition(
-    world_property( properties.alt_combat_enabled, false )
-  )
-
-  action = manager:action( state_mgr_to_idle_combat )
-  action:add_precondition(
-    world_property( properties.alt_combat_enabled, false )
-  )
+  for _, id in ipairs({
+    state_mgr.properties.state_mgr_idle_alife,
+    state_mgr.properties.state_mgr_idle_combat,
+  }) do
+    local action = manager:action( id )
+    action:add_precondition(
+      world_property( properties.alt_combat_enabled, false )
+    )
+  end
 end
 
 

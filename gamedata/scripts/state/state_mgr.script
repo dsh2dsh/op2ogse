@@ -67,25 +67,6 @@ function evaluator_state_mgr_idle:evaluate()
 end
 
 
-class "evaluator_state_mgr_idle_off" ( property_evaluator )
-function evaluator_state_mgr_idle_off:__init( name, state_manager )
-  super( nil, name )
-  self.st  = state_manager
-  self.mgr = nil
-end
-
-
-function evaluator_state_mgr_idle_off:evaluate()
-  return self.st.target_state == "idle"
-    and self.st.planner:evaluator( self.st.properties.movement  ):evaluate()
-    and self.st.planner:evaluator( self.st.properties.animstate ):evaluate()
-    and self.st.planner:evaluator( self.st.properties.animation ):evaluate()
-    and self.st.planner:evaluator( self.st.properties.bodystate ):evaluate()
-    and self.st.planner:evaluator( self.st.properties.weapon    ):evaluate()
-    and self.st.planner:evaluator( self.st.properties.mental    ):evaluate()
-end
-
-
 -- ћы уже в безраличном состо€нии idle или нет ()учет с проверкой alife
 class "evaluator_state_mgr_idle_alife" ( property_evaluator )
 function evaluator_state_mgr_idle_alife:__init( name, state_manager )
@@ -113,7 +94,7 @@ function evaluator_state_mgr_idle_alife:evaluate()
   end
 
   if self.st.combat == true then return false end
-  if xr_wounded and xr_wounded.is_wounded( self.object ) then
+  if xr_wounded.is_wounded( self.object ) then
     self.st.alife = false
     return false
   end
@@ -122,7 +103,7 @@ function evaluator_state_mgr_idle_alife:evaluate()
     if xr_meet.is_meet( self.object ) == false then
       local t = self.st.target_state == "idle"
         and (
-            not self.st.planner:evaluator( self.st.properties.locked ):evaluate()
+          not self.st.planner:evaluator( self.st.properties.locked ):evaluate()
         )
         and self.st.planner:evaluator( self.st.properties.movement  ):evaluate()
         and self.st.planner:evaluator( self.st.properties.animstate ):evaluate()
@@ -178,36 +159,6 @@ function act_state_mgr_to_idle:finalize()
   -- смотреть", чтобы при возврате было пон€тно что его нужно
   -- переинициализировать.
   self.st.current_object = -1
-  action_base.finalize( self )
-end
-
-
--- ѕереход в idle
-class "act_state_mgr_to_off" ( action_base )
-function act_state_mgr_to_off:__init( name, state_manager ) super( nil, name )
-  self.st = state_manager
-end
-
-
-function act_state_mgr_to_off:initialize()
-  action_base.initialize( self )
-  self.st:set_state( "idle", nil, nil, nil, { animation = true } )
-  xr_sound.set_sound( self.object, nil )
-  stop_play_sound( self.object )
-end
-
-
-function act_state_mgr_to_off:execute()
-  action_base.execute( self )
-end
-
-
-function act_state_mgr_to_off:finalize()
-  -- ѕо завершению перехода нужно записать -1 в указатель "на кого
-  -- смотреть", чтобы при возврате было пон€тно что его нужно
-  -- переинициализировать.
-  self.st.current_object = -1
-  self.object:movement_enabled( true )
   action_base.finalize( self )
 end
 
@@ -510,39 +461,44 @@ function state_manager:__init( npc )
   self.subanim           = 0
   self.need_reweapon     = false
 
-  self.sm = ogse_signals.get_mgr()
-  if npc:alive() then
-    self.subscribed = {
-      {
-        [ "signal" ] = "on_npc_update." .. self.npc:id(),
-        [ "fun"    ] = self.animstate.update,
-        [ "self"   ] = self.animstate,
-        [ "script_name" ] = "state_mgr_animstate.update",
-      },
-      {
-        [ "signal" ] = "on_npc_update." .. self.npc:id(),
-        [ "fun"    ] = self.animation.update,
-        [ "self"   ] = self.animation,
-        [ "script_name" ] = "state_mgr_animation.update",
-      },
-      {
-        [ "signal" ] = "on_npc_update." .. self.npc:id(),
-        [ "fun"    ] = self.update,
-        [ "self"   ] = self,
-        [ "script_name" ] = "state_mgr.update",
-      },
-    }
-    for _, s in ipairs( self.subscribed ) do
-      self.sm:subscribe( s )
-    end
+  self:subscribe()
+end
+
+
+function state_manager:subscribe()
+  if self.subscribed or not self.npc:alive() then return end
+  self.subscribed = {
+    {
+      [ "signal" ] = "on_npc_update." .. self.npc:id(),
+      [ "fun"    ] = self.animstate.update,
+      [ "self"   ] = self.animstate,
+      [ "script_name" ] = "state_mgr_animstate.update",
+    },
+    {
+      [ "signal" ] = "on_npc_update." .. self.npc:id(),
+      [ "fun"    ] = self.animation.update,
+      [ "self"   ] = self.animation,
+      [ "script_name" ] = "state_mgr_animation.update",
+    },
+    {
+      [ "signal" ] = "on_npc_update." .. self.npc:id(),
+      [ "fun"    ] = self.update,
+      [ "self"   ] = self,
+      [ "script_name" ] = "state_mgr.update",
+    },
+  }
+  local sm = ogse_signals.get_mgr()
+  for _, s in ipairs( self.subscribed ) do
+    sm:subscribe( s )
   end
 end
 
 
 function state_manager:unsubscribe()
   if self.subscribed then
+    local sm = ogse_signals.get_mgr()
     for _, s in ipairs( self.subscribed ) do
-      self.sm:unsubscribe( s )
+      sm:unsubscribe( s )
     end
     self.subscribed = nil
   end
@@ -675,18 +631,17 @@ function get_state( npc )
 end
 
 
+
+properties = {}
+properties.state_mgr_idle_combat = xr_evaluators_id.state_mgr + 1
+properties.state_mgr_idle_alife  = xr_evaluators_id.state_mgr + 2
+
 function bind_manager( object )
   local manager = object:motivation_action_manager()
-
-  local properties = {}
-  properties.state_mgr_idle_combat = xr_evaluators_id.state_mgr + 1
-  properties.state_mgr_idle_alife  = xr_evaluators_id.state_mgr + 2
-  properties.state_mgr_idle_off    = xr_evaluators_id.state_mgr + 3
 
   local operators = {}
   operators.state_mgr_to_idle_combat = xr_actions_id.state_mgr + 1
   operators.state_mgr_to_idle_alife  = xr_actions_id.state_mgr + 2
-  operators.state_mgr_to_idle_off    = xr_actions_id.state_mgr + 3
 
   local state_manager = state_mgr.state_manager( object )
   manager:add_evaluator(
@@ -697,10 +652,7 @@ function bind_manager( object )
     properties.state_mgr_idle_alife,
     evaluator_state_mgr_idle_alife( "state_mgr_idle_alife", state_manager )
   )
-  manager:add_evaluator(
-    properties.state_mgr_idle_off,
-    evaluator_state_mgr_idle_off( "state_mgr_idle_off", state_manager )
-  )
+
 
   local action = this.act_state_mgr_to_idle(
     "state_mgr_to_idle_combat", state_manager
@@ -712,16 +664,6 @@ function bind_manager( object )
     world_property( properties.state_mgr_idle_combat, true  )
   )
   manager:add_action( operators.state_mgr_to_idle_combat, action )
-
-  -- ƒобавим ещЄ один тип отключени€ этого безобрази€
-  action = this.act_state_mgr_to_off( "state_mgr_to_off", state_manager )
-  action:add_precondition(
-    world_property( properties.state_mgr_idle_off, false )
-  )
-  action:add_effect(
-    world_property( properties.state_mgr_idle_off, true  )
-  )
-  manager:add_action( operators.state_mgr_to_idle_off, action )
 
   action = this.act_state_mgr_to_idle(
     "state_mgr_to_idle_alife", state_manager
