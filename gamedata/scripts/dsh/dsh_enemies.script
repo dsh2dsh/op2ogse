@@ -1,9 +1,15 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
+  sm:subscribe({ signal = "on_monster_death",       fun = this.on_death })
   sm:subscribe({ signal = "on_monster_enemy_callback", fun = this.enemy_callback })
-  sm:subscribe({ signal = "on_npc_enemy_callback", fun = this.enemy_callback })
-  sm:subscribe({ signal = "on_spawn",              fun = this.on_spawn       })
+  sm:subscribe({ signal = "on_monster_hit",         fun = this.on_hit   })
+  sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_death })
+  sm:subscribe({ signal = "on_npc_death",           fun = this.on_death })
+  sm:subscribe({ signal = "on_npc_enemy_callback",  fun = this.enemy_callback })
+  sm:subscribe({ signal = "on_npc_hit",             fun = this.on_hit   })
+  sm:subscribe({ signal = "on_npc_net_destroy",     fun = this.on_death })
+  sm:subscribe({ signal = "on_spawn",               fun = this.on_spawn })
 end
 
 
@@ -84,30 +90,40 @@ function get_cache_rec( obj, enemy )
   local is_enemy
   local binder = obj:binded_object()
   local cached = binder[ "dsh_enemies.cached" ]
+  local fr
   if cached and cached[ enemy:id() ] then
     local res, ttl = unpack( cached[ enemy:id() ] )
     if ttl <= time_global() then
-      local fr
       res, fr = check_is_enemy_always( obj, enemy )
       add_cache_rec( obj, enemy, res, fr )
       add_cache_rec( enemy, obj, res, fr )
     end
     is_enemy = res
   else
-    local fr
     is_enemy, fr = check_is_enemy_always( obj, enemy )
     add_cache_rec( obj, enemy, is_enemy, fr )
     add_cache_rec( enemy, obj, is_enemy, fr )
   end
-  return is_enemy
+  return is_enemy, fr
 end
 
 
 function enemy_callback( obj, enemy, result )
   if db.actor and enemy:id() == db.actor:id() then return end
-  local is_enemy = get_cache_rec( obj, enemy )
+  local is_enemy, fr = get_cache_rec( obj, enemy )
   if is_enemy == false then
     table.insert( result, is_enemy )
+    if fr then
+      local binder = obj:binded_object()
+      local expire = binder[ "dsh_enemies.expire_cached" ]
+      if expire then
+        -- будим, что бы он пересчитал время для reschedule на следующем
+        -- апдейте
+        expire:weakup()
+      else
+        binder[ "dsh_enemies.expire_cached" ] = expire_cache( obj )
+      end
+    end
     return true
   end
 end
@@ -118,9 +134,6 @@ local far_freq =  5000          -- если слишком далеко
 local freq     = 60000          -- в остальных случаях
 
 function check_is_enemy_always( obj, enemy )
-  if not is_enemy_by_dist( obj, enemy ) then
-    return false, far_freq
-  end
   local ignories = {
     this.get_ignore_by_community,
     this.get_ignore_by_name_or_strn,
@@ -140,6 +153,9 @@ function check_is_enemy_always( obj, enemy )
         end
       end
     end
+  end
+  if not is_enemy_by_dist( obj, enemy ) then
+    return false, far_freq
   end
   return true, freq
 end
@@ -221,4 +237,94 @@ function get_smart_terrain( obj )
       return strn, begin_job
     end
   end
+end
+
+
+class "expire_cache"
+function expire_cache:__init( obj )
+  self.id   = obj:id()
+  self.name = obj:name()
+  self.sm   = ogse_signals.get_mgr()
+  self:subscribe()
+end
+
+function expire_cache:subscribe()
+  self.subscribed = self.sm:subscribe(
+    {
+      [ "signal" ] = "on_update",
+      [ "fun"    ] = self.update,
+      [ "self"   ] = self,
+      [ "script_name" ] = "dsh_enemies.expire_cache." .. self.name,
+    }
+  )
+end
+
+function expire_cache:unsubscribe( binder )
+  self.sm:unsubscribe( self.subscribed )
+  self.subscribed = nil
+  binder[ "dsh_enemies.expire_cached" ] = nil
+end
+
+function expire_cache:weakup()
+  self.sm:weakup( self.subscribed )
+end
+
+function expire_cache:update()
+  local obj = level.object_by_id( self.id )
+  ASSERT(
+    obj, "[%s]: object_by_id not found: id[%s] name[%s]",
+    script_name(), self.id, self.name
+  )
+  ASSERT(
+    obj:name() == self.name, "[%s]: different names: obj[%s] name[%s]",
+    script_name(), obj:name(), self.name
+  )
+  local binder = obj:binded_object()
+  local cached = binder[ "dsh_enemies.cached" ]
+  ASSERT( cached, "[%s]: cached not found: name[%s]", script_name(), self.name )
+  local min_ttl
+  for enemy_id, data in pairs( cached ) do
+    local is_enemy, ttl = unpack( data )
+    if ttl <= time_global() then
+      cached[ enemy_id ] = nil
+      if not is_enemy then
+        local enemy = level.object_by_id( enemy_id )
+        if enemy then
+          obj:enable_memory_object( enemy, true )
+        end
+      end
+    elseif min_ttl then
+      if ttl < min_ttl then min_ttl = ttl end
+    else
+      min_ttl = ttl
+    end
+  end
+  if min_ttl then
+    self.sm:reschedule( min_ttl - time_global() )
+  else
+    self:unsubscribe( binder )
+  end
+end
+
+
+function on_death( obj )
+  local binder = obj:binded_object()
+  local expire = binder[ "dsh_enemies.expire_cached" ]
+  if expire then
+    expire:unsubscribe( binder )
+  end
+end
+
+
+function on_hit( obj, amount, local_direction, who, bone_index )
+  if not who then return end
+  local binder = obj:binded_object()
+  local cached = binder[ "dsh_enemies.cached" ]
+  if cached and cached[ who:id() ] then
+    local is_enemy, ttl = unpack( cached[ who:id() ] )
+    if not is_enemy then
+      cached[ who:id() ] = nil
+    end
+  end
+  obj:enable_memory_object( who, true )
 end
