@@ -1,5 +1,11 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
+-- При получении хита удара такой величины, водка в инвентаре будет разбиваться
+-- c вероятностью 100%. Чем меньше полученный хит, тем меньше вероятность
+-- разбить водку.
+local BREAK_VODKA_HIT = 0.5
+
+-- Предметы и их кол-во, которые остаются в инвентаре, при сбросе рюкзака.
 local mandatory_items = {
   {
     [ "num"      ] = 20,
@@ -37,6 +43,7 @@ local mandatory_items = {
 
 
 function attach( sm )
+  sm:subscribe({ signal = "on_hit",        fun = this.on_hit      })
   sm:subscribe({ signal = "on_key_down",   fun = this.on_key_down })
   sm:subscribe({ signal = "on_mm_return_game", fun = this.on_mm_return_game })
   sm:subscribe({ signal = "on_take",       fun = this.on_take     })
@@ -367,4 +374,30 @@ function move_to_inventory( rukzak )
   end
   dsh_rukzak.save_rukzak( rukzak, {} )
   dsh_rukzak.spawn_item_in_inv( "treasure_item" )
+end
+
+
+function on_hit( obj, amount, local_direction, who, bone_index )
+  if not ( db.actor:alive() and amount > 0 ) then return end
+  local binder = obj:binded_object()
+  local data   = binder.last_hit_data
+  if not ( data and data.hit_type == hit.strike ) then return end
+  local t = {}
+  local r = amount / BREAK_VODKA_HIT
+  amk_utils.inventory_iterate_section(
+    "vodka",
+    function( obj )
+      if math.random() < r then
+        table.insert( t, obj )
+      end
+    end
+  )
+  if table.getn( t ) > 0 then
+    for _, obj in ipairs( t ) do
+      ogse.remove_item_from_inventory( obj )
+    end
+    local snd = sound_object( "material\\bottle\\collide\\bottle_break_1" )
+    snd:play( db.actor, 0, sound_object.s2d )
+    dsh.timeout( snd:length() * 1.1, dsh.say_blin )
+  end
 end
