@@ -4,6 +4,7 @@ ROOT=$1
 
 rsync -aFv --no-g --no-p --delete --filter=':- .gitignore' \
       ${ROOT}/bin \
+      ${ROOT}/game.graph \
       ${ROOT}/gamedata \
       ${ROOT}/gamemtl \
       ${ROOT}/particles \
