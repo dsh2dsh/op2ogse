@@ -63,24 +63,20 @@ function check_military_blockpost( obj )
 end
 
 
-function add_cache_rec( obj, enemy, is_enemy, freq )
+function add_cache_rec( obj, enemy, is_enemy, ttl )
   local binder = obj:binded_object()
   local cached = binder[ "dsh_enemies.cached" ]
   if cached then
     local t = cached[ enemy:id() ]
     if t then
       t[ 1 ] = is_enemy
-      t[ 2 ] = time_global() + freq + math.random( freq / 10 )
+      t[ 2 ] = ttl
     else
-      cached[ enemy:id() ] = {
-        is_enemy, time_global() + freq + math.random( freq / 10 )
-      }
+      cached[ enemy:id() ] = { is_enemy, ttl }
     end
   else
     binder[ "dsh_enemies.cached" ] = {
-      [ enemy:id() ] = {
-        is_enemy, time_global() + freq + math.random( freq / 10 )
-      }
+      [ enemy:id() ] = { is_enemy, ttl }
     }
   end
 end
@@ -95,21 +91,26 @@ function get_cache_rec( obj, enemy )
     local res, ttl = unpack( cached[ enemy:id() ] )
     if ttl <= time_global() then
       res, fr = check_is_enemy_always( obj, enemy )
-      add_cache_rec( obj, enemy, res, fr )
-      add_cache_rec( enemy, obj, res, fr )
+      ttl = time_global() + fr + math.random( fr / 10 )
+      add_cache_rec( obj, enemy, res, ttl )
+      if not enemy:is_actor() then
+        add_cache_rec( enemy, obj, res, ttl )
+      end
     end
     is_enemy = res
   else
     is_enemy, fr = check_is_enemy_always( obj, enemy )
-    add_cache_rec( obj, enemy, is_enemy, fr )
-    add_cache_rec( enemy, obj, is_enemy, fr )
+    local ttl = time_global() + fr + math.random( fr / 10 )
+    add_cache_rec( obj, enemy, is_enemy, ttl )
+    if not enemy:is_actor() then
+      add_cache_rec( enemy, obj, is_enemy, ttl )
+    end
   end
   return is_enemy, fr
 end
 
 
 function enemy_callback( obj, enemy, result )
-  if db.actor and enemy:id() == db.actor:id() then return end
   local is_enemy, fr = get_cache_rec( obj, enemy )
   if is_enemy == false then
     table.insert( result, is_enemy )
@@ -130,10 +131,11 @@ end
 
 
 -- как долго кешировать результат проверки
+local combat_ignore_freq = 1000 -- для combat_ignore_cond
 local far_freq =  5000          -- если слишком далеко
 local freq     = 60000          -- в остальных случаях
 
-function check_is_enemy_always( obj, enemy )
+function check_is_enemy_always( obj, enemy, recurse )
   local ignories = {
     this.get_ignore_by_community,
     this.get_ignore_by_name_or_strn,
@@ -145,7 +147,7 @@ function check_is_enemy_always( obj, enemy )
       for ignore_name, _ in pairs( ignore ) do
         if
           enemy:name() == ignore_name
-          or ( IsStalker( enemy ) and enemy:profile_name() == ignore_name )
+          or ( enemy:is_stalker() and enemy:profile_name() == ignore_name )
           or is_ignored_community( enemy, ignore_name )
           or ( strn and strn:name() == ignore_name )
         then
@@ -157,7 +159,24 @@ function check_is_enemy_always( obj, enemy )
   if not is_enemy_by_dist( obj, enemy ) then
     return false, far_freq
   end
+  if is_combat_ignore_cond( obj, enemy ) then
+    return false, combat_ignore_freq
+  end
+  if not ( recurse or enemy:is_actor() ) then
+    return check_is_enemy_always( enemy, obj, true )
+  end
   return true, freq
+end
+
+
+function is_combat_ignore_cond( obj, enemy )
+  if obj:is_stalker() then
+    local st = db.storage[ obj:id() ].combat_ignore
+    if st and st.action:enemy_callback( obj, enemy ) == false then
+      return true
+    end
+  end
+  return false
 end
 
 
@@ -166,6 +185,7 @@ end
 local too_far = 100
 
 function is_enemy_by_dist( obj, enemy )
+  if enemy:is_actor() then return true end
   if obj:is_stalker() or enemy:is_stalker() then
     local apos  = db.actor:position()
     local odist = apos:distance_to( obj:position() )
@@ -198,9 +218,9 @@ end
 
 function is_ignored_community( enemy, ignore_name )
   local keys = {}
-  if IsMonster( enemy ) then
+  if enemy:is_monster() then
     table.insert( keys, "monster" )
-  elseif IsStalker( enemy ) then
+  elseif enemy:is_stalker() then
     table.insert( keys, enemy:character_community() )
   end
   for _, k in ipairs( keys ) do
@@ -213,7 +233,7 @@ end
 function get_ignore_by_name_or_strn( obj )
   if ignore_enemies[ obj:name() ] then
     return ignore_enemies[ obj:name() ]
-  elseif IsStalker( obj ) and ignore_enemies[ obj:profile_name() ] then
+  elseif obj:is_stalker() and ignore_enemies[ obj:profile_name() ] then
     return ignore_enemies[ obj:profile_name() ]
   end
   local strn = get_smart_terrain( obj )
