@@ -856,7 +856,7 @@ sub pack {
 	my $self = shift;
 	my $template = shift;
 fail("template is not defined") if !(defined $template);
-fail("data is not defined") if !(defined @_);
+fail("data is not defined") if !scalar( @_ );
 fail("packet is not defined") unless defined $self;
 #	print "@_\n";
 	$self->{data} .= CORE::pack($template, @_);
