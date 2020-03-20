@@ -11,4 +11,5 @@ rsync -aFv --no-g --no-p --delete --filter=':- .gitignore' \
       ${ROOT}/ReadMe_dsh.txt \
       ${ROOT}/shaders_xr \
       ${ROOT}/shaders_xrlc_xr \
+      ${ROOT}/stkutils \
       ./
