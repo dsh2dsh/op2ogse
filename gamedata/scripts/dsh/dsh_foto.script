@@ -1,0 +1,206 @@
+-- -*- mode: lua; coding: windows-1251-dos -*-
+
+local use_wpn = {
+  [ "wpn_eagle_m2" ] = true,
+  [ "wpn_svd_foto" ] = true,
+}
+
+local targets = {
+  -- костер в ДН
+  [ "l01_escape" ] = {
+    {
+      [ "func"          ] = function() arhara_dialog.fotka_ubiysu_ok() end,
+      [ "inside"        ] = "mesto_fotografirovaniy_restrictor",
+      [ "pos_by_path"   ] = "esc_lager_camp_center",
+      [ "precondition"  ] = function()
+        return db.actor:has_info( "chern_foto_dialog_start" )
+          and db.actor:dont_has_info( "chern_foto_dialog_have" )
+      end,
+      [ "radius"        ] = 2,
+    },
+  },
+
+  -- контроллер Язва на Янтаре
+  [ "l08_yantar" ] = {
+    {
+      [ "func"           ] = function( obj )
+        if obj:name() == "yantar_kontroller_yazva" and obj:alive() then
+          arhara_dialog.fotka_kont_yazva_have()
+        end
+      end,
+      [ "get_target_obj" ] = true,
+      [ "precondition"   ] = function()
+        return db.actor:has_info( "yantar_kontroller_yazva_spawn" )
+          and db.actor:dont_has_info( "fotka_kont_yazva_have" )
+      end,
+    },
+  },
+
+  -- мозг в X-16
+  [ "l08u_brainlab" ] = {
+    {
+      [ "center_by_object" ] = "x16_physic_object",
+      [ "func"           ] = function() arhara_dialog.fotka_mozga_have() end,
+      [ "inside"         ] = "spawn_foto_monolitovets_restrictor",
+      [ "precondition"   ] = function()
+        return db.actor:has_info( "izomorf_dialog_start" )
+          and db.actor:dont_has_info( "fotka_mozga_have" )
+      end,
+    },
+  },
+
+  -- костер на АС
+  [ "l07_military" ] = {
+    {
+      [ "func"          ] = function() arhara_dialog.fotka_kisluy_ok() end,
+      [ "inside"        ] = "mil_mesto_osnov_fotografirov_restrictor",
+      [ "pos_by_path"   ] = "mil_freedom_camp_center1",
+      [ "precondition"  ] = function()
+        return db.actor:has_info( "father_after_deaf_done" )
+          and db.actor:dont_has_info( "as_ubiysa_have" )
+      end,
+      [ "radius"        ] = 2,
+    },
+  },
+
+  -- Монолит
+  [ "l12u_sarcofag" ] = {
+    {
+      [ "func"           ] = function( obj )
+        if obj:name() == "sar_monolith" then
+          arhara_dialog.spawn_fotografiy_mono()
+        end
+      end,
+      [ "get_target_obj" ] = true,
+      [ "inside"         ] = "foto_odnonogiy_proval_restrictor",
+      [ "precondition"   ] = function()
+        return db.actor:has_info( "odnonogiy_foto_start" )
+          and db.actor:dont_has_info( "spawn_bandosu_derevny" )
+      end,
+    },
+  },
+}
+
+
+function attach( sm )
+  if not targets[ level.name() ] then return end
+  sm:subscribe({ signal = "on_drop",         fun = this.remove_foto })
+  sm:subscribe({ signal = "on_item_to_ruck", fun = this.remove_foto })
+  sm:subscribe({ signal = "on_item_to_slot", fun = this.use_foto    })
+end
+
+
+function use_foto( obj )
+  if use_wpn[ obj:section() ] then
+    subscribe()
+  end
+end
+
+
+function remove_foto( obj )
+  if use_wpn[ obj:section() ] then
+    unsubscribe()
+  end
+end
+
+
+local signals
+function subscribe()
+  if not signals then
+    signals = {
+      { signal = "on_actor_weapon_fire", fun = this.on_actor_weapon_fire },
+    }
+    local sm = ogse_signals.get_mgr()
+    for _, s in ipairs( signals ) do
+      sm:subscribe( s )
+    end
+  end
+end
+
+function unsubscribe()
+  if signals then
+    local sm = ogse_signals.get_mgr()
+    for _, s in ipairs( signals ) do
+      sm:unsubscribe( s )
+    end
+    signals = nil
+  end
+end
+
+
+function on_actor_weapon_fire( wpn )
+  if not use_wpn[ wpn:section() ] then return end
+  for _, t in ipairs( targets[ level.name() ] ) do
+    if precondition( t ) and is_inside( t ) then
+      if t.get_target_obj then
+        local obj = level.get_target_obj()
+        if obj then
+          t.func( obj )
+        end
+      else
+        local pos = get_position( t )
+        local r   = get_radius( t )
+        if dsh.is_actor_looking_to_pos( pos, r ) then
+          t.func()
+        end
+      end
+    end
+  end
+end
+
+
+function is_inside( t )
+  if not t.inside then return true end
+  local sobj = alife():object( t.inside )
+  if sobj then
+    local obj = level.object_by_id( sobj.id )
+    if obj then
+      return obj:inside( db.actor:position() )
+    end
+  end
+  return false
+end
+
+
+function precondition( t )
+  if t.precondition then
+    return t.precondition()
+  end
+  return true
+end
+
+
+function get_position( t )
+  if t.pos_by_path then
+    local patrol = patrol( t.pos_by_path )
+    return patrol:point( 0 )
+  elseif t.pos_by_object then
+    local sobj = alife():object( t.pos_by_object )
+    if sobj then
+      return sobj.position
+    end
+  elseif t.center_by_object then
+    local sobj = alife():object( t.center_by_object )
+    if sobj then
+      local obj = level.object_by_id( sobj.id )
+      if obj then
+        return obj:center()
+      end
+    end
+  end
+end
+
+
+function get_radius( t )
+  if t.radius then
+    return t.radius
+  elseif t.center_by_object then
+    local sobj = alife():object( t.center_by_object )
+    if sobj then
+      local obj = level.object_by_id( sobj.id )
+      if obj then
+        return obj:radius()
+      end
+    end
+  end
+end
