@@ -14,6 +14,10 @@
 local npc_reaction_min =  500
 local npc_reaction_max = 1000
 
+-- время замечания гранаты
+local grenade_inertion_min =  500
+local grenade_inertion_max = 3000
+
 -- Параметры адаптивной дисперсии при стрельбе по актору. Дисперсия
 -- будет меняться с коэффициентом от max до min в течении time.
 local firing_actor_disp_max  = 3
@@ -439,6 +443,12 @@ function is_danger_corpse( npc, enemy )
 end
 
 
+function evaluator_check_altcombat:get_grenade_inertion()
+  return time_global()
+    + math.random( grenade_inertion_min, grenade_inertion_max )
+end
+
+
 function evaluator_check_altcombat:check_for_grenades()
   local npc = self.object
 
@@ -447,7 +457,7 @@ function evaluator_check_altcombat:check_for_grenades()
     local obj   = level.object_by_id( check.grenade )
     if
       check.timeout < time_global()
-      or not ( obj and obj:is_grenade() and not obj:is_exploded() )
+      or not ( obj and obj:is_grenade() and not obj:is_ready_to_explode() )
     then
       grenka_already_blow[ check.name ] = time_global()
     end
@@ -462,8 +472,9 @@ function evaluator_check_altcombat:check_for_grenades()
   then
     local parent = level.object_by_id( grenade.parent )
     if
-      parent
-      and not ( parent:id() == npc:id() or check_is_enemy( npc, parent ) )
+      parent and (
+        parent:id() == npc:id() or not check_is_enemy( npc, parent )
+      )
     then
       return false
     end
@@ -473,7 +484,7 @@ function evaluator_check_altcombat:check_for_grenades()
   grenade = self.st.active_grenade
   if not grenade then return false end
   if not grenade.inertion then
-    grenade.inertion = time_global() + math.random( 5 ) * 1000
+    grenade.inertion = self:get_grenade_inertion()
     return false
   end
   if grenade.inertion > time_global() then return false end
@@ -502,7 +513,7 @@ function evaluator_check_altcombat:get_nearest_grenade()
       if
         bd_object
         and level.object_by_id( bd_object:id() )
-        and ( bd_object:is_grenade() and not bd_object:is_exploded() )
+        and ( bd_object:is_grenade() and not bd_object:is_ready_to_explode() )
         and (
           ( not grenka_already_blow[ bd_object:name() ] )
           or time_global() - grenka_already_blow[ bd_object:name() ] > 5000
@@ -846,8 +857,8 @@ function action_altcombat:_execute()
   -- получим текущее оружие
   local bw = get_best_weapon( npc )
 
-  if self:throw_grenade()  then return end
-  if self:evade_grenades() then return end
+  if self:throw_grenade() then return end
+  if self:evade_grenades( bw ) then return end
 
   local enemy = get_target( npc ) -- текущий враг
   local deadman
@@ -1185,7 +1196,7 @@ end
 
 local grenka_already_shout = {}
 
-function action_altcombat:evade_grenades()
+function action_altcombat:evade_grenades( bw )
   if not self.st.active_grenade then return false end
   local npc        = self.object
   local danger     = self.st.active_grenade
@@ -1195,8 +1206,8 @@ function action_altcombat:evade_grenades()
   local blown = grenka_already_blow[ danger.name ]
   if
     blown or not (
-      danger_obj and alife():object( id )
-      and danger_obj:is_grenade() and not danger_obj:is_exploded()
+      danger_obj
+      and danger_obj:is_grenade() and not danger_obj:is_ready_to_explode()
     )
   then
     self.st.active_grenade = nil
@@ -1254,6 +1265,7 @@ function action_altcombat:evade_grenades()
     npc:set_mental_state( anim.danger )
     npc:set_body_state( move.standing )
   end
+  self:set_weapons_idle( bw )
 
   return true
 end
