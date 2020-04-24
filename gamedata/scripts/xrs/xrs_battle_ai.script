@@ -37,7 +37,7 @@ local memory_timeout            = 80000
 -- сколько помнить о последнем основном враге (нужно для
 -- предотвращения выхода из боя слишком рано), для неписей умножается
 -- на 2
-local remember_enemy            = 10000
+local remember_enemy            = 1000
 -- С какого апдейта схема начинает работать. Нельзя чтобы схема
 -- стартовала включенной сразу же, иначе будут глюки на переключении
 -- схем и выборе оружия
@@ -602,29 +602,26 @@ function evaluator_check_altcombat:reprioritize_targets()
       if primary_target[ npc:id() ] == k then
         set_primary_target( npc, nil )
       end
-      if not v.npc then         -- если она монстр
-        if v.range < max_invisible_range_mon then
-          v.weight = v.range * 2
-        else
-          v.weight = 1000
-        end
-      else                                        -- а если непись
-        if v.range < max_invisible_range_npc then -- если в радиусе "слуха"
-          v.weight = v.range * 3
-        elseif v.range < distant_combat_distance then
-          -- если в радиусе дальнего боя
-          if
-            v.last_time_seen
-            and v.last_time_seen + memory_timeout > time_global()
-          then
-            -- если видели её не менее минуты назад
-            v.weight = v.range * 5
-          else
-            v.weight = 1000
-          end
-        else
-          v.weight = 1000
-        end
+      local max_invis_range, max_invis_k
+      if v.npc then
+        max_invis_k = 3
+        max_invis_r = max_invisible_range_npc
+      else
+        max_invis_k = 2
+        max_invis_r = max_invisible_range_mon
+      end
+      if v.visible then
+        v.weight = v.range
+      elseif v.range < max_invis_r then
+        v.weight = v.range * max_invis_k
+      elseif
+          v.last_time_seen
+          and v.last_time_seen + memory_timeout > time_global()
+      then
+        -- если видели её не менее минуты назад
+        v.weight = v.range * 5
+      else
+        v.weight = 1000
       end
     end
     if v.engine then
@@ -1032,7 +1029,7 @@ function action_altcombat:process_situation( be, bw )
     end
 
   -- если видим врага
-  elseif npc:see_right_now( be ) then
+  elseif npc:see( be ) then
     -- и он видит нас - стреляем, ищем укрытие
     if be:see( npc ) then
       time_hide[ npc:id() ] = nil
@@ -1322,6 +1319,7 @@ function action_altcombat:finalize()
   if npc:alive() then
     npc:unregister_in_combat()
     npc:enable_clutched_hammer( false )
+    npc:set_mental_state( anim.free )
     self:restore_wpn_ammo()
   end
   npc:set_fastest_scheduler( false )
@@ -1781,9 +1779,10 @@ function register_as_target( npc, enemy, force_vis )
       range  = dist,
       vis    = ( force_vis or is_enemy_see( enemy, npc ) ),
       vis_lock = force_vis,
+      visible  = npc:see( enemy ),
       weight = 1000,
     }
-    if enemy_record.npc and ( enemy_record.vis or npc:see( enemy ) ) then
+    if enemy_record.npc and ( enemy_record.vis or enemy_record.visible ) then
       enemy_record.last_time_seen = time_global()
       enemy_record.vertex         = enemy:level_vertex_id()
     end
@@ -1886,6 +1885,7 @@ function refresh_targets( npc )
       check_target and check_target:alive()
       and not xr_wounded.is_wounded( check_target )
     then
+      v.visible = npc:see( check_target )
       if not v.vis_lock then
         v.vis = is_enemy_see( check_target, npc )
       end
@@ -1893,7 +1893,7 @@ function refresh_targets( npc )
       v.range = dist
       if not v.vis then
         if not v.npc then
-          if dist > max_range then
+          if dist > max_range and not v.visible then
             if v.engine then
               npc:remove_memory_object( check_target )
             else
@@ -1902,17 +1902,18 @@ function refresh_targets( npc )
           end
         else
           if check_is_enemy( npc, check_target, v.engine ) then
-            if dist > max_range and not check_target:is_actor() then
+            if
+              dist > max_range
+              and not ( v.visible or check_target:is_actor() )
+            then
               if v.engine then
                 npc:remove_memory_object( check_target )
               else
                 remove_from_targets( npc, k )
               end
-            else
-              if npc:see( check_target ) or st.is_camper then
-                v.last_time_seen = time_global()
-                v.vertex         = check_target:level_vertex_id()
-              end
+            elseif v.visible or st.is_camper then
+              v.last_time_seen = time_global()
+              v.vertex         = check_target:level_vertex_id()
             end
           else
             if v.engine then
@@ -1996,10 +1997,7 @@ end
 function have_fresh_deadman( npc )
   local t = last_target[ npc:id() ]
   if t and t.time > time_global() then
-    local obj = level.object_by_id( t.id )
-    if obj and obj:alive() then
-      return t.id
-    end
+    return t.id
   end
 end
 
@@ -2504,7 +2502,7 @@ function action_altcombat:add_deviation( position, weapon, distance, enemy )
         max = 0
       end
       self.firing_actor = true
-      if self.start_firing_actor and npc:see_right_now( enemy ) then
+      if self.start_firing_actor and npc:see( enemy ) then
         local time = time_global() - self.start_firing_actor
         local k    = 1 - ( time / firing_actor_disp_time )
         if k > 0 then
