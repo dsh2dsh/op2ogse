@@ -248,6 +248,7 @@ use constant mflags => (
 	{name => 'MF_ACTOR_OBSTACLE', 		value	=> 0x1000},
 	{name => 'MF_BULLET_NO_RICOSHET', 	value	=> 0x2000},
 	{name => 'MF_PICKABLE', 		value	=> 0x4000},
+	{name => 'MF_OUTDOOR', 			value	=> 0x8000},
 	
 	{name => 'MF_INJURIOUS', 			value	=> 0x10000000},
 	{name => 'MF_SHOOTABLE', 			value	=> 0x20000000},
