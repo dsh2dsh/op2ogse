@@ -46,6 +46,7 @@ float4 calc_night_vision_effect(float2 tc0, float4 color, float4 NV_COLOR, float
     // vignette
     #ifdef NV_VIGNETTE
 	color *= VIGNETTE_RADIUS-(distance(tc0.xy,float2( 0.5f, 0.5f)));
+    color *= smoothstep( 0.55f, 0.4f, distance( tc0.xy, float2( 0.5f, 0.5f ) ) );
    	#endif
 	
    	return color; 
