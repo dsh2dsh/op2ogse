@@ -40,10 +40,11 @@ function get_blowout_step()
 end
 
 
-class "evaluator_blowout" (property_evaluator)
-function evaluator_blowout:__init(st) super(nil,"evaluator_blowout")
-  self.st=st
+class "evaluator_blowout" ( property_evaluator )
+function evaluator_blowout:__init( st ) super( nil, "evaluator_blowout" )
+  self.st = st
   self.prevblow=0
+  self.check_any_hide = true
 end
 
 
@@ -67,7 +68,7 @@ function evaluator_blowout:evaluate()
   elseif blowout == 3 then
     if ( not self.hittime ) or self.hittime < time_global() then
       self.hittime = time_global() + 1000
-      if amk_mod.on_blowout_hit( npc, self.st.hide ) then
+      if amk_mod.on_blowout_hit( npc ) then
         self.st.need_run = true
         if npc:alive() then
           xr_wounded.hit_callback( npc:id() )
@@ -78,7 +79,36 @@ function evaluator_blowout:evaluate()
   if self.st.washitat and self.st.washitat > time_global() then
     return false
   end
-  return ( blowout >= 2 and ( not self.st.nohide ) )
+  if blowout >= 2 and ( not self.st.nohide ) then
+    if self:is_in_any_hide() then
+      return false
+    end
+    return true
+  end
+  self:reset_any_hide_check()
+  return false
+end
+
+
+function evaluator_blowout:is_in_any_hide()
+  local npc = self.object
+  if self.check_any_hide then
+    if self.in_hide_lvid and self.in_hide_lvid == npc:level_vertex_id() then
+      return true
+    else
+      if not amk_anoms.check_hideouts( npc:position() ) then
+        self.in_hide_lvid = npc:level_vertex_id()
+        return true
+      end
+    end
+    self.check_any_hide = nil
+  end
+  return false
+end
+
+function evaluator_blowout:reset_any_hide_check()
+  self.check_any_hide = true
+  self.in_hide_lvid   = nil
 end
 
 
@@ -94,27 +124,56 @@ function evaluator_monolith_blowout:evaluate()
 end
 
 
-class "evaluator_preblowout" (property_evaluator)
-function evaluator_preblowout:__init(st) super(nil,"evaluator_preblowout")
-  self.st=st
+class "evaluator_preblowout" ( property_evaluator )
+function evaluator_preblowout:__init( st ) super( nil, "evaluator_preblowout" )
+  self.st = st
+  self.check_any_hide = true
 end
 
 function evaluator_preblowout:evaluate()
   if amk_mod.blowout_type()>0 then return false end
   local npc=self.object
   local blowout=get_blowout_step()
-  return blowout==1
+  if blowout == 1 then
+    if self:is_in_any_hide() then
+      return false
+    end
+    return true
+  end
+  self:reset_any_hide_check()
+  return false
 end
 
 
-class "evaluator_outside" (property_evaluator)
-function evaluator_outside:__init(st) super(nil,"evaluator_outside")
-  self.st=st
+function evaluator_preblowout:is_in_any_hide()
+  local npc = self.object
+  if self.check_any_hide then
+    if self.in_hide_lvid and self.in_hide_lvid == npc:level_vertex_id() then
+      return true
+    else
+      if not amk_anoms.check_hideouts( npc:position() ) then
+        self.in_hide_lvid = npc:level_vertex_id()
+        return true
+      end
+    end
+    self.check_any_hide = nil
+  end
+  return false
+end
+
+function evaluator_preblowout:reset_any_hide_check()
+  self.check_any_hide = true
+  self.in_hide_lvid   = nil
+end
+
+
+class "evaluator_outside" ( property_evaluator )
+function evaluator_outside:__init( st ) super( nil, "evaluator_outside" )
+  self.st = st
   self.prev=false
   self.uptime=nil
+  self.check_any_hide = true
 end
-
-local ret_points={}
 
 function evaluator_outside:evaluate()
   local npc=self.object
@@ -134,17 +193,25 @@ function evaluator_outside:evaluate()
       return false
     end
 
+    if self:is_in_any_hide() then
+      return false
+    end
+
     local inhide=amk_mod.check_npc_in_hideout(npc,self.st.hide)
     local retpt=false
-    for i,o in ipairs(ret_points) do
-      if o.pos:distance_to(npc:position())<0.7 then
-        retpt=true
-        break
+    if self.ret_points then
+      for lvid, _ in pairs( self.ret_points ) do
+        if npc:level_vertex_id() == lvid then
+          retpt = true
+          break
+        end
       end
+    else
+      self.ret_points = {}
     end
     if self.prev and (not inhide) and (not retpt) then
     -- Непись пытается вылезти из укрытия. Поставим точку возвращения
-      table.insert(ret_points,{pos=npc:position()})
+      self.ret_points[ npc:level_vertex_id() ] = true
     end
     self.prev=inhide
     -- Непись считается вылезшим из укрытия если он снаружи или рядом с точкой возврата
@@ -170,9 +237,33 @@ function evaluator_outside:evaluate()
     end
     return (not inhide)
   else
+    self:reset_any_hide_check()
     self.st.hidefound=nil
+    self.ret_points = nil
     return false
   end
+end
+
+
+function evaluator_outside:is_in_any_hide()
+  local npc = self.object
+  if self.check_any_hide then
+    if self.in_hide_lvid and self.in_hide_lvid == npc:level_vertex_id() then
+      return true
+    else
+      if not amk_anoms.check_hideouts( npc:position() ) then
+        self.in_hide_lvid = npc:level_vertex_id()
+        return true
+      end
+    end
+    self.check_any_hide = nil
+  end
+  return false
+end
+
+function evaluator_outside:reset_any_hide_check()
+  self.check_any_hide = true
+  self.in_hide_lvid   = nil
 end
 
 
