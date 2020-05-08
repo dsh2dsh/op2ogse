@@ -200,11 +200,15 @@ local weather_transitions = {
   [ "marsh"   ] = weather_transitions_marsh,
 }
 
+local DEBUG_MODE = false;
+
 
 function attach( sm ) -- для менеджера сигналов
   sm:subscribe({ signal = "on_init",        fun = this.on_actor_init   })
-  -- sm:subscribe({ signal = "on_update", fun = this.on_update })
-  -- sm:subscribe({ signal = "on_key_down", fun = this.on_key_down })
+  if DEBUG_MODE then
+    sm:subscribe({ signal = "on_update", fun = this.on_update })
+    sm:subscribe({ signal = "on_key_down", fun = this.on_key_down })
+  end
   sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
   sm:subscribe({ signal = "on_save",         fun = this.on_save         })
 end
@@ -1648,6 +1652,7 @@ function WeatherManager:update_script_weather()
 
   if t.surge_frame then
     if not self.is_wfx_playing then
+      self.is_wfx_playing = true
       if self.forced then
         -- если загружен сейв с уже начавшемся выбросом, то перед
         -- запуском выброса нужно установить погоду, которая будет
@@ -1658,7 +1663,6 @@ function WeatherManager:update_script_weather()
         local p   = afc:get_p_after_surge()
         local ltx = self:get_final_weather_ltx( afc.cycles[ p.cycle ].ltx )
         level.set_weather( ltx, true ) -- установили Current[ 0 ] и Current[ 1 ]
-        self.engine_last_shift = level.get_weather_last_shift()
       end
       if t.data.time_orig > 0 then
         local dt = t.data.time_orig + game.get_game_time():diffSec( t.time )
@@ -1671,31 +1675,18 @@ function WeatherManager:update_script_weather()
       else
         level.set_weather_fx( weather_ltx )
       end
-      self.is_wfx_playing = true
     end
 
-  else
-    if self.forced then
-      local ltx = self:get_final_weather_ltx( weather_ltx )
-      level.set_weather( ltx, true ) -- установили Current[ 0 ] и Current[ 1 ]
-      local t2  = afc:get_p2()
-      ltx = self:get_final_weather_ltx( afc.cycles[ t2.cycle ].ltx )
-      if ltx ~= level.get_weather() and not t2.surge_frame then
-        level.set_weather_next( ltx ) -- установили Current[ 1 ]
-      end
+  elseif self.forced then
+    local ltx = self:get_final_weather_ltx( weather_ltx )
+    level.set_weather( ltx, true ) -- установили Current[ 0 ] и Current[ 1 ]
+    local t2  = afc:get_p2()
+    ltx = self:get_final_weather_ltx( afc.cycles[ t2.cycle ].ltx )
+    if ltx ~= level.get_weather() and not t2.surge_frame then
+      level.set_weather_next( ltx ) -- установили Current[ 1 ]
     end
-
     -- из какой погоды будет браться следующий Current[ 1 ]
-    if
-      self.forced or level.get_weather_last_shift() > self.engine_last_shift
-    then
-      local t3  = afc:get_p3()
-      local ltx = self:get_final_weather_ltx( afc.cycles[ t3.cycle ].ltx )
-      if ltx ~= level.get_weather() and not t3.surge_frame then
-        level.set_weather( ltx )
-      end
-      self.engine_last_shift = level.get_weather_last_shift()
-    end
+    self:set_next_weather()
   end
 
   if self.is_wfx_playing and not t.surge_frame then
@@ -1704,12 +1695,34 @@ function WeatherManager:update_script_weather()
 end
 
 
+function WeatherManager:set_next_weather()
+  local afc = self.active_forecast
+  local t3  = afc:get_p3()
+  local ltx = self:get_final_weather_ltx( afc.cycles[ t3.cycle ].ltx )
+  if ltx ~= level.get_weather() and not t3.surge_frame then
+    level.set_weather( ltx )
+  end
+end
+
+
+function WeatherManager:on_engine_weather_change()
+  if self.forced or self.is_wfx_playing or not self.script_weather_enabled then
+    return
+  end
+  self:set_next_weather()
+end
+
+
 function WeatherManager:on_update()
   if ogse_sleep_mgr.is_sleep_active() then return end
   self:update()
-  local dt = self.next_update:diffSec( game.get_game_time() ) / normal_time_factor
+  local dt = self.next_update:diffSec( game.get_game_time() ) / level.get_time_factor()
   if dt > 1 then
-    ogse_signals.get_mgr():reschedule( 1000 )
+    if DEBUG_MODE then
+      ogse_signals.get_mgr():reschedule( 1000 )
+    else
+      ogse_signals.get_mgr():reschedule( math.floor( dt * 1000 ) )
+    end
   end
 end
 
@@ -1773,4 +1786,11 @@ function WeatherManager:get_moon_phase()
   end
   -- return math.floor( math.mod( day, 28 ) / 3.5 )
   return math.mod( day, 8 )
+end
+
+
+function on_engine_weather_change()
+  if wm then
+    wm:on_engine_weather_change()
+  end
 end
