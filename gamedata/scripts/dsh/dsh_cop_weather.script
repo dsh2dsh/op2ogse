@@ -200,7 +200,7 @@ local weather_transitions = {
   [ "marsh"   ] = weather_transitions_marsh,
 }
 
-local DEBUG_MODE = false;
+local DEBUG_MODE = false
 
 
 function attach( sm ) -- для менеджера сигналов
@@ -361,7 +361,7 @@ function read_cycle_points( cycle_ltx, points_table, is_effect )
       local h, m, s = time_str:match( "^(%d%d):(%d%d):(%d%d)$" )
       ASSERT( ( h and m and s ), "" )
       local t = {}
-      t.time      = h * 3600 + m * 60 + s -- время в секундах
+      t.time = h * 3600 + m * 60 + s -- время в секундах
       t.time_orig = t.time -- сохраним исходное время на всякий случай
       t.section   = time_str
       table.insert( points_table, t )
@@ -377,6 +377,14 @@ function read_cycle_points( cycle_ltx, points_table, is_effect )
   -- и соотв. индексы
   for i, t in ipairs( points_table ) do
     t.index = i
+    -- первый фрейм выброса удлиняем на 5 реальных секунд, которые
+    -- движок прибавляет, для плавного перехода от нормальной погоды
+    -- к выбросу. Т.е. смещаем на эти 5 секунд время начала всех остальных
+    -- фреймов.
+    if i > 1 and is_effect then
+        t.time      = t.time + 5 * level.get_time_factor()
+        t.time_orig = t.time
+    end
   end
   return ini
 end
@@ -1009,7 +1017,7 @@ function StaticForecast:insert_surge_sequence()
     script_name(), self.static_weather_name
   )
   local h = get_day_time_sec( self.forecast[ 1 ].time ) / 3600
-  local is_day = ( h >= 5 and h <= 20 )
+  local is_day = ( h >= 5 and h <= 21 )
   local cycle  = is_day and "fx_blowout_day" or "fx_blowout_night"
   local surge_points = {}
   local ini = read_cycle_points( cycle, surge_points, true )
@@ -1022,7 +1030,6 @@ function StaticForecast:insert_surge_sequence()
   local insert_pos = 2
   for i, point_data in ipairs( surge_points ) do
     -- формируем точку фрейма как время начала суток + время фрейма
-    -- поскольку выброс рассчитывался под таймфактор 6, надо это учесть
     local point_time = game.CTime( self.forecast[ 1 ].time )
       + seconds2ctime( 3 * 60 + point_data.time )
     local point = {
@@ -1598,7 +1605,7 @@ end
 function WeatherManager:update_forecasts_and_surge()
   local current_time = game.get_game_time()
   -- ещё рано
-  if self.next_update and current_time <= self.next_update then return end
+  if self.next_update and current_time < self.next_update then return end
 
   ogse_surge_mgr.surge_log( "WeatherManager:update - new point" )
   -- обновляем прогноз независимо от того, используем ли эту погоду
@@ -1628,9 +1635,7 @@ function WeatherManager:update_forecasts_and_surge()
       self:update_forecast()
     end
   end
-  local t = game.CTime()
-  t:setHMSms( 0, 0, normal_time_factor, 0 )
-  self.next_update = afc:get_p2().time + t
+  self.next_update = afc:get_p2().time
 end
 
 
@@ -1705,10 +1710,11 @@ function WeatherManager:set_next_weather()
 end
 
 
-function WeatherManager:on_engine_weather_change()
-  if self.forced or self.is_wfx_playing or not self.script_weather_enabled then
-    return
-  end
+function WeatherManager:on_engine_weather_change( sect )
+  if self.forced or ogse_sleep_mgr.is_sleep_active() then return end
+  self:update()
+  self:weakup_update()
+  if self.is_wfx_playing or not self.script_weather_enabled then return end
   self:set_next_weather()
 end
 
@@ -1716,13 +1722,10 @@ end
 function WeatherManager:on_update()
   if ogse_sleep_mgr.is_sleep_active() then return end
   self:update()
-  local dt = self.next_update:diffSec( game.get_game_time() ) / level.get_time_factor()
-  if dt > 1 then
-    if DEBUG_MODE then
-      ogse_signals.get_mgr():reschedule( 1000 )
-    else
-      ogse_signals.get_mgr():reschedule( math.floor( dt * 1000 ) )
-    end
+  local dt    = self.next_update:diffSec( game.get_game_time() )
+  local sleep = math.floor( dt / level.get_time_factor() * 1000 )
+  if sleep > 0 then
+    ogse_signals.get_mgr():reschedule( sleep )
   end
 end
 
@@ -1746,9 +1749,15 @@ function WeatherManager:get_final_weather_ltx( ltx )
 end
 
 
+function WeatherManager:weakup_update()
+  ogse_signals.get_mgr():weakup( self.upd_ev_desc )
+end
+
+
 function WeatherManager:force_update()
   self.forced = true
   self:update()
+  self:weakup_update()
 end
 
 
@@ -1789,8 +1798,8 @@ function WeatherManager:get_moon_phase()
 end
 
 
-function on_engine_weather_change()
+function on_engine_weather_change( sect )
   if wm then
-    wm:on_engine_weather_change()
+    wm:on_engine_weather_change( sect )
   end
 end
