@@ -950,7 +950,10 @@ function action_altcombat:_execute()
     end,
     [ "find_cover_6"  ] = function() return self:find_cover( be, 6 ) end,
     [ "find_cover_7"  ] = function() return self:find_cover( be, 7 ) end,
+    [ "find_cover_8"  ] = function() return self:find_cover( be, 7 ) end,
+    [ "find_cover_9"  ] = function() return self:find_cover( be, 7 ) end,
     [ "grenade"       ] = function() return 0 end,
+    [ "keep"          ] = function() return 0 end,
   }
   ASSERT(
     last_algorythm and actions[ last_algorythm ],
@@ -1009,7 +1012,7 @@ function action_altcombat:process_situation( be, bw )
   elseif distance < 5 then
     time_hide[ npc:id() ] = nil
     cur_situation  = 3
-    last_algorythm = "find_cover_6"
+    last_algorythm = "find_cover_9"
     self:set_transfer_and_combat( be, bw, npc_rank )
     choose_idle_scheme( npc, "defence" )
 
@@ -1017,23 +1020,39 @@ function action_altcombat:process_situation( be, bw )
   elseif not be_can_fire( be ) then
     self.st.grenadier.ready_to_grenade = true
     time_hide[ npc:id() ] = nil
-    cur_situation = 4
-    last_algorythm = random_choice(
-      "find_cover_1", "find_cover_3", "find_cover_4"
-    )
-    self:set_transfer_and_combat( be, bw, npc_rank )
-    if be:see( npc ) then
-      choose_idle_scheme( npc, "attack" )
+    if npc:see( be ) then
+      -- если видим врага
+      if distance < close_combat_distance or be:see( npc ) then
+        cur_situation  = 4
+        last_algorythm = "find_cover_9"
+      else
+        cur_situation  = 5
+        last_algorythm = "keep"
+      end
+      if be:see( npc ) then
+        choose_idle_scheme( npc, "attack" )
+      else
+        choose_idle_scheme( npc, "attack_notsee" )
+      end
+    elseif be:see( npc ) then
+      -- если НЕ видим врага и он видит нас
+      cur_situation  = 6
+      last_algorythm = "find_cover_9"
+      choose_idle_scheme( npc, "defence" )
     else
-      choose_idle_scheme( npc, "attack_notsee" )
+      -- если НЕ видим врага и он НЕ видит нас
+      cur_situation  = 7
+      last_algorythm = "find_cover_8"
+      choose_idle_scheme( npc, "lost" )
     end
+    self:set_transfer_and_combat( be, bw, npc_rank )
 
   -- если видим врага
   elseif npc:see( be ) then
     -- и он видит нас - стреляем, ищем укрытие
     if be:see( npc ) then
       time_hide[ npc:id() ] = nil
-      cur_situation  = 5
+      cur_situation  = 8
       last_algorythm = "find_cover_2"
       self:set_transfer_and_combat( be, bw, npc_rank )
       choose_idle_scheme( npc, "attack" )
@@ -1042,7 +1061,7 @@ function action_altcombat:process_situation( be, bw )
     else
       self.st.grenadier.ready_to_grenade = true
       time_hide[ npc:id() ] = nil
-      cur_situation = 6
+      cur_situation = 9
       if self.st.is_camper then
         last_algorythm = "find_cover_5"
       else
@@ -1057,7 +1076,7 @@ function action_altcombat:process_situation( be, bw )
   -- если НЕ видим врага и он видит нас - убегаем, ищем укрытие
   elseif be:see( npc ) then
     time_hide[ npc:id() ] = nil
-    cur_situation  = 7
+    cur_situation  = 10
     last_algorythm = "find_cover_2"
     self:set_transfer_and_combat( be, bw, npc_rank )
     choose_idle_scheme( npc, "defence" )
@@ -1069,21 +1088,21 @@ function action_altcombat:process_situation( be, bw )
       time_hide[ npc:id() ] = time_global() + math.random( 7000, 15000 )
     end
     if self.st.is_camper then
-      cur_situation  = 8
+      cur_situation  = 11
       last_algorythm = "find_cover_5"
     else
       if time_hide[ npc:id() ] < time_global() then
         if self:actor_at_height( be ) then
-          cur_situation  = 9
+          cur_situation  = 12
           last_algorythm = random_choice( "find_cover_2", "find_cover_7" )
         else
-          cur_situation  = 10
+          cur_situation  = 13
           last_algorythm = random_choice(
             "find_cover_1", "find_cover_3", "find_cover_4"
           )
         end
       else
-        cur_situation  = 11
+        cur_situation  = 14
         last_algorythm = random_choice( "find_cover_2", "find_cover_7" )
       end
     end
@@ -2754,6 +2773,30 @@ function find_cover( npc, enemy, mode, camper_vertex )
       cover_vertex = find_pseudo_cover( npc, enemy, false, cover_cache )
     end
 
+  elseif mode == 8 then         -- максимальное приближение к противнику
+    cover_cache = {}
+    for _, r in ipairs({ 10, 30 }) do
+      cover = npc:close_cover(
+        npc_pos, enemy_pos, r, 5, 300, 10, cover_callback
+      )
+      if cover then break end
+    end
+    if not cover then
+      cover_vertex = find_pseudo_cover( npc, enemy, true, cover_cache )
+    end
+
+  elseif mode == 9 then         -- максимальное удаление от противника
+    cover_cache = {}
+    for _, r in ipairs({ 10, 30 }) do
+      cover = npc:far_cover(
+        npc_pos, enemy_pos, r, 5, 300, 10, cover_callback
+      )
+      if cover then break end
+    end
+    if not cover then
+      cover_vertex = find_pseudo_cover( npc, enemy, false, cover_cache )
+    end
+
   elseif mode == 0 then         -- оборона
     cover_cache = {}
     for _, r in ipairs({ 10, 30 }) do
@@ -2797,7 +2840,7 @@ function find_pseudo_cover( npc, enemy, attack, cover_cache )
   else
     rotate_min, rotate_max = 45, 180
   end
-  local min_dist, max_dist = 10, 10
+  local min_dist, max_dist = close_combat_distance, close_combat_distance
   local node_1_vertex_id = find_vertex_around(
     npc, npc:level_vertex_id(), dir, rotate_min, rotate_max,
     min_dist, max_dist,  1, cover_cache
