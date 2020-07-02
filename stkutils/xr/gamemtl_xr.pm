@@ -179,6 +179,10 @@ sub import_materials {
 		$mat->import($path);
 		push @{$self->{materials}}, $mat;
 	}	
+	$self->{ materials } = [
+	  sort { $a->{ ID } <=> $b->{ ID } } @{ $self->{ materials } }
+	];
+	$self->{ material_index } = $self->{ materials }->[ -1 ]->{ ID } + 1;
 }
 sub import_material_pairs {
 	my $self = shift;
@@ -191,6 +195,10 @@ sub import_material_pairs {
 		$mat_p->import($path);
 		push @{$self->{material_pairs}}, $mat_p;
 	}	
+	$self->{ material_pairs } = [
+	  sort { $a->{ ID } <=> $b->{ ID } } @{ $self->{ material_pairs } }
+	];
+	$self->{ material_pair_index } = $self->{ material_pairs }->[ -1 ]->{ ID } + 1;
 }
 sub subst_mat_ids {
 	my $self = shift;
@@ -346,7 +354,7 @@ sub import {
 	my ($src) = @_;
 	
 	my $cf = stkutils::ini_file->new($src, 'r') or fail("$src: $!\n");
-	$self->{ID} = $cf->value('general', 'id');
+	$self->{ID} = $cf->value('general', 'id') + 0;
 	$self->{m_Name} = $cf->value('general', 'name');
 	$self->{m_Desc} = $cf->value('general', 'description');
 	$self->{m_Flags} = $cf->value('flags', 'flags');
@@ -493,7 +501,7 @@ sub import {
 	my ($src) = @_;	
 	
 	my $cf = stkutils::ini_file->new($src, 'r') or fail("$src: $!\n");
-	$self->{ID} = $cf->value('general', 'id');
+	$self->{ID} = $cf->value('general', 'id') + 0;
 	$self->{ID_parent} = $cf->value('general', 'parent_id');
 	$self->{ID_parent} = 0xFFFFFFFF if ($self->{ID_parent} eq 'none');
 	$self->{mtl0} = $cf->value('general', 'mtl0');
