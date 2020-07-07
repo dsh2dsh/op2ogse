@@ -11,6 +11,7 @@ max_brightness = 0.1
 
 function attach( sm )
   sm:subscribe({ signal = "on_first_update", fun = this.on_first_update })
+  sm:subscribe({ signal = "inv_drag_drop",   fun = this.inv_drag_drop  })
   sm:subscribe({ signal = "on_key_down",     fun = this.on_key_down    })
   sm:subscribe({ signal = "on_mm_return_game", fun = this.on_mm_return_game })
   sm:subscribe({ signal = "on_sleep_finished", fun = this.on_sleep_finished })
@@ -87,12 +88,10 @@ function on_key_down( key, bind )
         if torch_mode == "near" then
           set_far_mode( torch )
         else
-          torch:switch( false )
-          torch_mode = "off"
+          set_off_mode( torch )
         end
       else
-        set_near_mode( torch )
-        torch:switch( true )
+        set_near_mode( torch, nil, true )
       end
       ogse.save_var( "dsh_torch.torch_mode", torch_mode )
     end
@@ -105,30 +104,47 @@ function set_brightness( torch, r )
 end
 
 
-function set_near_mode( torch, r )
+function set_near_mode( torch, r, switch_on )
   torch_mode = "near"
   if not r then r = get_torch_power() end
   torch:set_range( 20 * math.min( 1, r / max_brightness ) )
   torch:set_angle( math.rad( 90 ) )
   set_brightness( torch, r )
+  if switch_on and not torch.on then
+    torch:switch( true )
+  end
 end
 
 
-function set_far_mode( torch, r )
+function set_far_mode( torch, r, switch_on )
   torch_mode = "far"
   if not r then r = get_torch_power() end
   torch:set_range( 70 * math.min( 1, r / max_brightness ) )
   torch:set_angle( math.rad( 60 ) )
   set_brightness( torch, r )
+  if switch_on and not torch.on then
+    torch:switch( true )
+  end
 end
 
 
-function is_torch_enabled()
+function set_off_mode( torch )
+  torch_mode = "off"
+  torch:switch( false )
+end
+
+
+function is_torch_enabled( torch )
   if db.actor:alive() then
-    local torch = db.actor:item_in_slot( 9 )
+    if not torch then
+      torch = db.actor:item_in_slot( 9 )
+    end
     if torch and torch:is_torch() then
       torch = get_torch_obj( torch )
-      return torch.on
+      if torch.on then
+        return torch_mode
+      end
+      return false
     end
   end
 end
@@ -144,20 +160,48 @@ function play_click()
 end
 
 
-function get_torch_power( new )
-  local vname = "dsh_torch.power"
-  local power = ogse.load_var( vname, 1 )
-  if new then
-    ogse.save_var( vname, new, "float" )
+function get_torch_power( new, torch )
+  if not torch then
+    torch = db.actor:item_in_slot( 9 )
   end
-  return power
+  if new then
+    dsh.set_condition( torch, 1 )
+  end
+  return torch:condition()
 end
 
 
-function recharge_torch( cond )
+function before_recharge_torch( torch )
+  if not torch then
+    torch = db.actor:item_in_slot( 9 )
+  end
+  torch = get_torch_obj( torch )
+  if torch and torch.on then
+    torch:switch( false )
+    return true
+  end
+  return false
+end
+
+
+function recharge_torch( cond, torch, battery, switch_on )
   if not cond then cond = 1 end
-  get_torch_power( cond )
-  set_torch_mode()
+  if not torch then
+    torch = db.actor:item_in_slot( 9 )
+  end
+  get_torch_power( cond, torch )
+  torch = get_torch_obj( torch )
+  if torch then
+    if switch_on then
+      torch:switch( true )
+    end
+    if switch_on or torch.on then
+      set_torch_mode()
+    end
+  end
+  if battery then
+    ogse.remove_item_from_inventory( battery )
+  end
 end
 
 
@@ -207,4 +251,26 @@ function on_sleep_finished( sleep_time )
   if torch_mode == "off" then return end
   get_torch_power( 0.13 )
   set_torch_mode()
+end
+
+
+function inv_drag_drop( obj, me )
+  if not ( me:is_torch() and obj:section() == "batt_torch" ) then return end
+  if me:condition() > 0.99 then
+    ogse.autohiding_msg( "Фонарик не нуждается в подзарядке", 1500 )
+    return
+  end
+  dsh.exec_on_update(
+    function()
+      dsh_hud_fx.run_fx(
+        obj:section(), "recharge_torch", nil,
+        {
+          [ "battery"   ] = obj,
+          [ "condition" ] = obj:condition(),
+          [ "section"   ] = obj:section(),
+          [ "torch"     ] = me,
+        }
+      )
+    end
+  )
 end
