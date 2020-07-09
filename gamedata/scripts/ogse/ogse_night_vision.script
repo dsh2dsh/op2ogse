@@ -9,6 +9,7 @@
 function attach(sm)
   sm:subscribe({ signal = "on_destroy",      fun = this.on_destroy      })
   sm:subscribe({ signal = "on_hit",          fun = this.on_hit          })
+  sm:subscribe({ signal = "inv_drag_drop",   fun = this.inv_drag_drop  })
   sm:subscribe({ signal = "on_key_down",     fun = this.call_pnv        })
   sm:subscribe({ signal = "on_load",         fun = this.on_game_load    })
   sm:subscribe({ signal = "on_mm_return_game", fun = this.on_mm_return_game })
@@ -214,14 +215,13 @@ function chek_drop_pnv(obj)
   local outfit_slot    = db.actor:item_in_slot( 6 )
   local outfit_slot_nv = outfit_slot
     and sys_ini:line_exist( outfit_slot:section(), "nightvision_sect" )
-  local pnv_slot       =  db.actor:item_in_slot( 11 )
+  local pnv_slot       = db.actor:item_in_slot( 11 )
   local pnv_slot_nv    = pnv_slot
     and sys_ini:line_exist( pnv_slot:section(), "nightvision_sect" )
   if not outfit_slot_nv and not pnv_slot_nv then
     if night_vision_fx_on then
       turn_off_nv_fx( obj_sec )
-      ogse.delete_var( "pnv" )
-      active_nv_device = nil
+      set_active_nv()
     end
   end
 end
@@ -243,8 +243,7 @@ function chek_outfit_double_pnv( obj )
     end
     if night_vision_fx_on then
       turn_off_nv_fx( nv_slot:section() )
-      ogse.delete_var( "pnv" )
-      active_nv_device = nil
+      set_active_nv()
     end
   elseif is_nv_obj then
     if outfit_slot_nv then
@@ -322,15 +321,13 @@ function nv_fx( mode )
       and is_nv_allowed( nightvision_section, nv_item )
     then
       turn_on_nv_fx( nightvision_section, nv_item )
-      ogse.save_var( "pnv", true )
-      active_nv_device = nv_item
+      set_active_nv( nv_item )
     end
   elseif
     mode == false and night_vision_fx_on and night_vision_fx_not_sniper
   then
     turn_off_nv_fx()
-    ogse.delete_var( "pnv" )
-    active_nv_device = nil
+    set_active_nv()
   end
 end
 
@@ -378,8 +375,7 @@ end
 function nv_to_ruck( section )
   if night_vision_fx_on == true then
     turn_off_nv_fx( section )
-    ogse.delete_var( "pnv" )
-    active_nv_device = nil
+    set_active_nv()
   end
 end
 
@@ -590,8 +586,8 @@ end
 
 
 function is_nv_allowed( sect, obj )
-  if has_alife_info( "no_pnv" ) then return false end
-  if dsh_acumm.has_power() > 0  then return true  end
+  if db.actor:has_info( "no_pnv" ) then return false end
+  if obj:condition() > 0 then return true end
   return false
 end
 
@@ -829,4 +825,161 @@ function on_first_update()
   sm:subscribe({ signal = "on_item_to_ruck", fun = this.chek_drop_pnv })
   sm:subscribe({ signal = "on_item_to_slot", fun = this.chek_outfit_double_pnv })
   try_to_restart_nv_fx()
+end
+
+
+local subscribed
+function set_active_nv( obj )
+  if obj then
+    subscribed = { signal = "on_update", fun = this.on_update }
+    ogse_signals.get_mgr():subscribe( subscribed )
+    dsh_fdelta_times.start_timer( script_name() )
+    ogse.save_var( "pnv", true )
+  else
+    ogse_signals.get_mgr():unsubscribe( subscribed )
+    subscribed = nil
+    process_pnv_power( true )
+    ogse.delete_var( "pnv" )
+  end
+  active_nv_device = obj
+end
+
+
+function on_update()
+  ogse_signals.get_mgr():reschedule( math.random( 10000, 12000 ) )
+  process_pnv_power()
+end
+
+
+local pnv_timer
+function process_pnv_power( finalized )
+  if not active_nv_device then return end
+  local sobj = alife():object( active_nv_device:id() )
+  if not sobj then return end
+  local dt = dsh_fdelta_times.fdelta_time( script_name(), true )
+  if dt <= 0 then return end
+  local hours = sys_ini:r_float(
+    active_nv_device:section(), "pnv_discharge_hours"
+  )
+  local pnv_discharge = 1 / ( hours * 3600 ) * dt
+  if active_nv_device:condition() > 0 then
+    if active_nv_device:condition() > pnv_discharge then
+      dsh.set_condition(
+        active_nv_device, active_nv_device:condition() - pnv_discharge
+      )
+      if
+        active_nv_device:condition() < 0.1 and not ( pnv_timer or finalized )
+      then
+        pnv_timer = dsh.timeout(
+          math.random( 30, 300 ) * 1000,
+          function()
+            pnv_timer = nil
+            if active_nv_device and active_nv_device:condition() < 0.1 then
+              stop_active_pnv( finalized )
+            end
+          end
+        )
+      end
+    else
+      dsh.set_condition( active_nv_device, 0 )
+      stop_active_pnv( finalized )
+    end
+    return
+  end
+  stop_active_pnv( finalized )
+end
+
+
+function stop_active_pnv( finalized )
+  if pnv_timer then
+    pnv_timer:stop()
+    pnv_timer = nil
+  end
+  if active_nv_device and not finalized then
+    nv_fx( false )
+  end
+end
+
+
+function inv_drag_drop( obj, me )
+  if not ( is_pnv( me ) and get_recharge_k( obj:section() ) ) then return end
+  if me:condition() > 0.99 then
+    ogse.autohiding_msg( "ПНВ не нуждается в подзарядке", 1500 )
+    return true
+  elseif obj:condition() == 0 then
+    ogse.autohiding_msg( "Этим зарядить не получится", 1500 )
+    return true
+  end
+  dsh.exec_on_update(
+    function()
+      dsh_hud_fx.run_fx(
+        obj:section(), "recharge_pnv", nil,
+        {
+          [ "battery"   ] = obj,
+          [ "condition" ] = obj:condition(),
+          [ "loop"      ] = GetShift(),
+          [ "section"   ] = obj:section(),
+          [ "pnv"       ] = me,
+        }
+      )
+    end
+  )
+  return true
+end
+
+
+function get_recharge_k( sect )
+  return get_float( sect, "ogse_night_vision.recharge_k" )
+end
+
+
+function is_pnv( obj )
+  local r__pnv_mode = get_float( obj:section(), "r__pnv_mode", 0 )
+  return ( r__pnv_mode > 1 )
+end
+
+
+function before_recharge_pnv( pnv )
+  if not pnv then
+    pnv = active_nv_device
+  end
+  if active_nv_device and pnv:id() == active_nv_device:id() then
+    turn_off_nv_fx()
+    return true
+  end
+  return false
+end
+
+
+function recharge_pnv( cond, pnv, battery, switch_on, loop )
+  if not cond then cond = 1 end
+  if not pnv then
+    pnv = active_nv_device
+  end
+  local t = {}
+  if type( battery ) == "userdata" then
+    pnv_cond = pnv:condition()
+    amk_utils.inventory_iterate_section(
+      battery:section(),
+      function( obj )
+        local obj_cond = obj:condition() * get_recharge_k( obj:section() )
+        table.insert( t, { [ "cond" ] = obj_cond, [ "obj" ] = obj } )
+        pnv_cond = pnv_cond + obj_cond
+        if pnv_cond >= 1 or not loop then return true end
+      end
+    )
+  else
+    table.insert(
+      t, { [ "cond" ] = cond * get_recharge_k( battery ) }
+    )
+  end
+  for _, item in ipairs( t ) do
+    dsh.set_condition( pnv, math.min( 1, pnv:condition() + item.cond ) )
+    if item.obj then
+      ogse.remove_item_from_inventory( item.obj )
+    end
+  end
+  if active_nv_device and pnv:id() == active_nv_device:id() then
+    turn_on_nv_fx( get_string( pnv:section(), "nightvision_sect" ), pnv )
+  end
 end
