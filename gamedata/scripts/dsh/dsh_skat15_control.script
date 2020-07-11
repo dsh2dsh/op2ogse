@@ -6,13 +6,13 @@
 -- доп. веса.
 
 local exo_sect = "exo_mil_exoskeleton_addrs"
-local use_time = 2 -- как долго расходуется одна Черная энергия в часах
 -- за сколько кг. от максимального, начинает расходоваться энергия.
 local addl_weight = 30
 
 
 function attach( sm )
-  sm:subscribe({ signal = "on_destroy",        fun = this.on_destroy       })
+  sm:subscribe({ signal = "on_belt_change",    fun = this.on_belt_change    })
+  sm:subscribe({ signal = "on_destroy",        fun = this.on_destroy        })
   sm:subscribe({ signal = "on_exo_control_clicked", fun = this.show_autodoc })
   sm:subscribe({ signal = "on_first_update",   fun = this.on_first_update   })
   sm:subscribe({ signal = "on_inventory_open", fun = this.on_inv_open       })
@@ -91,6 +91,26 @@ function unsubscribe()
 end
 
 
+local power_on_belt = {}
+
+function on_belt_change()
+  power_on_belt = {}
+  for i = 0, db.actor:belt_count() - 1 do
+    local obj = db.actor:item_on_belt( i )
+    if
+      obj:condition() > 0
+      and get_float( obj:section(), "dsh_skat15_control.use_time" )
+    then
+      table.insert( power_on_belt, obj )
+    end
+  end
+  table.sort(
+    power_on_belt,
+    function( a, b ) return a:condition() < b:condition() end
+  )
+end
+
+
 local on_turbo_mode   = false
 local skip_weight_cnt = 1
 
@@ -99,7 +119,7 @@ function set_actor_max_weights( ext )
     skip_weight_cnt = skip_weight_cnt - 1
     return
   end
-  if inventory.on_belt( "art_acumm" ) then
+  if table.getn( power_on_belt ) > 0 then
     if on_turbo_mode then
       local cond   = 1
       local outfit = db.actor:get_current_outfit()
@@ -130,7 +150,7 @@ end
 local warn_low, warn_use = false, false
 
 function on_outfit_use_power( dt )
-  if on_turbo_mode and inventory.on_belt( "art_acumm" ) then
+  if on_turbo_mode and table.getn( power_on_belt ) > 0 then
     if not warn_use then
       news_manager.send_tip(
         db.actor,
@@ -148,11 +168,10 @@ end
 
 
 function use_art_acumm( dt )
-  local items = inventory.on_belt_obj( "art_acumm" )
-  if not items then return end
-  local used = dt / ( use_time * 3600 )
-  for _, item in ipairs( items ) do
-    local cond = item:condition()
+  for _, item in ipairs( power_on_belt ) do
+    local use_time = get_float( item:section(), "dsh_skat15_control.use_time" )
+    local used     = dt / ( use_time * 3600 )
+    local cond     = item:condition()
     if cond > used then
       cond = cond - used
       dsh.set_condition( item, cond )
