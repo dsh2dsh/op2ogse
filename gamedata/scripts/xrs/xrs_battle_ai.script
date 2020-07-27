@@ -24,6 +24,10 @@ local firing_actor_disp_max  = 3
 local firing_actor_disp_min  = 1
 local firing_actor_disp_time = 5000
 
+-- сколько можно стрел€ть во врага после его последней видимости
+local fire_make_sense_interval    =  5000
+local fire_make_sense_interval_be = 10000
+
 local total_debug               = false
 local close_combat_distance     = 15 -- дистанци€ ближнего бо€
 -- дистанци€ когда бой уже не считаетс€ ближним
@@ -983,6 +987,13 @@ function be_can_fire( be )
 end
 
 
+function be_can_fire_to_npc( be, npc )
+  if not be:is_stalker() then return false end
+  if not is_npc_enemy_of( be, npc ) then return false end
+  return be:can_fire_to_enemy( npc, fire_make_sense_interval_be )
+end
+
+
 function action_altcombat:process_situation( be, bw )
   local npc      = self.object
   local be_pos   = be:position()
@@ -1019,33 +1030,30 @@ function action_altcombat:process_situation( be, bw )
 
   -- если враг не умеет стрел€ть (мутант)
   elseif not be_can_fire( be ) then
-    self.st.grenadier.ready_to_grenade = true
     time_hide[ npc:id() ] = nil
-    if npc:see( be ) then
+    if npc:can_fire_to_enemy( be, fire_make_sense_interval ) then
       -- если видим врага
-      local enemy_see = is_enemy_see( be, npc )
-      if enemy_see or distance < close_combat_distance then
+      if distance < close_combat_distance then
         cur_situation  = 4
         last_algorythm = "find_cover_9"
       else
+        self.st.grenadier.ready_to_grenade = not be:see( npc )
         cur_situation  = 5
         last_algorythm = "keep"
       end
-      if enemy_see then
+      if is_enemy_see( be, npc ) then
         choose_idle_scheme( npc, "attack" )
       else
         choose_idle_scheme( npc, "attack_notsee" )
       end
-    elseif
-      be:see( npc )
-      or ( distance < close_combat_distance and is_enemy_see( be, npc ) )
-    then
+    elseif be:see( npc ) or distance < close_combat_distance then
       -- если Ќ≈ видим врага и он видит нас
       cur_situation  = 6
       last_algorythm = "find_cover_9"
       choose_idle_scheme( npc, "defence" )
     else
       -- если Ќ≈ видим врага и он Ќ≈ видит нас
+      self.st.grenadier.ready_to_grenade = true
       cur_situation  = 7
       last_algorythm = random_choice( "find_cover_8", "keep" )
       choose_idle_scheme( npc, "lost" )
@@ -1053,9 +1061,9 @@ function action_altcombat:process_situation( be, bw )
     self:set_transfer_and_combat( be, bw, npc_rank )
 
   -- если видим врага
-  elseif npc:see( be ) then
+  elseif npc:can_fire_to_enemy( be, fire_make_sense_interval ) then
     -- и он видит нас - стрел€ем, ищем укрытие
-    if be:see( npc ) then
+    if be:see( npc ) or be_can_fire_to_npc( be, npc ) then
       time_hide[ npc:id() ] = nil
       cur_situation  = 8
       last_algorythm = "find_cover_2"
@@ -1079,7 +1087,7 @@ function action_altcombat:process_situation( be, bw )
     end
 
   -- если Ќ≈ видим врага и он видит нас - убегаем, ищем укрытие
-  elseif be:see( npc ) then
+  elseif be:see( npc ) or be_can_fire_to_npc( be, npc ) then
     time_hide[ npc:id() ] = nil
     cur_situation  = 10
     last_algorythm = "find_cover_2"
@@ -2392,7 +2400,7 @@ function action_altcombat:_set_weapons_fire( enemy, weapon, override_vis, npc_ra
     or ( IsRPG( weapon ) and distance < 25 )
   then
     type_of_fire = object.aim1
-  elseif npc:can_fire_to_enemy( enemy ) then
+  elseif npc:can_fire_to_enemy( enemy, fire_make_sense_interval ) then
     if enemy:is_actor() then
       if self.aiming then
         if self.aiming < time_global() then
