@@ -2687,6 +2687,51 @@ function lock_vertex( npc, lvid )
 end
 
 
+class "cover_cache_processor"
+function cover_cache_processor:__init( npc, enemy )
+  self.enemy = enemy
+  self.npc   = npc
+  self:clear()
+end
+
+function cover_cache_processor:clear()
+  self.cache   = {}
+  self.ordered = {}
+end
+
+function cover_cache_processor:get_cache()
+  return self.cache
+end
+
+function cover_cache_processor:best_cover( cover )
+  if cover then
+    if not self.cache[ cover:level_vertex_id() ] then
+      return self.ordered[ 1 ]
+    end
+  elseif table.getn( self.ordered ) > 0 then
+    return self.ordered[ 1 ]
+  end
+  return cover
+end
+
+function cover_cache_processor:callback( cover, next_check )
+  local cover_vertex = cover:level_vertex_id()
+  local cached       = self.cache[ cover_vertex ]
+  if cached ~= nil then return cached end
+  self.cache[ cover_vertex ] = not (
+    check_vertex_locked( self.npc, cover_vertex )
+    or ( its_a_trap( self.npc, cover_vertex ) )
+    or ( next_check and next_check( cover ) )
+    or false
+  )
+  table.insert( self.ordered, cover )
+  if table.getn( self.ordered ) == 10 then
+    return true
+  end
+  return self.cache[ cover_vertex ]
+end
+
+
 -- список режимов:
 -- mode = 0 - оборона (удержание позиции)
 -- mode = 1 - атака
@@ -2716,18 +2761,9 @@ function find_cover( npc, enemy, mode, camper_vertex )
   local npc_pos      = npc:position()
   local to_enemy     = npc_pos:distance_to( enemy_pos )
 
-  local cover_cache    = {}
+  local cover_cache    = cover_cache_processor( npc, enemy )
   local cover_callback = function( cover, next_check )
-    local cover_vertex = cover:level_vertex_id()
-    local cached       = cover_cache[ cover_vertex ]
-    if cached ~= nil then return cached end
-    cover_cache[ cover_vertex ] = not (
-      check_vertex_locked( npc, cover_vertex )
-      or its_a_trap( npc, cover_vertex )
-      or ( next_check and next_check( cover ) )
-      or false
-    )
-    return cover_cache[ cover_vertex ]
+    return cover_cache:callback( cover, next_check )
   end
 
   local cover, cover_vertex
@@ -2735,7 +2771,6 @@ function find_cover( npc, enemy, mode, camper_vertex )
   if mode == 1 then             -- атака по дуге
     local max = math.max( to_enemy, min_dist )
     local min = min_dist
-    cover_cache = {}
     if to_enemy - min > 0 then
       cover = npc:angle_cover(
         npc_pos, to_enemy, enemy_pos, min, max, enemy_vertex, cover_callback
@@ -2749,36 +2784,42 @@ function find_cover( npc, enemy, mode, camper_vertex )
         if cover then break end
       end
     end
+    cover = cover_cache:best_cover( cover )
     if not cover then
-      cover_vertex = find_pseudo_cover( npc, enemy, true, cover_cache )
+      cover_vertex = find_pseudo_cover(
+        npc, enemy, true, cover_cache:get_cache()
+      )
     end
 
   elseif mode == 2 then         -- отступление
-    cover_cache = {}
     for _, r in ipairs({ 10, 30 }) do
       cover = npc:best_cover(
         npc_pos, enemy_pos, r, to_enemy, to_enemy + r, cover_callback
       )
       if cover then break end
     end
+    cover = cover_cache:best_cover( cover )
     if not cover then
-      cover_vertex = find_pseudo_cover( npc, enemy, false, cover_cache )
+      cover_vertex = find_pseudo_cover(
+        npc, enemy, false, cover_cache:get_cache()
+      )
     end
 
   elseif mode == 3 then         -- атака
-    cover_cache = {}
     for _, r in ipairs({ 10, 30 }) do
       cover = npc:ambush_cover(
         npc_pos, enemy_pos, r, close_combat_distance, cover_callback
       )
       if cover then break end
     end
+    cover = cover_cache:best_cover( cover )
     if not cover then
-      cover_vertex = find_pseudo_cover( npc, enemy, true, cover_cache )
+      cover_vertex = find_pseudo_cover(
+        npc, enemy, true, cover_cache:get_cache()
+      )
     end
 
   elseif mode == 4 then         -- атака
-    cover_cache = {}
     for _, r in ipairs({ 10, 30 }) do
       local max = math.max( to_enemy, min_dist )
       local min = min_dist
@@ -2787,18 +2828,22 @@ function find_cover( npc, enemy, mode, camper_vertex )
       )
       if cover then break end
     end
+    cover = cover_cache:best_cover( cover )
     if not cover then
-      cover_vertex = find_pseudo_cover( npc, enemy, true, cover_cache )
+      cover_vertex = find_pseudo_cover(
+        npc, enemy, true, cover_cache:get_cache()
+      )
     end
 
   elseif mode == 5 then         -- возврат кемпера на точку
     cover_vertex = camper_vertex
 
   elseif mode == 6 then -- срочное отступление, противник очень близко
-    cover_vertex = find_pseudo_cover( npc, enemy, false, cover_cache )
+    cover_vertex = find_pseudo_cover(
+      npc, enemy, false, cover_cache:get_cache()
+    )
 
   elseif mode == 7 then         -- отступление по дуге
-    cover_cache = {}
     cover = npc:angle_cover(
       npc_pos, to_enemy, enemy_pos, to_enemy, to_enemy * 2, enemy_vertex,
       cover_callback
@@ -2811,40 +2856,47 @@ function find_cover( npc, enemy, mode, camper_vertex )
         if cover then break end
       end
     end
+    cover = cover_cache:best_cover( cover )
     if not cover then
-      cover_vertex = find_pseudo_cover( npc, enemy, false, cover_cache )
+      cover_vertex = find_pseudo_cover(
+        npc, enemy, false, cover_cache:get_cache()
+      )
     end
 
   elseif mode == 8 then         -- максимальное приближение к противнику
-    cover_cache = {}
     for _, r in ipairs({ 10, 30 }) do
       cover = npc:close_cover(
         npc_pos, enemy_pos, r, 5, 300, 10, cover_callback
       )
       if cover then break end
     end
+    cover = cover_cache:best_cover( cover )
     if not cover then
-      cover_vertex = find_pseudo_cover( npc, enemy, true, cover_cache )
+      cover_vertex = find_pseudo_cover(
+        npc, enemy, true, cover_cache:get_cache()
+      )
     end
 
   elseif mode == 9 then         -- максимальное удаление от противника
-    cover_cache = {}
     for _, r in ipairs({ 10, 30 }) do
       cover = npc:far_cover(
         npc_pos, enemy_pos, r, 5, 300, 10, cover_callback
       )
       if cover then break end
     end
+    cover = cover_cache:best_cover( cover )
     if not cover then
-      cover_vertex = find_pseudo_cover( npc, enemy, false, cover_cache )
+      cover_vertex = find_pseudo_cover(
+        npc, enemy, false, cover_cache:get_cache()
+      )
     end
 
   elseif mode == 0 then         -- оборона
-    cover_cache = {}
     for _, r in ipairs({ 10, 30 }) do
       cover = npc:safe_cover( npc_pos, r, 0, cover_callback )
       if cover then break end
     end
+    cover = cover_cache:best_cover( cover )
   end
 
   local cover_pos
