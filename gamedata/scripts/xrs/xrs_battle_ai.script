@@ -929,8 +929,14 @@ function action_altcombat:_execute()
   else
     cur_situation, last_algorythm = self:process_situation( be, bw )
     if
-      lcp and lcp.situation == cur_situation and lcp.be == be:id()
-      and be:position():distance_to( lcp.pos ) < 5
+      lcp and lcp.situation == cur_situation
+      and (
+        lcp.keep
+        or (
+          lcp.be == be:id()
+          and be:position():distance_to( lcp.pos ) < 5
+        )
+      )
     then
       use_lcp = true
     end
@@ -1005,6 +1011,9 @@ function action_altcombat:process_situation( be, bw )
   local distance = be_pos:distance_to( npc_pos ) - be:radius() - npc:radius()
   local npc_rank = get_obj_rank_name( npc )
 
+  local lcp = last_choosed_path[ npc:id() ]
+  if lcp then lcp.keep = false end
+
   local cur_situation = 0
   local last_algorythm
 
@@ -1031,6 +1040,13 @@ function action_altcombat:process_situation( be, bw )
     last_algorythm = "find_cover_9"
     self:set_transfer_and_combat( be, bw, npc_rank )
     choose_idle_scheme( npc, "defence" )
+
+    -- если враг не умеет стрелять (мутант)
+    if not be_can_fire( be ) then
+      if lcp and lcp.situation == cur_situation then
+        lcp.keep = true
+      end
+    end
 
   -- если враг не умеет стрелять (мутант)
   elseif not be_can_fire( be ) then
@@ -1488,15 +1504,14 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
   if who and npc and who:id() == npc:id() then return end
 
   if in_combat[ npc:id() ] and amount > 0.01 then
-    -- hit_fx( npc, amount, who, bone_index )
     local lvid = locked_vertexes[ npc:id() ]
     if lvid and who and not who:is_monster() then
       local pos = level.vertex_position( lvid )
       if npc:position():distance_to( pos ) < 2 then
         register_death_place( lvid, who, math.random( 2, 5 ) * 1000 )
       end
+      reset_last_time_send( npc )
     end
-    reset_last_time_send( npc )
   end
 
   if
@@ -1532,7 +1547,7 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
         enemy_record.vertex         = who:level_vertex_id()
       end
       if check_is_enemy( npc, who, true ) or who:is_actor() then
-        if amount > 0.1 then
+        if amount > 0.5 then
           set_primary_target( npc, who:id() )
         end
       else
@@ -1547,7 +1562,7 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
         enemy_record.last_time_seen = time_global()
         enemy_record.vertex         = who:level_vertex_id()
       end
-      if amount > 0.1 then
+      if amount > 0.5 then
         set_primary_target( npc, who:id() )
       end
     end
@@ -2871,9 +2886,10 @@ function find_cover( npc, enemy, mode, camper_vertex )
     end
 
   elseif mode == 8 then         -- максимальное приближение к противнику
+    local min_dist = npc:radius() + enemy:radius() + 5
     for _, r in ipairs({ 10, 30 }) do
       cover = npc:close_cover(
-        npc_pos, enemy_pos, r, 5, 300, 10, cover_callback
+        npc_pos, enemy_pos, r, min_dist, 300, 10, cover_callback
       )
       if cover then break end
     end
@@ -2885,9 +2901,10 @@ function find_cover( npc, enemy, mode, camper_vertex )
     end
 
   elseif mode == 9 then         -- максимальное удаление от противника
+    local min_dist = npc:radius() + enemy:radius() + 5
     for _, r in ipairs({ 10, 30 }) do
       cover = npc:far_cover(
-        npc_pos, enemy_pos, r, 5, 300, 10, cover_callback
+        npc_pos, enemy_pos, r, min_dist, 300, 10, cover_callback
       )
       if cover then break end
     end
