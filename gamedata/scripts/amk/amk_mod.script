@@ -7,6 +7,7 @@
 
 function attach( sm )
   sm:subscribe({ signal = "on_before_spawn", fun = this.on_before_spawn   })
+  sm:subscribe({ signal = "on_drop",         fun = this.check_for_item_drop })
   sm:subscribe({ signal = "on_drop",         fun = this.check_for_af_drop })
   sm:subscribe({ signal = "on_spawn",        fun = this.on_actor_spawn    })
 end
@@ -439,48 +440,39 @@ function check_for_item_drop( obj )
     tramsform_items[ obj_sect ]
     and actor:has_info( tramsform_items[ obj_sect ].info )
   then
-    local lv = obj:level_vertex_id()
-    local gv = obj:game_vertex_id()
-    if gv == 65535 then gv = actor:game_vertex_id() end
-    if gv == 65535 then return end -- похоже, что рядом нету вертекса
-    -- предмет подходит - отправляем его на экспертизу
-    -- узнаем не съели ли его или вvложили в нvчку
-    local tbl = {}
-    tbl.obj_id = obj:id()
-    tbl.lv     = lv
-    tbl.gv     = gv
-    dsh.timeout( 200, function()
-      timer_drop_obj_transform( tbl )
-    end )
+    timer_drop_obj_transform( obj:id() )
+    return true
   end
 end
 
 
-function timer_drop_obj_transform( tbl )
-  local sobj = alife():object( tbl.obj_id )
+function timer_drop_obj_transform( id )
+  local sobj = alife():object( id )
   if not sobj then return end
   if sobj.parent_id == 65535 then
     -- выбросили
     -- запускаем трансформацию предмета
-    local obj = level.object_by_id( tbl.obj_id )
-    if obj then
-      amk_mod.item_transform( tbl.obj_id, tbl.lv, tbl.gv )
-    end
+    item_transform( sobj )
+    alife():release( sobj )
   end
 end
 
 
-function item_transform( obj_id, lv, gv )
-  local obj = level.object_by_id( obj_id )
-  if obj then
-    level.add_pp_effector( "teleport.ppe", 1524, false )
-    local result = tramsform_items[ obj:section() ].result
-    local position = obj:position()
-    for i = 1, #result do
-      amk.spawn_item( result[ i ], position, gv, lv )
-    end
-    amk.remove_item( obj )
+function item_transform( sobj )
+  level.add_pp_effector( "teleport.ppe", 1524, false )
+  local sect  = sobj:section_name()
+  local items = tramsform_items[ sect ].result
+  local pos   = db.actor:position()
+  pos.y = pos.y + 0.5
+  for i, s in ipairs( items ) do
+    local sobj2 = alife():create(
+      s, pos, db.actor:level_vertex_id(), db.actor:game_vertex_id()
+    )
+    sobj2 = alife():object( sobj2.id )
+    sobj2:used_ai_locations( false )
   end
+  local func = tramsform_items[ sect ].func
+  if func then func() end
 end
 
 
