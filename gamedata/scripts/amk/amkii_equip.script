@@ -56,7 +56,7 @@ end
 
 function on_update( obj )
   ogse_signals.get_mgr():reschedule( math.random( 1000, 5000 ) )
-  CAmkDisguise():PeriodicalUpdate( obj )
+  CAmkDisguise( obj ):PeriodicalUpdate()
 end
 
 
@@ -81,9 +81,7 @@ end
 
 
 function can_refit( oNpc )
-  if ( not oNpc ) or ( not oNpc:alive() ) or oNpc:wounded() then
-    return false
-  end
+  if not ( oNpc and oNpc:alive() ) then return false end
   if get_bool( oNpc:section(), "amkii_equip.can_refit" ) then
     return true
   end
@@ -141,21 +139,36 @@ end
 
 
 class "CAmkDisguise"
-function CAmkDisguise:__init()
+function CAmkDisguise:__init( npc )
+  self.npc = npc
 end
 
 
-function CAmkDisguise:get_npc_current_visual( npc )
+function CAmkDisguise:get_npc_current_visual()
+  local npc = self.npc
+  if not self.new_visual_name then
+    local binder = npc:binded_object()
+    self.new_visual_name = binder[ "amkii_equip.new_visual_name" ]
+  end
   return get_npc_current_visual( npc, self.new_visual_name )
 end
 
 
+function CAmkDisguise:set_new_visual_name( vis )
+  local npc = self.npc
+  self.new_visual_name = "actors\\" .. vis
+  local binder = npc:binded_object()
+  binder[ "amkii_equip.new_visual_name" ] = self.new_visual_name
+end
+
+
 -- Update(oBinder)
--- Апдейтим сталкера на предмет крутого костюмо в инвентаре.
+-- Апдейтим сталкера на предмет крутого костюма в инвентаре.
 -- И если костюм есть и его визуал круче чем текущий, то переодеваем нпс.
 -- @param  object  oBinder         Биндер сталкера.
 
-function CAmkDisguise:Update( oNpc, oItem )
+function CAmkDisguise:Update( oItem )
+  local oNpc = self.npc
   if not can_refit( oNpc ) then return end
   local com = oNpc:character_community()
   if not suits_to_visuals[ com ] then return end
@@ -163,30 +176,26 @@ function CAmkDisguise:Update( oNpc, oItem )
     amk.str_explode( "\\", oItem:get_visual_name() )
   )
   local avail = suits_to_visuals[ com ][ vis ]
-  if avail then
-    local cur_armor_l, cur_armor_sect = self:get_npc_current_visual( oNpc )
-    if cur_armor_sect and cur_armor_l < armor_levels[ vis ] then
-      local sobj = alife():object( oNpc:id() )
-      local pk   = get_netpk( sobj, 1 )
-      if pk and pk:isOk() then
-        self.new_visual_name = "actors\\"
-          .. avail[ math.random( table.getn( avail ) ) ]
-        local data = pk:get()
-        local cost = get_float( cur_armor_sect, "cost" )
-        data.money = data.money + math.floor( cost / 20 )
-        data.visual_name = self.new_visual_name
-        pk:set( data )
-        local rank = 270 * armor_levels[ vis ] + math.random( 50 )
-        if oNpc:character_rank() < rank and sobj:rank() < rank then
-          sobj:set_rank( rank )
-        end
-        needs_refit[ oNpc:id() ] = true
-        amkDel( oItem )
-      end
+  if not avail then return end
+  local cur_armor_l, cur_armor_sect = self:get_npc_current_visual()
+  if cur_armor_sect and cur_armor_l < armor_levels[ vis ] then
+    local sobj = alife():object( oNpc:id() )
+    local pk   = get_netpk( sobj, 1 )
+    ASSERT( ( pk and pk:isOk() ), "can't read netpacket of %s", sobj:name() )
+    self:set_new_visual_name( avail[ math.random( table.getn( avail ) ) ] )
+    local data = pk:get()
+    local cost = get_float( cur_armor_sect, "cost" )
+    data.money = data.money + math.floor( cost / 20 )
+    data.visual_name = self.new_visual_name
+    pk:set( data )
+    local rank = 270 * armor_levels[ vis ] + math.random( 50 )
+    if oNpc:character_rank() < rank and sobj:rank() < rank then
+      sobj:set_rank( rank )
     end
+    needs_refit[ oNpc:id() ] = true
+    amkDel( oItem )
   end
 end
-
 
 
 -- переодевание
@@ -217,11 +226,13 @@ end
 
 
 -- периодическая перепроверка
-function CAmkDisguise:PeriodicalUpdate( oNpc )
+function CAmkDisguise:PeriodicalUpdate()
+  local oNpc = self.npc
   if not can_refit( oNpc ) then return end
   if needs_refit[ oNpc:id() ] then
     if not (
-      xrs_battle_ai.actor_see( oNpc ) or oNpc:is_talking()
+      xr_wounded.is_wounded( oNpc )
+      or xrs_battle_ai.actor_see( oNpc ) or oNpc:is_talking()
       or xrs_battle_ai.get_target( oNpc ) or oNpc:best_enemy()
     ) then
       oNpc:clear_animations()
@@ -230,7 +241,16 @@ function CAmkDisguise:PeriodicalUpdate( oNpc )
       return
     end
   end
-  oNpc:iterate_inventory( check_armor, oNpc )
+  oNpc:iterate_inventory(
+    function( npc, item )
+      if item:is_outfit() then
+        if alife():object( item:id() ) then
+          self:Update( item )
+        end
+      end
+    end,
+    oNpc
+  )
   if not needs_refit[ oNpc:id() ] then
     local binder     = oNpc:binded_object()
     local subscribed = binder[ "amkii_equip.subscribed" ]
@@ -250,13 +270,6 @@ function CAmkDisguise:PeriodicalUpdate( oNpc )
       sm:subscribe( s )
     end
     binder[ "amkii_equip.subscribed" ] = subscribed
-  end
-end
-
-
-function check_armor( npc, item )
-  if npc and item and item:is_outfit() then
-    CAmkDisguise():Update( npc, item )
   end
 end
 
@@ -281,4 +294,35 @@ function on_npc_item_take( npc, obj, sobj )
   for _, s in ipairs( subscribed ) do
     sm:subscribe( s )
   end
+end
+
+
+function CAmkDisguise:set_community_visual()
+  local npc = self.npc
+  if not can_refit( npc ) then return end
+  local cur_armor_l, cur_armor_sect = self:get_npc_current_visual()
+  if not cur_armor_sect then return end
+  local com = npc:character_community()
+  if not suits_to_visuals[ com ] then return end
+  local vis = table.remove(
+    amk.str_explode( "\\", get_string( cur_armor_sect, "visual" ) )
+  )
+  local avail = suits_to_visuals[ com ][ vis ]
+  if not avail then return end
+  self:set_new_visual_name( avail[ math.random( table.getn( avail ) ) ] )
+  log2(
+    "[%s]: change visual of %s: %s -> %s",
+    script_name(), npc:name(), npc:get_visual_name(), self.new_visual_name
+  )
+  local sobj = alife():object( npc:id() )
+  local pk   = get_netpk( sobj, 1 )
+  ASSERT( ( pk and pk:isOk() ), "can't read netpacket of %s", sobj:name() )
+  local data = pk:get()
+  data.visual_name = self.new_visual_name
+  pk:set( data )
+end
+
+
+function set_community_visual( npc )
+  CAmkDisguise( npc ):set_community_visual()
 end
