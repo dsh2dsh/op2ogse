@@ -440,12 +440,10 @@ function drop_manager:create_release_item()
   -- чистим стволы и задаем им состояние
   self:npc_clear_spawn( items, cond.min, cond.max, cond_add )
 
-  --' Проверка на отсутствие спауна лута
+  -- Проверка на отсутствие спауна лута
   local ini = self.npc:spawn_ini()
-  if
-    ( ini and ini:section_exist( "dont_spawn_loot" ) )
-    or not self.who
-  then
+  local who = self:get_recipient()
+  if ( ini and ini:section_exist( "dont_spawn_loot" ) ) or not who then
     return
   end
 
@@ -453,8 +451,7 @@ function drop_manager:create_release_item()
   --' Необходимо составить список объектов которые могут быть
   --заспавнены для персонажа
   local spawn_items = get_spawn_items( self.npc:character_community() )
-  local who         = self:get_recipient()
-  if spawn_items and who then
+  if spawn_items and who and who:id() == self.npc:id() then
     for k, v in pairs( spawn_items ) do
       --' По каждому объекту необходимо получить зависимости
       if can_have_ammo[ k ] or not ammo_sections[ k ] then
@@ -484,23 +481,24 @@ function drop_manager:create_release_item()
   then
     local _, sect = amkii_equip.get_npc_current_visual( self.npc )
     if sect then
-      local otf
       local rnd = self:get_npc_rnd( "outfit_rnd" )
-      if rnd * 1000 <= data.probability_outfit * 10 then
-        otf = alife():create(
-          sect,
-          who:position(), who:level_vertex_id(), who:game_vertex_id(),
+      if
+        who:id() ~= self.npc:id()
+        or rnd * 1000 <= data.probability_outfit * 10
+      then
+        local otf = alife():create(
+          sect, who:position(), who:level_vertex_id(), who:game_vertex_id(),
           who:id()
         )
-      end
-      if otf then
-        local rnd = self:get_npc_rnd( "outfit_cond_rnd" )
-        level.client_spawn_manager():add(
-          otf.id, -1, function( id, obj )
-            rnd = cond.min + round( rnd * ( cond.max - cond.min ) )
-            obj:set_condition( ( rnd + cond_add ) / 100 )
-          end
-        )
+        if who:id() == self.npc:id() then
+          local rnd = self:get_npc_rnd( "outfit_cond_rnd" )
+          level.client_spawn_manager():add(
+            otf.id, -1, function( id, obj )
+              rnd = cond.min + round( rnd * ( cond.max - cond.min ) )
+              obj:set_condition( ( rnd + cond_add ) / 100 )
+            end
+          )
+        end
       end
     end
   end
@@ -721,30 +719,35 @@ function drop_manager:npc_clear_spawn( items, cond_min, cond_max, cond_add )
         table.insert( release_items, item )
       elseif item:is_weapon() and not is_unique_wpn( section ) then
         if who then
-          item:unload_magazine()
-          local rnd_cond = (
-            math.random( cond_min, cond_max ) + cond_add
-          ) / 100
-          if item:condition() > rnd_cond then
-            item:set_condition( rnd_cond )
-          end
-          if who:id() ~= npc:id() then
+          if who:id() == npc:id() then
+            item:unload_magazine()
+            local rnd_cond = (
+              math.random( cond_min, cond_max ) + cond_add
+            ) / 100
+            if item:condition() > rnd_cond then
+              item:set_condition( rnd_cond )
+            end
+          else
             table.insert( transfer_items, item )
           end
         else
           table.insert( release_items, item )
         end
       elseif ammo_sections[ section ] then
-        -- чистим патроны
-        if count_by_level[ section ] then
-          local number = math.random(
-            count_by_level[ section ].min, count_by_level[ section ].max
-          )
-          if number > 0 then
-            table.insert( ammos, { sect = section, cnt = number } )
+        if who and who:id() ~= npc:id() then
+          table.insert( transfer_items, item )
+        else
+          -- чистим патроны
+          if count_by_level[ section ] then
+            local number = math.random(
+              count_by_level[ section ].min, count_by_level[ section ].max
+            )
+            if number > 0 then
+              table.insert( ammos, { sect = section, cnt = number } )
+            end
           end
+          table.insert( release_items, item )
         end
-        table.insert( release_items, item )
       else
         if
           ( not watcher_act.do_not_touch( item ) )
