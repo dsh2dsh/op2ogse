@@ -473,6 +473,9 @@
 * nlc7_cold_wasterland.7z: Холодная пустошь от Кота из этой темы
   http://nlc-zone.ru/forum/topic/160-sborki-dopolneniya-i-pravki/?p=177837
 
+* nlc7_textures_said.7z: сборник текстур от -=Said=- отсюда
+  http://nlc-zone.ru/forum/topic/191-nlc7-build-30-hard-edition/?p=240805
+
 * nlc7_textures_venommans.7z: сборник текстур из NLC7 от VeNoMMaNs
 
 * sgc_v92_v1.7z: тестуры от V92 c доработками adm-ral
