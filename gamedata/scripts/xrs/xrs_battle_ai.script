@@ -376,12 +376,6 @@ function evaluator_check_altcombat:evaluate()
   self:check_corpse_danger()
   self:reprioritize_targets()
 
-  self.st.grenadier_ready = self.grenadier:evaluate( self.object )
-  if self.st.grenadier_ready then
-    ogse_debug.add_active_eval( self.object, script_name(), "altcombat_grenadier" )
-    return true
-  end
-
   if self:check_for_grenades() then
     ogse_debug.add_active_eval( self.object, script_name(), "altcombat_gr_evade" )
     return true
@@ -393,10 +387,17 @@ function evaluator_check_altcombat:evaluate()
     and ( not xr_wounded.is_wounded( best_enemy ) )
     and get_best_weapon( self.object )
   then
+    self.st.grenadier_ready = self.grenadier:evaluate( self.object )
+    if self.st.grenadier_ready then
+      ogse_debug.add_active_eval( self.object, script_name(), "altcombat_grenadier" )
+      return true
+    end
     ogse_debug.add_active_eval( self.object, script_name(), "altcombat" )
     return true
-  elseif have_fresh_deadman( self.object ) then
-    ogse_debug.add_active_eval( self.object, script_name(), "altcombat_2" )
+  end
+
+  if have_fresh_deadman( self.object ) then
+    ogse_debug.add_active_eval( self.object, script_name(), "altcombat_cooldown" )
     return true
   end
 
@@ -861,12 +862,10 @@ function action_altcombat:_execute()
   if self:not_ready_state() then return end
 
   -- получим текущее оружие
-  local bw = get_best_weapon( npc )
-
-  if self:throw_grenade() then return end
-  if self:evade_grenades( bw ) then return end
-
+  local bw    = get_best_weapon( npc )
   local enemy = get_target( npc ) -- текущий враг
+  if self:evade_grenades( bw, enemy ) then return end
+
   local deadman
   if not ( enemy or self:has_grenade() ) then
     deadman = have_fresh_deadman( npc )
@@ -914,6 +913,8 @@ function action_altcombat:_execute()
     notify_friends( self.object, enemy )
     self:set_combat_sight( enemy, bw )
   end
+
+  if self:throw_grenade() then return end
 
   process_combat_sound( npc )
   local be = enemy
@@ -1267,7 +1268,7 @@ end
 
 local grenka_already_shout = {}
 
-function action_altcombat:evade_grenades( bw )
+function action_altcombat:evade_grenades( bw, enemy )
   if not self.st.active_grenade then return false end
   local npc        = self.object
   local danger     = self.st.active_grenade
@@ -1288,6 +1289,18 @@ function action_altcombat:evade_grenades( bw )
     end
     escape_point[ npc:id() ] = nil
     return false
+  end
+
+  if enemy then
+    local be_pos   = be:position()
+    local npc_pos  = npc:position()
+    local distance = be_pos:distance_to( npc_pos ) - be:radius() - npc:radius()
+    if distance < 5 then
+      self.st.active_grenade = nil
+      npc:set_mental_state( anim.danger )
+      escape_point[ npc:id() ] = nil
+      return false
+    end
   end
 
   if danger.inertion > time_global() then
@@ -1318,7 +1331,6 @@ function action_altcombat:evade_grenades( bw )
   end
   utils.send_to_nearest_accessible_vertex( npc, ep.lvid )
 
-  local enemy = get_target( npc )
   if npc:path_completed() and enemy then
     npc:set_sight( enemy, true, true )
     return false
