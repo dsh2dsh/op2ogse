@@ -468,8 +468,6 @@
 Текстурные сборки:
 - https://drive.google.com/open?id=1jmmkNPtQbCtMcBHv6B-3UiHUX9lywT1A
 
-* atmosfear3_light.7z: облегченные текстуры неба, если это кому-то нужно
-
 * nlc7_cold_wasterland.7z: Холодная пустошь от Кота из этой темы
   http://nlc-zone.ru/forum/topic/160-sborki-dopolneniya-i-pravki/?p=177837
 
