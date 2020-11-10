@@ -462,14 +462,14 @@
 Текстурные сборки:
 - https://drive.google.com/open?id=1jmmkNPtQbCtMcBHv6B-3UiHUX9lywT1A
 
-* atmosfear3_light.7z: облегченные текстуры неба, если это кому-то нужно
-
-* nlc7_cold_wasterland.7z: Холодная пустошь от Кота из этой темы
-  http://nlc-zone.ru/forum/topic/160-sborki-dopolneniya-i-pravki/?p=177837
+* nlc7_he.7z: текстуры из NLC7 Hard Edition
+  http://nlc-zone.ru/forum/topic/191-nlc7-hard-edition/
 
 * nlc7_textures_venommans.7z: сборник текстур из NLC7 от VeNoMMaNs
 
-* sgc_v92_v1.7z: тестуры от V92 c доработками adm-ral
+* sgc_v92_v1.7z: текстуры от V92 c доработками adm-ral
+
+* v92_op2_intro.7z: загрузочные экраны от V92
 
 Все текстурные сборки можно комбинировать друг с другом в любых
 комбинациях. Текстуры будут браться из последнего по алфавиту
