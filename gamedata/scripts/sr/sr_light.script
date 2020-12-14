@@ -10,6 +10,7 @@ local light_off_states = {
 function attach( sm )
   sm:subscribe({ signal = "on_destroy",   fun = this.on_destroy   })
   sm:subscribe({ signal = "on_npc_death", fun = this.on_death     })
+  sm:subscribe({ signal = "on_npc_net_destroy", fun = this.on_npc_destroy })
   sm:subscribe({ signal = "on_npc_spawn", fun = this.on_npc_spawn })
 end
 
@@ -17,8 +18,9 @@ end
 function on_npc_spawn( obj, binder )
   if not obj:alive() then return end
   local s = {
-    [ "signal" ] = "on_npc_update." .. obj:id(),
+    [ "signal" ] = "on_update",
     [ "fun"    ] = this.on_update,
+    [ "self"   ] = obj,
   }
   binder[ "sr_light.subscribed" ] = s
   ogse_signals.get_mgr():subscribe( s )
@@ -32,17 +34,34 @@ end
 
 
 function on_death( obj )
-  local binder     = obj:binded_object()
-  local subscribed = binder[ "sr_light.subscribed" ]
-  if subscribed then
-    ogse_signals.get_mgr():unsubscribe( subscribed )
-  end
+  unsubscribe( obj )
   check_light( obj )
 end
 
 
 function on_destroy()
   clean_up()
+end
+
+
+function on_npc_destroy( obj )
+  local binder  = unsubscribe( obj )
+  local torch_t = binder[ "sr_light.torch_t" ]
+  if torch_t then
+    torch_t:stop()
+    binder[ "sr_light.torch_t" ] = nil
+  end
+end
+
+
+function unsubscribe( obj )
+  local binder     = obj:binded_object()
+  local subscribed = binder[ "sr_light.subscribed" ]
+  if subscribed then
+    ogse_signals.get_mgr():unsubscribe( subscribed )
+  end
+  binder[ "sr_light.subscribed" ] = nil
+  return binder
 end
 
 
@@ -98,24 +117,34 @@ function set_scheme( npc, ini, scheme, section, gulag_name )
 end
 
 
+function delay_torch_action( binder, func )
+  binder[ "sr_light.torch_t" ] = dsh.rt_exec_on_update(
+    function()
+      func()
+      binder[ "sr_light.torch_t" ] = nil
+    end
+  )
+end
+
+
 function check_light( stalker )
   if not stalker then return end
 
-  local torch = stalker:object( "device_torch" )
-  if not torch then return end
-
-  local binder = stalker:binded_object()
-  if not binder.sr_light_updated then
-    local torch = get_torch_obj( torch )
-    torch:set_brightness( 0.2 + 0.8 * math.random() )
-    binder.sr_light_updated = true
+  local torch = stalker:item_in_slot( 9 )
+  if not ( torch and torch:is_torch() ) then
+    local torch = stalker:object( "device_torch" )
+    if not torch then return end
   end
 
   local light  = false
   local forced = false
 
+  local binder = stalker:binded_object()
   if not stalker:alive() then
-    torch:enable_attachable_item( false )
+    delay_torch_action(
+      binder,
+      function() torch:enable_attachable_item( false ) end
+    )
     return
   end
 
@@ -186,7 +215,19 @@ function check_light( stalker )
     end
   end
 
-  torch:enable_attachable_item( light )
+  local sr_light_updated = binder.sr_light_updated
+  delay_torch_action(
+    binder,
+    function()
+      if not sr_light_updated then
+        local torch = get_torch_obj( torch )
+        torch:set_brightness( 0.2 + 0.8 * math.random() )
+      end
+      torch:enable_attachable_item( light )
+    end
+  )
+
+  binder.sr_light_updated = true
 end
 
 
