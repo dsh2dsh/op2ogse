@@ -63,6 +63,11 @@ function check_military_blockpost( obj )
 end
 
 
+function mark_used( t, f )
+  t[ 3 ] = f
+end
+
+
 function add_cache_rec( obj, enemy, is_enemy, ttl )
   local binder = obj:binded_object()
   local cached = binder[ "dsh_enemies.cached" ]
@@ -71,35 +76,42 @@ function add_cache_rec( obj, enemy, is_enemy, ttl )
     if t then
       t[ 1 ] = is_enemy
       t[ 2 ] = ttl
+      mark_used( t, true )
     else
-      cached[ enemy:id() ] = { is_enemy, ttl }
+      cached[ enemy:id() ] = { is_enemy, ttl, true }
     end
   else
     binder[ "dsh_enemies.cached" ] = {
-      [ enemy:id() ] = { is_enemy, ttl }
+      [ enemy:id() ] = { is_enemy, ttl, true }
     }
   end
 end
 
 
-function get_cache_rec( obj, enemy )
-  local is_enemy
+function get_cache_rec( obj, enemy, refresh )
+  local is_enemy, fr
   local binder = obj:binded_object()
   local cached = binder[ "dsh_enemies.cached" ]
-  local fr
   if cached and cached[ enemy:id() ] then
-    local res, ttl = unpack( cached[ enemy:id() ] )
-    if ttl <= time_global() then
+    local t = cached[ enemy:id() ]
+    local res, ttl = unpack( t )
+    if ttl > time_global() then
+      mark_used( t, true )
+    elseif refresh then
+      local was_enemy = res
       res, fr = check_is_enemy_always( obj, enemy )
-      ttl = time_global() + fr + math.random( fr / 10 )
-      add_cache_rec( obj, enemy, res, ttl )
-      if not enemy:is_actor() then
-        add_cache_rec( enemy, obj, res, ttl )
+      if res and not was_enemy then
+        obj:enable_memory_object( enemy, true )
+        if not enemy:is_actor() then
+          enemy:enable_memory_object( obj, true )
+        end
       end
     end
     is_enemy = res
   else
     is_enemy, fr = check_is_enemy_always( obj, enemy )
+  end
+  if fr then
     local ttl = time_global() + fr + math.random( fr / 10 )
     add_cache_rec( obj, enemy, is_enemy, ttl )
     if not enemy:is_actor() then
@@ -112,19 +124,20 @@ end
 
 function enemy_callback( obj, enemy, result )
   local is_enemy, fr = get_cache_rec( obj, enemy )
+  if fr then
+    -- в кэш была добавлена новая запись или обновлена существующая
+    local binder = obj:binded_object()
+    local expire = binder[ "dsh_enemies.expire_cached" ]
+    if expire then
+      -- будим, что бы он пересчитал время для reschedule на следующем
+      -- апдейте
+      expire:weakup()
+    else
+      binder[ "dsh_enemies.expire_cached" ] = expire_cache( obj )
+    end
+  end
   if is_enemy == false then
     table.insert( result, is_enemy )
-    if fr then
-      local binder = obj:binded_object()
-      local expire = binder[ "dsh_enemies.expire_cached" ]
-      if expire then
-        -- будим, что бы он пересчитал время для reschedule на следующем
-        -- апдейте
-        expire:weakup()
-      else
-        binder[ "dsh_enemies.expire_cached" ] = expire_cache( obj )
-      end
-    end
     return true
   end
 end
@@ -313,19 +326,47 @@ function expire_cache:update()
   ASSERT( cached, "[%s]: cached not found: name[%s]", script_name(), self.name )
   local min_ttl
   for enemy_id, data in pairs( cached ) do
-    local is_enemy, ttl = unpack( data )
+    local is_enemy, ttl, used = unpack( data )
+    local keep_cached = true
     if ttl <= time_global() then
-      cached[ enemy_id ] = nil
-      if not is_enemy then
+      if used then
         local enemy = level.object_by_id( enemy_id )
-        if enemy then
-          obj:enable_memory_object( enemy, true )
+        if
+          enemy and ( enemy:is_custom_monster() or enemy:is_actor() )
+          and enemy:alive()
+        then
+          local was_enemy = is_enemy
+          get_cache_rec( obj, enemy, true )
+          mark_used( data, false )
+          is_enemy, ttl = unpack( cached[ enemy_id ] )
+          if is_enemy and not was_enemy then
+            obj:enable_memory_object( enemy, true )
+            if not enemy:is_actor() then
+              enemy:enable_memory_object( obj, true )
+            end
+          end
+        else
+          keep_cached = false
+        end
+      else
+        keep_cached = false
+      end
+      if not keep_cached then
+        cached[ enemy_id ] = nil
+        if not is_enemy then
+          local enemy = level.object_by_id( enemy_id )
+          if enemy then
+            obj:enable_memory_object( enemy, true )
+          end
         end
       end
-    elseif min_ttl then
-      if ttl < min_ttl then min_ttl = ttl end
-    else
-      min_ttl = ttl
+    end
+    if keep_cached then
+      if min_ttl then
+        if ttl < min_ttl then min_ttl = ttl end
+      else
+        min_ttl = ttl
+      end
     end
   end
   if min_ttl then
