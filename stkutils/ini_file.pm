@@ -143,7 +143,7 @@ sub _export_vector {
 	if ($p->{type} =~ /dumb/) {
 		printf $fh "$p->{name} = ".unpack('H*', $container->{$p->{name}})."\n";	
 	} else {
-		return if ( @{ $p->{ default } } && comp_arrays( $container, $p ) );
+		return if ( $p->{ default } && @{ $p->{ default } } && comp_arrays( $container, $p ) );
 		print $fh "$p->{name} = ", join(', ', @{$container->{$p->{name}}}), "\n";
 	}
 }
