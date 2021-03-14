@@ -426,13 +426,19 @@
 Ссылки для скачивания:
 
 Основная часть:
+- https://bamus.cz/pub/dsh_mod_repack/
+или
+- torrent: https://bamus.cz/pub/dsh_mod_repack.torrent
+- magnet: http://magnet:?xt=urn:btih:035246a8d5b4cd19e06b3273114616564e22b920&dn=dsh_mod_repack
 - https://yadi.sk/d/6xuKVU1w3Q9jf2
 
 Последнее обновление:
-- https://drive.google.com/open?id=1kex-J7Yp55e0QX3xVHXRD2AKso7f6W_7
+- https://bamus.cz/pub/dsh_mod_latest/latest.7z
 
 Текстурные сборки:
-- https://drive.google.com/open?id=1jmmkNPtQbCtMcBHv6B-3UiHUX9lywT1A
+- https://bamus.cz/pub/dsh_mod_mods/
+- torrent: https://bamus.cz/pub/dsh_mod_mods.torrent
+- magnet: http://magnet:?xt=urn:btih:462d11b3afa9d7010ed8b6529a50cdd043d1527f&dn=dsh_mod_mods
 
 * nlc7_he.7z: текстуры из NLC7 Hard Edition
   http://nlc-zone.ru/forum/topic/191-nlc7-hard-edition/

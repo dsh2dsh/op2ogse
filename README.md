@@ -427,7 +427,7 @@
 - https://yadi.sk/d/6xuKVU1w3Q9jf2
 
 Последнее обновление:
-- https://bamus.cz/pub/dsh_mod_latest/
+- https://bamus.cz/pub/dsh_mod_latest/latest.7z
 
 Текстурные сборки:
 - https://bamus.cz/pub/dsh_mod_mods/
