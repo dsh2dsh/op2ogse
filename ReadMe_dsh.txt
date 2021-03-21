@@ -434,6 +434,8 @@
 
 Последнее обновление:
 - https://bamus.cz/pub/dsh_mod_latest/latest.7z
+- torrent: https://bamus.cz/pub/dsh_mod_latest.torrent
+- magnet: magnet:?xt=urn:btih:446fbecb7de642ffedd3254cc3d27c7124e3bb44&dn=dsh%5Fmod%5Flatest
 
 Текстурные сборки:
 - https://bamus.cz/pub/dsh_mod_mods/
