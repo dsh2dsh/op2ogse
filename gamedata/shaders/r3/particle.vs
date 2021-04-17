@@ -16,7 +16,6 @@ struct v2p
 #ifdef	USE_SOFT_PARTICLES
 	float4 tctexgen	: TEXCOORD1;
 #endif	//	USE_SOFT_PARTICLES
-	float  fog	: FOG;	// Fog
 	float4 hpos	: SV_Position;
 };
 
@@ -35,7 +34,6 @@ v2p main (vv v)
 	o.tctexgen 	= mul( mVPTexgen, v.P);
 	o.tctexgen.z	= o.hpos.z;
 #endif	//	USE_SOFT_PARTICLES
-	o.fog = saturate(calc_fogging(v.P));	// // ForserX (Port SkyLoader fog fix): fog, input in world coords
 
 	return o;
 }
