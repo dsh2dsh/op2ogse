@@ -7,6 +7,7 @@ function attach( sm ) -- для менеджера сигналов
 end
 
 
+local last_matras_used     = false
 local monsters_can_find_me = false
 
 function on_sleep_finished( sleep_seconds )
@@ -15,6 +16,15 @@ function on_sleep_finished( sleep_seconds )
   if monsters_can_find_me then
     monsters_can_find_me = false
     monsters_found_me( sleep_seconds )
+  end
+  if last_matras_used then
+    local cond = last_matras_used:condition()
+    if cond > 0.1 then
+      dsh.set_condition( obj, cond - 0.1 )
+    else
+      dsh.set_condition( obj, 0 )
+    end
+    last_matras_used = false
   end
 end
 
@@ -45,7 +55,25 @@ end
 function on_item_use( obj )
   local section = obj:section()
   if section == "matras" then
-    test_for_need_sleep_matras()
+    if obj:condition() > 0 then
+      if
+        level.rain_factor() > 0
+        and not ( isIndoor( level.name() ) or level.is_actor_indoor() )
+      then
+        ogse.autohiding_msg( game.translate_string( "sleep_raining" ), 1500 )
+      elseif not ogse_campfire.find_nearest_flame_pos( 10 ) then
+        ogse.autohiding_msg(
+          game.translate_string( "sleep_want_campfire" ), 1500
+        )
+      else
+        last_matras_used = obj
+        if not test_for_need_sleep_impl() then
+          last_matras_used = false
+        end
+      end
+    else
+      ogse.autohiding_msg( game.translate_string( "sleep_bad_matras" ), 1500 )
+    end
     return true -- матрас больше никому не надо использовать
   end
 end
@@ -96,6 +124,7 @@ local zevota_flag = 0
 function test_sleep_pp()
   local gg_need_sleep = get_gg_need_sleep()
   if gg_need_sleep > 250 then
+    last_matras_used = false
     ogse_sleep_mgr.begin_sleep( 8 + dsh_energy_drink.get_energy_drink_n() )
     local cat = are_cats_near()
     if cat then return db.actor:kill( cat ) end
@@ -137,6 +166,12 @@ end
 
 
 function test_for_need_sleep_matras()
+  last_matras_used = false
+  test_for_need_sleep_impl()
+end
+
+
+function test_for_need_sleep_impl( check_best_enemy )
   if
     db.actor:has_info( "horror_time_begin" )
     and db.actor:dont_has_info( "horror_fail" )
@@ -151,20 +186,31 @@ function test_for_need_sleep_matras()
   for npcId, is_stalker in pairs( db.creature ) do
     local obj = level.object_by_id( npcId )
     if obj and obj:alive() then
-      local dist = obj:position():distance_to( actorPos )
-      local is_enemy_to_actor = ogse.get_npc_relation(
-        obj, db.actor
-      ) == "enemy" and xrs_battle_ai.check_is_enemy( obj, db.actor )
+      local is_enemy_to_actor = false
       if
         string.find( obj:section(), "rat_", 1, true )
         and not dsh_rats.rats_evil_here()
       then
         is_enemy_to_actor = false
+      else
+        is_enemy_to_actor = xrs_battle_ai.check_is_enemy( obj, db.actor )
       end
-      if is_enemy_to_actor and ( dist < 20 or obj:see( db.actor ) ) then
-        enemy = true
-        break
-      elseif is_stalker and dist < 40 then
+      local dist = obj:position():distance_to( actorPos )
+      if is_enemy_to_actor then
+        if
+          dist < 20 or obj:see( db.actor )
+          or (
+            check_best_enemy and obj:best_enemy() and obj:best_enemy():is_actor()
+          )
+          or (
+            check_best_enemy and is_stalker
+            and xrs_battle_ai.has_actor_in_targets( obj )
+          )
+        then
+          enemy = true
+          break
+        end
+      elseif is_stalker then
         friends = true
         break
       end
@@ -221,10 +267,12 @@ function test_for_need_sleep_matras()
           level.start_stop_menu( ui_sleep.sleep(), true )
         end
       )
+      return true
     else
       ogse.autohiding_msg( game.translate_string( "not_need_sleep" ), 1500 )
     end
   end
+  return false
 end
 
 
