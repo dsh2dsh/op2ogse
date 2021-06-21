@@ -424,17 +424,22 @@
 Последнее обновление:
 - https://bamus.cz/pub/dsh_mod_latest/latest.7z
 - torrent: https://bamus.cz/pub/dsh_mod_latest.torrent
-- magnet: magnet:?xt=urn:btih:446fbecb7de642ffedd3254cc3d27c7124e3bb44&dn=dsh%5Fmod%5Flatest
+- magnet: magnet:?xt=urn:btih:8676b63d6fad4ad8c1368141f0f0cfe2b4ef7300&dn=dsh%5Fmod%5Fmods
 
 Текстурные сборки:
 - https://bamus.cz/pub/dsh_mod_mods/
 - torrent: https://bamus.cz/pub/dsh_mod_mods.torrent
 - magnet: http://magnet:?xt=urn:btih:462d11b3afa9d7010ed8b6529a50cdd043d1527f&dn=dsh_mod_mods
 
+* apocalypse3.7z: сборник от @optivankiev. Взято вот из этого сообщения
+  http://nlc-zone.ru/forum/topic/160-sborki-dopolneniya-i-pravki/?p=253791
+
 * nlc7_he.7z: текстуры из NLC7 Hard Edition
   http://nlc-zone.ru/forum/topic/191-nlc7-hard-edition/
 
 * nlc7_textures_venommans.7z: сборник текстур из NLC7 от VeNoMMaNs
+
+* optivankiev_asphalt.7z: текстура асфальта с большим разрешением от @optivankiev
 
 * sgc_v92_v1.7z: текстуры от V92 c доработками adm-ral
 
