@@ -424,13 +424,11 @@
 - https://bamus.cz/pub/dsh_mod_repack/
 или
 - torrent: https://bamus.cz/pub/dsh_mod_repack.torrent
-- magnet: http://magnet:?xt=urn:btih:035246a8d5b4cd19e06b3273114616564e22b920&dn=dsh_mod_repack
-- https://yadi.sk/d/6xuKVU1w3Q9jf2
+- magnet: magnet:?xt=urn:btih:035246a8d5b4cd19e06b3273114616564e22b920&dn=dsh%5Fmod%5Frepack
 
 Последнее обновление:
 - https://bamus.cz/pub/dsh_mod_latest/latest.7z
 - torrent: https://bamus.cz/pub/dsh_mod_latest.torrent
-- magnet: magnet:?xt=urn:btih:446fbecb7de642ffedd3254cc3d27c7124e3bb44&dn=dsh%5Fmod%5Flatest
 
 Текстурные сборки:
 - https://bamus.cz/pub/dsh_mod_mods/

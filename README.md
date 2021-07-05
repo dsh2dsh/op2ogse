@@ -418,18 +418,16 @@
 - https://bamus.cz/pub/dsh_mod_repack/
 или
 - torrent: https://bamus.cz/pub/dsh_mod_repack.torrent
-- magnet: http://magnet:?xt=urn:btih:035246a8d5b4cd19e06b3273114616564e22b920&dn=dsh_mod_repack
-- https://yadi.sk/d/6xuKVU1w3Q9jf2
+- magnet: magnet:?xt=urn:btih:035246a8d5b4cd19e06b3273114616564e22b920&dn=dsh%5Fmod%5Frepack
 
 Последнее обновление:
 - https://bamus.cz/pub/dsh_mod_latest/latest.7z
 - torrent: https://bamus.cz/pub/dsh_mod_latest.torrent
-- magnet: magnet:?xt=urn:btih:8676b63d6fad4ad8c1368141f0f0cfe2b4ef7300&dn=dsh%5Fmod%5Fmods
 
 Текстурные сборки:
 - https://bamus.cz/pub/dsh_mod_mods/
 - torrent: https://bamus.cz/pub/dsh_mod_mods.torrent
-- magnet: http://magnet:?xt=urn:btih:462d11b3afa9d7010ed8b6529a50cdd043d1527f&dn=dsh_mod_mods
+- magnet: magnet:?xt=urn:btih:8676b63d6fad4ad8c1368141f0f0cfe2b4ef7300&dn=dsh%5Fmod%5Fmods
 
 * apocalypse3.7z: сборник от @optivankiev. Взято вот из этого сообщения
   http://nlc-zone.ru/forum/topic/160-sborki-dopolneniya-i-pravki/?p=253791
