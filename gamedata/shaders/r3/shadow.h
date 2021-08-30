@@ -835,8 +835,8 @@ float 	shadow_rain 	(float4 tc, float2 tcJ)			// jittered sampling
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
-uniform float3x4 m_sunmask; // ortho-projection
-#ifdef USE_SUNMASK
+#ifdef  USE_SUNMASK    
+float3x4 m_sunmask;    // ortho-projection
 float sunmask( float4 P )
 {
 	float2 		tc	= mul( m_sunmask, P );		//
