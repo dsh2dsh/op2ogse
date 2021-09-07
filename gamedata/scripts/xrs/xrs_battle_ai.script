@@ -750,6 +750,7 @@ end
 class "action_altcombat" ( action_base )
 function action_altcombat:__init( npc, action_name, storage ) super( nil, action_name )
   self.st = storage
+  self.covers = covers_mgr( self )
 end
 
 
@@ -969,9 +970,7 @@ function action_altcombat:execute_situation_later( be, bw )
   if not combat_situations_args[ npc:id() ] then
     table.insert( combat_situations_queue, npc:id() )
   end
-  combat_situations_args[ npc:id() ] = function()
-    self:execute_situation( be, bw )
-  end
+  combat_situations_args[ npc:id() ] = function() self:execute_situation() end
 end
 
 function reset_combat_situation( id )
@@ -979,8 +978,12 @@ function reset_combat_situation( id )
 end
 
 
-function action_altcombat:execute_situation( be, bw )
+function action_altcombat:execute_situation()
   local npc = self.object
+  local be  = get_target( npc, true ) -- текущий враг
+  if not be then return false end
+  local bw  = get_best_weapon( npc )
+  if not bw then return false end
   local cur_situation, last_algorythm
   local lcp     = last_choosed_path[ npc:id() ]
   local use_lcp = false
@@ -1026,17 +1029,19 @@ function action_altcombat:execute_situation( be, bw )
     reset_last_time_send( npc )
   end
 
-  local covers = covers_mgr( self, be )
+  self.covers:set_best_enemy( npc, be )
   ASSERT(
-    last_algorythm and covers[ last_algorythm ],
+    last_algorythm and self.covers[ last_algorythm ],
     "[%s]: %s: wrong last_algorythm = %s",
      script_name(), npc:name(), tostring( last_algorythm )
   )
-  local assist_point = covers[ last_algorythm ]( covers )
+  local assist_point = self.covers[ last_algorythm ]( self.covers )
 
   if assist_point and assist_point ~= 0 then
     utils.send_to_nearest_accessible_vertex( npc, assist_point )
   end
+
+  return true
 end
 
 
@@ -1225,7 +1230,8 @@ end
 
 
 function action_altcombat:find_cover( be, ... )
-  return covers_mgr( self, be ):find_cover( ... )
+  self.covers:set_best_enemy( self.object, be )
+  self.covers:find_cover( ... )
 end
 
 
@@ -2781,10 +2787,15 @@ end
 
 class "covers_mgr"
 function covers_mgr:__init( act, be )
-  self.act    = act
+  self.st = act.st
+  self.cover_cache = cover_cache_processor( act.object, be )
+  self:set_best_enemy( act.object, be )
+end
+
+function covers_mgr:set_best_enemy( npc, be )
   self.be     = be
-  self.object = act.object
-  self.st     = act.st
+  self.object = npc
+  self.cover_cache:reset( npc, be )
 end
 
 function covers_mgr:find_cover_0()
@@ -2867,7 +2878,7 @@ function covers_mgr:find_cover( mode )
   local npc_pos      = npc:position()
   local to_enemy     = npc_pos:distance_to( enemy_pos )
 
-  local cover_cache    = cover_cache_processor( npc, enemy )
+  local cover_cache    = self.cover_cache
   local cover_callback = function( cover, next_check )
     return cover_cache:callback( cover, next_check )
   end
@@ -3113,6 +3124,10 @@ end
 
 class "cover_cache_processor"
 function cover_cache_processor:__init( npc, enemy )
+  self:reset( npc, enemy )
+end
+
+function cover_cache_processor:reset( npc, enemy )
   self.enemy = enemy
   self.npc   = npc
   self:clear()
@@ -3288,9 +3303,10 @@ function process_combat_situations_on_update()
     local npc_id = table.remove( combat_situations_queue, 1 )
     local f = combat_situations_args[ npc_id ]
     if f then
-      f()
       combat_situations_args[ npc_id ] = nil
-      return true
+      if f() then
+        return true
+      end
     end
   end
   return false
