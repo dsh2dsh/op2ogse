@@ -751,6 +751,12 @@ class "action_altcombat" ( action_base )
 function action_altcombat:__init( npc, action_name, storage ) super( nil, action_name )
   self.st = storage
   self.covers = covers_mgr( self )
+  self.grenadier = xrs_grenade.action_kill_it_with_fire( storage.grenadier )
+  self.objects = {
+    [ game_object.friend  ] = {},
+    [ game_object.neutral ] = {},
+    [ game_object.enemy   ] = {},
+  }
 end
 
 
@@ -785,7 +791,7 @@ function action_altcombat:initialize()
     self.st.is_camper = nil
   end
 
-  self.fake_battle       = nil
+  self.fake_battle       = false
   self.can_fire          = false
   self.check_ready_state = true
   in_combat[ npc:id() ]  = true
@@ -834,7 +840,7 @@ function action_altcombat:not_ready_state()
   if self.check_ready_state then
     npc:clear_animations()
     if is_not_ready_state( npc ) then
-      self.aiming = nil
+      self.aiming = false
       return true
     end
     self.check_ready_state = nil
@@ -854,7 +860,7 @@ function action_altcombat:not_ready_state()
     end
     return true
   elseif self.critically_wounded then
-    self.critically_wounded = nil
+    self.critically_wounded = false
   end
   return false
 end
@@ -867,7 +873,7 @@ function action_altcombat:execute()
   self.firing_actor = false
   self:_execute()
   if not self.firing_actor then
-    self.start_firing_actor = nil
+    self.start_firing_actor = false
   end
   pt:stop()
   if pt:time() > 30000 then
@@ -929,7 +935,7 @@ function action_altcombat:_execute()
     self:set_transfer_state( obj, bw )
     if bw then
       self.object:set_item( object.aim1, bw )
-      self.aiming = nil
+      self.aiming = false
     end
     last_enemy_id[ npc:id() ] = nil
     return
@@ -1016,16 +1022,23 @@ function action_altcombat:execute_situation()
     end
   end
   if not use_lcp then
-    if not lcp then
-      lcp = {}
+    if lcp then
+      lcp.alg       = last_algorythm
+      lcp.be        = be:id()
+      lcp.inertion  = self:get_npc_reaction_time()
+      lcp.pos       = be:position()
+      lcp.situation = cur_situation
+      lcp.ttl       = nil
+    else
+      lcp = {
+        alg       = last_algorythm,
+        be        = be:id(),
+        inertion  = self:get_npc_reaction_time(),
+        pos       = be:position(),
+        situation = cur_situation,
+      }
       last_choosed_path[ npc:id() ] = lcp
     end
-    lcp.alg       = last_algorythm
-    lcp.be        = be:id()
-    lcp.inertion  = self:get_npc_reaction_time()
-    lcp.pos       = be:position()
-    lcp.situation = cur_situation
-    lcp.ttl       = nil
     reset_last_time_send( npc )
   end
 
@@ -1264,11 +1277,9 @@ end
 function action_altcombat:check_objects( bw, enemy )
   local npc = self.object
   if enemy and bw and IsRPG( bw ) then
-    self.objects = {
-      [ game_object.friend  ] = {},
-      [ game_object.neutral ] = {},
-      [ game_object.enemy   ] = {},
-    }
+    for k, _ in pairs( self.objects ) do
+      self.objects[ k ] = {}
+    end
     for o in npc:memory_visible_objects() do
       self:check_single_object( o:object() )
     end
@@ -1414,21 +1425,18 @@ end
 function action_altcombat:throw_grenade()
   local npc = self.object
   if self.st.grenadier_ready then
-    if self.grenadier then
-      self.grenadier:execute()
-    else
-      self.grenadier = xrs_grenade.action_kill_it_with_fire(
-        npc, self.st.grenadier
-      )
-      self.grenadier:initialize()
+    if not self.grenadier_initialized then
+      self.grenadier:initialize( npc )
+      self.grenadier_initialized = true
     end
+    self.grenadier:execute()
     return true
   end
   self.st.grenadier.ready_to_grenade = false
-  if self.grenadier then
+  if self.grenadier_initialized then
     self.grenadier:finalize()
-    self.aiming    = nil
-    self.grenadier = nil
+    self.aiming = false
+    self.grenadier_initialized = false
     reset_last_time_send( npc )
     return true
   end
@@ -1437,19 +1445,21 @@ end
 
 
 function action_altcombat:finalize()
-  if self.grenadier then self.grenadier:finalize() end
+  if self.grenadier_initialized then
+    self.grenadier:finalize()
+    self.grenadier_initialized = false
+  end
   local npc = self.object
-  self.aiming              = nil
-  self.critically_wounded  = nil
-  self.combat_sight        = nil
-  self.grenadier           = nil
-  self.st.grenadier_ready  = nil
-  self.st.grenadier.ready_to_grenade = nil
-  self.start_firing_actor  = nil
+  self.aiming              = false
+  self.critically_wounded  = false
+  self.combat_sight        = false
+  self.st.grenadier_ready  = false
+  self.st.grenadier.ready_to_grenade = false
+  self.start_firing_actor  = false
   reset_everything( npc )
   cooldown[ npc:id() ] = time_global() + cooldown_time
   if self.fake_battle then
-    self.fake_battle = nil
+    self.fake_battle = false
     return
   end
   xr_sound.set_sound( npc, nil )
@@ -2566,7 +2576,7 @@ function action_altcombat:set_weapons_fire( enemy, weapon, override_vis, npc_ran
         type_of_fire = object.aim1
       end
     else
-      self.aiming  = nil
+      self.aiming  = false
       type_of_fire = object.fire1
     end
   else
@@ -2677,7 +2687,7 @@ function action_altcombat:set_weapons_idle( wpn )
   if wpn then
     self.object:set_item( object.idle, wpn )
   end
-  self.aiming = nil
+  self.aiming = false
 end
 
 
@@ -2731,7 +2741,14 @@ function action_altcombat:set_combat_sight( enemy, weapon )
 
   local st = self.combat_sight
   if not st then
-    st = {}
+    st = {
+      bone      = false,
+      enemy_id  = false,
+      look_pos  = false,
+      time      = false,
+      use_deviation = false,
+      weapon_id = false,
+    }
     self.combat_sight = st
   end
 
@@ -2879,9 +2896,7 @@ function covers_mgr:find_cover( mode )
   local to_enemy     = npc_pos:distance_to( enemy_pos )
 
   local cover_cache    = self.cover_cache
-  local cover_callback = function( cover, next_check )
-    return cover_cache:callback( cover, next_check )
-  end
+  local cover_callback = cover_cache.callback_f
 
   local cover, cover_vertex
   local min_dist = close_combat_distance
@@ -3125,6 +3140,9 @@ end
 class "cover_cache_processor"
 function cover_cache_processor:__init( npc, enemy )
   self:reset( npc, enemy )
+  self.callback_f = function( cover, next_check )
+    return self:callback( cover, next_check )
+  end
 end
 
 function cover_cache_processor:reset( npc, enemy )
@@ -3136,6 +3154,7 @@ end
 function cover_cache_processor:clear()
   self.cache   = {}
   self.ordered = {}
+  self.ordered_n = 0
 end
 
 function cover_cache_processor:get_cache()
@@ -3145,10 +3164,10 @@ end
 function cover_cache_processor:best_cover( cover )
   if cover then
     if not self.cache[ cover:level_vertex_id() ] then
-      return self.ordered[ math.random( table.getn( self.ordered ) ) ]
+      return self.ordered[ math.random( self.ordered_n ) ]
     end
-  elseif table.getn( self.ordered ) > 0 then
-    return self.ordered[ math.random( table.getn( self.ordered ) ) ]
+  elseif self.ordered_n > 0 then
+    return self.ordered[ math.random( self.ordered_n ) ]
   end
   return cover
 end
@@ -3159,12 +3178,13 @@ function cover_cache_processor:callback( cover, next_check )
   if cached ~= nil then return cached end
   self.cache[ cover_vertex ] = not (
     check_vertex_locked( self.npc, cover_vertex )
-    or ( its_a_trap( self.npc, cover_vertex ) )
+    or its_a_trap( self.npc, cover_vertex )
     or ( next_check and next_check( cover ) )
     or false
   )
-  table.insert( self.ordered, cover )
-  if table.getn( self.ordered ) == 50 then
+  self.ordered_n = self.ordered_n + 1
+  self.ordered[ self.ordered_n ] = cover
+  if self.ordered_n == 50 then
     return true
   end
   return self.cache[ cover_vertex ]
