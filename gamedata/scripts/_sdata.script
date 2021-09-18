@@ -6,15 +6,8 @@
 -- Last edit:	KamikaZze (11.06.14)
 -- Global Description: Отладочная информация
 
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-GlobalEnable = false		--Включить скрипт? Подробные настройки смотрите ниже
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+GlobalEnable = false --Включить скрипт? Подробные настройки смотрите ниже
 
-----------------------------------------------------------------------------
 -- ПОДРОБНОЕ ОПИСАНИЕ:
 
 -- Показывает позицию актора
@@ -25,29 +18,28 @@ GlobalEnable = false		--Включить скрипт? Подробные настройки смотрите ниже
 -- Показывает информацию о ГГ - здоровье, сила, радиация, сытость, жажда, сонливость, наличные, пси-здоровье, мораль, ранг, группировка, репутация. Все параметры настраиваются
 -- Показывает счетчиков новых амчивок
 -- Показывает состояние предметов в слотах
-----------------------------------------------------------------------------
 
 local subscribed
 function subscribe()
-	GlobalEnable = true
-	ogse_benchmark.subscribe()
-	subscribed = {
-		{ signal = "on_info", fun = this.infos },
-		{ signal = "on_actor_update", fun = this.vis_int },
-	}
-	for _, s in ipairs( subscribed ) do
-		ogse_signals.get_mgr():subscribe( s )
-	end
+  GlobalEnable = true
+  ogse_benchmark.subscribe()
+  subscribed = {
+    { signal = "on_info", fun = this.infos },
+    { signal = "on_actor_update", fun = this.vis_int },
+  }
+  for _, s in ipairs( subscribed ) do
+    ogse_signals.get_mgr():subscribe( s )
+  end
 end
 
 function unsubscribe()
-	for _, s in ipairs( subscribed ) do
-		ogse_signals.get_mgr():unsubscribe( s )
-	end
-	subscribed = nil
-	switch_off()
-	ogse_benchmark.unsubscribe()
-	GlobalEnable = false
+  for _, s in ipairs( subscribed ) do
+    ogse_signals.get_mgr():unsubscribe( s )
+  end
+  subscribed = nil
+  switch_off()
+  ogse_benchmark.unsubscribe()
+  GlobalEnable = false
 end
 
 ----------------------------------------------------------------------------
@@ -208,172 +200,201 @@ function infos(npc, info_id)
 	end
 end
 
+
 local mental_anims = {
-    [0]="danger",
-    [1]="free",
-    [2]="panic"
+  [ 0 ] = "danger",
+  [ 1 ] = "free",
+  [ 2 ] = "panic",
 }
 
-function info_about_npc()	
-	clear_info_about_npc()
+local danger_types = {
+  [ danger_object.attack_sound    ] = "attack sound",
+  [ danger_object.attacked        ] = "attacked",
+  [ danger_object.bullet_ricochet ] = "bullet ricochet",
+  [ danger_object.enemy_sound     ] = "enemy sound",
+  [ danger_object.entity_attacked ] = "entity attacked",
+  [ danger_object.entity_corpse   ] = "entity corpse",
+  [ danger_object.entity_death    ] = "entity death",
+  [ danger_object.grenade         ] = "grenade",
+}
 
-	local PosLogic = hud:GetCustomStatic("logic_debug")
-	if PosLogic == nil then
-		hud:AddCustomStatic("logic_debug",true)
-		PosLogic = hud:GetCustomStatic("logic_debug")
-	end
+function info_about_npc()
+  clear_info_about_npc()
+  local PosLogic = hud:GetCustomStatic( "logic_debug" )
+  if not PosLogic then
+    hud:AddCustomStatic( "logic_debug", true )
+    PosLogic = hud:GetCustomStatic( "logic_debug" )
+  end
 
-	local LogicText = ""
+  local rq = level.get_current_ray_query()
+  -- local rq = level.ray_query(
+  --   device().cam_pos, device().cam_dir, 300, rq_target.rqtBoth, db.actor
+  -- )
+  local target_obj = rq.object
 
-	local rq = level.get_current_ray_query()
-        -- local rq = level.ray_query(
-        --   device().cam_pos, device().cam_dir, 300, rq_target.rqtBoth, db.actor
-        -- )
-	local target_obj = rq.object
+  local LogicText
+  if target_obj then
+    if
+      target_obj:is_stalker() or target_obj:is_monster()
+      or target_obj:is_trader()
+    then
+      local gulag_val, scheme1, scheme2, anim, mental, pos, lv, gv
 
-	if target_obj then 
-		if target_obj:is_stalker() or target_obj:is_monster() or target_obj:is_trader() then
+      local gulag = xr_gulag.get_npc_gulag( target_obj )
+      if gulag then
+        gulag = gulag.name
+        gulag_val = xr_gulag.getGulagPopulation( gulag )
+      end
 
-			local gulag_val,scheme1,scheme2,anim,mental,pos,lv,gv
-		
-			local gulag = xr_gulag.get_npc_gulag(target_obj)
-			if gulag then
-				gulag = gulag.name
-				gulag_val = xr_gulag.getGulagPopulation(gulag)
-			end
-			if db.storage[target_obj:id()] then
-				scheme1 = tostring(db.storage[target_obj:id()].active_section)
-				scheme2 = tostring(db.storage[target_obj:id()].section_logic)
-				if db.storage[target_obj:id()].state_mgr then
-					anim = db.storage[target_obj:id()].state_mgr.animstate:state()
-					mental = state_lib.states[db.storage[target_obj:id()].state_mgr.target_state].mental
-					if mental_anims[mental] then
-						mental = mental_anims[mental]
-					else
-						mental = tostring(mental).." (unknown state!)"
-					end
-				end
-			end
-			local be = target_obj:best_enemy()
-			if be then
-				be = be:name()
-			end
-			local xrs_be = xrs_battle_ai.get_target( target_obj )
-			if xrs_be then xrs_be = xrs_be:name() end
-			local best_danger = target_obj:best_danger()
-			local best_danger_name = nil
-			local best_danger_type = nil
-			if best_danger and best_danger:object() then
-				best_danger_name = best_danger:object():name()
-			end
-			if best_danger then
-				best_danger_type = "not specified"
-				local bd_type = best_danger:type()
-				if bd_type == danger_object.attack_sound then
-					best_danger_type = "attack sound"
-				elseif bd_type == danger_object.bullet_ricochet then
-					best_danger_type = "bullet ricochet"
-				elseif bd_type == danger_object.grenade then
-					best_danger_type = "grenade"
-				elseif bd_type == danger_object.entity_corpse then
-					best_danger_type = "entity corpse"
-				elseif bd_type == danger_object.entity_attacked then
-					best_danger_type = "entity attacked"
-				elseif bd_type == danger_object.attacked then
-					best_danger_type = "attacked"
-				elseif bd_type == danger_object.enemy_sound then
-					best_danger_type = "enemy sound"
-				elseif bd_type == danger_object.entity_death then
-					best_danger_type = "entity death"
-				end
-			end
-			local community = "monster"
-			if target_obj:is_stalker() then
-				community = target_obj:character_community()
-			end
-			local storage = db.storage[target_obj:id()]
-			local scheme = storage.active_scheme
-			local state = state_mgr.get_state(target_obj)
-			local active_evaluator
-			if ogse_debug.active_evaluators and ogse_debug.active_evaluators[target_obj:id()] then
-				active_evaluator = ogse_debug.active_evaluators[target_obj:id()]			
-			end
-			local active_danger
-			if ogse_debug.active_dangers and ogse_debug.active_dangers[target_obj:id()] then
-				active_danger = ogse_debug.active_dangers[target_obj:id()]			
-			end	
-			local active_anim
-			if ogse_debug.active_anim and ogse_debug.active_anim[target_obj:id()] then
-				active_anim = ogse_debug.active_anim[target_obj:id()]			
-			end				
-			LogicText = LogicText..
-				"npc: sect: ["..target_obj:section().."] ".."name: ["..target_obj:name().."]\\n"..
-				"npc: id: "..target_obj:id().." ".."story_id: "..target_obj:story_id().." ".."comm: ["..community.."]\\n"..
-				"npc: behave scheme: ["..tostring(scheme).."], fov: "..target_obj:fov()..", range: "..target_obj:range().."\\n"..
-				"npc: st_mgr state: ["..tostring(state).."] ".."anim: ["..tostring(anim).."] ".."mental: ["..tostring(mental).."]\\n"..
-				"npc: last active eval: "..tostring(active_evaluator).."\\n"..
-				"npc: last active danger: "..tostring(active_danger).."\\n"..
-				"npc: last active anim_eval: "..tostring(active_anim).."\\n"..						
-				"------------------\\n"..
-				"best_enemy: xrs_battle_ai[" .. tostring( xrs_be ) .. "] engine[" .. tostring( be ) .. "]\\n" ..
-				"best_danger: "..tostring(best_danger_name).."\\n"..
-				"best_danger_type: "..tostring(best_danger_type).."\\n"..
-				"is wounded: "..tostring(xr_wounded.is_wounded(target_obj))..", health: "..target_obj.health..", bleeding: "..target_obj:get_bleeding().."\\n"..
-				"------------------\\n"..
-				"profile name: "..tostring(target_obj:profile_name()).."\\n"..
-				"visual name: "..tostring(target_obj:get_visual_name()).."\\n"..
-				"gulag: "..tostring(gulag).."\\n"..
-				"gulag val: "..tostring(gulag_val).."\\n"..
-				"gulag job: "..scheme1.."\\n"..
-				"global job: "..scheme2.."\\n"..
-				"coords: X "..target_obj:position().x..", Y "..target_obj:position().y..", Z "..target_obj:position().z.."\\n"..
-				"level_vertex: "..target_obj:level_vertex_id()..", game_vertex: "..target_obj:game_vertex_id()
-		else
-			local scheme1, scheme2
-			if db.storage[target_obj:id()] then
-				scheme1 = tostring(db.storage[target_obj:id()].active_section)
-				scheme2 = tostring(db.storage[target_obj:id()].section_logic)			
-			end
-			LogicText = LogicText..
-				"obj: section: "..target_obj:section().."\\n"..
-				"obj: name: "..target_obj:name().."\\n"..
-				"obj: id: "..target_obj:id().."\\n"..
-				"story_id: "..target_obj:story_id().."\\n"..
-				"visual name: "..target_obj:get_visual_name().."\\n"..
-				"------------------\\n"..
-				"coords: X "..target_obj:position().x..", Y "..target_obj:position().y..", Z "..target_obj:position().z.."\\n"..
-				"dir: X "..target_obj:direction().x..", Y "..target_obj:direction().y..", Z "..target_obj:direction().z.."\\n"..
-				"Active logic: "..tostring(scheme2).."\\n"..
-				"Logic Section: "..tostring(scheme1).."\\n"..
-				"level_vertex: "..target_obj:level_vertex_id().."\\n"..
-				"game_vertex: "..target_obj:game_vertex_id()
+      if db.storage[ target_obj:id() ] then
+        scheme1 = tostring( db.storage[ target_obj:id() ].active_section )
+        scheme2 = tostring( db.storage[ target_obj:id() ].section_logic  )
+        if db.storage[ target_obj:id() ].state_mgr then
+          anim = db.storage[ target_obj:id() ].state_mgr.animstate:state()
+          mental = state_lib.states[ db.storage[ target_obj:id() ].state_mgr.target_state ].mental
+          mental = mental_anims[ mental ]
+            or ( tostring( mental ) .. " (unknown state!)" )
+        end
+      end
 
-			if target_obj:is_ammo() then
-				LogicText = LogicText.."\\n \\nbullets in pack:"..target_obj:get_current_ammo()
-			end
-		end
+      local be = target_obj:best_enemy()
+      if be then
+        be = be:name()
+      end
+      local xrs_be = xrs_battle_ai.get_target( target_obj )
+      if xrs_be then xrs_be = xrs_be:name() end
+      local best_danger = target_obj:best_danger()
+      local best_danger_name
+      local best_danger_type
+      if best_danger and best_danger:object() then
+        best_danger_name = best_danger:object():name()
+      end
+      if best_danger then
+        best_danger_type = danger_types[ best_danger:type() ] or "not specified"
+      end
 
-		local bone  = rq.element
-		if bone then
-			local bone_name = target_obj:get_bone_name(bone)
-			LogicText = LogicText.."\\n\\nbone index=".. bone ..", name="..bone_name
-		end
-		
-	elseif rq.mtl then
-		LogicText = LogicText .. get_mtl_text( rq.mtl )
+      local community = "monster"
+      if target_obj:is_stalker() then
+        community = target_obj:character_community()
+      end
+
+      local storage = db.storage[ target_obj:id() ]
+      local scheme = storage.active_scheme
+      local state = state_mgr.get_state( target_obj )
+      local active_evaluator = ogse_debug.get_active_evals( target_obj )
+      local active_danger    = ogse_debug.get_active_dangers( target_obj )
+      local active_anim      = ogse_debug.get_active_anims( target_obj )
+
+      LogicText = {
+        string.format(
+          "npc: sect: [%s] name: [%s]", target_obj:section(), target_obj:name()
+        ),
+        string.format(
+          "npc: id: %s story_id: %s comm: [%s]",
+          target_obj:id(), target_obj:story_id(), community
+        ),
+        string.format(
+          "npc: behave scheme: [%s], fov: %s, range: %s",
+          tostring( scheme ), target_obj:fov(), target_obj:range()
+        ),
+        string.format(
+          "npc: st_mgr state: [%s] anim: [%s] mental: [%s]",
+          tostring( state ), tostring( anim ), tostring( mental )
+        ),
+        string.format( "npc: last active eval: %s", active_evaluator or "" ),
+        string.format( "npc: last active danger: %s", active_danger or "" ),
+        string.format( "npc: last active anim_eval: %s", active_anim or "" ),
+        "------------------",
+        string.format(
+          "best_enemy: xrs_battle_ai[%s] engine[%s]",
+          tostring( xrs_be ), tostring( be )
+        ),
+        string.format( "best_danger: %s", tostring( best_danger_name ) ),
+        string.format( "best_danger_type: %s", tostring( best_danger_type ) ),
+        string.format(
+          "is wounded: %s, health: %s, bleeding: %s",
+          tostring( xr_wounded.is_wounded( target_obj ) ), target_obj.health,
+          target_obj:get_bleeding()
+        ),
+        "------------------",
+        string.format( "profile name: %s", tostring( target_obj:profile_name() ) ),
+        string.format( "visual name: %s", tostring( target_obj:get_visual_name() ) ),
+        string.format( "gulag: %s", tostring( gulag ) ),
+        string.format( "gulag val: %s", tostring( gulag_val ) ),
+        string.format( "gulag job: %s", scheme1 ),
+        string.format( "global job: %s", scheme2 ),
+        string.format(
+          "coords: X %1.3f, Y %1.3f, Z %1.3f",
+          target_obj:position().x, target_obj:position().y, target_obj:position().z
+        ),
+        string.format(
+          "level_vertex: %s, game_vertex: %s",
+          target_obj:level_vertex_id(), target_obj:game_vertex_id()
+        ),
+      }
+
+    else
+      local scheme1, scheme2
+      if db.storage[ target_obj:id() ] then
+        scheme1 = tostring( db.storage[ target_obj:id() ].active_section )
+        scheme2 = tostring( db.storage[ target_obj:id() ].section_logic  )
+      end
+      LogicText = {
+        string.format( "obj: section: %s", target_obj:section() ),
+        string.format( "obj: name: %s", target_obj:name() ),
+        string.format( "obj: id: %s", target_obj:id() ),
+        string.format( "story_id: %s", target_obj:story_id() ),
+        string.format( "visual name: %s", target_obj:get_visual_name() ),
+        "------------------",
+        string.format(
+          "coords: X %1.3f, Y %1.3f, Z %1.3f",
+          target_obj:position().x, target_obj:position().y, target_obj:position().z
+        ),
+        string.format(
+          "dir: X %1.3f, Y %1.3f, Z %1.3f",
+          target_obj:direction().x, target_obj:direction().y, target_obj:direction().z
+        ),
+        string.format( "Active logic: %s", tostring( scheme2 ) ),
+        string.format( "Logic Section: %s", tostring( scheme1 ) ),
+        string.format( "level_vertex: %s", target_obj:level_vertex_id() ),
+        string.format( "game_vertex: %s", target_obj:game_vertex_id() ),
+      }
+      if target_obj:is_ammo() then
+        table.insert(
+          LogicText,
+          string.format( "bullets in pack: %s", target_obj:get_current_ammo() )
+        )
+      end
     end
 
-	local dist = rq.range
-	if dist then 
-		LogicText = LogicText.."\\n\\ndistance: ".. dist
-		local pos = vector():mad( device().cam_pos, device().cam_dir, dist )
-		LogicText = string.format( "%s \\n\\ntarget pos: %1.3f, %1.3f, %1.3f", LogicText, pos.x, pos.y, pos.z )
+    local bone = rq.element
+    if bone then
+      local bone_name = target_obj:get_bone_name( bone )
+        table.insert(
+          LogicText,
+          string.format( "bone index=%s, name=%s", bone, bone_name )
+        )
+    end
 
-	end
+  elseif rq.mtl then
+    LogicText = { get_mtl_text( rq.mtl ) }
+  else
+    LogicText = {}
+  end
 
-	if PosLogic then
-		PosLogic:wnd():SetText(LogicText)
-	end
+  local dist = rq.range
+  if dist then
+    table.insert( LogicText, string.format( "distance: %s", dist ) )
+    local pos = vector():mad( device().cam_pos, device().cam_dir, dist )
+    table.insert(
+      LogicText,
+      string.format( "target pos: %1.3f, %1.3f, %1.3f", pos.x, pos.y, pos.z )
+    )
+  end
+
+  if PosLogic then
+    PosLogic:wnd():SetText( table.concat( LogicText, "\\n" ) )
+  end
 end
 
 
