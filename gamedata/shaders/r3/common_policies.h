@@ -20,13 +20,6 @@
 	#define	GLD_P( _tc, _pos2d, _iSample ) _tc, _iSample
 #endif	//	GBUFFER_OPTIMIZATION
 
-// GLDO_P - gbuffer_load_data_offset
-#ifdef GBUFFER_OPTIMIZATION
-	#define	GLDO_P( _tc, _tc2, _pos2d, _iSample ) _tc, _tc2, _pos2d, _iSample
-#else
-	#define	GLDO_P( _tc, _tc2, _pos2d, _iSample ) _tc, _tc2, _iSample
-#endif
-
 /////////////////////////////////////////////////////////////////////////////
 // CS_P
 #ifdef USE_MSAA

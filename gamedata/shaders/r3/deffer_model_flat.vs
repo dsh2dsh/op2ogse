@@ -28,10 +28,6 @@ v2p_flat _main( v_model I )
 	O.tcdh.w	= L_material.y;							// (,,,dir-occlusion)
 #endif
 
-#ifdef USE_GRASS_WAVE
-	O.tcdh.z = 1.f;
-#endif
-
 #ifdef USE_TDETAIL
 	O.tcdbump	= O.tcdh*dt_params;					// dt tc
 #endif

@@ -197,9 +197,9 @@ float gbuf_unpack_mtl( float mtl_hemi )
 }
 
 #ifndef EXTEND_F_DEFFER
-f_deffer pack_gbuffer( float4 norm, float4 pos, float4 col, float4 wet )
+f_deffer pack_gbuffer( float4 norm, float4 pos, float4 col )
 #else
-f_deffer pack_gbuffer( float4 norm, float4 pos, float4 col, float4 wet, uint imask )
+f_deffer pack_gbuffer( float4 norm, float4 pos, float4 col, uint imask )
 #endif
 {
 	f_deffer res;
@@ -211,10 +211,6 @@ f_deffer pack_gbuffer( float4 norm, float4 pos, float4 col, float4 wet, uint ima
 #else
 	res.position	= float4( gbuf_pack_normal( norm ), pos.z, gbuf_pack_hemi_mtl( norm.w, pos.w ) );
 	res.C			   = col;
-#endif
-
-#ifdef SSLR_ENABLED
-	res.Wetness = wet;
 #endif
 
 #ifdef EXTEND_F_DEFFER
