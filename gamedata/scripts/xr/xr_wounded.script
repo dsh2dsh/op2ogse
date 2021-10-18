@@ -231,8 +231,8 @@ function action_wounded:execute()
     end
     -- жрание аптечек и прочей срани.
     -- Использовать можно только если нам можно сейчас есть аптечку.
-    if self.a.use_medkit then
-      wound_manager:eat_medkit()
+    if self.a.use_medkit and wound_manager:eat_medkit() then
+      return
     end
     local emerg
     if wound_manager_state == "psy_shoot" then
@@ -396,91 +396,62 @@ end
 
 
 function Cwound_manager:eat_medkit()
+  local medkit_eaten = false
   if self.can_use_medkit then
-    local medkit_eaten = false
-    local has_medkit
-    for _, sect in ipairs( medkits ) do
-      has_medkit = self.npc:object( sect )
-      if has_medkit and alife():object( has_medkit:id() ) then
-        break
-      else
-        has_medkit = nil
-      end
-    end
-    if has_medkit then
-      -- self.npc:eat( has_medkit )
-      self.npc:heal_wounds( 1 )
-      self.npc.health = 1
-      ogse.remove_item_from_inventory( has_medkit, self.npc )
-      medkit_eaten = true
-    end
-    if medkit_eaten then
-      local sobj = alife():object( self.npc:id() )
-      sobj.wounded        = false -- позволяем выйти из состояния раненности
-      self.npc:wounded( false )
-      self.medkit_eaten   = true
-      self.can_use_medkit = false
-    end
+    medkit_eaten = true
+    self.npc:heal_wounds( 1 )
+    self.npc.health = 1
+    self.npc:wounded( false )
+    local sobj = alife():object( self.npc:id() )
+    sobj.wounded        = false -- позволяем выйти из состояния раненности
+    self.medkit_eaten   = true
+    self.can_use_medkit = false
   end
   self:hit_callback()
+  return medkit_eaten
 end
 
 
 function Cwound_manager:process_fight( hp )
-  local key = self:get_key_from_distance( self.a.hp_fight, hp )
-  if key then
-    if self.a.hp_fight[ key ].state then
-      return tostring(
-        xr_logic.pick_section_from_condlist(
-          db.actor, self.npc, self.a.hp_fight[ key ].state
-        )
-      )
-    end
+  local key, t = self:get_key_from_distance( self.a.hp_fight, hp )
+  if key and t.state then
+    return tostring(
+      xr_logic.pick_section_from_condlist( db.actor, self.npc, t.state )
+    )
   end
   return "true"
 end
 
 
 function Cwound_manager:process_victim( hp )
-  local key = self:get_key_from_distance( self.a.hp_victim, hp )
-  if key then
-    if self.a.hp_victim[ key ].state then
-      return tostring(
-        xr_logic.pick_section_from_condlist(
-          db.actor, self.npc, self.a.hp_victim[ key ].state
-        )
-      )
-    end
+  local key, t = self:get_key_from_distance( self.a.hp_victim, hp )
+  if key and t.state then
+    return tostring(
+      xr_logic.pick_section_from_condlist( db.actor, self.npc, t.state )
+    )
   end
   return "nil"
 end
 
 
 function Cwound_manager:process_hp_wound( hp )
-  local key = self:get_key_from_distance( self.a.hp_state, hp )
+  local key, t = self:get_key_from_distance( self.a.hp_state, hp )
   if key then
     local r1, r2
     if self.npc:see( db.actor ) then
-      if self.a.hp_state_see[ key ].state then
-        r1 = xr_logic.pick_section_from_condlist(
-          db.actor, self.npc, self.a.hp_state_see[ key ].state
-        )
+      t = self.a.hp_state_see[ key ]
+      if t.state then
+        r1 = xr_logic.pick_section_from_condlist( db.actor, self.npc, t.state )
       end
-      if self.a.hp_state_see[ key ].sound then
-        r2 = xr_logic.pick_section_from_condlist(
-          db.actor, self.npc, self.a.hp_state_see[ key ].sound
-        )
+      if t.sound then
+        r2 = xr_logic.pick_section_from_condlist( db.actor, self.npc, t.sound )
       end
     else
-      if self.a.hp_state[ key ].state then
-        r1 = xr_logic.pick_section_from_condlist(
-          db.actor, self.npc, self.a.hp_state[ key ].state
-        )
+      if t.state then
+        r1 = xr_logic.pick_section_from_condlist( db.actor, self.npc, t.state )
       end
-      if self.a.hp_state[ key ].sound then
-        r2 = xr_logic.pick_section_from_condlist(
-          db.actor, self.npc, self.a.hp_state[ key ].sound
-        )
+      if t.sound then
+        r2 = xr_logic.pick_section_from_condlist( db.actor, self.npc, t.sound )
       end
     end
     return tostring( r1 ), tostring( r2 )
@@ -490,18 +461,14 @@ end
 
 
 function Cwound_manager:process_psy_wound( hp )
-  local key = self:get_key_from_distance( self.a.psy_state, hp )
+  local key, t = self:get_key_from_distance( self.a.psy_state, hp )
   if key then
     local r1, r2
-    if self.a.psy_state[ key ].state then
-      r1 = xr_logic.pick_section_from_condlist(
-        db.actor, self.npc, self.a.psy_state[ key ].state
-      )
+    if t.state then
+      r1 = xr_logic.pick_section_from_condlist( db.actor, self.npc, t.state )
     end
-    if self.a.psy_state[ key ].sound then
-      r2 = xr_logic.pick_section_from_condlist(
-        db.actor, self.npc, self.a.psy_state[ key ].sound
-      )
+    if t.sound then
+      r2 = xr_logic.pick_section_from_condlist( db.actor, self.npc, t.sound )
     end
     return tostring( r1 ), tostring( r2 )
   end
@@ -510,16 +477,17 @@ end
 
 
 function Cwound_manager:get_key_from_distance( t, hp )
-  local key
+  local key, d
   if ( not t ) or t == "" or t == "nil" then return nil end
-  for k, v in pairs( t ) do
+  for i, v in ipairs( t ) do
     if v.dist >= hp then
-      key = k
+      key = i
+      d   = v
     else
-      return key
+      return key, d
     end
   end
-  return key
+  return key, d
 end
 
 
