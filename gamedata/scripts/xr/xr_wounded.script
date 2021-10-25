@@ -131,10 +131,12 @@ function evaluator_wound:evaluate()
     self.a.wound_manager:hit_callback()
   end
 
-  if tostring( xr_logic.pstor_retrieve( npc, "wounded_state" ) ) ~= "nil" then
+  local ws = tostring( xr_logic.pstor_retrieve( npc, "wounded_state" ) )
+  if ws ~= "nil" and not npc:critically_wounded() then
     ogse_debug.add_active_eval( self.object, script_name(), "wounded" )
     return true
   end
+
   return false
 end
 
@@ -148,7 +150,7 @@ end
 function evaluator_can_fight:evaluate()
   if self.object:critically_wounded() then
     ogse_debug.add_active_eval(
-      self.object, script_name(), "wounded_can_fight"
+      self.object, script_name(), "wounded_critically"
     )
     return true
   end
@@ -221,7 +223,7 @@ function action_wounded:execute()
     self.object:hit( h )
   else
     -- является ли текущий звук синхронным для текущего стейта
-    for k, v in pairs( self.a.syndata ) do
+    for k, v in ipairs( self.a.syndata ) do
       if
         v.state == wound_manager_state
         and v.sound == wound_manager_sound
@@ -231,8 +233,9 @@ function action_wounded:execute()
     end
     -- жрание аптечек и прочей срани.
     -- Использовать можно только если нам можно сейчас есть аптечку.
-    if self.a.use_medkit and wound_manager:eat_medkit() then
-      return
+    if self.a.use_medkit then
+      if wound_manager:eat_medkit() then return end
+      self:dont_shoot()
     end
     local emerg
     if wound_manager_state == "psy_shoot" then
@@ -283,9 +286,84 @@ function action_wounded:finalize()
   local npc = self.object
   npc:disable_talk()
   xr_sound.set_sound( npc, nil )
+  stop_play_sound( npc )
   npc:wounded( false )
   xrs_medic.remove_wounded( npc )
+  if self.a.medkit_eaten then help_wounded_snd( npc ) end
+  self.a.medkit_eaten = false
   state_mgr.set_state( npc, "idle", nil, nil, nil, { animation = true } )
+end
+
+
+function action_wounded:dont_shoot()
+  local comm = self.object:character_community()
+  local npc  = self.object
+  if
+    db.actor and comm ~= "ecolog" and comm ~= "trader" and comm ~= "zombied"
+    and isWeapon( db.actor:active_item() )
+    and npc:relation( db.actor ) == game_object.enemy
+    and npc.health < 0.35
+    and npc:position():distance_to( db.actor:position() ) < 10
+    and self:actor_targets_npc()
+  then
+    npc:disable_talk()
+    stop_play_sound( npc )
+    beg_check_timer[ npc:id() ] = time_global()
+    if beg_check_timer[ npc:id() ] > beg_timer then
+      -- играем звук
+      local snd_name
+      if comm == "bandit" then
+        snd_name = dont_shoot[ "bandit_" .. tostring( math.random( 1, 5 ) ) ]
+      elseif comm == "freedom" then
+        snd_name = dont_shoot[ "freedom_" .. tostring( math.random( 1, 4 ) ) ]
+      elseif comm == "killer" then
+        snd_name = dont_shoot[ "killer_" .. tostring( math.random( 1, 3 ) ) ]
+      elseif comm == "military" then
+        snd_name = dont_shoot[ "military_" .. tostring( math.random( 1, 4 ) ) ]
+      elseif comm == "monolith" then
+        snd_name = dont_shoot[ "monolith_" .. tostring( math.random( 1, 3 ) ) ]
+      elseif comm == "stalker" then
+        local rank = get_npc_rank( npc )
+        if rank and rank > 3 then
+          snd_name = dont_shoot[ "newbie_" .. tostring( math.random( 1, 4 ) ) ]
+        else
+          snd_name = dont_shoot[ "stalker_" .. tostring( math.random( 1, 3 ) ) ]
+        end
+      end
+      if snd_name then
+        local snd_obj = xr_sound.get_safe_sound_object( snd_name )
+        if snd_obj and not snd_obj:playing() then
+          snd_obj:play_no_feedback(
+            npc, sound_object.s3d, 0, npc:position(), 1.0
+          )
+        end
+      end
+      beg_timer = beg_check_timer[ npc:id() ] + math.random( 3000, 4000 )
+    end
+  else
+    npc:enable_talk()
+  end
+end
+
+
+function action_wounded:actor_targets_npc()
+  local npc = self.object
+  local dangerang = 1 / npc:position():distance_to( db.actor:position() )
+  local ang = horz_angle(
+    device().cam_dir, npc:position():sub( device().cam_pos )
+  )
+  local tgt = ang > -dangerang and ang < dangerang
+  if tgt then
+    if self.tgt_time then
+      return self.tgt_time < time_global()
+    else
+      self.tgt_time = time_global() + 600
+      return false
+    end
+  else
+    self.tgt_time = nil
+  end
+  return false
 end
 
 
@@ -294,7 +372,7 @@ function Cwound_manager:__init( npc, storage )
   self.npc            = npc
   self.a              = storage
   self.can_use_medkit = false
-  self.medkit_eaten   = nil
+  self.medkit_eaten   = false
 end
 
 
@@ -309,6 +387,7 @@ function Cwound_manager:update()
     hp = 1                      -- симулируем раненость
   end
 
+--[=[
   if
     db.actor and comm ~= "ecolog" and comm ~= "trader" and comm ~= "zombied"
     and isWeapon( db.actor:active_item() )
@@ -354,6 +433,7 @@ function Cwound_manager:update()
   else
     self.npc:enable_talk()
   end
+--]=]
 
   self.state, self.sound = self:process_psy_wound( psy )
   if self.state == "nil" and self.sound == "nil" then
@@ -367,14 +447,10 @@ function Cwound_manager:update()
     self.cover  = "false"
     self.victim = "nil"
   end
-
-  xr_logic.pstor_store( self.npc, "wounded_state",  self.state  )
-  xr_logic.pstor_store( self.npc, "wounded_sound",  self.sound  )
-  xr_logic.pstor_store( self.npc, "wounded_fight",  self.fight  )
-  xr_logic.pstor_store( self.npc, "wounded_victim", self.victim )
+  self:save_states()
 
   if ( not self.state ) or self.state == "nil" then
-    self.medkit_eaten = nil
+    self.medkit_eaten = false
     sobj.wounded = false
     self.npc:wounded( false )
     self.npc:enable_trade()
@@ -389,6 +465,14 @@ function Cwound_manager:update()
 end
 
 
+function Cwound_manager:save_states()
+  xr_logic.pstor_store( self.npc, "wounded_state",  self.state  )
+  xr_logic.pstor_store( self.npc, "wounded_sound",  self.sound  )
+  xr_logic.pstor_store( self.npc, "wounded_fight",  self.fight  )
+  xr_logic.pstor_store( self.npc, "wounded_victim", self.victim )
+end
+
+
 function Cwound_manager:unlock_medkit()
   self.can_use_medkit = true
   xrs_medic.remove_wounded( self.npc )
@@ -396,19 +480,24 @@ end
 
 
 function Cwound_manager:eat_medkit()
-  local medkit_eaten = false
   if self.can_use_medkit then
-    medkit_eaten = true
     self.npc:heal_wounds( 1 )
-    self.npc.health = 1
-    self.npc:wounded( false )
+    -- self.npc.health = 1
+    self.npc.conditions.health = 1
+    -- self.npc:wounded( false )
+    self.npc:enable_trade()
     local sobj = alife():object( self.npc:id() )
-    sobj.wounded        = false -- позволяем выйти из состояния раненности
-    self.medkit_eaten   = true
+    sobj.wounded = false -- позволяем выйти из состояния раненности
     self.can_use_medkit = false
+    self.medkit_eaten   = false
+    self.fight, self.victim = "true", "nil"
+    self.state, self.sound  = "nil",  "nil"
+    self:save_states()
+    self.a.medkit_eaten = true
+    return true
   end
   self:hit_callback()
-  return medkit_eaten
+  return false
 end
 
 
@@ -493,11 +582,12 @@ end
 
 function Cwound_manager:hit_callback()
   if not self.npc:alive() then return end
-  if self.npc:critically_wounded() then return end
+  -- if self.npc:critically_wounded() then return end
   self:update()
 end
 
 
+--[=[
 function Cwound_manager:actor_targets_npc( npc )
   local dangerang = 1 / npc:position():distance_to( db.actor:position() )
   local ang = horz_angle(
@@ -516,6 +606,7 @@ function Cwound_manager:actor_targets_npc( npc )
   end
   return false
 end
+--]=]
 
 
 function add_to_binder( object, ini, scheme, section, st )
@@ -531,16 +622,18 @@ function add_to_binder( object, ini, scheme, section, st )
   manager:add_evaluator(
     properties.wounded, this.evaluator_wound( "wounded", st )
   )
+--[=[
   manager:add_evaluator(
     properties.can_fight, this.evaluator_can_fight( "can_fight", st )
   )
+--]=]
 
   local action = this.action_wounded( "wounded_action", st )
   action:add_precondition( world_property( stalker_ids.property_alive, true ) )
   action:add_precondition( world_property( properties.wounded, true ) )
   action:add_effect( world_property( properties.wounded, false ) )
   action:add_effect( world_property( stalker_ids.property_enemy, false ) )
-  action:add_effect( world_property( properties.can_fight, true ) )
+  -- action:add_effect( world_property( properties.can_fight, true ) )
   manager:add_action( operators.wounded, action )
 
   state_mgr.add_to_idle_preconditions( manager, { properties.wounded } )
@@ -553,15 +646,15 @@ function add_to_binder( object, ini, scheme, section, st )
 
   action = manager:action( stalker_ids.action_combat_planner )
   action:add_precondition( world_property( properties.wounded, false ) )
-  action:add_precondition( world_property( properties.can_fight, true ) )
+  -- action:add_precondition( world_property( properties.can_fight, true ) )
 
   action = manager:action( stalker_ids.action_danger_planner )
   action:add_precondition( world_property( properties.wounded, false ) )
-  action:add_precondition( world_property( properties.can_fight, true ) )
+  -- action:add_precondition( world_property( properties.can_fight, true ) )
 
   action = manager:action( stalker_ids.action_anomaly_planner )
   action:add_precondition( world_property( properties.wounded, false ) )
-  action:add_precondition( world_property( properties.can_fight, true ) )
+  -- action:add_precondition( world_property( properties.can_fight, true ) )
 end
 
 
@@ -842,19 +935,8 @@ end
 
 -- Помощь раненому
 function help_wounded( npc )
-  if
-    like_monolith[ npc:name() ] or like_monolith[ npc:profile_name() ]
-    or npc:name() == "esc_vagon_wounded" -- Толик
-    or npc:name() == "gar_wounded_bandit" -- раненый бандит на Свалке
-    or npc:name() == "val_escort_bandit_halfdead" -- Монгол
-  then
-    return
-  end
-  local snd = xr_sound.get_safe_sound_object(
-    "characters_voice\\human_01\\newbie\\help\\wounded_thanx\\thanx_"
-      .. math.random( 1, 3 )
-  )
-  snd:play_no_feedback( npc, sound_object.s3d, 0, npc:position(), 1.0 )
+  if not can_help_wounded( npc ) then return end
+  -- help_wounded_snd( npc )
   npc:set_character_community( "stalker", 0, 0 )
   npc:set_relation( game_object.friend, db.actor )
   npc:remove_memory_object( db.actor )
@@ -873,6 +955,27 @@ function help_wounded( npc )
       sobj:brain():update()
     end
   end
+end
+
+
+function can_help_wounded( npc )
+  return not(
+    like_monolith[ npc:name() ] or like_monolith[ npc:profile_name() ]
+    or npc:name() == "esc_vagon_wounded" -- Толик
+    or npc:name() == "gar_wounded_bandit" -- раненый бандит на Свалке
+    or npc:name() == "val_escort_bandit_halfdead" -- Монгол
+  )
+end
+
+
+function help_wounded_snd( npc )
+  if not can_help_wounded( npc ) then return end
+  local snd = xr_sound.get_safe_sound_object(
+    "characters_voice\\human_01\\newbie\\help\\wounded_thanx\\thanx_"
+      .. math.random( 1, 3 )
+  )
+  snd:play_no_feedback( npc, sound_object.s3d, 0, npc:position(), 1.0 )
+  return snd
 end
 
 
