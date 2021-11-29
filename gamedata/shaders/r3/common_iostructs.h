@@ -304,6 +304,10 @@ struct                  f_deffer
 	float4	position: SV_Target0;        // px,py,pz, m-id
 	float4	Ne		  : SV_Target1;        // nx,ny,nz, hemi
 	float4	C		  : SV_Target2;        // r, g, b,  gloss
+#ifdef SSLR_ENABLED
+	float4 Wetness    : SV_Target3; // r - puddles, gba - null
+#endif
+
 #ifdef EXTEND_F_DEFFER
    uint     mask    : SV_COVERAGE;
 #endif
@@ -313,6 +317,10 @@ struct                  f_deffer
 {
 	float4	position: SV_Target0;        // xy=encoded normal, z = pz, w = encoded(m-id,hemi)
 	float4	C		  : SV_Target1;        // r, g, b,  gloss
+#ifdef SSLR_ENABLED
+	float4 Wetness    : SV_Target2; // r - puddles, gba - null
+#endif
+
 #ifdef EXTEND_F_DEFFER
    uint     mask    : SV_COVERAGE;
 #endif
@@ -373,7 +381,7 @@ struct p_bumped
 //	Defer flat
 struct	v2p_flat
 {
-#if defined(USE_R2_STATIC_SUN) && !defined(USE_LM_HEMI)
+#if ((defined(USE_R2_STATIC_SUN) && !defined(USE_LM_HEMI)) || defined(USE_GRASS_WAVE))
 	float4	tcdh	: TEXCOORD0;	// Texture coordinates,         w=sun_occlusion
 #else
 	float2	tcdh	: TEXCOORD0;	// Texture coordinates
@@ -391,7 +399,7 @@ struct	v2p_flat
 
 struct	p_flat
 {
-#if defined(USE_R2_STATIC_SUN) && !defined(USE_LM_HEMI)
+#if ((defined(USE_R2_STATIC_SUN) && !defined(USE_LM_HEMI)) || defined(USE_GRASS_WAVE))
 	float4	tcdh	: TEXCOORD0;	// Texture coordinates,         w=sun_occlusion
 #else
 	float2	tcdh	: TEXCOORD0;	// Texture coordinates
