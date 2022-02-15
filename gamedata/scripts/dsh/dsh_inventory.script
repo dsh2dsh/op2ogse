@@ -1,6 +1,7 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
 function attach( sm )
+  sm:subscribe({ signal = "inv_drag_drop", fun = this.drag_drop_reload_next_ammo })
   sm:subscribe({ signal = "on_inventory_hide", fun = this.on_inventory_hide })
   sm:subscribe({ signal = "on_destroy",  fun = this.on_destroy  })
   sm:subscribe({ signal = "on_key_down", fun = this.on_key_down })
@@ -57,10 +58,24 @@ function set_inventory_exit()
 end
 
 
+local remembered_active_item_id
+function remember_active_item()
+  if db.actor:active_item() then
+    remembered_active_item_id = db.actor:active_item():id()
+  else
+    remembered_active_item_id = nil
+  end
+end
+
+function forget_active_item()
+  remembered_active_item_id = nil
+end
+
 function on_key_down( key, bind )
   if ( not dik_inv_open[ key ] ) or level.main_input_receiver() or db.eat then
     return
   end
+  remember_active_item()
   db.actor:hide_weapon()
   rummaged_wnd:ReInitIcons()
   level.start_stop_menu( rummaged_wnd, true )
@@ -225,6 +240,7 @@ function rummaged:on_quit()
   podsumok_deselect:play( db.actor, 0, sound_object.s2d )
   self:GetHolder():start_stop_menu( self, true )
   db.actor:restore_weapon()
+  forget_active_item()
 end
 
 
@@ -403,6 +419,7 @@ function on_inventory_hide()
     ogse_signals.get_mgr():unsubscribe( unsubscribe_later )
     unsubscribe_later = false
   end
+  forget_active_item()
 end
 
 
@@ -449,4 +466,29 @@ function rummaged:btn_pod()
       return pod_items[ t.section ]
     end
   )
+end
+
+
+function drag_drop_reload_next_ammo( obj, me )
+  if not (
+    me:id() == remembered_active_item_id
+    and db.actor:is_in_slot( me )
+    and me:is_weapon_magazined() and obj:is_ammo()
+  ) then
+    return
+  end
+  local sect = obj:section()
+  local ammo_class = parse_names( get_string( sect, "ammo_class" ) )
+  local next_ammo  = -1
+  for i, ammo_sect in ipairs( ammo_class ) do
+    if sect == ammo_sect then
+      next_ammo = i - 1
+      break
+    end
+  end
+  if next_ammo >= 0 then
+    dsh_hud_fx.close_inventory()
+    me:reload_next_ammo( next_ammo )
+    return true
+  end
 end
