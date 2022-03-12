@@ -3,6 +3,7 @@
 
 Форум мода тут:
 
+- http://nlc-zone.ru/forum/topic/209-dsh-mod/
 - https://www.amk-team.ru/forum/topic/13176-dsh-mod/
 
 Важное замечание. Либо играйте так, как я задумал, либо со всеми

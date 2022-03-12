@@ -4,6 +4,7 @@
 
 Форум проекта:
 
+- http://nlc-zone.ru/forum/topic/209-dsh-mod/
 - https://www.amk-team.ru/forum/topic/13176-dsh-mod/
 
 
