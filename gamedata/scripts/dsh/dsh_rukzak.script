@@ -1011,6 +1011,9 @@ function ui_rukzak:InitControls()
   btn_quit:SetAccelerator( bind_to_dik( key_bindings.kUSE ), 0 )
   self:Register( btn_quit, "btn_quit" )
 
+  local btn_take = xml:Init3tButton( "main_dialog:btn_take", self.dialog )
+  self:Register( btn_take, "btn_take" )
+
   self.tab = xml:InitTab( "main_dialog:tab", self.dialog )
   self:Register( self.tab, "tab" )
 
@@ -1041,6 +1044,9 @@ function ui_rukzak:InitCallBacks()
   self:dshAddCallback( "btn_4", ui_events.BUTTON_CLICKED, self.rep_btn, self )
   self:dshAddCallback(
     "btn_quit", ui_events.BUTTON_CLICKED, self.on_quit, self
+  )
+  self:dshAddCallback(
+    "btn_take", ui_events.BUTTON_CLICKED, self.on_take, self
   )
   self:dshAddCallback(
     "list_other", ui_events.LIST_ITEM_CLICKED, self.OnListItemClicked, self
@@ -1112,40 +1118,36 @@ function ui_rukzak:rep_btn()
 end
 
 
-function ui_rukzak:OnMoveAllClicked()
-  local ui_item = self:get_selected_item()
+function ui_rukzak:OnMoveAllClicked( ui_item, quiet )
+  if not ui_item then ui_item = self:get_selected_item() end
   if ui_item then
     local amount = tonumber( ui_item.item_cnt:GetText() ) or 1
-    self:move_items( amount )
+    self:move_items( amount, ui_item, quiet )
   end
 end
 
 
-function ui_rukzak:move_items( amount )
-  local ui_item = self:get_selected_item()
+function ui_rukzak:move_items( amount, ui_item, quiet )
+  if not ui_item then
+    ui_item = self:get_selected_item()
+  end
   if not ui_item then return end
   self.changed = true
   self.moved   = true
   if ui_item.data.game_objs then
     self:move_by_amount(
       function()
-        return self:move_from_our( ui_item )
+        return self:move_from_our( ui_item, quiet )
       end,
       amount
     )
   else
     self:move_by_amount(
       function()
-        return self:move_from_other( ui_item )
+        return self:move_from_other( ui_item, quiet )
       end,
       amount
     )
-    if self:is_rukzak_empty() then
-      spawn_item_in_inv( "treasure_item" )
-      local obj = level.object_by_id( self.owner_id )
-      ogse.remove_item( obj )
-      return self:on_quit()
-    end
   end
   self:reset_edit_amount()
   self:show_cur_weight_delay()
@@ -1160,7 +1162,7 @@ function ui_rukzak:is_rukzak_empty()
 end
 
 
-function ui_rukzak:move_by_amount( f, amount )
+function ui_rukzak:move_by_amount( f, amount, quiet )
   while amount > 0 do
     local moved = f()
     if moved == 0 then moved = amount end
@@ -1169,7 +1171,7 @@ function ui_rukzak:move_by_amount( f, amount )
 end
 
 
-function ui_rukzak:move_from_other( ui_item )
+function ui_rukzak:move_from_other( ui_item, quiet )
   local item   = ui_item.data
   local ui_our = self.index_our[ item.key ]
   local our
@@ -1258,7 +1260,7 @@ function ui_rukzak:move_from_other( ui_item )
     elseif item.section == "zamok" then
       ogse.save_var( ( "dsh_rukzak." .. self.owner_id .. ".zamok" ), false )
       amk_offline_alife.protected.ids[ self.owner_id ] = nil
-      if not self:is_rukzak_empty() then
+      if not ( self:is_rukzak_empty() or quiet ) then
         amk.send_tip( "С тайника убрали замок.", nil, nil, 5 )
       end
     end
@@ -1268,7 +1270,7 @@ function ui_rukzak:move_from_other( ui_item )
 end
 
 
-function ui_rukzak:move_from_our( ui_item )
+function ui_rukzak:move_from_our( ui_item, quiet )
   local item     = ui_item.data
   local obj      = table.remove( item.game_objs, 1 )
   local ui_other = self.index_other[ item.key ]
@@ -1347,7 +1349,9 @@ function ui_rukzak:move_from_our( ui_item )
         end
         off_npcs[ lname ].inv_boxes = inv_boxes
       end
-      amk.send_tip( "Заперли тайник на замок.", nil, nil, 5 )
+      if not quiet then
+        amk.send_tip( "Заперли тайник на замок.", nil, nil, 5 )
+      end
     end
   end
   return size
@@ -1834,4 +1838,16 @@ end
 
 function ui_rukzak:is_active( id )
   return self.owner_id == id
+end
+
+
+function ui_rukzak:on_take()
+  for k, ui_item in pairs( self.index_other ) do
+    self:OnMoveAllClicked( ui_item, true )
+  end
+  ASSERT( self:is_rukzak_empty(), "[%s]: not empty!", script_name() )
+  spawn_item_in_inv( "treasure_item" )
+  local obj = level.object_by_id( self.owner_id )
+  ogse.remove_item( obj )
+  self:on_quit()
 end
