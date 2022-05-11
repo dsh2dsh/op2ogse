@@ -1189,37 +1189,7 @@ function ui_rukzak:move_from_other( ui_item, quiet )
     }
     table.insert( self.items_our, our )
   end
-  local size, sobj
-  if item.game_type == "ammo" then
-    if not our.count then our.count = 0 end
-    local box_size = get_ammo_box_size( item.section )
-    if item.count > box_size then
-      sobj = spawn_ammo_in_inv( item.section, box_size )
-      size       = box_size
-      item.count = item.count - box_size
-      our.count  = our.count  + box_size
-    else
-      sobj = spawn_ammo_in_inv( item.section, item.count )
-      size       = item.count
-      our.count  = our.count  + item.count
-      item.count = 0
-    end
-  else
-    if item.game_type == "weapon" then
-      sobj = spawn_weapon_in_inv( item.section, item.info )
-    else
-      sobj = spawn_item_in_inv( item.section )
-    end
-    if
-      string.find( item.section, "arc_art_box_", 1, true )
-      or dsh.is_artefact( item.section )
-      or item.game_type == "outfit"
-    then
-      sobj.custom_data = item.info or ""
-    end
-    item.count = item.count - 1
-    size       = 1
-  end
+  local size, sobj = self:create_actor_item( item, our )
   if ui_our then
     ui_our.item_cnt:SetText(
       our.count or table.getn( our.game_objs )
@@ -1242,11 +1212,6 @@ function ui_rukzak:move_from_other( ui_item, quiet )
       self.spawning[ sobj.id ] = nil
     end
   )
-  if item.condition < 100 then
-    sobj = alife():object( sobj.id )
-    local iitem = sobj:get_inventory_item()
-    iitem.item_condition = item.condition / 100
-  end
   if item.count > 0 then
     ui_item.item_cnt:SetText( item.count )
   else
@@ -1267,6 +1232,50 @@ function ui_rukzak:move_from_other( ui_item, quiet )
     size = 0
   end
   return size
+end
+
+
+function ui_rukzak:create_actor_item( item, our )
+  local size, sobj
+
+  if item.game_type == "ammo" then
+    if not our.count then our.count = 0 end
+    local box_size = get_ammo_box_size( item.section )
+    if item.count > box_size then
+      sobj = spawn_ammo_in_inv( item.section, box_size )
+      size = box_size
+      item.count = item.count - box_size
+      our.count  = our.count  + box_size
+    else
+      sobj = spawn_ammo_in_inv( item.section, item.count )
+      size = item.count
+      our.count  = our.count  + item.count
+      item.count = 0
+    end
+  else
+    if item.game_type == "weapon" then
+      sobj = spawn_weapon_in_inv( item.section, item.info )
+    else
+      sobj = spawn_item_in_inv( item.section )
+    end
+    if
+      string.find( item.section, "arc_art_box_", 1, true )
+      or dsh.is_artefact( item.section )
+      or item.game_type == "outfit"
+    then
+      sobj.custom_data = item.info or ""
+    end
+    item.count = item.count - 1
+    size       = 1
+  end
+
+  if item.condition < 100 then
+    sobj = alife():object( sobj.id )
+    local iitem = sobj:get_inventory_item()
+    iitem.item_condition = item.condition / 100
+  end
+
+  return size, sobj
 end
 
 
@@ -1844,15 +1853,17 @@ end
 
 
 function ui_rukzak:on_take()
-  self:clear_all_lists()
-  self:FillList( self.items_other, self.ui_list_other, self.index_other )
-  self:FillList( self.items_our,   self.ui_list_our,   self.index_our   )
-  for k, ui_item in pairs( self.index_other ) do
-    self:OnMoveAllClicked( ui_item, true )
+  local t = {}
+  for _, item in ipairs( self.items_other ) do
+    while item.count > 0 do
+      self:create_actor_item( item, t )
+    end
   end
-  ASSERT( self:is_rukzak_empty(), "[%s]: not empty!", script_name() )
+  self.changed = true
+  self.items_other = {}
   spawn_item_in_inv( "treasure_item" )
   local obj = level.object_by_id( self.owner_id )
   ogse.remove_item( obj )
+  amk_offline_alife.protected.ids[ self.owner_id ] = nil
   self:on_quit()
 end
