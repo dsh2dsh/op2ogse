@@ -1,94 +1,85 @@
-#ifndef        HMODEL_H
+#ifndef HMODEL_H
 #define HMODEL_H
 
 #include "common.h"
+#include "cgim.h"
 
-//uniform samplerCUBE         env_s0                ;
-//uniform samplerCUBE         env_s1                ;
-//uniform samplerCUBE         sky_s0                ;
-//uniform samplerCUBE         sky_s1                ;
+TextureCube env_s0;
+TextureCube env_s1;
 
-TextureCube		env_s0;
-TextureCube		env_s1;
-TextureCube		sky_s0;
-TextureCube		sky_s1;
+uniform float4 env_color; // color.w  = lerp factor
+uniform float3x4 m_v2w;
 
-uniform float4	env_color;        // color.w  = lerp factor
-uniform float3x4	m_v2w;
+float3 SmallSkyCompute(float3 uv)
+{
+	float3 color = float3(0.0, 0.0, 0.0);
+
+	static const int3 o[8] =
+	{
+		{-1, 0, 0},
+		{ 1, 0, 0},
+		{ 0,-1, 0},
+		{ 0, 1, 0},
+		{ 0, 0,-1},
+		{ 0, 0, 1},
+		{ 1, 1, 1},
+		{ 0, 0, 0}
+	};
+
+	static const int num = 8;
+
+	for (int i = 0; i < num; i++)
+	{
+		float3 tap = normalize(uv + o[i] * SMALLSKY_BLUR_INTENSITY);
+		float3 env0 = env_s0.SampleLevel(smp_rtlinear, tap, 0);
+		float3 env1 = env_s1.SampleLevel(smp_rtlinear, tap, 0);
+		color += lerp(env0, env1, env_color.w) / num;
+	}
+
+	float top_to_down_vec = saturate(uv.y);
+	top_to_down_vec *= top_to_down_vec;
+	
+	static const float factor = SMALLSKY_TOP_VECTOR_POWER;
+	color *= saturate(factor + (1.0 - factor) * top_to_down_vec) + (1.0 - factor) / 2;
+
+	return color;
+
+	//float3 s0 = env_s0.SampleLevel(smp_rtlinear, uv, 0);
+	//float3 s1 = env_s1.SampleLevel(smp_rtlinear, uv, 0);
+	//return lerp(s0, s1, env_color.w);
+}
 
 void hmodel
 (
 	out float3 hdiffuse, out float3 hspecular, 
-	float m, float h, float s, float3 Pnt, float3 normal
-)
+	float m, float h, float s, float3 Pnt, float3 normal)
 {
-        // hscale - something like diffuse reflection
-	float3	nw		= mul( m_v2w, normal );
-	float	hscale	= h;	//. *        (.5h + .5h*nw.y);
-
-#ifdef         USE_GAMMA_22
-			hscale	= (hscale*hscale);        // make it more linear
-#endif
+    // hscale - something like diffuse reflection
+	float3 nw	 = mul(m_v2w, normal);
+	float hscale = h;
 
 	// reflection vector
-	float3	v2PntL	= normalize( Pnt );
-	float3	v2Pnt	= mul( m_v2w, v2PntL );
-	float3	vreflect= reflect( v2Pnt, nw );
-	float	hspec	= .5h + .5h * dot( vreflect, v2Pnt );
+	float3	v2PntL	 = normalize( Pnt );
+	float3	v2Pnt	 = mul(m_v2w, v2PntL);
+	float3	vreflect = reflect(v2Pnt, nw);
+	float	hspec    = .5h + .5h * dot(vreflect, v2Pnt);
 
 	// material	// sample material
-	//float4	light	= tex3D( s_material, float3(hscale, hspec, m) );
-//	float4	light	= s_material.Sample( smp_material, float3( hscale, hspec, m ) ).xxxy;
-	float4	light	= s_material.SampleLevel( smp_material, float3( hscale, hspec, m ), 0 ).xxxy;
-//	float4	light	= float4(1,1,1,1);
+	float4 light = s_material.SampleLevel(smp_material, float3( hscale, hspec, m ), 0).xxxy;
 
 	// diffuse color
-//	float3	e0d		= texCUBE( env_s0, nw );
-//	float3	e1d		= texCUBE( env_s1, nw );
-//	float3	e0d		= env_s0.Sample( smp_rtlinear, nw );
-//	float3	e1d		= env_s1.Sample( smp_rtlinear, nw );
-	float3	e0d		= env_s0.SampleLevel( smp_rtlinear, nw, 0 );
-	float3	e1d		= env_s1.SampleLevel( smp_rtlinear, nw, 0 );
-	float3	env_d	= env_color.xyz * lerp( e0d, e1d, env_color.w );
-			env_d	*=env_d;	// contrast
-			hdiffuse= env_d * light.xyz + L_ambient.rgb;
+	float3 env_d = SmallSkyCompute(nw) * env_color.rgb;
+	env_d *= env_d; // contrast
+	
+	hdiffuse = env_d * light.xyz + L_ambient.rgb;
 
 	// specular color
-	vreflect.y      = vreflect.y*2-1;	// fake remapping
-//	float3	e0s		= texCUBE( env_s0, vreflect );
-//	float3	e1s		= texCUBE( env_s1, vreflect );
-//	float3	e0s		= env_s0.Sample( smp_rtlinear, vreflect );
-//	float3	e1s		= env_s1.Sample( smp_rtlinear, vreflect );
-	float3	e0s		= env_s0.SampleLevel( smp_rtlinear, vreflect, 0 );
-	float3	e1s		= env_s1.SampleLevel( smp_rtlinear, vreflect, 0 );
-	float3	env_s	= env_color.xyz * lerp( e0s, e1s, env_color.w);
-			env_s	*=env_s;	// contrast
-		hspecular	= env_s*light.w*s;                //*h*m*s        ;        //env_s        *light.w         * s;
+	vreflect.y = vreflect.y * 2 - 1; // fake remapping
+		
+	float3 env_s = SmallSkyCompute(vreflect) * env_color.rgb;
+	env_s *= env_s; // contrast
+
+	hspecular = env_s * light.w * s;
 }
 
-/*
-void         hmodel_table        (out float3 hdiffuse, out float3 hspecular, float m, float h, float s, float3 point, float3 normal)
-{
-        // hscale - something like diffuse reflection
-        float         hscale         = h;
-
-        // reflection vector
-        float3         v2point        = normalize        (Pnt);
-        float3        vreflect= reflect         (v2point,normal);
-        float         hspec         = .5h+.5h*dot        (vreflect,v2point);
-
-        // material
-          float4         light        = tex3D                (s_material, float3(hscale, hspec, m) );                // sample material
-
-        // diffuse color
-        float3         env_d         = texCUBE         (env_s0,normal);
-
-        // specular color
-        float3         env_s          = texCUBE         (env_s0,vreflect);
-
-        //
-        hdiffuse        = env_d        *light.xyz         + L_ambient.rgb        ;
-        hspecular        = env_s        *light.w         * s                ;
-}
-*/
 #endif
