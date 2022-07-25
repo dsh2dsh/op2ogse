@@ -8,6 +8,7 @@ function attach( sm )
   sm:subscribe({
     signal = "on_busy_hands_check", fun = this.on_busy_hands_check
   })
+  sm:subscribe({ signal = "on_key_up",         fun = this.on_key_up        })
   sm:subscribe({ signal = "on_monster_death",  fun = this.on_monster_death })
   sm:subscribe({ signal = "on_monster_net_destroy", fun = this.on_destroy  })
   sm:subscribe({ signal = "on_monster_spawn",  fun = this.on_monster_spawn })
@@ -98,6 +99,8 @@ function on_ph_spawn( obj, binder )
 end
 
 
+local near_objs = {}
+
 function on_destroy( obj, binder )
   local subscribed = binder[ "dsh_busy_hands.subscribed" ]
   if subscribed then
@@ -105,6 +108,7 @@ function on_destroy( obj, binder )
     binder[ "dsh_busy_hands.subscribed" ] = nil
   end
   binder[ "dsh_busy_hands.tip_text" ] = nil
+  near_objs[ obj:id() ] = nil
 end
 
 
@@ -134,39 +138,48 @@ function on_any_update( obj )
   if not db.actor then return end
   local dist = obj:position():distance_to( db.actor:position() )
   ogse_signals.get_mgr():reschedule(
-    ( dist < 25 and freq )
+    ( dist < info_radius and 0 )
+    or ( dist < 25 and freq )
     or ( dist < 50 and 1000 ) or ( dist < 100 and 2000 )
     or math.random( 5000, 6000 )
   )
   if dist < info_radius then
-    local binder = obj:binded_object()
-    local data   = {}
-    ogse_signals.get_mgr():call( "on_busy_hands_check", obj, binder, data )
-    local tip_text = "dsh_busy_hands.tip_text"
-    if data.usable then
-      if binder[ tip_text ] ~= data.tip_text then
-        if data.tip_text then
-          obj:set_tip_text( data.tip_text )
-        else
-          obj:set_tip_text_default()
-        end
-        obj:set_nonscript_usable( true )
-        if data.change_can_take then
-          set_item_takeable( obj )
-        end
-        binder[ tip_text ] = data.tip_text
-        binder[ "dsh_busy_hands_nonusable" ] = false
-      end
-    else
-      if binder[ tip_text ] ~= data.tip_text then
+    near_objs[ obj:id() ] = true
+    on_any_update_check( obj )
+  else
+    near_objs[ obj:id() ] = nil
+  end
+end
+
+
+function on_any_update_check( obj )
+  local binder = obj:binded_object()
+  local data   = {}
+  ogse_signals.get_mgr():call( "on_busy_hands_check", obj, binder, data )
+  local tip_text = "dsh_busy_hands.tip_text"
+  if data.usable then
+    if binder[ tip_text ] ~= data.tip_text then
+      if data.tip_text then
         obj:set_tip_text( data.tip_text )
-        obj:set_nonscript_usable( false )
-        if data.change_can_take then
-          set_item_untakeable( obj )
-        end
-        binder[ tip_text ] = data.tip_text
-        binder[ "dsh_busy_hands_nonusable" ] = true
+      else
+        obj:set_tip_text_default()
       end
+      obj:set_nonscript_usable( true )
+      if data.change_can_take then
+        set_item_takeable( obj )
+      end
+      binder[ tip_text ] = data.tip_text
+      binder[ "dsh_busy_hands_nonusable" ] = false
+    end
+  else
+    if binder[ tip_text ] ~= data.tip_text then
+      obj:set_tip_text( data.tip_text )
+      obj:set_nonscript_usable( false )
+      if data.change_can_take then
+        set_item_untakeable( obj )
+      end
+      binder[ tip_text ] = data.tip_text
+      binder[ "dsh_busy_hands_nonusable" ] = true
     end
   end
 end
@@ -201,4 +214,16 @@ function on_busy_hands_check( obj, binder, data )
     data.tip_text = cfg.tip_text_def or binder.dsh_tip_text
   end
   data.change_can_take = cfg.change_can_take
+end
+
+
+function on_key_up( key, bind )
+  if key == DIK_keys.DIK_LSHIFT or key == DIK_keys.DIK_RSHIFT then
+    for id, _ in pairs( near_objs ) do
+      local obj = level.object_by_id( id )
+      if obj then
+        on_any_update_check( obj )
+      end
+    end
+  end
 end
