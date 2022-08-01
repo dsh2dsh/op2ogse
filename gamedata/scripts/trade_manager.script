@@ -175,6 +175,7 @@ function update( npc )
     tt.skip_updates = tt.skip_updates - 1
     return
   end
+  if tt.noupdate then return end
 
   local str = xr_logic.pick_section_from_condlist(
     db.actor, npc, tt.buy_condition
@@ -346,4 +347,67 @@ end
 
 function get_cfg( npc )
   return trade_manager[ npc:id() ]
+end
+
+
+local actor_money = -1
+
+function tradein_start( npc, buy, sell )
+  local tt = get_cfg( npc )
+  ASSERT( tt, "trade_manager[ npc:id() ] npc found: %s", npc:name() )
+  tt.noupdate = true
+  actor_money = db.actor:money()
+  db.actor:set_money( 0 )
+
+  -- коэфициенты покупки
+  if not tt[ buy ] then
+    local str = get_string( "trader", buy, nil, tt.config )
+    ASSERT( str, "[%s]: %s: %s not found", script_name(), npc:name(), buy )
+    tt[ buy ] = xr_logic.parse_condlist( npc, "trade_manager", buy, str )
+  end
+  ASSERT( tt[ buy ], "[%s]: %s: %s not found", script_name(), npc:name(), buy )
+  npc:buy_condition(
+    tt.config, xr_logic.pick_section_from_condlist( db.actor, npc, tt[ buy ] )
+  )
+
+  -- коэфициенты продажи
+  if not tt[ sell ] then
+    local str = get_string( "trader", sell, nil, tt.config )
+    ASSERT( str, "[%s]: %s: %s not found", script_name(), npc:name(), sell )
+    tt[ sell ] = xr_logic.parse_condlist( npc, "trade_manager", sell, str )
+  end
+  ASSERT( tt[ sell ], "[%s]: %s: %s not found", script_name(), npc:name(), sell )
+  npc:sell_condition(
+    tt.config, xr_logic.pick_section_from_condlist( db.actor, npc, tt[ sell ] )
+  )
+
+  ogse_signals.get_mgr():subscribe(
+    {
+      [ "signal" ] = "on_trade_hide",
+      [ "self"   ] = npc,
+      [ "fun"    ] = this.tradein_stop,
+    }
+  )
+  db.actor:switch_to_trade()
+end
+
+
+function tradein_stop( npc )
+  local tt = get_cfg( npc )
+  ASSERT( tt, "trade_manager[ npc:id() ] npc found: %s", npc:name() )
+
+  npc:buy_condition( tt.config, tt.current_buy_condition )
+  npc:sell_condition( tt.config, tt.current_sell_condition )
+  tt.noupdate = nil
+
+  if actor_money >= 0 then
+    db.actor:set_money( actor_money )
+    actor_money = -1
+  end
+end
+
+
+function voron_tradein( npc1, npc2 )
+  local npc = npc1:is_actor() and npc2 or npc1
+  tradein_start( npc, "buy_psevdodog_tail", "sell_psevdodog_tail" )
 end
