@@ -57,6 +57,18 @@ Texture2D<float> s_occ;
 #endif	//	USE_HBAO
 #endif // USE_HDAO
 
+
+#ifdef SSLR_ENABLED
+#include "ogsr_sslr.h"
+#ifndef USE_MSAA
+Texture2D s_wetness;
+#else
+TEXTURE2DMS(float4, MSAA_SAMPLES) s_wetness;
+#endif
+uniform float4 rain_params; //x = raindensity
+#endif
+
+
 struct	_input
 {
 	float4	tc0	: TEXCOORD0;	// tc.xy, tc.w = tonemap scale
@@ -156,6 +168,24 @@ _out main ( _input I, uint iSample : SV_SAMPLEINDEX )
 
 	float3 color = C.rgb + spec;
 
+////////////////////////////////////////////////////////////////////////////////
+#ifdef SSLR_ENABLED
+	if (rain_params.x > 0.05f) {
+#ifndef USE_MSAA
+		float wet = s_wetness.Sample(smp_nofilter, I.tc0).r;
+#else
+#ifdef GBUFFER_OPTIMIZATION
+		float wet = s_wetness.Load( int3( I.pos2d.xy, 0 ), ISAMPLE ).r;
+#else
+		float wet = s_wetness.Load( int3( I.tc0 * pos_decompression_params2.xy, 0 ), ISAMPLE ).r;
+#endif
+#endif
+		if (wet > 0.05f) {
+			float3 SSLR = calc_sslr(I.tc0.xy, I.pos2d, color, ISAMPLE);
+			color = lerp(color, SSLR, wet * rain_params.x);
+		}
+	}
+#endif
 ////////////////////////////////////////////////////////////////////////////////
 
         // here should be distance fog
