@@ -189,6 +189,12 @@ function signals_mgr:subscribe( slot_to_subscribe )
 end
 
 
+function signals_mgr:subscribe_once( slot )
+  slot.once = true
+  return self:subscribe( slot )
+end
+
+
 function signals_mgr:make_empty_signal( signal )
   local t = {
     [ "normal" ] = {}, [ "scheduled" ] = {},
@@ -286,6 +292,7 @@ function signals_mgr:call( signal_name, ... )
       for signal, slots in pairs( self.to_unsubscribe ) do
         for _, slot in ipairs( slots ) do
           self:unsubscribe( slot )
+          slot.unsubscribed = nil
         end
       end
       self.to_unsubscribe = nil
@@ -319,15 +326,10 @@ function signals_mgr:process_call( signal_name, slots, ... )
     if slot.unsubscribed then
       slots.next_in_normal = slots.next_in_normal + 1
     else
-      local result
       table.insert( self.slots_in_process, slot )
       local pt = profile_timer()
       pt:start()
-      if slot.self then
-        result = slot.fun( slot.self, ... )
-      else
-        result = slot.fun( ... )
-      end
+      local result = self:process_slot_fun( slot, ... )
       pt:stop()
       work_time = work_time + pt:time()
       table.insert(
@@ -371,15 +373,10 @@ function signals_mgr:process_call( signal_name, slots, ... )
       slots.next_in_scheduled = slots.next_in_scheduled + 1
     else
       if slot.timeout > time_global() and self.use_rescheduling then break end
-      local result
       table.insert( self.slots_in_process, slot )
       local pt = profile_timer()
       pt:start()
-      if slot.self then
-        result = slot.fun( slot.self, ... )
-      else
-        result = slot.fun( ... )
-      end
+      local result = self:process_slot_fun( slot, ... )
       pt:stop()
       work_time = work_time + pt:time()
       table.insert(
@@ -433,6 +430,22 @@ function signals_mgr:process_call( signal_name, slots, ... )
     end
     time_limited_cnt = 0
   end
+end
+
+
+function signals_mgr:process_slot_fun( slot, ... )
+  local result
+  if slot.self then
+    result = slot.fun( slot.self, ... )
+  else
+    result = slot.fun( ... )
+  end
+
+  if slot.once then
+    self:unsubscribe( slot )
+  end
+
+  return result
 end
 
 
