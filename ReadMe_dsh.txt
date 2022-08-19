@@ -439,6 +439,8 @@
 * apocalypse3.7z: сборник от @optivankiev. Взято вот из этого сообщения
   http://nlc-zone.ru/forum/topic/160-sborki-dopolneniya-i-pravki/?p=253791
 
+* jack_rama_sky4k.7z: текстуры неба в повышенном разрешении от @jack_rama
+
 * nlc7_he.7z: текстуры из NLC7 Hard Edition
   http://nlc-zone.ru/forum/topic/191-nlc7-hard-edition/
 
