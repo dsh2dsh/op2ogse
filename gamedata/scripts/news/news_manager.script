@@ -1,5 +1,22 @@
 -- -*- mode: lua; coding: windows-1251-dos -*-
 
+local actor_names = {
+  -- перед esc_find_doctor_done
+  {
+    [ "СТРЕЛОК:" ] = "МЕЧЕНЫЙ:",
+    [ "{ACTOR}"  ] = game.translate_string( "actor_name1u" ),
+    [ "Стрелок:" ] = "Меченый:",
+    [ "{Actor}"  ] = game.translate_string( "actor_name1c" ),
+  },
+  -- после
+  {
+    [ "МЕЧЕНЫЙ:" ] = "СТРЕЛОК:",
+    [ "{ACTOR}"  ] = game.translate_string( "actor_name2u" ),
+    [ "Меченый:" ] = "Стрелок:",
+    [ "{Actor}"  ] = game.translate_string( "actor_name2c" ),
+  },
+}
+
 local snds = {
 	tips_esc_trader_about_anomalies	= [[characters_voice\scenario\trader\trader_tutorial_anomalies_1]],
 	gar_dolg_warning				= [[characters_voice\scenario\duty\duty_warning1]],
@@ -388,84 +405,66 @@ end
 ozvuchka_end = 0
 
 function send_tip( actor, news_id, timeout, sender, showtime, sender_id, ozvuchka, clear_ozvuchka_end )
-	if news_id == nil then return false end
-
---[=[
-	if sender_id ~= nil then
-		printf("try to send tips for [%s]", tostring(sender_id))
-		local sim = alife()
-		if sim ~= nil then
-			local npc = sim:story_object(sender_id)
-			if npc ~= nil then
-				if npc.online then
-					--в онлайне проверяем на раненность
-					if xr_wounded.is_heavy_wounded_by_id(npc.id) then
-						printf("[PDA]Cannot send tips [%s], sender is heavy wounded", tostring(news_id))
-						return false
-					end
-				end
-				-- в других случаях только на смерть
-				if npc:alive() == 1 then
-					printf("[PDA]Cannot send tips [%s], sender is dead", tostring(news_id))
-					return false
-				end
-			end
-		end
-	end
---]=]
-
-	if timeout == nil then timeout = 0 end
-	if showtime == nil then showtime = 5000 end
+  if not news_id then return false end
+  if not timeout then timeout = 0 end
+  if not showtime then showtime = 5000 end
 	
-	local ozvuchka_snd
-	if ozvuchka then
-		--' играем озвучку
-		xr_sound.stop_prev_sms_sound()
-		ozvuchka_snd = xr_sound.get_safe_sound_object(ozvuchka)
-		ozvuchka_snd:play(db.actor, timeout, sound_object.s2d)
+  local ozvuchka_snd
+  if ozvuchka then
+    -- играем озвучку
+    xr_sound.stop_prev_sms_sound()
+    ozvuchka_snd = xr_sound.get_safe_sound_object( ozvuchka )
+    ozvuchka_snd:play( db.actor, timeout, sound_object.s2d )
 		
-		--' Необходимо поставить время показа по длине сцены
-		local length = ozvuchka_snd:length()
-		if length > showtime then
-			showtime = length
-		end
-		if clear_ozvuchka_end then
-		  ozvuchka_end = 0
-		else
-		  ozvuchka_end = time_global() + length * 1.1
-		end
-	else
-		--' Играем дефолтный звук
-		pda_tips:play_no_feedback(db.actor, sound_object.s2d, timeout, vector():set( 0, 0, 0 ), 1.0)
-	--	pda_tips:play(db.actor, timeout, sound_object.s2d)
-		local news_snd = news[news_id]
-		if news_snd ~= nil then
-			--' Играем звук забитый
-			news_snd:play(db.actor, timeout+1, sound_object.s2d)
-
-			--' Необходимо поставить время показа по длине сцены
-			local length = news_snd:length()
-			if length > showtime then
-				showtime = length
-			end
-		end
-	end
+    -- Необходимо поставить время показа по длине сцены
+    local length = ozvuchka_snd:length()
+    if length > showtime then
+      showtime = length
+    end
+    if clear_ozvuchka_end then
+      ozvuchka_end = 0
+    else
+      ozvuchka_end = time_global() + length * 1.1
+    end
+  else
+    -- Играем дефолтный звук
+    pda_tips:play_no_feedback(
+      db.actor, sound_object.s2d, timeout, vector():set( 0, 0, 0 ), 1.0
+    )
+    local news_snd = news[ news_id ]
+    if news_snd then
+      -- Играем звук забитый
+      news_snd:play( db.actor, timeout + 1, sound_object.s2d )
+      -- Необходимо поставить время показа по длине сцены
+      local length = news_snd:length()
+      if length > showtime then
+        showtime = length
+      end
+    end
+  end
 	
-	-- Определяем, ГГ как отправитель по игре уже Cтрелок, или еще Меченый
-	if has_alife_info("esc_find_doctor_done") then
-		news_id = string.gsub(news_id, "МЕЧЕНЫЙ:", "СТРЕЛОК:", 1)
-		news_id = string.gsub(news_id, "Меченый:", "Стрелок:", 1)
-	else
-		news_id = string.gsub(news_id, "СТРЕЛОК:", "МЕЧЕНЫЙ:", 1)
-		news_id = string.gsub(news_id, "Стрелок:", "Меченый:", 1)
-	end
+  local news_text = game.translate_string( news_id )
 
-	-- local news_text = "%c[255,160,160,160]"..game.translate_string("st_tip").."\\n".."%c[default]"..game.translate_string(news_id)
-	local news_text = game.translate_string(news_id)
-	local x,y = get_sender_icon(news_text, sender)
-	actor:give_game_news(news_text, "ui\\ui_iconsTotal", Frect():set(x,y,83,47), timeout*1000, showtime)
-	return ozvuchka_snd or true
+  -- Определяем, ГГ как отправитель по игре уже Cтрелок, или еще Меченый
+  local names
+  if db.actor:has_info( "esc_find_doctor_done" ) then
+    names = actor_names[ 2 ]
+  else
+    names = actor_names[ 1 ]
+  end
+  for k, v in pairs( names ) do
+    news_text = string.gsub( news_text, k, v, 1 )
+  end
+
+  local x, y = get_sender_icon( news_text, sender )
+  actor:give_game_news(
+    news_text, "ui\\ui_iconsTotal", Frect():set( x, y, 83, 47 ), timeout * 1000,
+    showtime
+  )
+
+  return ozvuchka_snd or true
 end
+
 
 function send_tip_nosound(actor, news_id, timeout, sender)
 	if news_id == nil then return end
