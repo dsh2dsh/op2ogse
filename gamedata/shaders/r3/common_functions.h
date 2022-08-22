@@ -1,6 +1,10 @@
 #ifndef common_functions_h_included
 #define common_functions_h_included
 
+#include "cgim.h"
+
+//uniform float4 m_actor_params;
+
 //	contrast function
 float Contrast(float Input, float ContrastPower)
 {
@@ -12,12 +16,10 @@ float Contrast(float Input, float ContrastPower)
     return Output;
 }
 
-float3 TonemapFunction(float3 x) { return log(x + 1.0f); }
-
 void tonemap(out float4 low, out float4 high, float3 rgb, float scale)
 {
     rgb = rgb * scale;
-    low = TonemapFunction(rgb).xyzz;
+    low = TonemapFunctionGet(rgb).xyzz;
     high = rgb.xyzz / def_hdr; // 8x dynamic range
 }
 

@@ -2,7 +2,6 @@
 #define HMODEL_H
 
 #include "common.h"
-#include "cgim.h"
 
 TextureCube env_s0;
 TextureCube env_s1;

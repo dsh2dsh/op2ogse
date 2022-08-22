@@ -21,6 +21,21 @@ float Luminance(float3 color) { return dot(color, LUM); }
 
 ///////////////////////////////////////////////////////////////////////////////////////////
 
+float3 TonemapFunction(float3 x)
+{
+    const float fWhiteIntensity = 1.55;
+    const float fWhiteIntensitySQR = fWhiteIntensity * fWhiteIntensity;
+    return (x * (1 + x / fWhiteIntensitySQR)) / (x + 1);
+    //return log(x + 1.0f);
+}
+
+float3 TonemapFunctionGet(float3 c)
+{
+    float3 tc = TonemapFunction(c);
+    float l = Luminance(c);
+    return lerp(c * TonemapFunction(l) / l, tc, tc);
+}
+
 float3 InverseTonemapFunction(float3 x) { return exp(x) - 1.0f; }
 
 ///////////////////////////////////////////////////////////////////////////////////////////
