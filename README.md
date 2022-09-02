@@ -487,6 +487,8 @@ coc_actor_step.xdb: звук шагов ГГ из CoC
 
 nlc7_bolt.xdb, nlc7_bolt2.xdb: болты разных версий из NLC7 Переосмысление
 
+nlc7_bolt381.xdb: болт из NLC7 3.8.1
+
 op2_actor_step: звук шагов ГГ из ОП-2
 
 op2_bolt.xdb: болт из ОП-2
