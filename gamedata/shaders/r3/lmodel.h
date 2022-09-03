@@ -42,6 +42,13 @@ float4 compute_lighting(float3 N, float3 V, float3 L, float4 alb_gloss, float ma
 
 float4 plight_infinity(float m, float3 pnt, float3 normal, float4 c_tex, float3 light_direction)
 {
+#if 1
+    float3 N = normal; // normal
+    float3 V = -normalize(pnt); // vector2eye
+    float3 L = -light_direction; // vector2light
+    float3 H = normalize(L + V); // float-angle-vector
+    return s_material.Sample(smp_material, float3(dot(L, N), dot(H, N), m)).xxxy; // sample material
+#else
     // gsc vanilla stuff
     float3 N = normalize(normal); // normal
     float3 V = -normalize(pnt); // vector2eye
@@ -50,6 +57,7 @@ float4 plight_infinity(float m, float3 pnt, float3 normal, float4 c_tex, float3 
     float4 light = compute_lighting(N, V, L, c_tex, m);
 
     return light; // output (albedo.gloss)
+#endif
 }
 
 /*
@@ -78,7 +86,7 @@ float4 plight_local(float m, float3 pnt, float3 normal, float3 light_position, f
     float3 L = -normalize((float3)L2P); // vector2light
     float3 H = normalize(L + V); // float-angle-vector
     rsqr = dot(L2P, L2P); // distance 2 light (squared)
-    float att = saturate(1 - rsqr * light_range_rsq); // q-linear attenuate
+    float att = saturate(1 - rsqr * light_range_rsq) * 2.0f / 3.0f; // q-linear attenuate
     //	float4 light	= tex3D		(s_material, float3( dot(L,N), dot(H,N), m ) ); 	// sample material
     float4 light = s_material.Sample(smp_material, float3(dot(L, N), dot(H, N), m)).xxxy; // sample material
     return att * light;
