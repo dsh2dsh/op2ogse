@@ -35,28 +35,44 @@ function on_destroy( obj, binder )
 end
 
 
+local buy_items     = {}
 local sold_items    = {}
 local trade_manager = {}
 
 function on_trade_open( npc )
+  buy_items  = {}
   sold_items = {}
 end
 
 
 function on_trade( item, is_sold, money )
+  local id = item:id()
   if is_sold then
-    table.insert( sold_items, item:id() )
+    buy_items[  id ] = nil
+    sold_items[ id ] = true
+  else
+    buy_items[  id ] = true
+    sold_items[ id ] = nil
   end
 end
 
 
 function on_trade_hide( npc )
+  process_trade_counts(
+    count_sold_items( sold_items ), count_buy_items( buy_items )
+  )
+  buy_items  = {}
+  sold_items = {}
+end
+
+
+function count_sold_items( items )
   local counts = {}
-  for _, id in ipairs( sold_items ) do
+  for id, _ in pairs( items ) do
     local obj = level.object_by_id( id )
     if obj then
       local trader = obj:parent()
-      if trader then
+      if trader and not trader:is_actor() then
         local tt = trade_manager[ trader:id() ]
         if tt and tt.buy_supplies then
           local t = counts[ trader:name() ]
@@ -64,27 +80,47 @@ function on_trade_hide( npc )
             t = {}
             counts[ trader:name() ] = t
           end
-          if t[ obj:section() ] then
-            t[ obj:section() ] = t[ obj:section() ] + 1
+          local sect = obj:section()
+          if t[ sect ] then
+            t[ sect ] = t[ sect ] + 1
           else
-            t[ obj:section() ] = 1
+            t[ sect ] = 1
           end
           ogse.remove_item_from_inventory( obj, trader )
         end
       end
     end
   end
-  sold_items = {}
-  process_trade_counts( counts )
+  return counts
 end
 
 
-function process_trade_counts( t )
+function count_buy_items( items )
+  local counts = {}
+  for id, _ in pairs( items ) do
+    local obj = level.object_by_id( id )
+    if obj then
+      local parent = obj:parent()
+      if parent and parent:is_actor() then
+        local sect = obj:section()
+        if counts[ sect ] then
+          counts[ sect ] = counts[ sect ] + 1
+        else
+          counts[ sect ] = 1
+        end
+      end
+    end
+  end
+  return counts
+end
+
+
+function process_trade_counts( t, b )
   if t.amk_vitek_voron then -- Ворон
     if wawka_dialog.trade_voron_enough() then return end
 
     t = t.amk_vitek_voron
-    if t.mutant_psevdodog_tail and t.mutant_psevdodog_tail >= 2 then
+    if t.mutant_psevdodog_tail then
       wawka_dialog.trade_voron_count()
     end
 
@@ -92,7 +128,11 @@ function process_trade_counts( t )
     if sak_dialog.trade_kuznezov_enough() then return end
 
     t = t.esc_bridge_soldier5
-    if t.vodka and t.vodka >= 3 then
+    if t.vodka and (
+         b[ "ammo_5.45x39_ap"  ]
+      or b[ "ammo_5.45x39_fmj" ]
+      or b[ "ammo_7.62x39_ap"  ]
+    ) then
       sak_dialog.trade_kuznezov_count()
     end
 
@@ -107,7 +147,11 @@ function process_trade_counts( t )
     if sak_dialog.trade_sherstyk_enough() then return end
 
     t = t.sak_military_stalker
-    if t.vodka and t.vodka >= 3 then
+    if t.vodka and (
+         b[ "ammo_5.45x39_ap"  ]
+      or b[ "ammo_5.45x39_fmj" ]
+      or b[ "ammo_7.62x54r"    ]
+    ) then
       sak_dialog.trade_sherstyk_count()
     end
 
@@ -115,7 +159,7 @@ function process_trade_counts( t )
     if sak_dialog.trade_jlob_enough() then return end
 
     t = t.val_bandit_trader
-    if t.conserva and t.conserva >= 2 then
+    if t.conserva and b[ "ammo_5.45x39_fmj" ] then
       sak_dialog.trade_jlob_count()
     end
 
