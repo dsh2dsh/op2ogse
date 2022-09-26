@@ -27,6 +27,7 @@ local firing_actor_disp_time = 5000
 -- сколько можно стрелять во врага после его последней видимости
 local fire_make_sense_interval    =  5000
 local fire_make_sense_interval_be = 10000
+local fire_make_sense_interval_rnd = 60000
 
 local total_debug               = false
 local close_combat_distance     = 15 -- дистанция ближнего боя
@@ -1662,6 +1663,7 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
         end
       else
         local enemy_record = get_target_info( npc, who:id() )
+        enemy_record.center         = who:center()
         enemy_record.last_time_seen = time_global()
         enemy_record.vertex         = who:level_vertex_id()
       end
@@ -1678,6 +1680,7 @@ function hit_callback( obj, amount, local_direction, who, bone_index )
         process_enemy( npc, who )
       else
         local enemy_record = get_target_info( npc, who:id() )
+        enemy_record.center         = who:center()
         enemy_record.last_time_seen = time_global()
         enemy_record.vertex         = who:level_vertex_id()
       end
@@ -1957,6 +1960,7 @@ function register_as_target( npc, enemy, force_vis )
   if get_target_info( npc, id ) then
     local t = get_target_info( npc, id )
     if force_vis then
+      t.center         = enemy:center()
       t.last_time_seen = time_global()
       t.vertex         = enemy:level_vertex_id()
       t.vis            = true
@@ -1976,6 +1980,7 @@ function register_as_target( npc, enemy, force_vis )
       weight = 1000,
     }
     if enemy_record.npc and ( enemy_record.vis or enemy_record.visible ) then
+      enemy_record.center         = enemy:center()
       enemy_record.last_time_seen = time_global()
       enemy_record.vertex         = enemy:level_vertex_id()
     end
@@ -2105,6 +2110,7 @@ function refresh_targets( npc )
                 remove_from_targets( npc, k )
               end
             elseif v.visible or st.is_camper then
+              v.center         = check_target:center()
               v.last_time_seen = time_global()
               v.vertex         = check_target:level_vertex_id()
             end
@@ -2118,6 +2124,7 @@ function refresh_targets( npc )
           end
         end
       elseif v.npc then
+        v.center         = check_target:center()
         v.last_time_seen = time_global()
         v.vertex         = check_target:level_vertex_id()
       end
@@ -2552,7 +2559,7 @@ function action_altcombat:set_weapons_fire( enemy, weapon, override_vis, npc_ran
     or ( IsRPG( weapon ) and distance < 25 )
   then
     type_of_fire = object.aim1
-  elseif npc:can_fire_to_enemy( enemy, fire_make_sense_interval ) then
+  elseif self:can_fire_to_enemy( enemy ) then
     if enemy:is_actor() then
       if self.aiming then
         if self.aiming < time_global() then
@@ -2616,6 +2623,37 @@ function action_altcombat:set_weapons_fire( enemy, weapon, override_vis, npc_ran
     local t = math.random( time_aim.other, time_aim.other + 100 )
     npc:set_item( type_of_fire, weapon, qs, t )
   end
+end
+
+
+function action_altcombat:can_fire_to_enemy( enemy )
+  local npc = self.object
+  if npc:can_fire_to_enemy( enemy, fire_make_sense_interval ) then
+    return true
+  end
+
+  local t = get_target_info( npc, enemy:id() )
+  if t.last_time_seen then
+    local max_time    = fire_make_sense_interval_rnd
+    local unseen_time = time_global() - t.last_time_seen
+    if unseen_time > fire_make_sense_interval and unseen_time < max_time then
+      if t.unseen_fire_time and t.unseen_fire_time > time_global() then
+        if t.unseen_fire_fire then
+          return npc:can_fire_to_enemy( enemy, max_time )
+        end
+      else
+        t.unseen_fire_time = time_global() + fire_make_sense_interval
+        if math.random() > unseen_time / max_time then
+          t.unseen_fire_fire = true
+          return npc:can_fire_to_enemy( enemy, max_time )
+        else
+          t.unseen_fire_fire = false
+        end
+      end
+    end
+  end
+
+  return false
 end
 
 
@@ -2779,6 +2817,10 @@ function action_altcombat:set_combat_sight( enemy, weapon )
     and npc:memory_position( enemy ):magnitude() ~= 0
   then
     look_pos = npc:memory_position( enemy )
+    local t = get_target_info( npc, enemy:id() )
+    if t and t.center then
+      look_pos = t.center
+    end
   end
 
   st.look_pos = look_pos
