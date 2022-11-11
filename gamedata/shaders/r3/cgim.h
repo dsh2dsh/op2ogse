@@ -26,7 +26,7 @@ float3 TonemapFunction(float3 x)
     const float fWhiteIntensity = 1.55;
     const float fWhiteIntensitySQR = fWhiteIntensity * fWhiteIntensity;
     return (x * (1 + x / fWhiteIntensitySQR)) / (x + 1);
-    //return log(x + 1.0f);
+    // return log(x + 1.0f);
 }
 
 float3 TonemapFunctionGet(float3 c)

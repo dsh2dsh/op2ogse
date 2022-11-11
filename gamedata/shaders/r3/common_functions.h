@@ -3,7 +3,7 @@
 
 #include "cgim.h"
 
-//uniform float4 m_actor_params;
+// uniform float4 m_actor_params;
 
 //	contrast function
 float Contrast(float Input, float ContrastPower)
