@@ -23,6 +23,7 @@ cbuffer shader_params { float m_AlphaRef; }
 cbuffer static_globals
 {
     uniform float3x4 m_V;
+    uniform float3x4 m_inv_V;
     uniform float4x4 m_P;
     uniform float4x4 m_VP;
 
@@ -43,22 +44,8 @@ cbuffer static_globals
     uniform float4 pos_decompression_params2;
 
     uniform float4 parallax;
-    //	uniform float4		screen_res;		// Screen resolution (x-Width,y-Height, zw - 1/resolution)
+    // uniform float4 screen_res; // Screen resolution (x-Width,y-Height, zw - 1/resolution)
 }
-
-/*
-//
-
-
-
-
-uniform float4x4 	m_texgen;
-//uniform float4x4 	mVPTexgen;
-uniform float3		L_sun_dir_e;
-
-//uniform float3		eye_direction;
-uniform float3		eye_normal;
-*/
 
 float calc_cyclic(float x)
 {
@@ -76,5 +63,8 @@ float2 calc_xz_wave(float2 dir2D, float frac)
     float2 ctrl_B = float2(dir2D.x, dir2D.y);
     return lerp(ctrl_A, ctrl_B, frac); //! This calculates tree wave. No changes made
 }
+
+#define SKY_EPS float(0.001)
+#define MAT_FLORA 6.0
 
 #endif

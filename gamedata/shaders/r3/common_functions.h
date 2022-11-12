@@ -62,6 +62,27 @@ float3 v_sun(float3 n) { return L_sun_color * dot(n, -L_sun_dir_w); }
 
 float3 calc_reflection(float3 pos_w, float3 norm_w) { return reflect(normalize(pos_w - eye_position), norm_w); }
 
+// https://knarkowicz.wordpress.com/2014/04/16/octahedron-normal-vector-encoding/
+float2 OctWrap(float2 v) { return (1.0 - abs(v.yx)) * (v.xy >= 0.0 ? 1.0 : -1.0); }
+
+float2 gbuf_pack_normal(float3 n)
+{
+    n /= (abs(n.x) + abs(n.y) + abs(n.z));
+    n.xy = n.z >= 0.0 ? n.xy : OctWrap(n.xy);
+    n.xy = n.xy * 0.5 + 0.5;
+    return n.xy;
+}
+
+float3 gbuf_unpack_normal(float2 f)
+{
+    f = f * 2.0 - 1.0;
+
+    float3 n = float3(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
+    float t = saturate(-n.z);
+    n.xy += n.xy >= 0.0 ? -t : t;
+    return normalize(n);
+}
+
 #define USABLE_BIT_1 uint(0x00002000)
 #define USABLE_BIT_2 uint(0x00004000)
 #define USABLE_BIT_3 uint(0x00008000)
@@ -78,23 +99,6 @@ float3 calc_reflection(float3 pos_w, float3 norm_w) { return reflect(normalize(p
 #define USABLE_BIT_14 uint(0x04000000) // mantissa bits where other bit flags are stored.
 #define USABLE_BIT_15 uint(0x80000000)
 #define MUST_BE_SET uint(0x40000000) // This flag *must* be stored in the floating-point representation of the bit flag to store
-
-// RainbowZerg: use spheremap transform (Crytek's implementation) for normals packing
-float2 gbuf_pack_normal(float3 N)
-{
-    return normalize(N.xy) * sqrt(N.z * 0.5 + 0.5);
-    ;
-}
-
-float3 gbuf_unpack_normal(float2 enc)
-{
-    // Spheremap transform
-    float3 res;
-    float l = length(enc.xy);
-    res.z = l * l * 2.0 - 1.0;
-    res.xy = normalize(enc.xy) * sqrt(1.0 - res.z * res.z);
-    return res;
-}
 
 float gbuf_pack_hemi_mtl(float hemi, float mtl)
 {
