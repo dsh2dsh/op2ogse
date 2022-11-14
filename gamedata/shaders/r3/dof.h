@@ -46,7 +46,9 @@ float3	dof(float2 center)
 #else
    float 	depth		= s_position.Load( int3( center * pos_decompression_params2.xy ,0),0 ).z;
 #endif
-	if (depth <= EPSDEPTH)	depth = dof_params.w;
+	// if (depth <= EPSDEPTH)	depth = dof_params.w;
+	if (depth <= EPSDEPTH)
+		return s_image.Sample(smp_rtlinear, center);
 	float	blur 		= DOFFactor(depth);
 
 	//float blur = 1;
