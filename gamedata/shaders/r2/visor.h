@@ -1,7 +1,7 @@
 
 #define VIS_GLASS_NUM 9
 
-// uniform float4 screen_res; // Screen resolution (x-Width,y-Height, zw - 1/resolution)
+//uniform float4 screen_res; // Screen resolution (x-Width,y-Height, zw - 1/resolution)
 uniform float4 addon_VControl;
 
 float visor_ratio(float s)
@@ -21,9 +21,9 @@ float3 visor_reflection(float3 image, float2 tc)
     float t = addon_VControl.y;
 
     if (x < t)
-    {
+	{
         return image;
-    }
+	}
     else
     {
         float p = saturate((x / t - 1.0f) * 2.0f);
@@ -32,12 +32,12 @@ float3 visor_reflection(float3 image, float2 tc)
         {
             float N = 1.h - p / 0.8f + 0.15f * (i / (y - 1.0f)) * p;
             float2 m = (center - tc) * -N + center;
-            final += tex2Dlod(s_image, float4(m, 0, 0));
+            final += tex2Dlod(s_image,float4(m,0,0));
         }
         final /= y;
         final *= 1.h - saturate((x - t - 0.05f) * 5.2f);
 
-        image = (image + addon_VControl.x * final) / (1.f + addon_VControl.x);
-        return image;
-    }
-}
+    image = (image + addon_VControl.x * final) / (1.f + addon_VControl.x);	
+	return image;
+	}
+} 
