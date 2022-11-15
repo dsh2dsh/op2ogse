@@ -1,10 +1,6 @@
 #ifndef common_functions_h_included
 #define common_functions_h_included
 
-#include "cgim.h"
-
-//uniform float4 m_actor_params;
-
 //	contrast function
 float Contrast(float Input, float ContrastPower)
 {
@@ -19,8 +15,23 @@ float Contrast(float Input, float ContrastPower)
 void tonemap(out float4 low, out float4 high, float3 rgb, float scale)
 {
     rgb = rgb * scale;
-    low = TonemapFunctionGet(rgb).xyzz;
+
+#ifdef USE_COP_WEATHER_CONFIGS
+
+    const float fWhiteIntensity = 1.7;
+
+    const float fWhiteIntensitySQR = fWhiteIntensity * fWhiteIntensity;
+
+    low = ((rgb * (1 + rgb / fWhiteIntensitySQR)) / (rgb + 1)).xyzz;
+
     high = rgb.xyzz / def_hdr; // 8x dynamic range
+
+#else
+
+    low = rgb.xyzz;
+    high = low / def_hdr; // 8x dynamic range
+
+#endif
 }
 
 float4 combine_bloom(float3 low, float4 high) { return float4(low + high * high.a, 1.h); }
@@ -79,20 +90,50 @@ float3 calc_reflection(float3 pos_w, float3 norm_w) { return reflect(normalize(p
 #define USABLE_BIT_15 uint(0x80000000)
 #define MUST_BE_SET uint(0x40000000) // This flag *must* be stored in the floating-point representation of the bit flag to store
 
-// RainbowZerg: use spheremap transform (Crytek's implementation) for normals packing
-float2 gbuf_pack_normal(float3 N)
+/*
+float2 gbuf_pack_normal( float3 norm )
 {
-    return normalize(N.xy) * sqrt(N.z * 0.5 + 0.5);
-    ;
+   float2 res;
+
+   res = 0.5 * ( norm.xy + float2( 1, 1 ) ) ;
+   res.x *= ( norm.z < 0 ? -1.0 : 1.0 );
+
+   return res;
 }
 
-float3 gbuf_unpack_normal(float2 enc)
+float3 gbuf_unpack_normal( float2 norm )
 {
-    // Spheremap transform
+   float3 res;
+
+   res.xy = ( 2.0 * abs( norm ) ) - float2(1,1);
+
+   res.z = ( norm.x < 0 ? -1.0 : 1.0 ) * sqrt( abs( 1 - res.x * res.x - res.y * res.y ) );
+
+   return res;
+}
+*/
+
+// Holger Gruen AMD - I change normal packing and unpacking to make sure N.z is accessible without ALU cost
+// this help the HDAO compute shader to run more efficiently
+float2 gbuf_pack_normal(float3 norm)
+{
+    float2 res;
+
+    res.x = norm.z;
+    res.y = 0.5f * (norm.x + 1.0f);
+    res.y *= (norm.y < 0.0f ? -1.0f : 1.0f);
+
+    return res;
+}
+
+float3 gbuf_unpack_normal(float2 norm)
+{
     float3 res;
-    float l = length(enc.xy);
-    res.z = l * l * 2.0 - 1.0;
-    res.xy = normalize(enc.xy) * sqrt(1.0 - res.z * res.z);
+
+    res.z = norm.x;
+    res.x = (2.0f * abs(norm.y)) - 1.0f;
+    res.y = (norm.y < 0 ? -1.0 : 1.0) * sqrt(abs(1 - res.x * res.x - res.z * res.z));
+
     return res;
 }
 

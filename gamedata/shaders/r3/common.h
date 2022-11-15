@@ -10,7 +10,8 @@
 #include "common_cbuffers.h"
 #include "common_functions.h"
 
-//#define USE_SUNMASK
+// #define USE_SUPER_SPECULAR
+#define USE_SUNMASK
 
 #ifdef USE_R2_STATIC_SUN
 #define xmaterial float(1.0h / 4.h)
@@ -28,6 +29,7 @@
 // #define DBG_TEST_LIGHT
 // #define DBG_TEST_LIGHT_SPEC
 
+// #define USE_GAMMA_22
 // #define USE_SJITTER
 // #define USE_SUNFILTER
 // #define USE_FETCH4
@@ -46,6 +48,7 @@
 // #define USE_LM_HEMI                	//- shader defined
 // #define USE_DISTORT                	//- shader defined
 // #define USE_SUNMASK                		//- shader defined
+// #define DBG_TMAPPING
 //////////////////////////////////////////////////////////////////////////////////////////
 
 uniform float4                J_direct        [6];

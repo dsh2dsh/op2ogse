@@ -1,7 +1,6 @@
 #include "common.h"
 #include "mblur.h"
 #include "dof.h"
-
 /*
 struct 	v2p
 {
@@ -25,10 +24,16 @@ uniform float4 pnv_params;
 //////////////////////////////////////////////////////////////////////////////////////////
 #define EPSDEPTH 0.001
 
+#ifdef SSLR_ENABLED
+Texture2D s_SSLR;
+Texture2D s_wetness;
+uniform float4 rain_params; // x = raindensity
+#endif
+
 #ifndef USE_MSAA
 Texture2D s_distort;
 #else
-TEXTURE2DMS(float4, MSAA_SAMPLES) s_distort;
+Texture2DMS<float4, MSAA_SAMPLES> s_distort;
 #endif
 //////////////////////////////////////////////////////////////////////////////////////////
 // Pixel
@@ -90,10 +95,6 @@ c2_out main(v2p_aa_AA I)
     // float3 	img 	= tex2D		(s_image, center);
 
     float3 img = dof(center);
-    if (pnv_color.w > 1.f)
-    {
-        img = calc_night_vision_effect(I.Tex0, float4(img, 0), pnv_color, pnv_params);
-    }
     //	float4 	bloom	= tex2D		(s_bloom, center);
     float4 bloom = s_bloom.Sample(smp_rtlinear, center);
 
@@ -101,15 +102,15 @@ c2_out main(v2p_aa_AA I)
     //			img 	= mblur( center, s_position.Sample( smp_nofilter, tc0), img.rgb);
     img = mblur(center, (gbd).P, img.rgb);
 
-    if (addon_VControl.w == 1)
-        img = visor_reflection(img, center);
-
-    // if (center.x > sin(timers.x) * 0.5 + 0.5)
-    bloom = BrokeBloom(bloom);
-
 #ifdef USE_DISTORT
     float3 blurred = bloom * def_hdr;
     img = lerp(img, blurred, distort.z);
+#endif
+
+#ifdef SSLR_ENABLED
+    float3 SSLR = s_SSLR.Sample(smp_rtlinear, center);
+    float wet = s_wetness.Sample(smp_rtlinear, center).r;
+    img = lerp(img, SSLR, wet * rain_params.x);
 #endif
 
     res.Color += combine_bloom(img, bloom);
@@ -117,7 +118,11 @@ c2_out main(v2p_aa_AA I)
     float4 ptp = mul(m_P, float4(gbd.P, 1));
     res.Depth = ptp.w == 0 ? 1 : ptp.z / ptp.w;
 #endif
-    res.Color.rgb = Uncharted2Tonemap(res.Color.rgb);
+
+    if (pnv_color.w > 1.f)
+        res.Color.rgb = calc_night_vision_effect(I.Tex0, float4(res.Color.rgb, 0), pnv_color, pnv_params);
+    else if (addon_VControl.w == 1)
+        res.Color.rgb = visor_reflection(res.Color.rgb, center);
 
     return res;
 }
