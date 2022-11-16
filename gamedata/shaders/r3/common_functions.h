@@ -113,28 +113,25 @@ float3 gbuf_unpack_normal( float2 norm )
 }
 */
 
-// Holger Gruen AMD - I change normal packing and unpacking to make sure N.z is accessible without ALU cost
-// this help the HDAO compute shader to run more efficiently
-float2 gbuf_pack_normal(float3 norm)
+// https://knarkowicz.wordpress.com/2014/04/16/octahedron-normal-vector-encoding/
+float2 OctWrap(float2 v) { return (1.0 - abs(v.yx)) * (v.xy >= 0.0 ? 1.0 : -1.0); }
+
+float2 gbuf_pack_normal(float3 n)
 {
-    float2 res;
-
-    res.x = norm.z;
-    res.y = 0.5f * (norm.x + 1.0f);
-    res.y *= (norm.y < 0.0f ? -1.0f : 1.0f);
-
-    return res;
+    n /= (abs(n.x) + abs(n.y) + abs(n.z));
+    n.xy = n.z >= 0.0 ? n.xy : OctWrap(n.xy);
+    n.xy = n.xy * 0.5 + 0.5;
+    return n.xy;
 }
 
-float3 gbuf_unpack_normal(float2 norm)
+float3 gbuf_unpack_normal(float2 f)
 {
-    float3 res;
+    f = f * 2.0 - 1.0;
 
-    res.z = norm.x;
-    res.x = (2.0f * abs(norm.y)) - 1.0f;
-    res.y = (norm.y < 0 ? -1.0 : 1.0) * sqrt(abs(1 - res.x * res.x - res.z * res.z));
-
-    return res;
+    float3 n = float3(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
+    float t = saturate(-n.z);
+    n.xy += n.xy >= 0.0 ? -t : t;
+    return normalize(n);
 }
 
 float gbuf_pack_hemi_mtl(float hemi, float mtl)
