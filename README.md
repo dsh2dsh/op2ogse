@@ -419,7 +419,7 @@
 - https://bamus.cz/pub/dsh_mod_repack/
 или
 - torrent: https://bamus.cz/pub/dsh_mod_repack.torrent
-- magnet: magnet:?xt=urn:btih:035246a8d5b4cd19e06b3273114616564e22b920&dn=dsh%5Fmod%5Frepack
+- magnet: magnet:?xt=urn:btih:e84c39dba645eeaf2e8e0495d9a29cb623e5a565&dn=dsh%5Fmod%5Frepack
 
 Последнее обновление:
 - https://bamus.cz/pub/dsh_mod_latest/latest.7z
@@ -428,27 +428,26 @@
 Текстурные сборки:
 - https://bamus.cz/pub/dsh_mod_mods/
 - torrent: https://bamus.cz/pub/dsh_mod_mods.torrent
-- magnet: magnet:?xt=urn:btih:8676b63d6fad4ad8c1368141f0f0cfe2b4ef7300&dn=dsh%5Fmod%5Fmods
+- magnet: magnet:?xt=urn:btih:8823edc77ccfdd6573a40162cd9ce98eae2ed248&dn=dsh%5Fmod%5Fmods
 
-* apocalypse3.7z: сборник от @optivankiev. Взято вот из этого сообщения
-  http://nlc-zone.ru/forum/topic/160-sborki-dopolneniya-i-pravki/?p=253791
+* v92_op2_intro: загрузочные экраны от V92
 
-* jack_rama_sky4k.7z: текстуры неба в повышенном разрешении от @jack_rama
+* zz1_nlc7_textures_venommans: сборник текстур из NLC7 от VeNoMMaNs
 
-* nlc7_he.7z: текстуры из NLC7 Hard Edition
+* zz2_s.g.c._000_materials.v92_v.1: текстуры от V92 c доработками adm-ral
+
+* zz3_nlc7_he: текстуры из NLC7 Hard Edition
   http://nlc-zone.ru/forum/topic/191-nlc7-hard-edition/
+  
+* zz5_nlc7_he_detail_fall: текстуры земли/травы из NLC7 HE
 
-* nlc7_textures_venommans.7z: сборник текстур из NLC7 от VeNoMMaNs
+* zz6_absolute_nature_4_04: сухая растительность из Absolute Nature
 
-* optivankiev_asphalt.7z: текстура асфальта с большим разрешением от @optivankiev
-
-* sgc_v92_v1.7z: текстуры от V92 c доработками adm-ral
-
-* v92_op2_intro.7z: загрузочные экраны от V92
+* zz6_jack_rama_sky4k_night: текстуры ночного неба в повышенном разрешении от
+  @jack_rama
 
 Все текстурные сборки можно комбинировать друг с другом в любых
-комбинациях. Текстуры будут браться из последнего по алфавиту
-сборника.
+комбинациях. Текстуры будут браться из последнего по алфавиту сборника.
 
 
 Установка:
@@ -460,13 +459,16 @@
 
 и перезагрузить компьютер, на всякий случай.
 
-2. Создать новую папку
+2. Создать новую папку и скачать в нее основную часть, т.е. dshmod0.7z и все
+   gamedata.db*.
 
-3. Распаковать туда основную часть
+3. Распаковать dshmod0.7z и после этого удалить его, т.к. он больше ни для чего
+   не нужен.
 
 4. Распаковать туда же последнее обновление
 
-5. Распаковать туда же сборку текстур. Это не обязательно, но я рекомендую.
+5. Скачать и перенести туда же нужную сборку текстур. Это не обязательно, но я
+   рекомендую.
 
 Всё, можно запускать.
 
@@ -481,19 +483,19 @@
 
 Дополнения:
 
-atmosfear3_rain.xdb: текстура дождя с заметными каплями
+* atmosfear3_rain.xdb: текстура дождя с заметными каплями
 
-coc_actor_step.xdb: звук шагов ГГ из CoC
+* coc_actor_step.xdb: звук шагов ГГ из CoC
 
-nlc7_bolt.xdb, nlc7_bolt2.xdb: болты разных версий из NLC7 Переосмысление
+* nlc7_bolt.xdb, nlc7_bolt2.xdb: болты разных версий из NLC7 Переосмысление
 
-nlc7_bolt381.xdb: болт из NLC7 3.8.1
+* nlc7_bolt381.xdb: болт из NLC7 3.8.1
 
-op2_actor_step: звук шагов ГГ из ОП-2
+* op2_actor_step: звук шагов ГГ из ОП-2
 
-op2_bolt.xdb: болт из ОП-2
+* op2_bolt.xdb: болт из ОП-2
 
-sak_bolt.xdb: другая версия болта из NLC7
+* sak_bolt.xdb: другая версия болта из NLC7
 
 Для установки любого дополнения, в папке с игрой нужно создать папку
 "mods" и положить туда файл дополнения. При этом нужно убедиться, что
