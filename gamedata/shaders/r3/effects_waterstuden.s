@@ -1,11 +1,11 @@
 local tex_base                = "water\\water_studen"
-local tex_nmap                = "fx\\water_normal"
+local tex_nmap                = "water\\water_normal" --"fx\\water_normal"
 local tex_dist                = "water\\water_dudv"
 local tex_sky0                = "$user$sky0"         -- "sky\\sky_8_cube"
 local tex_sky1                = "$user$sky1"         -- "sky\\sky_8_cube"
 
 local tex_bluenoise           = "fx\\blue_noise"
-local tex_rainsplash          = "fx\\water_sbumpvolume"
+local tex_rainsplash          = "water\\water_sbumpvolume" --"fx\\water_sbumpvolume"
 local tex_caustics 	     	  = "fx\\water_caustics"
 
 function normal                (shader, t_base, t_second, t_detail)

@@ -17,7 +17,7 @@
 #define G_SSR_WATER_SPECULAR 6.0f // Sun/Moon specular intensity
 #define G_SSR_WATER_SPECULAR_NORMAL 0.2f // Specular normal intensity. ( You may need to adjust this if you change the value of G_SSR_WATER_WAVES )
 
-#define G_SSR_WATER_CAUSTICS 0.5f // Caustics intensity
+#define G_SSR_WATER_CAUSTICS 0.1f // Caustics intensity
 #define G_SSR_WATER_CAUSTICS_SCALE 1.5f // Caustics Size
 
 #define G_SSR_WATER_SOFTBORDER 0.1f // Soft border factor. ( 0.0f = hard edge )
