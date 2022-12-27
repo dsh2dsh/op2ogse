@@ -520,7 +520,10 @@ bool cheap_reject(float3 tc, inout bool full_light)
             full_light = false;
             return true;
         }
-        else { return false; }
+        else
+        {
+            return false;
+        }
     }
     else // plane equation detected
     {
@@ -702,7 +705,10 @@ float shadow_dx10_1_sunshafts(float4 tc, float2 pos2d)
     bool umbra = ((minmax.x < 0) && (t.z > -minmax.x));
 
     [branch] if (umbra) { return 0.0; }
-    else { return shadow_hw(tc); }
+    else
+    {
+        return shadow_hw(tc);
+    }
 }
 
 #endif
@@ -760,14 +766,24 @@ float shadow_rain(float4 tc, float2 tcJ) // jittered sampling
 //////////////////////////////////////////////////////////////////////////////////////////
 uniform float3x4 m_sunmask; // ortho-projection
 #ifdef USE_SUNMASK
+float4 sun_shafts_intensity;
+
 float sunmask(float4 P)
 {
-    float2 tc = mul(m_sunmask, P); //
-    //	return 		tex2D( s_lmap, tc ).w;			// A8
-    return s_lmap.Sample(smp_linear, tc).w; // A8
+    float2 tc = mul(m_sunmask, P);
+    float sunmask = s_lmap.Sample(smp_linear, tc).w;
+    float sunmask_correction;
+
+    const float intensity = 0.6, ss_bebuff = 10;
+
+    sunmask = sunmask * intensity + (1.0 - intensity);
+    sunmask_correction = saturate(sun_shafts_intensity.x * ss_bebuff);
+
+    sunmask = lerp(sunmask, 1.0h, sunmask_correction);
+    return sunmask;
 }
 #else
-float sunmask(float4 P) { return 1.h; } //
+float sunmask(float4 P) { return 1.h; }
 #endif
 //////////////////////////////////////////////////////////////////////////////////////////
 uniform float4x4 m_shadow;
