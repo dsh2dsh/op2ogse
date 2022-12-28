@@ -149,6 +149,7 @@ surface_bumped sload_i(p_bumped I)
     float4 detail = s_detail.Sample(smp_base, I.tcdbump);
     S.base.rgb = S.base.rgb * detail.rgb * 2;
     S.gloss = S.gloss * detail.w * 2;
+
 #endif //	USE_TDETAIL_BUMP
 #endif
 
@@ -209,14 +210,14 @@ surface_bumped sload_i(p_bumped I, float2 pixeloffset)
 surface_bumped sload(p_bumped I)
 {
     surface_bumped S = sload_i(I);
-    // S.normal.z *= 0.5; //. make bump twice as contrast (fake, remove me if possible)
+    //	S.normal.z			*=	0.5;		//. make bump twice as contrast (fake, remove me if possible)
     return S;
 }
 
 surface_bumped sload(p_bumped I, float2 pixeloffset)
 {
     surface_bumped S = sload_i(I, pixeloffset);
-    // S.normal.z *= 0.5; //. make bump twice as contrast (fake, remove me if possible)
+    //	S.normal.z			*=	0.5;		//. make bump twice as contrast (fake, remove me if possible)
     return S;
 }
 

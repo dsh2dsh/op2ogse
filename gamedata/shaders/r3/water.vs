@@ -9,7 +9,6 @@ struct v_vert
     float4 T : TANGENT;
     float4 B : BINORMAL;
     float4 color : COLOR0; // (r,g,b,dir-occlusion)
-    //	float2	uv		: TEXCOORD0;	// (u0,v0)
     int2 uv : TEXCOORD0; // (u0,v0)
 };
 
@@ -17,7 +16,7 @@ struct vf
 {
     float2 tbase : TEXCOORD0; // base
     float4 tnorm0 : TEXCOORD1; // nm0
-    float4 position_w : TEXCOORD2; // nm1
+    float3 position_w : TEXCOORD2; // nm1
     float3 M1 : TEXCOORD3;
     float3 M2 : TEXCOORD4;
     float3 M3 : TEXCOORD5;
@@ -44,10 +43,10 @@ vf main(v_vert v)
     vf o;
 
     float4 P = v.P; // world
-    float3 NN = unpack_normal(v.N);
+    o.position_w = P.xyz;
+
     P = watermove(P);
 
-    o.position_w = float4(P.xyz, 1.0);
     o.v2point_w = P - eye_position;
     o.tbase = unpack_tc_base(v.uv, v.T.w, v.B.w); // copy tc
     o.tnorm0.xy = watermove_tc(o.tbase * W_DISTORT_BASE_TILE_0, P.xz, W_DISTORT_AMP_0);
@@ -82,7 +81,6 @@ vf main(v_vert v)
 
     o.hpos = mul(m_VP, P); // xform, input in world coords
     o.fog = saturate(calc_fogging(v.P));
-    // o.fog		*= o.fog;
 
     o.c0 = float4(L_final, 1);
 

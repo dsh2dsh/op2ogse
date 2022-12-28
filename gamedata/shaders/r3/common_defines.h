@@ -1,6 +1,12 @@
 #ifndef common_defines_h_included
 #define common_defines_h_included
 
+#if defined(SM_5) || defined(SM_4_1)
+#define TEXTURE2DMS(a, b) Texture2DMS<a>
+#else
+#define TEXTURE2DMS(a, b) Texture2DMS<a, b>
+#endif
+
 //////////////////////////////////////////////////////////////////////////////////////////
 // Defines                                		//
 #define def_gloss float(2.f / 255.f)
@@ -19,7 +25,7 @@
 #endif
 //////////////////////////////////////////////////////////////////////////////////////////
 
-//#define USE_GRASS_WAVE								// enable grass wave
+// #define USE_GRASS_WAVE								// enable grass wave
 #define GRASS_WAVE_FREQ float(0.7) // frequency of waves
 #define GRASS_WAVE_POWER float(3.0) // brightness of waves
 

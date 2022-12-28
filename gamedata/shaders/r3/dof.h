@@ -1,7 +1,7 @@
 #ifndef DOF_H_INCLUDED
 #define DOF_H_INCLUDED
 
-//#define USE_DOF
+// #define USE_DOF
 
 #ifndef USE_DOF
 
@@ -28,7 +28,7 @@ float DOFFactor(float depth)
     return blur;
 }
 
-//#define MAXCOF		5.h
+// #define MAXCOF		5.h
 #define MAXCOF 7.h
 #define EPSDEPTH 0.0001h
 float3 dof(float2 center)
@@ -43,7 +43,6 @@ float3 dof(float2 center)
 #else
     float depth = s_position.Load(int3(center * pos_decompression_params2.xy, 0), 0).z;
 #endif
-    // if (depth <= EPSDEPTH)	depth = dof_params.w;
     if (depth <= EPSDEPTH)
         return s_image.Sample(smp_rtlinear, center);
     float blur = DOFFactor(depth);
