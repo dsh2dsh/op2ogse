@@ -1,1 +1,1 @@
-//#define SSFX_FOG //пока отключено
+#define SSFX_FOG
