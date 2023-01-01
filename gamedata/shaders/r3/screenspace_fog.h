@@ -32,7 +32,7 @@ float SSFX_HEIGHT_FOG(float3 P, float World_Py, inout float3 color)
     float3 FOG_COLOR = lerp(fog_color, Sun, FogBlend);
 
     // Apply fog to color
-    color = lerp(color, FOG_COLOR, fogresult);
+    color = lerp(color, FOG_COLOR * TONEMAP_SCALE_FACTOR, fogresult);
 
     // Return distance fog.
     return fog;
