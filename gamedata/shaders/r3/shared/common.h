@@ -66,6 +66,6 @@ float2 calc_xz_wave(float2 dir2D, float frac)
 }
 
 #define SKY_EPS float(0.001)
-#define MAT_FLORA 6.0
+#define MAT_FLORA 0.15f
 
 #endif
