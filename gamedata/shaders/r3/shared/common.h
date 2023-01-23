@@ -68,4 +68,12 @@ float2 calc_xz_wave(float2 dir2D, float frac)
 #define SKY_EPS float(0.001)
 #define MAT_FLORA 0.15f
 
+// Simple subsurface scattering
+float SSS(float3 N, float3 V, float3 L)
+{
+    float intensity = 0.5f;
+    float S = saturate(dot(V, -(L + N))) * intensity;
+    return S;
+}
+
 #endif
