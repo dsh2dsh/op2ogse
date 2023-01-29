@@ -1,4 +1,8 @@
+#include "anomaly_shaders.h"
 #include "common.h"
+
+#include "lmodel.h"
+#include "hmodel.h"
 
 // Check MODs
 #include "check_screenspace.h"
@@ -11,10 +15,8 @@
 #include "screenspace_fog.h"
 #endif
 
-#include "lmodel.h"
-#include "hmodel.h"
-
-uniform Texture2D s_half_depth;
+Texture2D s_half_depth;
+#include "ssao.ps"
 
 #ifdef HDAO
 #define USE_HDAO 1
@@ -25,7 +27,8 @@ Texture2D<float> s_occ;
 #endif // SM_5
 
 #if SSAO_QUALITY <= 3
-#include "ssao.ps"
+#include "ssdo.ps"
+
 #else
 #ifndef USE_HDAO
 #define USE_HDAO
@@ -38,14 +41,11 @@ Texture2D<float> s_occ;
 #endif
 #define USE_HDAO_CODE
 #if SSAO_QUALITY <= 3
-#define g_f2RTSize (pos_decompression_params2.xy)
-#ifdef GBUFFER_OPTIMIZATION
+#define g_f2RTSize (screen_res.xy)
+
 #define g_txDepth s_position
 #define g_txNormal s_position
-#else
-#define g_txDepth s_position
-#define g_txNormal s_normal
-#endif
+
 #include "ssao_hdao.ps"
 #endif
 #else // USE_HDAO
@@ -83,11 +83,7 @@ _out main(_input I, uint iSample : SV_SAMPLEINDEX)
 #ifndef USE_MSAA
     float4 L = s_accumulator.Sample(smp_nofilter, I.tc0); // diffuse.specular
 #else
-#ifdef GBUFFER_OPTIMIZATION
-    float4 L = s_accumulator.Load(int3(I.pos2d.xy, 0), ISAMPLE); // diffuse.specular
-#else
-    float4 L = s_accumulator.Load(int3(I.tc0 * pos_decompression_params2.xy, 0), ISAMPLE);
-#endif
+    float4 L = s_accumulator.Load(int3(I.tc0 * screen_res.xy, 0), ISAMPLE);
 #endif
 
     // static sun
@@ -104,41 +100,49 @@ _out main(_input I, uint iSample : SV_SAMPLEINDEX)
     float3 hdiffuse, hspecular;
 
     //  Calculate SSAO
+
 #ifdef USE_MSAA
-#ifdef GBUFFER_OPTIMIZATION
     int2 texCoord = I.pos2d;
-#else
-    int2 texCoord = int2(I.tc0 * pos_decompression_params2.xy);
 #endif
-#endif
+
+    float3 occ = float3(1.0, 1.0, 1.0);
 
 #ifdef USE_HDAO
 #ifdef SM_5
 #if SSAO_QUALITY > 3
-    float occ = s_occ.Sample(smp_nofilter, I.tc0);
+    occ = s_occ.Sample(smp_nofilter, I.tc0);
 #else // SSAO_QUALITY > 3
-    float occ = calc_hdao(CS_P(P, N, I.tc0, I.tcJ, I.pos2d, ISAMPLE));
+    occ = calc_hdao(CS_P(P, N, I.tc0, I.tcJ, I.pos2d, ISAMPLE));
 #endif // SSAO_QUALITY > 3
 #else // SM_5
 #if SSAO_QUALITY > 3
-    float occ = calc_new_hdao(CS_P(P, N, I.tc0, I.tcJ, I.pos2d, ISAMPLE));
+    occ = calc_new_hdao(CS_P(P, N, I.tc0, I.tcJ, I.pos2d, ISAMPLE));
 #else // SSAO_QUALITY > 3
-    float occ = calc_hdao(CS_P(P, N, I.tc0, I.tcJ, I.pos2d, ISAMPLE));
+    occ = calc_hdao(CS_P(P, N, I.tc0, I.tcJ, I.pos2d, ISAMPLE));
 #endif // SSAO_QUALITY > 3
 #endif // SM_5
 #else // USE_HDAO
 #ifdef USE_HBAO
-    float occ = calc_hbao(P.z, N, I.tc0, I.pos2d);
+    occ = calc_hbao(P.z, N, I.tc0, I.pos2d);
 #else // USE_HBAO
-    float occ = calc_ssao(CS_P(P, N, I.tc0, I.tcJ, I.pos2d, ISAMPLE));
+    occ = calc_ssdo(P, N, I.tc0, I.pos2d, ISAMPLE);
 #endif
 #endif // USE_HDAO
 
-    hmodel(hdiffuse, hspecular, mtl, N.w, D.w, P.xyz, N.xyz);
-    hdiffuse *= occ;
-    hspecular *= occ;
+#ifdef SSAO_QUALITY
+    occ = compute_colored_ao(occ.x, D.xyz);
+#endif
 
-// Disable specular if SSR is enabled. ( Temporary fix? )
+    hmodel(hdiffuse, hspecular, mtl, N.w, D.w, P.xyz, N.xyz);
+
+    // AO implementation
+#ifdef SSFX_AO
+    hdiffuse *= (1.0f - (1.0f - occ) * (1.0f - dot(hdiffuse.rgb, LUMINANCE_VECTOR)));
+#else
+    hdiffuse *= occ;
+#endif
+
+    // Disable specular if SSR is enabled. ( Temporary fix? )
 #ifdef SSFX_SSR
 #ifdef REFLECTIONS_ONLY_ON_TERRAIN
     if (gbd.refl_flag)
@@ -147,14 +151,12 @@ _out main(_input I, uint iSample : SV_SAMPLEINDEX)
 #endif
 
     float4 light = float4(L.rgb + hdiffuse, L.w);
-    float4 C = D * light;
-
-    // float3 spec = C.www * L.rgb + hspecular * C.rgba; // replicated specular
-    float3 spec = C.www * L.rgb + hspecular; // replicated specular
+    float4 C = D * light; // rgb.gloss * light(diffuse.specular)
+    float3 spec = C.www * L.rgb + hspecular * C.rgba; // replicated specular
 
     float3 color = C.rgb + spec;
 
-// SSR Implementation
+    // SSR Implementation
 #ifdef SSFX_SSR
 #ifdef REFLECTIONS_ONLY_ON_TERRAIN
     if (gbd.refl_flag)
@@ -162,22 +164,23 @@ _out main(_input I, uint iSample : SV_SAMPLEINDEX)
         SSFX_ScreenSpaceReflections(I.tc0, P, N, D.a, color, ISAMPLE);
 #endif
 
+        ////////////////////////////////////////////////////////////////////////////////
+
         // here should be distance fog
 #ifdef SSFX_FOG
     float3 WorldP = mul(m_inv_V, float4(P.xyz, 1));
     float fog = SSFX_HEIGHT_FOG(P.xyz, WorldP.y, color);
 #else
-    float3 pos = P.xyz;
-    float distance = length(pos);
+    float distance = length(P.xyz);
     float fog = saturate(distance * fog_params.w + fog_params.x);
     color = lerp(color, fog_color * TONEMAP_SCALE_FACTOR, fog);
 #endif
-
     float skyblend = saturate(fog * fog);
 
     float tm_scale = I.tc0.w; // interpolated from VS
 
     _out o;
+
     tonemap(o.low, o.high, color, tm_scale);
     o.low.a = skyblend;
     o.high.a = skyblend;
