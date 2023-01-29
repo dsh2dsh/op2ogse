@@ -23,6 +23,15 @@ void tonemap(out float4 low, out float4 high, float3 rgb, float scale)
     high = rgb.xyzz / def_hdr; // 8x dynamic range
 }
 
+float3 compute_colored_ao(float ao, float3 albedo)
+{ // https://www.activision.com/cdn/research/s2016_pbs_activision_occlusion.pptx
+    float3 a = 2.0404 * albedo - 0.3324;
+    float3 b = -4.7951 * albedo + 0.6417;
+    float3 c = 2.7552 * albedo + 0.6903;
+
+    return max(ao, ((ao * a + b) * ao + c) * ao);
+}
+
 float4 combine_bloom(float3 low, float4 high) { return float4(low + high * high.a, 1.h); }
 
 float calc_fogging(float4 w_pos) { return dot(w_pos, fog_plane); }
@@ -61,6 +70,14 @@ float3 v_hemi(float3 n) { return L_hemi_color * (.5f + .5f * n.y); }
 float3 v_sun(float3 n) { return L_sun_color * dot(n, -L_sun_dir_w); }
 
 float3 calc_reflection(float3 pos_w, float3 norm_w) { return reflect(normalize(pos_w - eye_position), norm_w); }
+
+#ifndef SKY_WITH_DEPTH
+float is_sky(float depth) { return step(depth, SKY_EPS); }
+float is_not_sky(float depth) { return step(SKY_EPS, depth); }
+#else
+float is_sky(float depth) { return step(abs(depth - SKY_DEPTH), SKY_EPS); }
+float is_not_sky(float depth) { return step(SKY_EPS, abs(depth - SKY_DEPTH)); }
+#endif
 
 // https://knarkowicz.wordpress.com/2014/04/16/octahedron-normal-vector-encoding/
 float2 OctWrap(float2 v) { return (1.0 - abs(v.yx)) * (v.xy >= 0.0 ? 1.0 : -1.0); }
