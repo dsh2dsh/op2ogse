@@ -10,6 +10,20 @@
 #include "common_cbuffers.h"
 #include "common_functions.h"
 
+// SSS Settings
+#include "settings_screenspace_FLORA.h"
+
+////////////////////////
+// Material table
+#define MAT_FLORA 0.15f
+
+// Simple subsurface scattering
+float SSS(float3 N, float3 V, float3 L)
+{
+    float S = saturate(dot(V, -(L + N))) * G_SSS_INTENSITY;
+    return S;
+}
+
 // #define USE_SUNMASK
 
 #ifdef USE_R2_STATIC_SUN
