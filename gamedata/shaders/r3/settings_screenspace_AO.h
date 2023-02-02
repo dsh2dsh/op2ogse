@@ -2,8 +2,8 @@
 
 #define G_SSDO_RENDER_DIST 				15.0f //150.0f 	// Max rendering distance.
 	
-#define G_SSDO_RADIUS 					0.2f	// AO radius, higher values means more occlusion coverage with less detail and intensity. ( Recommended 0.1 ~ 0.5 )
-#define G_SSDO_INTENSITY 				4.0f //8.0f 	// General AO intensity.
+#define G_SSDO_RADIUS 					0.4f	// AO radius, higher values means more occlusion coverage with less detail and intensity. ( Recommended 0.1 ~ 0.5 )
+#define G_SSDO_INTENSITY 				7.0f 	// General AO intensity.
 
 #define G_SSDO_MAX_OCCLUSION			0.1f 	// Maximum obscurance for a pixel. 0 = full black
 #define G_SSDO_SMOOTH 					1.3f 	// AO softer. Highly occluded pixels will be more affected than low occluded ones.
