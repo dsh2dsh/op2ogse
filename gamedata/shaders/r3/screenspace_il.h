@@ -1,7 +1,7 @@
 /**
- * @ Version: SCREEN SPACE SHADERS - UPDATE 14.3
+ * @ Version: SCREEN SPACE SHADERS - UPDATE 14.5
  * @ Description: Indirect Light Shader
- * @ Modified time: 2023-01-30 04:02
+ * @ Modified time: 2023-02-01 07:08
  * @ Author: https://www.moddb.com/members/ascii1457
  * @ Mod: https://www.moddb.com/mods/stalker-anomaly/addons/screen-space-shaders
  */
@@ -109,9 +109,14 @@ void ssfx_il(float2 tc, float2 pos2d, float3 P, float3 N, inout float3 color, ui
 #ifdef SSFX_FOG
     float3 WorldP = mul(m_inv_V, float4(P.xyz, 1));
     float Fog = saturate(PLen * fog_params.w + fog_params.x);
-    float Fade = (SSFX_FOGGING(Fog, WorldP.y));
+
+    // Same as SSFX_FOGGING but multiplied * 2
+    float fog_height = smoothstep(G_FOG_HEIGHT, -G_FOG_HEIGHT, WorldP.y) * G_FOG_HEIGHT_INTENSITY;
+    float fog_extra = saturate(Fog + fog_height * (Fog * G_FOG_HEIGHT_DENSITY));
+    float Fade = 1.0f - saturate(fog_extra * 2.0f);
 #else
-    float Fade = saturate(PLen * fog_params.w + fog_params.x);
+    // Vanilla fog calc multiplied * 2
+    float Fade = 1.0f - saturate((PLen * fog_params.w + fog_params.x) * 2.0f);
 #endif
 
     // "Fix" DOF incompatibility ( Reload at the moment... Maybe peripheral blur requires the same? )
