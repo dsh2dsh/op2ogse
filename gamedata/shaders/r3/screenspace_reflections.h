@@ -9,6 +9,8 @@
 #include "screenspace_common.h"
 #include "settings_screenspace_SSR.h"
 
+uniform float4 rain_params;
+
 static const int2 q_ssr_steps[6] = {
     int2(8, 200), int2(16, 35), int2(24, 18), int2(32, 5), int2(48, 1), int2(64, 1),
 };
