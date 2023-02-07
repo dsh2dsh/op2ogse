@@ -329,9 +329,6 @@ struct gbuffer_data
     float hemi; // AO
     float3 C;
     float gloss;
-#ifdef REFLECTIONS_ONLY_ON_TERRAIN
-    bool refl_flag;
-#endif
 };
 
 ////////////////////////////////////////////////////////////////
