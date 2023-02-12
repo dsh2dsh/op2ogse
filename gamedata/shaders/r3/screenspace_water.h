@@ -9,7 +9,7 @@
 #include "screenspace_common.h"
 #include "settings_screenspace_WATER.h"
 
-static const int2 q_steps[5] = {int2(8, 3), int2(16, 2), int2(24, 2), int2(32, 2), int2(64, 1)};
+static const int2 q_steps[5] = {int2(4, 3), int2(16, 2), int2(24, 2), int2(32, 2), int2(64, 1)};
 
 float3 SSFX_ssr_water_ray(float3 ray_start_vs, float3 ray_dir_vs, float noise, uint iSample : SV_SAMPLEINDEX)
 {
