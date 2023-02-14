@@ -1,6 +1,6 @@
 // [ SETTINGS ] [ INDIRECT LIGHT ]
 
-#define G_IL_QUALITY				1		// Quality of the IL [ 0 = Very Low | 1 = Low | 2 = Normal | 3 = High ]
+#define G_IL_QUALITY				0 //1		// Quality of the IL [ 0 = Very Low | 1 = Low | 2 = Normal | 3 = High ]
 
 #define G_IL_INTENSITY				1.0f	// Intensity of the indirect ilumination
 #define G_IL_SKYLIGHT_INTENSITY		0.3f	// Intensity of the sky light
