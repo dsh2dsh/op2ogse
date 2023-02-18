@@ -568,4 +568,5 @@ $mod_dir$   		= false|	false|	$fs_root$|		mods\
   [Shkrek & Klick](https://www.youtube.com/user/MrDisappearing)
   Haarhus,
   Okichi,
-  Инок
+  Инок,
+  ISTORMI
