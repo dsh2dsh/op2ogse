@@ -4,7 +4,6 @@
 
 Форум проекта:
 
-- http://nlc-zone.ru/forum/topic/209-dsh-mod/
 - https://www.amk-team.ru/forum/topic/13176-dsh-mod/
 
 
@@ -442,31 +441,7 @@
 Последнее обновление:
 - https://bamus.cz/pub/dsh_mod_latest/latest.7z
 - torrent: https://bamus.cz/pub/dsh_mod_latest.torrent
-
-Текстурные сборки:
-- https://bamus.cz/pub/dsh_mod_mods/
-- torrent: https://bamus.cz/pub/dsh_mod_mods.torrent
-- magnet: magnet:?xt=urn:btih:8823edc77ccfdd6573a40162cd9ce98eae2ed248&dn=dsh%5Fmod%5Fmods
-
-* v92_op2_intro: загрузочные экраны от V92
-
-* zz1_nlc7_textures_venommans: сборник текстур из NLC7 от VeNoMMaNs
-
-* zz2_s.g.c._000_materials.v92_v.1: текстуры от V92 c доработками adm-ral
-
-* zz3_nlc7_he: текстуры из NLC7 Hard Edition
-  http://nlc-zone.ru/forum/topic/191-nlc7-hard-edition/
-
-* zz5_nlc7_he_detail_fall: текстуры земли/травы из NLC7 HE
-
-* zz6_absolute_nature_4_04: сухая растительность из Absolute Nature
-
-* zz6_jack_rama_sky4k_night: текстуры ночного неба в повышенном разрешении от
-  @jack_rama
-
-Все текстурные сборки можно комбинировать друг с другом в любых
-комбинациях. Текстуры будут браться из последнего по алфавиту сборника. Что
-было, как у меня, скачивайте все в папку mods и готово.
+- magnet:?xt=urn:btih:67cf7d779d3d4b7a26e84b3058bb9bcf40474d16&dn=dsh%5Fmod%5Frepack
 
 
 Установка:
@@ -478,16 +453,13 @@
 
 и перезагрузить компьютер, на всякий случай.
 
-2. Создать новую папку и скачать в нее основную часть, т.е. dshmod0.7z и все
-   gamedata.db*.
+2. Создать новую папку и скачать в нее всю основную часть, т.е. dshmod0.7z, все
+   gamedata.db* и папку mods.
 
 3. Распаковать dshmod0.7z и после этого удалить его, т.к. он больше ни для чего
    не нужен.
 
 4. Распаковать туда же последнее обновление
-
-5. Скачать и перенести туда же нужную сборку текстур. Это не обязательно, но я
-   рекомендую.
 
 Всё, можно запускать.
 
@@ -498,20 +470,6 @@
 
 И не забывайте устанавливать свежие обновления, после их выхода. Как
 правило, обновления выходят каждую неделю, по выходным.
-
-
-Дополнения:
-
-Для установки любого дополнения, в папке с игрой нужно создать папку
-"mods" и положить туда файл дополнения. При этом нужно убедиться, что
-в файле fs.ltx, который тоже находится в папке с игрой, есть вот такая
-строка:
-
-$mod_dir$   		= false|	false|	$fs_root$|		mods\
-
-Если такой строки там нет, то добавляем.
-
-Для удаления дополнения нужно удалить его файл из папки "mods".
 
 
 От Инок:
@@ -577,4 +535,5 @@ $mod_dir$   		= false|	false|	$fs_root$|		mods\
   [Shkrek & Klick](https://www.youtube.com/user/MrDisappearing),
   Haarhus,
   Okichi,
-  Инок
+  Инок,
+  ISTORMI
