@@ -1,4 +1,8 @@
 #include "common.h"
+#include "check_screenspace.h"
+
+float4 benders_pos[16];
+float4 benders_setup;
 
 float4 consts; // {1/quant,1/quant,diffusescale,ambient}
 float4 wave; // cx,cy,cz,tm
@@ -30,8 +34,27 @@ v2p_bumped main(v_detail v)
     float inten = H * dp;
     float2 result = calc_xz_wave(dir2D.xz * inten, frac);
 
-    // Pos + Wave Result
+    // Add wind
     pos = float4(pos.x + result.x, pos.y, pos.z + result.y, 1);
+
+    // INTERACTIVE GRASS - SSS Update 15.2
+    // https://www.moddb.com/mods/stalker-anomaly/addons/screen-space-shaders/
+#ifdef SSFX_INTER_GRASS
+#if SSFX_INT_GRASS > 0
+    for (int b = 0; b < SSFX_INT_GRASS + 1; b++)
+    {
+        float dist = distance(float2(pos.x, pos.z), float2(benders_pos[b].x, benders_pos[b].z)); // Distance from Vertex to Bender.
+        float height_limit =
+            saturate(1.0f - abs(pos.y - benders_pos[b].y) * 0.5f); // Limit the effect vertically. We don't want a Stalker walking on a platform and affecting the grass bellow.
+        float bend = saturate(benders_setup.x - dist * dist) * height_limit; // Bend intensity, Radius - Dist. ( Square Dist to soft the end )
+        float3 dir = normalize(pos.xyz - benders_pos[b].xyz) * bend; // Direction of the bend.
+
+        // Apply vertex displacement
+        pos.xz += dir.xz * 2.0f * benders_setup.y * H; // Horizontal
+        pos.y -= bend * 0.4f * benders_setup.z * H; // Vertical
+    }
+#endif
+#endif
 
     // FLORA FIXES & IMPROVEMENTS - SSS Update 14.6
     // https://www.moddb.com/mods/stalker-anomaly/addons/screen-space-shaders/
