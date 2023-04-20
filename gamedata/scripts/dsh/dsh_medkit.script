@@ -14,6 +14,7 @@ function attach( sm ) -- для менеджера сигналов
     fun    = this.on_actor_conditions_update
   })
   sm:subscribe({ signal = "on_key_down",       fun = this.on_key_down       })
+  sm:subscribe({ signal = "on_key_holding",    fun = this.on_key_hold       })
   sm:subscribe({ signal = "on_key_up",         fun = this.on_key_up         })
   sm:subscribe({ signal = "on_mm_return_game", fun = this.on_mm_return_game })
   sm:subscribe({ signal = "on_save",           fun = this.on_save           })
@@ -281,22 +282,12 @@ function on_mm_return_game()
 end
 
 
-local key_hold_t
-local key_holded = false
+local medkey_holded = false
 
 function on_key_down( key, bind )
   if level.main_input_receiver() then return end
   if dik_use_medkit[ key ] then
-    if db.eat then return end
-    key_hold_t = dsh.rt_timeout(
-      300,
-      function()
-        key_hold_t = nil
-        key_holded = true
-        on_key_up( key, bind )
-        key_holded = false
-      end
-    )
+    medkey_holded = false
   elseif dik_use_bandage[ key ] then
     local found, t = amk_utils.inventory_search_check({ [ "bandage" ] = 1 })
     if found then
@@ -308,26 +299,32 @@ function on_key_down( key, bind )
 end
 
 
+function on_key_hold( key, bind, press_time )
+  if not dik_use_medkit[ key ] then return end
+  if medkey_holded == press_time or level.main_input_receiver() then return end
+  medkey_holded = press_time
+  if not db.eat then
+    level.disable_input()
+    dsh_inventory.btn_eat()
+  end
+end
+
+
 function on_key_up( key, bind )
   if not dik_use_medkit[ key ] then return end
+  if medkey_holded then
+    medkey_holded = false
+    return
+  end
   if level.main_input_receiver() or db.eat then return end
 
-  if key_hold_t then
-    key_hold_t:stop()
-    key_hold_t = nil
-  end
-
-  if key_holded then
-    dsh_inventory.btn_eat()
-  else
-    for _, sect in ipairs( use_medkit_order ) do
-      local found, t = amk_utils.inventory_search_check({ [ sect ] = 1 })
-      if found then
-        local obj = t[ 1 ]
-        on_actor_before_use( obj )
-        db.actor:eat( obj )
-        break
-      end
+  for _, sect in ipairs( use_medkit_order ) do
+    local found, t = amk_utils.inventory_search_check({ [ sect ] = 1 })
+    if found then
+      local obj = t[ 1 ]
+      on_actor_before_use( obj )
+      db.actor:eat( obj )
+      break
     end
   end
 end
