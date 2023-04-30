@@ -275,7 +275,7 @@ float3x4 m_sunmask; // ortho-projection
 float sunmask(float4 P)
 {
     float2 tc = mul(m_sunmask, P); //
-    return s_lmap.Sample(smp_linear, tc).w; // Hemi map - ambient occlusion
+    return s_lmap.SampleLevel(smp_linear, tc, 0).w; // Hemi map - ambient occlusion
 }
 #else
 float sunmask(float4 P) { return 1.0; } //
