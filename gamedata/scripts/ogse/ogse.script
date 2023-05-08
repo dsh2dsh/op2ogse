@@ -2713,42 +2713,76 @@ function has_info(info)
 	return db.actor:has_info(info)
 end
 
--- функция создания окна сообщения, которое закроется само через определённое время
-function autohiding_msg(txt, delay)
-	local dlg = MonologueMsg(txt)
-	level.start_stop_menu(dlg, true)
-	autohide_dlg_timer(delay, dlg):start()
+
+-- функция создания окна сообщения, которое закроется само через определённое
+-- время
+local autohide_dlg
+
+function autohiding_msg( txt, delay )
+  if autohide_dlg and autohide_dlg:IsShown() then
+    autohide_dlg:on_quit()
+  end
+  local d = MonologueMsg( txt, delay ):WithOnUnregister( function ()
+    autohide_dlg = nil
+  end )
+  level.start_stop_menu( d, true )
+  autohide_dlg = d
 end
+
 
 -- окно "монологового" типа. Просто сообщение в рамке.
 -- Закрыть можно по ESC. Также можно использовать в комбинации с
 -- таймером автозакрытия (см. MonologueMsg и ф-ю autohiding_msg)
-class "MonologueMsg" (CUIScriptWnd)
-
-function MonologueMsg:__init(txt) super()
-	local xml = CScriptXmlInit()
-	local dev = device()
+class "MonologueMsg" ( dsh_ui.dshCUIScriptWnd )
+function MonologueMsg:__init( txt, delay ) super()
+  local xml = CScriptXmlInit()
+  local dev = device()
 	
-	if dev.aspect_ratio > 0.7 then
-		xml:ParseFile("ui_ogse_monologue_msg.xml") -- 4^3
-	else
-		xml:ParseFile("ui_ogse_monologue_msg_16.xml") -- 16^9
-	end	
-	xml:InitWindow("main", 0, self)
-	self.msg = xml:InitStatic("main:msg", self)
-	self.msg:SetTextST(txt)
-	self.dlg = self -- трюк для предотвращения вылета.
-	-- Чтобы не было утечки памяти после закрытия окна надо обнулить эту ссылку
-	-- (см. метод OnKeyboard и также метод срабатывания спец. таймера)
+  if dev.aspect_ratio > 0.7 then
+    xml:ParseFile( "ui_ogse_monologue_msg.xml" ) -- 4^3
+  else
+    xml:ParseFile( "ui_ogse_monologue_msg_16.xml" ) -- 16^9
+  end	
+
+  xml:InitWindow( "main", 0, self )
+  self.msg = xml:InitStatic( "main:msg", self )
+  self.msg:SetTextST( txt )
+  -- self.dlg = self -- трюк для предотвращения вылета.
+  -- Чтобы не было утечки памяти после закрытия окна надо обнулить эту ссылку
+  -- (см. метод OnKeyboard и также метод срабатывания спец. таймера)
+
+  self:auto_close( delay )
 end
-function MonologueMsg:OnKeyboard(dik, key_act) CUIScriptWnd.OnKeyboard(self,dik,key_act)
-	if key_act == ui_events.WINDOW_KEY_PRESSED and dik == DIK_keys.DIK_ESCAPE then
-		self:GetHolder():start_stop_menu(self,true)
-		self:ClearCallbacks()
-		self.dlg = nil -- отпускаем объект для сборщика мусора
-	end
-	return true
+
+
+function MonologueMsg:OnKeyboard( dik, key_act )
+  CUIScriptWnd.OnKeyboard( self, dik, key_act )
+  if
+    key_act == ui_events.WINDOW_KEY_PRESSED
+    and dik == DIK_keys.DIK_ESCAPE
+  then
+    self:on_quit()
+  end
+  return true
 end
+
+
+function MonologueMsg:on_quit()
+  self:GetHolder():start_stop_menu( self, true )
+  self:dsh_unregister_self()
+  if self.t then self.t:stop() end
+  -- self.dlg = nil -- отпускаем объект для сборщика мусора
+end
+
+
+function MonologueMsg:auto_close( delay )
+  self.t = dsh.rt_timeout( delay, function()
+    self.t = nil
+    self:on_quit()
+  end )
+end
+
+
 -- служебный таймер для автоматического закрытия диалога через заданное время
 class "autohide_dlg_timer" (ogse_qt.quick_timer)
 function autohide_dlg_timer:__init(delay, dlg) super(delay)
