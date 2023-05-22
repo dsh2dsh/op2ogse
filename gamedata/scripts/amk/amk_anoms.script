@@ -998,78 +998,12 @@ end
 
 
 function configure_restrictions( check_func )
-  local lname  = level.name()
   restrictions = restricted_areas()
   restrictions:add_level_vertex_id( db.actor:level_vertex_id() )
   restrictions:add_position( db.actor:position(), db.actor:radius() )
-  dsh_respawn.iterate_respawners(
-    function( resp )
-      local pos, lv, gv = unpack( resp.xyzlg )
-      local lid = location_id_by_gvid( gv )
-      if lid then
-        local resp_lname = level_system_name_by_lid( lid )
-        if resp_lname == lname then
-          restrictions:add_level_vertex_id( lv )
-          restrictions:add_position( pos, 5 )
-        end
-      end
-    end
-  )
-  dsh_alife.iterate_items(
-    function( sobj )
-      if object_level_name( sobj ) == lname then
-        if ( not check_func ) or check_func( sobj ) then
-          local skip = false
-          if sobj:clsid() == clsid.script_restr then
-            local sr = sobj:get_space_restrictor()
-            if
-              sr.restrictor_type == global_flags.eDefaultRestrictorTypeNone
-              or sr.restrictor_type == global_flags.eRestrictorTypeNone
-            then
-              skip = true
-            end
-          elseif
-            sobj:clsid() == clsid.respawn
-            or sobj:clsid() == clsid.smart_terrain
-          then
-            skip = true
-          elseif sobj:clsid() == clsid.level_changer then
-            local ini = sobj:spawn_ini()
-            if ini:section_exist( "pt_move_if_reject" ) then
-              local path = get_string( "pt_move_if_reject", "path", nil, ini )
-              if path then
-                ASSERT(
-                  level.patrol_path_exists( path ),
-                  "[%s]: patrol_path %s not found", script_name(), path
-                )
-                local pp = patrol( path )
-                restrictions:add_level_vertex_id( pp:level_vertex_id( 0 ) )
-                restrictions:add_position( pp:point( 0 ), 5 )
-              end
-            end
-          elseif
-            sobj:clsid() == clsid.zone_mosquito_bald
-            and get_bool( sobj:section_name(), "teleport", false )
-          then
-            restrictions:check_teleport( sobj )
-          end
-          if not skip then
-            restrictions:add_level_vertex_id( sobj.m_level_vertex_id )
-            restrictions:add_position( sobj.position, 5 )
-          end
-        end
-      else
-        if sobj:clsid() == clsid.level_changer then
-          local lc = sobj:get_level_changer()
-          if level_system_name_by_gvid( lc.dest_game_vertex_id ) == level.name() then
-            restrictions:add_level_vertex_id( lc.dest_level_vertex_id )
-            restrictions:add_position( lc.dest_position, 5 )
-          end
-        end
-      end
-    end,
-    65535 -- на земле
-  )
+  restrictions:add_respawners()
+  restrictions:add_alife_items( check_func )
+  restrictions:add_smart_terrains()
 end
 
 
@@ -1906,6 +1840,104 @@ function restricted_areas:check_teleport( sobj )
       self:add_level_vertex_id( vert_ok )
     end
   end
+end
+
+
+function restricted_areas:add_respawners()
+  local lname = level.name()
+  dsh_respawn.iterate_respawners(
+    function( resp )
+      local pos, lv, gv = unpack( resp.xyzlg )
+      local lid = location_id_by_gvid( gv )
+      if lid then
+        local resp_lname = level_system_name_by_lid( lid )
+        if resp_lname == lname then
+          restrictions:add_level_vertex_id( lv )
+          restrictions:add_position( pos, 5 )
+        end
+      end
+    end
+  )
+end
+
+
+function restricted_areas:add_alife_items( check_func )
+  local lname = level.name()
+  dsh_alife.iterate_items(
+    function( sobj )
+      if object_level_name( sobj ) == lname then
+        if ( not check_func ) or check_func( sobj ) then
+          local skip = false
+          if sobj:clsid() == clsid.script_restr then
+            local sr = sobj:get_space_restrictor()
+            if
+              sr.restrictor_type == global_flags.eDefaultRestrictorTypeNone
+              or sr.restrictor_type == global_flags.eRestrictorTypeNone
+            then
+              skip = true
+            end
+          elseif
+            sobj:clsid() == clsid.respawn
+            or sobj:clsid() == clsid.smart_terrain
+          then
+            skip = true
+          elseif sobj:clsid() == clsid.level_changer then
+            local ini = sobj:spawn_ini()
+            if ini:section_exist( "pt_move_if_reject" ) then
+              local path = get_string( "pt_move_if_reject", "path", nil, ini )
+              if path then
+                ASSERT(
+                  level.patrol_path_exists( path ),
+                  "[%s]: patrol_path %s not found", script_name(), path
+                )
+                local pp = patrol( path )
+                restrictions:add_level_vertex_id( pp:level_vertex_id( 0 ) )
+                restrictions:add_position( pp:point( 0 ), 5 )
+              end
+            end
+          elseif
+            sobj:clsid() == clsid.zone_mosquito_bald
+            and get_bool( sobj:section_name(), "teleport", false )
+          then
+            restrictions:check_teleport( sobj )
+          end
+          if not skip then
+            restrictions:add_level_vertex_id( sobj.m_level_vertex_id )
+            restrictions:add_position( sobj.position, 5 )
+          end
+        end
+      else
+        if sobj:clsid() == clsid.level_changer then
+          local lc = sobj:get_level_changer()
+          if level_system_name_by_gvid( lc.dest_game_vertex_id ) == level.name() then
+            restrictions:add_level_vertex_id( lc.dest_level_vertex_id )
+            restrictions:add_position( lc.dest_position, 5 )
+          end
+        end
+      end
+    end,
+    65535 -- на земле
+  )
+end
+
+
+function restricted_areas:add_smart_terrains()
+  local lname = level.name()
+  smart_terrain.iterate_smart_terrains( function( s )
+    if s.level_name ~= lname or not s.gulag_working then return end
+    s:initialize_if_needed()
+    local g = s.gulag
+    if not g then return end
+    for _, j in ipairs( g.Job ) do
+      if
+        j.alife_task
+        and not self:check_level_vertex_id( j.level_vertex_id )
+      then
+        restrictions:add_level_vertex_id( j.level_vertex_id )
+        restrictions:add_position( j.position, 5 )
+      end
+    end
+  end )
 end
 
 
