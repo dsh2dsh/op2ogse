@@ -4,10 +4,11 @@
 //////////////////////////////////////////////////////////////////////////////////////////
 
 // defines
+// #define NV_AMP
 #define NV_BRIGHTNESS 5.0 // NV_COLOR.w
 
 // effects
-//#define NV_FLICKERING
+// #define NV_FLICKERING
 #define NV_NOISE
 #define NV_VIGNETTE
 #define NV_SCANLINES
@@ -21,8 +22,10 @@
 
 float4 calc_night_vision_effect(float2 tc0, float4 color, float4 NV_COLOR, float4 NV_PARAMS)
 {
-    float lum = dot(color.rgb, float3(0.3f, 0.38f, 0.22f) * NV_COLOR.w); // instead of float3 use LUMINANCE_floatTOR in stalker
+#ifdef NV_AMP
+    float lum = dot(color.rgb, float3(0.3f, 0.38f, 0.22f) * NV_COLOR.w);
     color.rgb = NV_COLOR.xyz * lum;
+#endif
 
     // cheap noise function
     float noise = frac(sin(dot(tc0, float2(12.0, 78.0) + (timers.x * 1.17f))) * 43758.0);
