@@ -433,12 +433,11 @@
 - https://bamus.cz/pub/dsh_mod_repack/
 или
 - torrent: https://bamus.cz/pub/dsh_mod_repack.torrent
-- magnet: magnet:?xt=urn:btih:e84c39dba645eeaf2e8e0495d9a29cb623e5a565&dn=dsh%5Fmod%5Frepack
+- magnet: magnet:?xt=urn:btih:67cf7d779d3d4b7a26e84b3058bb9bcf40474d16&dn=dsh%5Fmod%5Frepack
 
 Последнее обновление:
 - https://bamus.cz/pub/dsh_mod_latest/latest.7z
 - torrent: https://bamus.cz/pub/dsh_mod_latest.torrent
-- magnet:?xt=urn:btih:67cf7d779d3d4b7a26e84b3058bb9bcf40474d16&dn=dsh%5Fmod%5Frepack
 
 
 Установка:
